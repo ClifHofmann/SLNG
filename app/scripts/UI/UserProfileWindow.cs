@@ -111,6 +111,7 @@ public partial class UserProfileWindow : SLNGWindow
 
     // Social actions (view mode only)
     private Button? _addFriendBtn;
+    private bool _isFriend;
     private Button? _muteBtn;
 
     /// <summary>Wired by Boot to <c>ChatWindow.OpenOrFocusImTab</c> — the "IM" action button.</summary>
@@ -172,6 +173,7 @@ public partial class UserProfileWindow : SLNGWindow
 
     public override void _ExitTree()
     {
+        if (_session != null) _session.FriendListChanged -= OnFriendListChanged;
         FlushNotes();
         // Give back every GpuCache ref this window pinned -- see RepinTexture's doc comment.
         // Without this, closing the window (or QueueFree on relogin) would leave these entries
@@ -198,6 +200,7 @@ public partial class UserProfileWindow : SLNGWindow
 
         BuildTabs();
         BuildActions();
+        if (!_isSelf && _session != null) _session.FriendListChanged += OnFriendListChanged;
 
         ApplyCascade();
         UpdateNameHeader();
@@ -754,8 +757,10 @@ public partial class UserProfileWindow : SLNGWindow
         bool alreadyFriend = false;
         foreach (var f in _session.GetFriends())
             if (f.Id == _agentId) { alreadyFriend = true; break; }
-        _addFriendBtn.Disabled = alreadyFriend;
-        _addFriendBtn.Text = alreadyFriend ? Tr("action_friend_added") : Tr("action_add_friend");
+        // One button, two jobs: add a stranger, remove a friend. A friend is not a dead end.
+        _addFriendBtn.Disabled = false;
+        _addFriendBtn.Text = alreadyFriend ? Tr("action_remove_friend") : Tr("action_add_friend");
+        _isFriend = alreadyFriend;
 
         _muteBtn.Text = _session.IsAvatarMuted(_agentId) ? Tr("action_unmute") : Tr("action_mute");
     }
@@ -778,10 +783,41 @@ public partial class UserProfileWindow : SLNGWindow
 
     private void OnAddFriendPressed()
     {
+        if (_isFriend)
+        {
+            PromptRemoveFriend();
+            return;
+        }
         _session?.OfferFriendship(_agentId);
         if (_addFriendBtn != null) _addFriendBtn.Disabled = true;
         _statusLabel.Text = Tr("status_friend_sent");
     }
+
+    // Ending a friendship is mirrored on the other side, so it asks first. The window goes on the
+    // HUD layer, like every other prompt, not under this one.
+    private void PromptRemoveFriend()
+    {
+        if (_session == null) return;
+        var win = new ConfirmWindow();
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                   ?? (Node?)GetParent() ?? this;
+        host.AddChild(win);
+        string name = string.IsNullOrWhiteSpace(_agentName) ? _agentId.ToString() : _agentName;
+        win.Initialize(
+            L10n.Tr("ui.friend_remove.title"),
+            L10n.TrFormat("ui.friend_remove.prompt", name),
+            L10n.Tr("ui.friend_remove.ok"),
+            danger: true);
+        win.Confirmed += () =>
+        {
+            if (_session?.RemoveFriend(_agentId) == true) _statusLabel.Text = Tr("status_friend_removed");
+            RefreshActionButtons();
+        };
+    }
+
+    // An offer accepted, or a friendship ended by either side, changes what the button should say.
+    // Raised on a network thread; Node.CallDeferred is the safe way back.
+    private void OnFriendListChanged(object? sender, EventArgs e) => CallDeferred(nameof(RefreshActionButtons));
 
     private void OnImPressed() =>
         OnOpenImRequested?.Invoke(_agentId, string.IsNullOrWhiteSpace(_agentName) ? "" : _agentName);

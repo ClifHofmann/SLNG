@@ -212,6 +212,40 @@ public record TeleportOfferEvent(
     TeleportOfferKind Kind, Guid LureId, Guid FromId, string FromName, string Message,
     bool Godlike = false, MaturityLevel? Maturity = null);
 
+/// <summary>BUG-NET-28: somebody offers the agent friendship (IM dialog 38, the viewer's
+/// <c>IM_FRIENDSHIP_OFFERED</c>). Answer with <c>GridSession.AcceptFriendshipOffer</c> /
+/// <c>DeclineFriendshipOffer</c>; until then nothing is sent, like the viewer's unanswered
+/// notification. Decoded by hand from the instant message, never through LibreMetaverse's
+/// <c>FriendshipOffered</c> event: it is only raised while somebody listens, and nothing there
+/// answers for us either.</summary>
+/// <param name="FromId">Who is offering (the packet's <c>AgentID</c>, llviewermessage.cpp:2145). The
+/// reply names them.</param>
+/// <param name="FromName">Their name as the message carried it, for display.</param>
+/// <param name="Message">Their text; empty for a client from before July 2008
+/// (llimprocessing.cpp:1478), which is still an offer.</param>
+/// <param name="SessionId">The message's <c>ID</c> field (llimprocessing.cpp:1446 <c>session_id</c>).
+/// The UDP accept and decline both echo it as <c>TransactionBlock.TransactionID</c>
+/// (llviewermessage.cpp:287-291, 337-341).</param>
+/// <param name="Online">True when the offer was delivered live, false when it was stored while the
+/// agent was away (<c>Offline != IM_ONLINE</c>, llimprocessing.cpp:1448). The viewer answers a stored
+/// offer through the <c>AcceptFriendship</c> / <c>DeclineFriendship</c> capability.</param>
+public record FriendshipOfferEvent(Guid FromId, string FromName, string Message, Guid SessionId, bool Online);
+
+/// <summary>BUG-NET-28: another avatar answered a friendship offer the agent sent (IM dialog 39,
+/// <c>IM_FRIENDSHIP_ACCEPTED</c>, or 40, <c>IM_FRIENDSHIP_DECLINED_DEPRECATED</c>). The viewer only
+/// acts on 39 (llimprocessing.cpp:1496); 40 is deprecated and current simulators do not send it
+/// ("We no longer notify other viewers", llviewermessage.cpp:318), so a decline is usually silence.</summary>
+/// <param name="FromId">The avatar who answered.</param>
+/// <param name="FromName">Their name as the message carried it.</param>
+/// <param name="Accepted">True for an acceptance.</param>
+public record FriendshipAnsweredEvent(Guid FromId, string FromName, bool Accepted);
+
+/// <summary>Somebody ended their friendship with us (the sim's <c>TerminateFriendship</c>, sent when
+/// they remove us in any viewer). Never raised for a friendship WE ended.</summary>
+/// <param name="FromId">The former friend.</param>
+/// <param name="FromName">Their name, from the friend list or the name cache; empty if neither knew it.</param>
+public record FriendshipEndedEvent(Guid FromId, string FromName);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object

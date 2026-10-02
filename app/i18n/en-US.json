@@ -278,6 +278,19 @@
       "join": "Join",
       "decline": "Decline"
     },
+    "friend_remove": {
+      "title": "REMOVE FRIEND",
+      "prompt": "Remove {0} from your friends? You will no longer see each other's online status, and they will be removed from their list too.",
+      "ok": "Remove friend"
+    },
+    "friendship_offer": {
+      "title": "FRIENDSHIP OFFER",
+      "from": "{0} is offering friendship.",
+      "default_rights": "By default, you will be able to see each other's online status.",
+      "accept": "Accept",
+      "decline": "Decline",
+      "send_failed": "Could not answer right now. Please try again in a moment."
+    },
     "teleport_offer": {
       "title_offer": "TELEPORT OFFER",
       "title_request": "TELEPORT REQUEST",
@@ -361,12 +374,14 @@
       "save": "Save Profile",
       "action_add_friend": "Add Friend",
       "action_friend_added": "Friend ✓",
+      "action_remove_friend": "Remove Friend",
       "action_im": "IM",
       "action_pay": "Pay…",
       "action_offer_tp": "Offer TP",
       "action_mute": "Mute",
       "action_unmute": "Unmute",
       "status_friend_sent": "Friendship offer sent.",
+      "status_friend_removed": "Friend removed.",
       "status_tp_sent": "Teleport offer sent.",
       "status_muted": "Avatar muted.",
       "status_unmuted": "Avatar unmuted.",
@@ -856,6 +871,12 @@
       "teleport_request": "{0} asks to be teleported to your location.",
       "teleport_request_offered": "{0} asked to be teleported to you — offer sent.",
       "teleport_request_declined": "{0} asked to be teleported to you — declined.",
+      "friendship_offer": "{0} is offering friendship.",
+      "friendship_offer_accepted": "{0} offered friendship — accepted.",
+      "friendship_offer_declined": "{0} offered friendship — declined.",
+      "friendship_answer_accepted": "{0} accepted your friendship offer.",
+      "friendship_answer_declined": "{0} declined your friendship offer.",
+      "friendship_ended": "{0} removed you as a friend.",
       "script_permission": "“{0}” by {1} is asking for permissions.",
       "display_name_changed": "{0} ({1}) is now known as {2}."
     }

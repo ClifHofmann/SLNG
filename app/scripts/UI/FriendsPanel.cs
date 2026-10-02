@@ -14,8 +14,8 @@ namespace SLNG.App.UI;
 /// half only -- voice is a separate, much larger, unbuilt subsystem) are functional. Profile,
 /// Teleport and Pay were placeholders here from the days when the net layer had neither;
 /// both exist now (GridSession.OfferTeleport, MVP5-2's PayAvatarWindow) and are wired. Remove
-/// and Add still are not: there is no friendship-termination call in the session at all, so they
-/// keep the "(not implemented)" tooltip rather than being silently omitted.
+/// is wired too (it asks first). Add is not and keeps the "(not implemented)" tooltip rather than
+/// being silently omitted.
 /// </summary>
 public partial class FriendsPanel : Control
 {
@@ -96,17 +96,44 @@ public partial class FriendsPanel : Control
         if (_session != null)
         {
             _session.FriendStatusChanged -= OnFriendStatusChanged;
+            _session.FriendListChanged -= OnFriendListChanged;
             _session.NameResolved -= OnNameResolved;
         }
 
         _session = session;
         _session.FriendStatusChanged += OnFriendStatusChanged;
+        _session.FriendListChanged += OnFriendListChanged;
         _session.NameResolved += OnNameResolved;
 
         Refresh();
     }
 
+    // Asks first: ending a friendship is mirrored on the other side and cannot be taken back with
+    // one click. The window lives on the HUD layer, not under this panel, so closing the chat window
+    // does not take the question with it.
+    private void PromptRemoveFriend(Guid friendId, string name)
+    {
+        if (_session == null) return;
+        var win = new ConfirmWindow();
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                   ?? (Node?)GetParent() ?? this;
+        host.AddChild(win);
+        win.Initialize(
+            L10n.Tr("ui.friend_remove.title"),
+            L10n.TrFormat("ui.friend_remove.prompt", name),
+            L10n.Tr("ui.friend_remove.ok"),
+            danger: true);
+        win.Confirmed += () =>
+        {
+            if (_selectedFriendId == friendId) _selectedFriendId = null;
+            _session?.RemoveFriend(friendId);
+        };
+    }
+
     private void OnFriendStatusChanged(object? sender, FriendStatusEvent e) => CallDeferred(nameof(Refresh));
+
+    // BUG-NET-28: a friendship accepted (by us or by them) adds a row no presence event announces.
+    private void OnFriendListChanged(object? sender, EventArgs e) => CallDeferred(nameof(Refresh));
 
     // A name resolving could be for anything (object owner, group, ...) -- Refresh() is a cheap
     // full rebuild from GetFriends(), so there's no need to filter to friend ids here.
@@ -253,7 +280,13 @@ public partial class FriendsPanel : Control
             if (_selectedFriendId is { } id) OnPayRequested?.Invoke(id, _selectedFriendName);
         };
         panel.AddChild(payButton);
-        panel.AddChild(BuildActionButton("Remove...", warn: true));
+        var removeButton = BuildActionButton("Remove...", warn: true, implemented: true);
+        removeButton.TooltipText = "Remove this friend";
+        removeButton.Pressed += () =>
+        {
+            if (_selectedFriendId is { } id) PromptRemoveFriend(id, _selectedFriendName);
+        };
+        panel.AddChild(removeButton);
         panel.AddChild(BuildActionButton("Add..."));
 
         panel.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill }); // pushes the count to the bottom

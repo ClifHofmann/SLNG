@@ -399,7 +399,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.2-alpha";
+    public const string AppVersion = "v0.26.7-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2427,6 +2427,9 @@ public partial class Boot : Control
         // BUG-NET-27: teleport offers and requests, same reason.
         while (_pendingTeleportOffers.TryDequeue(out var lure)) ShowTeleportOffer(lure);
 
+        // BUG-NET-28: friendship offers, same reason.
+        while (_pendingFriendshipOffers.TryDequeue(out var friendOffer)) ShowFriendshipOffer(friendOffer);
+
         // FEAT-NET-01: script permission requests, same reason again.
         while (_pendingScriptPermissions.TryDequeue(out var ask)) ShowScriptPermissionRequest(ask);
 
@@ -3394,6 +3397,11 @@ public partial class Boot : Control
         _session.InventoryOfferReceived += OnInventoryOfferReceived;
         // BUG-NET-27: teleport offers and requests. Same buffering; never answered without a click.
         _session.TeleportOfferReceived += OnTeleportOfferReceived;
+        // BUG-NET-28: friendship offers and the answers to ours. Same buffering; an offer is never
+        // answered without a click, an answer only lands in the notification history.
+        _session.FriendshipOfferReceived += OnFriendshipOfferReceived;
+        _session.FriendshipAnswered += OnFriendshipAnswered;
+        _session.FriendshipEnded += OnFriendshipEnded;
         // FEAT-NET-01: llRequestPermissions. Same buffering; never answered without a click.
         _session.ScriptPermissionRequested += OnScriptPermissionRequested;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
@@ -4289,6 +4297,95 @@ public partial class Boot : Control
             ? (positive ? "ui.notifications.teleport_offer_accepted" : "ui.notifications.teleport_offer_declined")
             : (positive ? "ui.notifications.teleport_request_offered" : "ui.notifications.teleport_request_declined");
         _notifications.CompleteAction(key, SLNG.App.UI.L10n.TrFormat(text, e.FromName));
+    }
+
+    // ---- BUG-NET-28: friendship offers and their answers ---------------------------------------
+
+    /// <summary>Open friendship prompts, keyed by the offer's transaction id so a resent offer
+    /// raises the existing window instead of stacking a second one.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.FriendshipOfferWindow> _friendshipOfferWindows = new();
+
+    /// <summary>Which notification entry belongs to which still-open prompt (BUG-UI-12), keyed like
+    /// the window dictionary.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, System.Guid> _friendshipOfferActionKeys = new();
+
+    /// <summary>Offers buffered off the network thread — a FriendshipOfferEvent is a plain record
+    /// and so not Variant-safe for CallDeferred.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.FriendshipOfferEvent> _pendingFriendshipOffers = new();
+
+    private void OnFriendshipOfferReceived(object? sender, SLNG.Core.FriendshipOfferEvent e)
+    {
+        // BUG-UI-12: closing the window with the × sends nothing, so the entry is the way back to
+        // the question and carries an action until it is answered.
+        var actionKey = System.Guid.NewGuid();
+        _notificationActions[actionKey] = () => ShowFriendshipOffer(e);
+        _friendshipOfferActionKeys[e.SessionId] = actionKey;
+
+        _notifications.Add(SLNG.Core.NotificationKind.Invitation, e.FromId,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.friendship_offer", e.FromName),
+            senderName: e.FromName, actionKey: actionKey);
+        _pendingFriendshipOffers.Enqueue(e);
+    }
+
+    private void ShowFriendshipOffer(SLNG.Core.FriendshipOfferEvent e)
+    {
+        if (_session == null) return;
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer == null) return;
+
+        if (_friendshipOfferWindows.TryGetValue(e.SessionId, out var existing) && IsInstanceValid(existing))
+        {
+            existing.MoveToFront();
+            return;
+        }
+
+        // _session is read when the button is pressed, not captured now: it is replaced on a
+        // re-login, and an answer sent through a dead session would go nowhere.
+        var win = new SLNG.App.UI.FriendshipOfferWindow();
+        hudLayer.AddChild(win);
+        win.CascadeIndex = _friendshipOfferWindows.Count % 8;
+        win.Closed += () => _friendshipOfferWindows.Remove(e.SessionId);
+        // Only a real answer retires the action; the × leaves the question open on purpose.
+        win.Answered += accepted => CompleteFriendshipOfferAction(e, accepted);
+        _friendshipOfferWindows[e.SessionId] = win;
+        win.Initialize(e,
+            accept: () => _session?.AcceptFriendshipOffer(e) ?? false,
+            decline: () => _session?.DeclineFriendshipOffer(e) ?? false);
+
+        GD.Print($"[FriendshipOffer] from {e.FromName} transaction {e.SessionId}{(e.Online ? "" : " (offline)")}");
+    }
+
+    /// <summary>The prompt has been answered, so the entry keeps the record and loses the button
+    /// (BUG-UI-12).</summary>
+    private void CompleteFriendshipOfferAction(SLNG.Core.FriendshipOfferEvent e, bool accepted)
+    {
+        GD.Print($"[FriendshipOffer] {(accepted ? "accepted" : "declined")} from {e.FromName}");
+        if (!_friendshipOfferActionKeys.Remove(e.SessionId, out var key)) return;
+        _notificationActions.Remove(key);
+
+        _notifications.CompleteAction(key, SLNG.App.UI.L10n.TrFormat(
+            accepted ? "ui.notifications.friendship_offer_accepted" : "ui.notifications.friendship_offer_declined",
+            e.FromName));
+    }
+
+    /// <summary>Somebody answered an offer of ours. A history entry only — there is nothing left to
+    /// decide, so no window (the viewer shows a toast, llimprocessing.cpp:1496-1512).</summary>
+    private void OnFriendshipAnswered(object? sender, SLNG.Core.FriendshipAnsweredEvent e)
+    {
+        _notifications.Add(SLNG.Core.NotificationKind.Invitation, e.FromId,
+            SLNG.App.UI.L10n.TrFormat(
+                e.Accepted ? "ui.notifications.friendship_answer_accepted" : "ui.notifications.friendship_answer_declined",
+                e.FromName),
+            senderName: e.FromName);
+    }
+
+    private void OnFriendshipEnded(object? sender, SLNG.Core.FriendshipEndedEvent e)
+    {
+        string name = string.IsNullOrEmpty(e.FromName) ? e.FromId.ToString() : e.FromName;
+        // A statement, not an offer: it belongs under System, not under Invitations.
+        _notifications.Add(SLNG.Core.NotificationKind.System, e.FromId,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.friendship_ended", name),
+            senderName: name);
     }
 
     // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------

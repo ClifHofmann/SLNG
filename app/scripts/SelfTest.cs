@@ -179,6 +179,7 @@ public static class SelfTest
         results.Add(CheckRegionRestartWindow(tree));
         results.Add(CheckLandInfoWindow(tree));
         results.Add(CheckTeleportOfferWindow(tree));
+        results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -263,6 +264,69 @@ public static class SelfTest
             return new Check(Name, ok, ok
                 ? $"offer: '{offer.primary}'/'{offer.secondary}', request: '{request.primary}'/'{request.secondary}'; each button runs its own answer, an unsent one keeps the window open"
                 : $"labels ok:{labels} (offer '{offer.primary}'/'{offer.secondary}', request '{request.primary}'/'{request.secondary}'); offer {offer.detail}; request {request.detail}");
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            foreach (var w in created)
+                if (GodotObject.IsInstanceValid(w)) w.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// BUG-NET-28: the friendship prompt builds, labels its two buttons, and each runs the answer it
+    /// was given — and only a sent answer settles it. The answers are injected delegates, so no
+    /// <c>GridSession</c> is needed.
+    /// </summary>
+    private static Check CheckFriendshipOfferWindow(SceneTree tree)
+    {
+        const string Name = "friendship offer window";
+        var created = new List<UI.FriendshipOfferWindow>();
+        try
+        {
+            var evt = new SLNG.Core.FriendshipOfferEvent(Guid.NewGuid(), "Someone", "Do ya wanna be my buddy?", Guid.NewGuid(), true);
+            string log = "";
+            bool? answer = null;
+
+            UI.FriendshipOfferWindow Build(Func<bool> accept, Func<bool> decline)
+            {
+                var w = new UI.FriendshipOfferWindow();
+                created.Add(w);
+                tree.Root.AddChild(w);
+                w.Answered += v => answer = v;
+                w.Initialize(evt, accept, decline);
+                return w;
+            }
+
+            var yes = Build(() => { log += "A"; return true; }, () => { log += "D"; return true; });
+            string accept = yes.AcceptText, decline = yes.DeclineText;
+            yes.ChooseAccept();
+            bool acceptOk = answer == true && log == "A";
+
+            answer = null; log = "";
+            var no = Build(() => { log += "A"; return true; }, () => { log += "D"; return true; });
+            no.ChooseDecline();
+            bool declineOk = answer == false && log == "D";
+
+            // An answer that could not be sent settles nothing: no Answered, window still there.
+            answer = null;
+            var stuck = Build(() => false, () => false);
+            stuck.ChooseAccept();
+            bool unsentOk = answer == null && stuck.StatusVisible && GodotObject.IsInstanceValid(stuck) && !stuck.IsQueuedForDeletion();
+
+            string wantAccept = UI.L10n.Tr("ui.friendship_offer.accept");
+            string wantDecline = UI.L10n.Tr("ui.friendship_offer.decline");
+            bool labels = accept == wantAccept && decline == wantDecline
+                // An untranslated key comes back as itself.
+                && wantAccept != "ui.friendship_offer.accept" && wantDecline != "ui.friendship_offer.decline";
+
+            bool ok = labels && acceptOk && declineOk && unsentOk;
+            return new Check(Name, ok, ok
+                ? $"'{accept}'/'{decline}'; each button runs its own answer, an unsent one keeps the window open"
+                : $"labels ok:{labels} ('{accept}'/'{decline}'); accept ran:{acceptOk} decline ran:{declineOk} unsent kept open:{unsentOk}");
         }
         catch (System.Exception ex)
         {
@@ -586,6 +650,9 @@ public static class SelfTest
             W<UI.PreferencesWindow>(w => w.AddTab("Test", new Label { Text = "Test" })), W<UI.RegionRestartWindow>(w => w.Initialize(session, new RegionRestartEvent("Testland", 120))),
             W<UI.ScriptDialogWindow>(w => w.Initialize(session, new ScriptDialogEvent(id(), "Object", id(), "Owner", "Pick", 1, new[] { "Yes", "No" }))),
             W<UI.ScriptPermissionWindow>(w => w.Initialize(session, new ScriptPermissionRequestEvent(id(), id(), "Object", "Owner", 4))),
+            W<UI.FriendshipOfferWindow>(w => w.Initialize(
+                new FriendshipOfferEvent(id(), "Someone", "Do ya wanna be my buddy?", id(), true),
+                () => true, () => true)),
             W<UI.TeleportOfferWindow>(w => w.Initialize(
                 new TeleportOfferEvent(TeleportOfferKind.Offer, id(), id(), "Someone", "Come over", false, MaturityLevel.Moderate),
                 () => true, () => true)),

@@ -278,6 +278,19 @@
       "join": "Beitreten",
       "decline": "Ablehnen"
     },
+    "friend_remove": {
+      "title": "FREUND ENTFERNEN",
+      "prompt": "{0} aus deiner Freundesliste entfernen? Ihr seht den Online-Status des anderen dann nicht mehr, und du verschwindest auch aus seiner Liste.",
+      "ok": "Freund entfernen"
+    },
+    "friendship_offer": {
+      "title": "FREUNDSCHAFTSANGEBOT",
+      "from": "{0} bietet dir die Freundschaft an.",
+      "default_rights": "Standardmäßig könnt ihr gegenseitig sehen, ob der andere online ist.",
+      "accept": "Annehmen",
+      "decline": "Ablehnen",
+      "send_failed": "Die Antwort konnte gerade nicht gesendet werden. Bitte versuche es gleich noch einmal."
+    },
     "teleport_offer": {
       "title_offer": "TELEPORT-ANGEBOT",
       "title_request": "TELEPORT-ANFRAGE",
@@ -361,12 +374,14 @@
       "save": "Profil speichern",
       "action_add_friend": "Freund hinzufügen",
       "action_friend_added": "Befreundet ✓",
+      "action_remove_friend": "Freund entfernen",
       "action_im": "IM",
       "action_pay": "Bezahlen…",
       "action_offer_tp": "TP anbieten",
       "action_mute": "Ignorieren",
       "action_unmute": "Freigeben",
       "status_friend_sent": "Freundschaftsangebot gesendet.",
+      "status_friend_removed": "Freund entfernt.",
       "status_tp_sent": "Teleport-Angebot gesendet.",
       "status_muted": "Avatar wird ignoriert.",
       "status_unmuted": "Avatar wird nicht mehr ignoriert.",
@@ -856,6 +871,12 @@
       "teleport_request": "{0} bittet darum, zu dir teleportiert zu werden.",
       "teleport_request_offered": "{0} bat darum, zu dir teleportiert zu werden — Teleport angeboten.",
       "teleport_request_declined": "{0} bat darum, zu dir teleportiert zu werden — abgelehnt.",
+      "friendship_offer": "{0} bietet dir die Freundschaft an.",
+      "friendship_offer_accepted": "{0} bot dir die Freundschaft an — angenommen.",
+      "friendship_offer_declined": "{0} bot dir die Freundschaft an — abgelehnt.",
+      "friendship_answer_accepted": "{0} hat dein Freundschaftsangebot angenommen.",
+      "friendship_answer_declined": "{0} hat dein Freundschaftsangebot abgelehnt.",
+      "friendship_ended": "{0} hat dich als Freund entfernt.",
       "script_permission": "„{0}“ von {1} bittet um Berechtigungen.",
       "display_name_changed": "{0} ({1}) heißt jetzt {2}."
     }
