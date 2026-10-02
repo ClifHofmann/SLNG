@@ -588,6 +588,8 @@
       "intro": "Entwickler-Werkzeug zum Vergleichen mit Firestorm. Die Werte werden nicht gespeichert; nach einem Neustart gilt wieder das normale Verhalten.",
       "legacy_specular": "Legacy-Spiegelung (Schleier)",
       "legacy_specular_hint": "Skaliert die Spekularitaet von Flaechen mit Spekular-Map (z. B. Terrassenboden). 1,00 = normal. Bei 0 verschwinden der helle Himmels-Schleier UND der Sonnenglanz.",
+      "viewer_spec": "Viewer-Sonnenglanz (Experiment)",
+      "viewer_spec_hint": "Ersetzt bei Flaechen mit Spekular-Map den Sonnenglanz durch die Formel des Referenz-Viewers (breite Blinn-Phong-Keule, warm getoent) statt Godots eigenem Glanz. Zusammen mit Schleier = 0 testen. Wirkt nur auf undurchsichtige Flaechen; normal: aus.",
       "reset": "Zuruecksetzen (1,00)"
     },
     "active_animations": {

@@ -440,6 +440,7 @@ public partial class ObjectRenderer : Node3D
         : ReferenceEquals(s, PrimShaderFamily.ScissorEdge) ? "ScissorEdge"
         : ReferenceEquals(s, PrimShaderFamily.BlendDepth) ? "BlendDepth"
         : ReferenceEquals(s, PrimShaderFamily.Opaque) ? "Opaque"
+        : ReferenceEquals(s, PrimShaderFamily.OpaqueViewerSpec) ? "OpaqueViewerSpec"
         : "other";
 
     /// <summary>BUG-RENDER-16: true for the shader kinds that render in Godot's SORTED transparent
@@ -525,6 +526,7 @@ public partial class ObjectRenderer : Node3D
             this,
             id => _visuals.TryGetValue(id, out var vs) && IsInstanceValid(vs.MeshInstance) ? vs.MeshInstance : null);
 
+        MaterialLab.ViewerSunSpecularChanged += ReapplyViewerSpecularVariants;
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
         _world.ComponentUpdated += OnComponentUpdated;
@@ -3672,6 +3674,7 @@ public partial class ObjectRenderer : Node3D
                         }
                         material.SetShaderParameter(PrimShaderFamily.SpecularTexture, specTex);
                         material.SetShaderParameter(PrimShaderFamily.HasSpecularTexture, true);
+                        ApplyViewerSpecularVariant(material);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvScale, sScale);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvOffset, sOffset);
                         material.SetShaderParameter(PrimShaderFamily.SpecularUvRotation, lm.SpecularRotation);
@@ -4831,6 +4834,50 @@ public partial class ObjectRenderer : Node3D
     private ShaderMaterial? _hiddenMaterial;
     private ShaderMaterial HiddenMaterial => _hiddenMaterial ??= new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
 
+    /// <summary>Material lab: puts a face that takes the has_specular_texture legacy branch on the
+    /// Opaque variant with the viewer's sun highlight while the lab checkbox is on, and back on
+    /// plain Opaque when it is off. Anything that is not exactly one of those two shaders (alpha
+    /// kinds, double-sided, mirror...) is left alone -- the experiment covers the Opaque variant only.
+    /// Main thread only.</summary>
+    private static void ApplyViewerSpecularVariant(ShaderMaterial mat)
+    {
+        var shader = mat.Shader;
+        if (MaterialLab.ViewerSunSpecular)
+        {
+            if (!ReferenceEquals(shader, PrimShaderFamily.Opaque)) return;
+            var has = mat.GetShaderParameter(PrimShaderFamily.HasSpecularTexture);
+            if (has.VariantType == Variant.Type.Nil || !has.AsBool()) return;
+            mat.Shader = PrimShaderFamily.OpaqueViewerSpec;
+        }
+        else if (ReferenceEquals(shader, PrimShaderFamily.OpaqueViewerSpec))
+        {
+            mat.Shader = PrimShaderFamily.Opaque;
+        }
+    }
+
+    /// <summary>Material lab: the checkbox changed -- walk every live visual once and re-apply the
+    /// choice. A dev tool, so a one-off pass over the scene is fine.</summary>
+    private void ReapplyViewerSpecularVariants()
+    {
+        int swapped = 0, seen = 0;
+        foreach (var state in _visuals.Values)
+        {
+            if (!IsInstanceValid(state.MeshInstance)) continue;
+            if (state.MeshInstance.MaterialOverride is ShaderMaterial mo) { ApplyViewerSpecularVariant(mo); seen++; }
+            int surfaces = state.MeshInstance.Mesh?.GetSurfaceCount() ?? 0;
+            for (int i = 0; i < surfaces; i++)
+            {
+                if (SurfaceMaterial(state, i) is not ShaderMaterial sm) continue;
+                seen++;
+                var before = sm.Shader;
+                ApplyViewerSpecularVariant(sm);
+                if (!ReferenceEquals(before, sm.Shader)) swapped++;
+            }
+        }
+        if (Diagnostics.Enabled)
+            Console.Error.WriteLine($"[MaterialLab] viewer sun highlight {(MaterialLab.ViewerSunSpecular ? "ON" : "off")}: re-applied to {swapped} surface(s) of {seen}");
+    }
+
     /// <summary>The material a surface is currently drawn with: the child's when the surface has
     /// been split off, else the parent's own override. Every per-surface uniform write (texture
     /// animation, prim scale) must go through this or it lands on the Hidden stand-in.</summary>
@@ -5325,6 +5372,7 @@ public partial class ObjectRenderer : Node3D
 
     public override void _ExitTree()
     {
+        MaterialLab.ViewerSunSpecularChanged -= ReapplyViewerSpecularVariants;
         if (_world != null)
         {
             _world.EntityAdded -= OnEntityAdded;

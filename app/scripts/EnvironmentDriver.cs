@@ -691,6 +691,14 @@ public sealed class EnvironmentDriver
             $"[LightBalance] specular veil of the terrace-floor legacy material (gloss 30/255, specular luminance 0.81), " +
             $"as a multiple of the reflected radiance: godot F0*probe = {veilGodot:0.####} (SPECULAR 0.81 x lab scale) vs viewer applyGlossEnv upper bound = {veilViewer:0.####} " +
             $"({(veilViewer > 0f ? veilGodot / veilViewer : 0f):0}x) | lab: {MaterialLab.Describe()}");
+
+        // The material lab's viewer sun highlight uses Godot's sun radiance where the viewer uses
+        // sunlit_linear * 1.1; this is the check that the two are the same size for THIS sky.
+        var full = SLNG.Core.ClassicLightBalance.Compute(lighting.SunDiffuse, lighting.SunAmbient, 1f).Godot;
+        var godotSun = full.Lit - full.Shadow;
+        var viewerSunlit = SLNG.Core.ClassicLightBalance.ViewerSunlitForSpecular(lighting.SunDiffuse);
+        Console.Error.WriteLine(
+            $"[LightBalance] sun colour for the specular lobe: viewer sunlit_linear*1.1={F(viewerSunlit)} vs godot sun radiance (lit@N.L=1 - shadow)={F(godotSun)}");
     }
 
     /// <summary>The sun direction in Godot world space, as last pushed to

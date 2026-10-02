@@ -588,6 +588,8 @@
       "intro": "Developer tool for A/B comparison against Firestorm. Values are not saved; after a restart the normal behaviour applies again.",
       "legacy_specular": "Legacy reflection (veil)",
       "legacy_specular_hint": "Scales the specular of faces that have a specular map (e.g. the terrace floor). 1.00 = normal. At 0 both the pale sky veil AND the sun highlight disappear.",
+      "viewer_spec": "Viewer sun highlight (experiment)",
+      "viewer_spec_hint": "For faces with a specular map, replaces the sun highlight with the reference viewer's own formula (wide Blinn-Phong lobe, tinted) instead of Godot's own highlight. Try it together with the veil at 0. Opaque faces only; normal: off.",
       "reset": "Reset (1.00)"
     },
     "active_animations": {

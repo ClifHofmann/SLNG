@@ -150,4 +150,105 @@ public class LegacyShadeMirrorTests
         Assert.Equal(1, shader.Split("out_specular *= " + name).Length - 1);
         Assert.Equal(1.0f, LegacyShadeMirror.DefaultLegacySpecularScale);
     }
+
+    // --- the viewer's sun highlight (material lab, prim_opaque_vspec.gdshader) ------------------
+
+    [Fact]
+    public void TheViewerLutAtTheTerraceFloorsGlossIsAWideLobe()
+    {
+        // gloss 30/255 -> n = 0.1176^2 * 368 = 5.09; normalisation (n+2)(n+4)/(8 pi (2^(-n/2) + n)).
+        float g = 30f / 255f;
+        Assert.Equal(5.093f, g * g * LegacyShadeMirror.ViewerSpecularExponentScale, 2);
+        Assert.Equal(0.4875f, LegacyShadeMirror.ViewerSpecularLut(1f, g), 3);   // N.H = 1 -> the bare normalisation
+        Assert.Equal(0.2850f, LegacyShadeMirror.ViewerSpecularLut(0.9f, g), 3); // still more than half at 25 degrees off
+        Assert.Equal(0.0143f, LegacyShadeMirror.ViewerSpecularLut(0.5f, g), 3);
+    }
+
+    [Fact]
+    public void TheViewerSunSpecularMatchesKnownGeometry()
+    {
+        float g = 30f / 255f;
+        // everything aligned: lit 1, fres 0.5, gt/(nh nl) = 2 -> 0.5 * 0.4875 * 2 / ... = the LUT peak
+        Assert.Equal(0.4875f, LegacyShadeMirror.ViewerSunSpecular(1f, 1f, 1f, 1f, g), 3);
+        // sun 34.9 deg up, camera on the far side 35 deg up (mirror geometry): nl .5716 nh 1 nv .5736 vh .5726
+        Assert.Equal(0.861f, LegacyShadeMirror.ViewerSunSpecular(0.5716f, 0.99999925f, 0.5736f, 0.5726f, g), 2);
+        // same geometry from the sun's side: the lobe is almost gone
+        Assert.True(LegacyShadeMirror.ViewerSunSpecular(0.5716f, 0.5726f, 0.5736f, 0.99999f, g) < 0.05f);
+    }
+
+    [Fact]
+    public void TheViewerSunSpecularIsGatedShadowedAndFadesAtGrazingLight()
+    {
+        float g = 30f / 255f;
+        // `if (spec.a > 0.0)`: glossiness 0 means no highlight at all
+        Assert.Equal(0f, LegacyShadeMirror.ViewerSunSpecular(0.8f, 0.9f, 0.7f, 0.9f, 0f));
+        // scol is multiplied by the shadow term
+        float lit = LegacyShadeMirror.ViewerSunSpecular(0.6f, 0.95f, 0.6f, 0.7f, g, shadow: 1f);
+        Assert.True(lit > 0.1f);
+        Assert.Equal(lit * 0.25f, LegacyShadeMirror.ViewerSunSpecular(0.6f, 0.95f, 0.6f, 0.7f, g, shadow: 0.25f), 5);
+        Assert.Equal(0f, LegacyShadeMirror.ViewerSunSpecular(0.6f, 0.95f, 0.6f, 0.7f, g, shadow: 0f));
+        // lit = min(nl * 6, 1): a light skimming the surface (nl = 0.01) contributes next to nothing
+        Assert.True(LegacyShadeMirror.ViewerSunSpecular(0.01f, 0.5f, 0.7f, 0.9f, g) < 0.002f);
+    }
+
+    [Fact]
+    public void ATanTintScalesTheViewerHighlightByItsOwnColour()
+    {
+        // The highlight is `lit*scol * sunlit * spec.rgb`: for a warm tint the shader multiplies the
+        // scalar above by the (linearised) colour -- the red channel keeps more of it than the blue.
+        var tint = new Vector3(0.87f, 0.80f, 0.72f);
+        var rgb = new Vector3(
+            ClassicLightBalance.SrgbToLinear(tint.X), ClassicLightBalance.SrgbToLinear(tint.Y), ClassicLightBalance.SrgbToLinear(tint.Z));
+        Assert.True(rgb.X > rgb.Y && rgb.Y > rgb.Z);
+        Assert.Equal(0.7293f, rgb.X, 3);
+        Assert.Equal(0.6038f, rgb.Y, 3);
+        Assert.Equal(0.4770f, rgb.Z, 3);
+    }
+
+    [Fact]
+    public void TheViewerSunColourAndGodotsSunRadianceAgreeForTheLoggedSky()
+    {
+        // Why the shader may use LIGHT_COLOR / PI for the viewer's `sunlit_linear`: for the logged
+        // terrace sky (red SunDiffuse 0.565) the two differ by about 0.1%.
+        var ambient = new Vector3(0.4753f, 0.5708f, 0.6344f);
+        var sun = new Vector3(0.565f, 0.38f, 0.31f);
+        var godot = ClassicLightBalance.Compute(sun, ambient, 1f).Godot;
+        float godotSunR = godot.Lit.X - godot.Shadow.X;
+        float viewerSunlitR = ClassicLightBalance.ViewerSunlitForSpecular(sun).X;
+        Assert.Equal(0.5969f, viewerSunlitR, 3);
+        Assert.InRange(godotSunR / viewerSunlitR, 0.99f, 1.01f);
+    }
+
+    [Fact]
+    public void TheViewerSpecShaderCarriesTheSameConstantsAndOnlyReplacesLightingInItsOwnVariant()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "app", "materials", "prim", "prim_opaque_vspec.gdshader")))
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        var prim = Path.Combine(dir!.FullName, "app", "materials", "prim");
+        var vspec = File.ReadAllText(Path.Combine(prim, "prim_opaque_vspec.gdshader"));
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+
+        Assert.Contains("const float VSPEC_EXPONENT_SCALE = " + LegacyShadeMirror.ViewerSpecularExponentScale.ToString("0.0", inv) + ";", vspec);
+        Assert.Contains("const float VSPEC_LIT_NL_SCALE = 6.0;", vspec);
+        Assert.Contains("const float VSPEC_FRESNEL_BASE = 0.5;", vspec);
+        Assert.Contains("const float VSPEC_FRESNEL_SCALE = 0.4;", vspec);
+        Assert.Contains("float gt = max(0.0, min(2.0 * nh * nv / vh, 2.0 * nh * nl / vh));", vspec);
+        Assert.Contains("float lut = pow(nh, n) * ((n + 2.0) * (n + 4.0)) / (8.0 * PI * (exp2(-n / 2.0) + n));", vspec);
+        Assert.Contains("float scol = ATTENUATION * fres * lut * gt / (nh * nl);", vspec);
+        Assert.Contains("SPECULAR_LIGHT += lit * scol * (LIGHT_COLOR / PI) * v_vspec_rgb;", vspec);
+        Assert.Contains("if (v_vspec_gloss > 0.0)", vspec);
+
+        // light() is defined in this variant and ONLY this one: it replaces Godot's whole direct
+        // lighting, so every shipped variant must keep the built-in.
+        foreach (var f in Directory.GetFiles(prim, "*.gdshader*"))
+        {
+            if (Path.GetFileName(f) == "prim_opaque_vspec.gdshader") continue;
+            Assert.DoesNotContain("void light()", File.ReadAllText(f));
+        }
+        // and the stock Opaque variant is untouched by the experiment
+        var opaque = File.ReadAllText(Path.Combine(prim, "prim_opaque.gdshader"));
+        Assert.DoesNotContain("vspec", opaque);
+    }
 }

@@ -102,6 +102,17 @@ public static class ClassicLightBalance
     public static float GodotSpecularWeight(float specular, float probeIntensity) =>
         0.08f * specular * probeIntensity;
 
+    /// <summary>The sun colour the viewer feeds its legacy highlight with: <c>sunlit_linear</c> after
+    /// the classic-mode <c>* 1.35</c> and <c>srgb_to_linear</c> (softenLightF.glsl:152-153, :226-232),
+    /// times the final <c>* 1.1</c> (:280-281). The material lab's "viewer sun highlight" uses Godot's
+    /// own sun radiance (<c>LIGHT_COLOR / PI</c>) in its place; <see cref="Compute"/>'s Godot sun
+    /// radiance (lit at N.L = 1 minus shadow) is within about 0.1% of this for the red channel of the
+    /// logged terrace sky, which is what makes that substitution defensible.</summary>
+    public static Vector3 ViewerSunlitForSpecular(Vector3 sunDiffuse) => new(
+        SrgbToLinear(sunDiffuse.X * SunlitBoost) * FinalScale,
+        SrgbToLinear(sunDiffuse.Y * SunlitBoost) * FinalScale,
+        SrgbToLinear(sunDiffuse.Z * SunlitBoost) * FinalScale);
+
     private static float Channel(Vector3 v, int c) => c == 0 ? v.X : c == 1 ? v.Y : v.Z;
 
     private static void Set(ref Vector3 v, int c, float value)

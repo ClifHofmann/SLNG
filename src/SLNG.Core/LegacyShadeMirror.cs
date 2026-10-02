@@ -31,6 +31,48 @@ public static class LegacyShadeMirror
     /// <summary>Upper end of the lab slider (the lower end is 0: no highlight and no reflection).</summary>
     public const float MaxLegacySpecularScale = 1.5f;
 
+    /// <summary>RenderSpecularExponent, the default of the viewer's setting
+    /// (app_settings/settings.xml:8484): the Blinn-Phong exponent of a face is
+    /// <c>glossiness^2 * this</c> (pipeline.cpp:1466, <c>n = spec * spec * specExp</c>).</summary>
+    public const float ViewerSpecularExponentScale = 368f;
+
+    /// <summary>The viewer's specular lookup table, <c>texture(lightFunc, vec2(nh, glossiness)).r</c>,
+    /// built in <c>LLPipeline::createLUTBuffers</c> (pipeline.cpp:1466-1475): a Blinn-Phong lobe
+    /// <c>nh^n</c> times its normalisation <c>(n+2)(n+4) / (8 pi (2^(-n/2) + n))</c>.</summary>
+    public static float ViewerSpecularLut(float nh, float glossiness)
+    {
+        float n = glossiness * glossiness * ViewerSpecularExponentScale;
+        float lobe = MathF.Pow(Math.Clamp(nh, 0f, 1f), n);
+        float norm = (n + 2f) * (n + 4f) / (8f * MathF.PI * (MathF.Pow(2f, -n / 2f) + n));
+        return lobe * norm;
+    }
+
+    /// <summary>The scalar the viewer multiplies <c>sunlit_linear * spec.rgb</c> by for a legacy face's
+    /// direct highlight: <c>lit * scol</c> from softenLightF.glsl:243-263 (the same expression
+    /// materialF.glsl:154-170 uses for local lights) with
+    /// <c>lit = min(nl * 6, 1)</c>, <c>fres = (1 - vh)^5 * 0.4 + 0.5</c>,
+    /// <c>gt = max(0, min(2 nh nv / vh, 2 nh nl / vh))</c> and
+    /// <c>scol = shadow * fres * LUT(nh, glossiness) * gt / (nh * nl)</c>.
+    /// The dot products are clamped to [1e-6, 1] first, exactly as calcHalfVectors does
+    /// (deferredUtil.glsl:114-128). Gated on <c>glossiness &gt; 0</c> (the viewer's
+    /// <c>if (spec.a &gt; 0.0)</c>).</summary>
+    public static float ViewerSunSpecular(float nl, float nh, float nv, float vh, float glossiness, float shadow = 1f)
+    {
+        if (glossiness <= 0f) return 0f;
+        const float eps = 0.000001f;
+        nl = Math.Clamp(nl, eps, 1f);
+        nh = Math.Clamp(nh, eps, 1f);
+        nv = Math.Clamp(nv, eps, 1f);
+        vh = Math.Clamp(vh, eps, 1f);
+
+        float lit = MathF.Min(nl * 6f, 1f);
+        float fres = MathF.Pow(1f - vh, 5f) * 0.4f + 0.5f;
+        float gtDenom = 2f * nh;
+        float gt = MathF.Max(0f, MathF.Min(gtDenom * nv / vh, gtDenom * nl / vh));
+        float scol = shadow * fres * ViewerSpecularLut(nh, glossiness) * gt / (nh * nl);
+        return lit * scol;
+    }
+
     public readonly record struct Inputs(
         bool HasSpecularTexture,
         Vector3 SpecularTexel,      // RGB of the specular map where it is sampled (white for IMG_WHITE)

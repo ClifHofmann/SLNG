@@ -14,6 +14,7 @@ public partial class MaterialLabWindow : SLNGWindow
 {
     private HSlider _specSlider = null!;
     private Label _specValue = null!;
+    private CheckBox _viewerSpecCheck = null!;
     private bool _refreshing;
 
     public override void _Ready()
@@ -21,8 +22,8 @@ public partial class MaterialLabWindow : SLNGWindow
         base._Ready(); // no PersistId on purpose: a dev tool does not remember its place
 
         Title = L10n.Tr("ui.material_lab.title");
-        CustomMinimumSize = new Vector2(380, 230);
-        Size = new Vector2(400, 250);
+        CustomMinimumSize = new Vector2(380, 330);
+        Size = new Vector2(420, 360);
         Position = new Vector2(260, 200);
         Visible = false;
 
@@ -82,6 +83,30 @@ public partial class MaterialLabWindow : SLNGWindow
         hint.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
         vbox.AddChild(hint);
 
+        vbox.AddChild(new HSeparator());
+
+        _viewerSpecCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.material_lab.viewer_spec"),
+            ButtonPressed = MaterialLab.ViewerSunSpecular,
+            FocusMode = FocusModeEnum.None,
+        };
+        _viewerSpecCheck.Toggled += on =>
+        {
+            if (_refreshing) return;
+            MaterialLab.SetViewerSunSpecular(on);
+        };
+        vbox.AddChild(_viewerSpecCheck);
+
+        var viewerHint = new Label
+        {
+            Text = L10n.Tr("ui.material_lab.viewer_spec_hint"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        };
+        viewerHint.AddThemeFontSizeOverride("font_size", 11);
+        viewerHint.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        vbox.AddChild(viewerHint);
+
         var reset = new Button
         {
             Text = L10n.Tr("ui.material_lab.reset"),
@@ -101,6 +126,7 @@ public partial class MaterialLabWindow : SLNGWindow
         _refreshing = true;
         _specSlider.Value = MaterialLab.LegacySpecularScale;
         _specValue.Text = Format(MaterialLab.LegacySpecularScale);
+        _viewerSpecCheck.ButtonPressed = MaterialLab.ViewerSunSpecular;
         _refreshing = false;
     }
 
