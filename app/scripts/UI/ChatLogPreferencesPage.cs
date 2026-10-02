@@ -20,6 +20,7 @@ public partial class ChatLogPreferencesPage : VBoxContainer
 
     private OptionButton _location = null!;
     private LineEdit _custom = null!;
+    private Button _browse = null!;
     private OptionButton _names = null!;
     private Label _active = null!;
     private Button _importButton = null!;
@@ -69,7 +70,17 @@ public partial class ChatLogPreferencesPage : VBoxContainer
         };
         _custom.TextSubmitted += text => ChatLogSettings.SetCustomFolder(text);
         _custom.FocusExited += () => ChatLogSettings.SetCustomFolder(_custom.Text);
-        AddChild(_custom);
+        _custom.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+        // Firestorm has a "Choose..." button here; typing a path is not an acceptable way to pick a folder.
+        var customRow = new HBoxContainer();
+        customRow.AddThemeConstantOverride("separation", 6);
+        customRow.AddChild(_custom);
+        _browse = new Button { Text = L10n.Tr("ui.preferences.chat_logs_browse") };
+        _browse.Visible = DisplayServer.HasFeature(DisplayServer.Feature.NativeDialogFile);
+        _browse.Pressed += OnBrowsePressed;
+        customRow.AddChild(_browse);
+        AddChild(customRow);
 
         AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_im_names")));
         _names = new OptionButton();
@@ -100,6 +111,29 @@ public partial class ChatLogPreferencesPage : VBoxContainer
         ChatLogSettings.Changed += RefreshActive;
         VisibilityChanged += () => { if (IsVisibleInTree()) RefreshActive(); };
         RefreshActive();
+    }
+
+    // The OS folder picker. The chosen folder is the BASE: the account's own folder (first_last, with a
+    // grid suffix off Second Life) is created inside it, exactly like Firestorm's "Logs and transcripts
+    // location". Picking one switches the location to "chosen folder" -- choosing a folder and then
+    // having it ignored would be the one wrong outcome.
+    private void OnBrowsePressed()
+    {
+        string start = _custom.Text.Length > 0 && Directory.Exists(_custom.Text)
+            ? _custom.Text
+            : SLNG.Core.Services.ChatLogger.DefaultFirestormProfileDirectory();
+        DisplayServer.FileDialogShow(
+            L10n.Tr("ui.preferences.chat_logs_browse_title"), start, "", false,
+            DisplayServer.FileDialogMode.OpenDir, Array.Empty<string>(),
+            Callable.From((bool ok, string[] paths, long filter) =>
+            {
+                if (!ok || paths.Length == 0 || string.IsNullOrWhiteSpace(paths[0])) return;
+                _custom.Text = paths[0];
+                ChatLogSettings.SetCustomFolder(paths[0]);
+                _location.Selected = _location.GetItemIndex((int)ChatLogMode.Custom);
+                _custom.Editable = true;
+                ChatLogSettings.SetMode(ChatLogMode.Custom);
+            }));
     }
 
     private void OnLocationSelected(long index)

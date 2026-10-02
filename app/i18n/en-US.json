@@ -404,6 +404,8 @@
       "chat_logs_loc_slng": "SLNG's own folder",
       "chat_logs_loc_custom": "A folder of my choice",
       "chat_logs_custom_placeholder": "Folder path",
+      "chat_logs_browse": "Choose...",
+      "chat_logs_browse_title": "Choose the folder for chat logs",
       "chat_logs_im_names": "IM file names:",
       "chat_logs_im_auto": "As Firestorm is set up here (default)",
       "chat_logs_im_legacy": "First Last.txt (Firestorm's legacy names)",

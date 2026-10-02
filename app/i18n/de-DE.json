@@ -404,6 +404,8 @@
       "chat_logs_loc_slng": "Eigener SLNG-Ordner",
       "chat_logs_loc_custom": "Ein selbst gewählter Ordner",
       "chat_logs_custom_placeholder": "Ordnerpfad",
+      "chat_logs_browse": "Wählen...",
+      "chat_logs_browse_title": "Ordner für Chat-Protokolle wählen",
       "chat_logs_im_names": "Dateinamen der IM-Protokolle:",
       "chat_logs_im_auto": "Wie Firestorm hier eingestellt ist (Standard)",
       "chat_logs_im_legacy": "Vorname Nachname.txt (alte Firestorm-Namen)",
