@@ -40,6 +40,11 @@ That splits the search space in one click:
   handedness question in one screenshot instead of by reasoning about coordinate frames.
   It earned its keep on the sun-azimuth work, where the alternative was inferring the
   camera heading from terrain.
+- `specular_probe.lsl` — a 2 m sphere that steps through legacy Blinn-Phong specular settings
+  (opaque / alpha mask / alpha blend, several glossiness values, the terrace floor's gloss 30 +
+  environment 5, and a matte reference). Rez it in the open, touch to step, shoot each step from
+  the same camera angle in Firestorm and SLNG. Built for BUG-RENDER-41's open question: whether
+  the alpha variants need the viewer's sun highlight too.
 
 The texture is built so a screenshot alone identifies the transform:
 
