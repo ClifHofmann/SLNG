@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-INV-01`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review` — all four symptoms addressed; the `v0.20.57` three need a live check.
+- **Status:** `✅ Done`
 - **Priority:** **Medium** — one functional break (detach from the Worn tab does nothing),
   two UX gaps.
 - **Owner:** `claude`
