@@ -98,7 +98,13 @@ param(
     # before the cache existed) and every object is streamed in full, every time. For A/B testing a
     # rendering difference against the cache: if it goes away with this switch, the cache caused it.
     # Passes --no-object-cache.
-    [switch]$NoObjectCache
+    [switch]$NoObjectCache,
+
+    # Report one object and every part linked to it, every 3 s, in the log: whether each part has a
+    # visual, whether its mesh arrived and at which level, whether it is culled, instanced or hidden.
+    # Takes the object's UUID as the build floater shows it. For "object X is not shown". Passes
+    # --trace-object=<uuid>. Works without -Diag.
+    [string]$TraceObject = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -184,6 +190,10 @@ if ($NoGroundDrop) {
 if ($NoReattach) {
     Write-Host "      login outfit reconcile OFF -- missing attachments stay missing (--no-reattach)" -ForegroundColor Magenta
     $userArgs += '--no-reattach'
+}
+if ($TraceObject -ne '') {
+    Write-Host "      tracing object $TraceObject (--trace-object)" -ForegroundColor Yellow
+    $userArgs += "--trace-object=$TraceObject"
 }
 if ($NoObjectCache) {
     Write-Host "      object cache OFF -- every object is streamed in full (--no-object-cache)" -ForegroundColor Magenta

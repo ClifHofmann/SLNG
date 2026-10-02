@@ -624,6 +624,7 @@ public partial class ObjectRenderer : Node3D
 
         TickAlphaSortCensus();
         TickAlphaSortHysteresis();
+        TickTraceObject(delta);
 
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
         _agentPos = agentPos;
@@ -1030,6 +1031,67 @@ public partial class ObjectRenderer : Node3D
     /// <summary>The object stopped being an attachment, so the visual this renderer declined to
     /// build while it was worn is owed to it now.</summary>
     public void EnsureStandaloneVisual(Guid entityId) => CallDeferred(nameof(CreateVisual), entityId.ToString());
+
+    private double _traceTimer;
+
+    /// <summary>--trace-object: every 3 s, one line per part of the traced linkset saying what the
+    /// renderer is actually holding for it. Silent when the flag is absent.</summary>
+    private void TickTraceObject(double delta)
+    {
+        if (Diagnostics.TraceObject == Guid.Empty || _world == null) return;
+        _traceTimer -= delta;
+        if (_traceTimer > 0) return;
+        _traceTimer = 3.0;
+
+        Entity? root = null;
+        foreach (var id in _visuals.Keys)
+        {
+            var e = _world.GetEntity(id);
+            if (e?.GetComponent<MetadataComponent>()?.Id == Diagnostics.TraceObject) { root = e; break; }
+        }
+        if (root == null)
+        {
+            GD.Print($"[Trace] {Diagnostics.TraceObject}: no visual for this object (never created, or removed)");
+            return;
+        }
+
+        var parts = new List<Entity> { root };
+        foreach (var id in _visuals.Keys)
+        {
+            var e = _world.GetEntity(id);
+            if (e != null && e != root
+                && e.GetComponent<TransformComponent>()?.ParentLocalId == root.LocalId)
+                parts.Add(e);
+        }
+
+        var cam = GetViewport()?.GetCamera3D();
+        GD.Print($"[Trace] {Diagnostics.TraceObject}: {parts.Count} part(s) in the scene, " +
+                 $"agent-known={_agentPosKnown}, draw distance {RenderConfig.DrawDistance:0}");
+        int shown = 0;
+        foreach (var part in parts)
+        {
+            if (shown++ >= 40) break;
+            if (!_visuals.TryGetValue(part.Id, out var st) || !IsInstanceValid(st.MeshInstance))
+            {
+                GD.Print($"[Trace]   local {part.LocalId}: no valid visual");
+                continue;
+            }
+            var prim = part.GetComponent<PrimitiveComponent>();
+            var mi = st.MeshInstance;
+            string mat = mi.MaterialOverride is ShaderMaterial mo ? mo.Shader?.ResourcePath ?? "(shader)"
+                : mi.Mesh != null && mi.Mesh.GetSurfaceCount() > 0
+                    ? (mi.GetSurfaceOverrideMaterial(0) as ShaderMaterial)?.Shader?.ResourcePath
+                        ?? mi.Mesh.SurfaceGetMaterial(0)?.GetType().Name ?? "none"
+                    : "-";
+            string dist = cam != null ? $"{mi.GlobalPosition.DistanceTo(cam.GlobalPosition):0.#} m" : "?";
+            GD.Print($"[Trace]   local {part.LocalId} {(prim == null ? "?" : prim.IsMesh ? "mesh " + prim.MeshId.ToString()[..8] : prim.IsSculpt ? "sculpt" : "prim")} " +
+                     $"released={st.ResourcesReleased} visible={mi.Visible} inTree={mi.IsInsideTree()} " +
+                     $"mesh={(mi.Mesh == null ? "null" : mi.Mesh.GetSurfaceCount() + " surf")} " +
+                     $"lod={st.LoadedMeshDetailLevel?.ToString() ?? "-"} instanced={_instanceGroups?.IsInstanced(part.Id) == true} " +
+                     $"ctrlAvatar={st.ControlAvatarOwned} dist={dist} scale=({mi.Scale.X:0.##},{mi.Scale.Y:0.##},{mi.Scale.Z:0.##}) " +
+                     $"phantom={prim?.IsPhantom} shader={mat}");
+        }
+    }
 
     private void CreateVisual(string entityIdStr)
     {
