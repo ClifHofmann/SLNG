@@ -278,6 +278,14 @@
       "join": "Beitreten",
       "decline": "Ablehnen"
     },
+    "friendship_offer": {
+      "title": "FREUNDSCHAFTSANGEBOT",
+      "from": "{0} bietet dir die Freundschaft an.",
+      "default_rights": "Standardmäßig könnt ihr gegenseitig sehen, ob der andere online ist.",
+      "accept": "Annehmen",
+      "decline": "Ablehnen",
+      "send_failed": "Die Antwort konnte gerade nicht gesendet werden. Bitte versuche es gleich noch einmal."
+    },
     "teleport_offer": {
       "title_offer": "TELEPORT-ANGEBOT",
       "title_request": "TELEPORT-ANFRAGE",
@@ -856,6 +864,11 @@
       "teleport_request": "{0} bittet darum, zu dir teleportiert zu werden.",
       "teleport_request_offered": "{0} bat darum, zu dir teleportiert zu werden — Teleport angeboten.",
       "teleport_request_declined": "{0} bat darum, zu dir teleportiert zu werden — abgelehnt.",
+      "friendship_offer": "{0} bietet dir die Freundschaft an.",
+      "friendship_offer_accepted": "{0} bot dir die Freundschaft an — angenommen.",
+      "friendship_offer_declined": "{0} bot dir die Freundschaft an — abgelehnt.",
+      "friendship_answer_accepted": "{0} hat dein Freundschaftsangebot angenommen.",
+      "friendship_answer_declined": "{0} hat dein Freundschaftsangebot abgelehnt.",
       "script_permission": "„{0}“ von {1} bittet um Berechtigungen.",
       "display_name_changed": "{0} ({1}) heißt jetzt {2}."
     }

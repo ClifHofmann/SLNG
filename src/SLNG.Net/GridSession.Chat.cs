@@ -524,6 +524,27 @@ public sealed partial class GridSession
             return;
         }
 
+        // A friendship offer (38) and the answers to our own (39 / 40) are dialogs of their own and
+        // fell through the MessageFromAgent guard at the bottom like the ones above (BUG-NET-28).
+        // Deliberately NOT via LibreMetaverse's FriendsManager.FriendshipOffered: it is only raised
+        // while somebody listens, and we decode by hand like the group invitation. Its own Self.IM
+        // handler still records an acceptance (39) in FriendList, which is why 39 only has to tell
+        // the UI to re-read it.
+        if (TryDecodeFriendshipOffer(
+                e.IM.Dialog, e.IM.IMSessionID.Guid, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message,
+                online: e.IM.Offline == InstantMessageOnline.Online) is { } friendship)
+        {
+            FriendshipOfferReceived?.Invoke(this, friendship);
+            return;
+        }
+
+        if (TryDecodeFriendshipAnswer(e.IM.Dialog, e.IM.FromAgentID.Guid, e.IM.FromAgentName) is { } answer)
+        {
+            if (answer.Accepted) FriendListChanged?.Invoke(this, EventArgs.Empty);
+            FriendshipAnswered?.Invoke(this, answer);
+            return;
+        }
+
         // Group chat first, and NOT by inspecting the dialog byte: it arrives as
         // InstantMessageDialog.SessionSend, not MessageFromAgent, and its GroupIM flag is only set
         // on the first message of a session -- a later one carries just the session id. Both the

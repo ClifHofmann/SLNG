@@ -278,6 +278,14 @@
       "join": "Join",
       "decline": "Decline"
     },
+    "friendship_offer": {
+      "title": "FRIENDSHIP OFFER",
+      "from": "{0} is offering friendship.",
+      "default_rights": "By default, you will be able to see each other's online status.",
+      "accept": "Accept",
+      "decline": "Decline",
+      "send_failed": "Could not answer right now. Please try again in a moment."
+    },
     "teleport_offer": {
       "title_offer": "TELEPORT OFFER",
       "title_request": "TELEPORT REQUEST",
@@ -856,6 +864,11 @@
       "teleport_request": "{0} asks to be teleported to your location.",
       "teleport_request_offered": "{0} asked to be teleported to you — offer sent.",
       "teleport_request_declined": "{0} asked to be teleported to you — declined.",
+      "friendship_offer": "{0} is offering friendship.",
+      "friendship_offer_accepted": "{0} offered friendship — accepted.",
+      "friendship_offer_declined": "{0} offered friendship — declined.",
+      "friendship_answer_accepted": "{0} accepted your friendship offer.",
+      "friendship_answer_declined": "{0} declined your friendship offer.",
       "script_permission": "“{0}” by {1} is asking for permissions.",
       "display_name_changed": "{0} ({1}) is now known as {2}."
     }

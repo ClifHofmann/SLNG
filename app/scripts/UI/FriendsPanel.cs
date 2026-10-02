@@ -96,17 +96,22 @@ public partial class FriendsPanel : Control
         if (_session != null)
         {
             _session.FriendStatusChanged -= OnFriendStatusChanged;
+            _session.FriendListChanged -= OnFriendListChanged;
             _session.NameResolved -= OnNameResolved;
         }
 
         _session = session;
         _session.FriendStatusChanged += OnFriendStatusChanged;
+        _session.FriendListChanged += OnFriendListChanged;
         _session.NameResolved += OnNameResolved;
 
         Refresh();
     }
 
     private void OnFriendStatusChanged(object? sender, FriendStatusEvent e) => CallDeferred(nameof(Refresh));
+
+    // BUG-NET-28: a friendship accepted (by us or by them) adds a row no presence event announces.
+    private void OnFriendListChanged(object? sender, EventArgs e) => CallDeferred(nameof(Refresh));
 
     // A name resolving could be for anything (object owner, group, ...) -- Refresh() is a cheap
     // full rebuild from GetFriends(), so there's no need to filter to friend ids here.
