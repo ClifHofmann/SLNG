@@ -12,13 +12,21 @@ namespace SLNG.Core;
 /// <param name="MoonAmbient">Scotopic ambient, used while the moon is the light source.</param>
 /// <param name="HazeColor">The haze tint the sky dome is drawn with.</param>
 /// <param name="TotalAmbient">The unmodified ambient from the settings.</param>
+/// <param name="SurfaceSunlit">What the viewer's shaders actually light a surface with: the raw
+/// <c>sunlight_color</c> times <c>exp(-light_atten / sun_elevation_sine)</c> and NOTHING else
+/// (atmosphericsFuncs.glsl:60-73, <c>sunlit = sunlight.rgb</c>). It is <see cref="SunDiffuse"/>
+/// without the Beer's-law <c>lightTransmittance</c> factor, which exists only in
+/// <c>calculateLightSettings</c> -- code whose output reaches the sun DISC (llvosky.cpp:527) and
+/// nowhere in the surface shading path. Use this, not <see cref="SunDiffuse"/>, for anything that
+/// lights geometry.</param>
 public readonly record struct SkyLighting(
     Vector3 SunDiffuse,
     Vector3 SunAmbient,
     Vector3 MoonDiffuse,
     Vector3 MoonAmbient,
     Vector3 HazeColor,
-    Vector3 TotalAmbient)
+    Vector3 TotalAmbient,
+    Vector3 SurfaceSunlit = default)
 {
     /// <summary>Turns raw sky settings into the lighting the renderer publishes, as a port of
     /// <c>LLSettingsSky::calculateLightSettings</c> (llsettingssky.cpp:1704).
@@ -59,6 +67,8 @@ public readonly record struct SkyLighting(
         sunLighty = Math.Max(limit, sunLighty);
 
         sunlight *= Exp(lightAtten * -1.0f * sunLighty);
+        // The sunlight the surface shaders use stops HERE; see the SurfaceSunlit parameter.
+        Vector3 surfaceSunlit = sunlight;
         sunlight *= lightTransmittance;
 
         // More cloud cover means more of the sky acts as a diffuser, so ambient goes UP.
@@ -88,7 +98,7 @@ public readonly record struct SkyLighting(
         // The viewer's hardcoded scotopic ambient: (0.66, 0.66, 1.2) * 0.0125.
         Vector3 moonAmbient = new Vector3(0.66f, 0.66f, 1.2f) * 0.0125f;
 
-        return new SkyLighting(sunDiffuse, sunAmbient, moonDiffuse, moonAmbient, hazeColor, ambient);
+        return new SkyLighting(sunDiffuse, sunAmbient, moonDiffuse, moonAmbient, hazeColor, ambient, surfaceSunlit);
     }
 
     /// <summary>Component-wise exponential — the viewer's <c>componentExp</c>. Extracted because

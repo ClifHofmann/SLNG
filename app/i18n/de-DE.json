@@ -34,6 +34,7 @@
       "measure_render_baseline": "Render-Baseline messen (10s)",
       "create_test_skin": "Testhaut erzeugen (Strg+Alt+T)",
       "bake_test_pattern": "Testmuster backen",
+      "material_lab": "Material-Labor",
       "sculpt_v_nudge_down": "Sculpt-V verschieben: -1 Rasterzeile",
       "sculpt_v_nudge_up": "Sculpt-V verschieben: +1 Rasterzeile",
       "sculpt_v_nudge_down_coarse": "Sculpt-V verschieben: -16 Rasterzeilen",
@@ -581,6 +582,15 @@
         "show_original": "Original anzeigen"
       },
       "original_missing": "Das Original ist nicht (mehr) im Inventar."
+    },
+    "material_lab": {
+      "title": "Material-Labor",
+      "intro": "Entwickler-Werkzeug zum Vergleichen mit Firestorm. Die Werte werden nicht gespeichert; nach einem Neustart gelten wieder die Standardwerte (Schleier 0,00, Viewer-Sonnenglanz an).",
+      "legacy_specular": "Legacy-Spiegelung (Schleier)",
+      "legacy_specular_hint": "Skaliert die Spekularitaet undurchsichtiger Flaechen mit Spekular-Map (z. B. Terrassenboden): den hellen Himmels-Schleier und, ohne Viewer-Sonnenglanz, auch den Sonnenglanz. Standard 0,00 (kein Schleier). 1,00 = voller Schleier wie vor v0.25.13. Andere Flaechenarten (Alpha, doppelseitig, Avatar) sind nicht betroffen.",
+      "viewer_spec": "Viewer-Sonnenglanz",
+      "viewer_spec_hint": "Standard: an. Ersetzt bei undurchsichtigen Flaechen mit Spekular-Map den Sonnenglanz durch die Formel des Referenz-Viewers (breite Blinn-Phong-Keule, warm getoent) statt Godots eigenem Glanz. Aus = Godots Glanz, dann wirkt der Schleier-Regler auch auf den Glanz.",
+      "reset": "Zuruecksetzen (0,00)"
     },
     "active_animations": {
       "title": "Aktive Animationen",

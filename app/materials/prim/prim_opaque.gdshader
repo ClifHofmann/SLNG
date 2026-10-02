@@ -10,6 +10,8 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
+// Material lab: this variant takes the lab's legacy-specular scale (see prim_common.gdshaderinc).
+#define SLNG_LAB_SPECULAR_SCALE
 #include "res://materials/prim/prim_common.gdshaderinc"
 
 varying vec3 v_view_position;

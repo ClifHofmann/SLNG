@@ -1,5 +1,5 @@
-using Godot;
 using System;
+using Godot;
 using SLNG.Core.Avatars;
 
 namespace SLNG.App.UI
@@ -52,6 +52,7 @@ namespace SLNG.App.UI
         public Action? OnTogglePlayTypingAnimation;
         public Action? OnToggleHeadFollowsCamera;
         public Action? OnOpenActiveAnimations;
+        public Action? OnOpenMaterialLab;
         /// <summary>FEAT-UI-24: Invoked when the user clicks the location readout to copy the SLURL.</summary>
         public Action<string>? OnCopySlurl;
         /// <summary>FEAT-UI-24: Invoked when the user toggles the top-bar FPS display.</summary>
@@ -446,7 +447,8 @@ namespace SLNG.App.UI
             appMenu.AddSeparator();
             appMenu.AddItem(L10n.Tr("ui.menu.disconnect"), 0);
             appMenu.AddItem(L10n.Tr("ui.menu.exit"), 1);
-            appMenu.IdPressed += (id) => {
+            appMenu.IdPressed += (id) =>
+            {
                 if (id == 0) OnDisconnect?.Invoke();
                 if (id == 1) OnExit?.Invoke();
                 if (id == 2) OnOpenPreferences?.Invoke();
@@ -477,7 +479,8 @@ namespace SLNG.App.UI
             viewMenu.AddItem(L10n.Tr("ui.menu.first_person"), 1);
             viewMenu.AddItem(L10n.Tr("ui.menu.third_person"), 2);
             viewMenu.AddItem(L10n.Tr("ui.menu.free_camera"), 3);
-            viewMenu.IdPressed += (id) => {
+            viewMenu.IdPressed += (id) =>
+            {
                 if (id == 0) OnToggleHud?.Invoke();
                 if (id == 4) OnToggleCameraHud?.Invoke();
                 if (id == 5) OnToggleStats?.Invoke();
@@ -502,7 +505,8 @@ namespace SLNG.App.UI
             worldMenu.AddItem(L10n.Tr("ui.menu.environment"), 3);
             worldMenu.AddItem(L10n.Tr("ui.menu.world_map"), 4);
             worldMenu.AddItem(L10n.Tr("ui.menu.minimap"), 5);
-            worldMenu.IdPressed += (id) => {
+            worldMenu.IdPressed += (id) =>
+            {
                 if (id == 0) OnCreateLandmark?.Invoke();
                 else if (id == 3) OnOpenEnvironment?.Invoke();
                 else if (id == 4) OnOpenWorldMap?.Invoke();
@@ -536,7 +540,8 @@ namespace SLNG.App.UI
             _holdPoseMenu.AddRadioCheckItem(L10n.Tr("ui.menu.hold_pose_tpose"), 1);
             _holdPoseMenu.AddRadioCheckItem(L10n.Tr("ui.menu.hold_pose_stand"), 2);
             _holdPoseMenu.SetItemChecked(0, true);
-            _holdPoseMenu.IdPressed += (id) => {
+            _holdPoseMenu.IdPressed += (id) =>
+            {
                 for (int i = 0; i < 3; i++)
                 {
                     _holdPoseMenu.SetItemChecked(i, i == id);
@@ -554,7 +559,8 @@ namespace SLNG.App.UI
             _freezeMenu.AddSeparator();
             _freezeMenu.AddItem(L10n.Tr("ui.menu.step_backward"), 2);
             _freezeMenu.AddItem(L10n.Tr("ui.menu.step_forward"), 3);
-            _freezeMenu.IdPressed += (id) => {
+            _freezeMenu.IdPressed += (id) =>
+            {
                 if (id == 0)
                 {
                     _freezeSelfChecked = !_freezeSelfChecked;
@@ -582,7 +588,8 @@ namespace SLNG.App.UI
             avatarMenu.AddSeparator();
             avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_huds"), 1);
             avatarMenu.AddItem(L10n.Tr("ui.menu.detach_all_attachments"), 2);
-            avatarMenu.IdPressed += (id) => {
+            avatarMenu.IdPressed += (id) =>
+            {
                 if (id == 0) OnRebakeAvatar?.Invoke();
                 else if (id == 1) OnDetachAttachments?.Invoke(true);
                 else if (id == 2) OnDetachAttachments?.Invoke(false);
@@ -605,11 +612,14 @@ namespace SLNG.App.UI
             devMenu.AddItem(L10n.Tr("ui.menu.measure_render_baseline"), 1);
             devMenu.AddItem(L10n.Tr("ui.menu.create_test_skin"), 2);
             devMenu.AddItem(L10n.Tr("ui.menu.bake_test_pattern"), 3);
-            devMenu.IdPressed += (id) => {
+            devMenu.AddItem(L10n.Tr("ui.menu.material_lab"), 4);
+            devMenu.IdPressed += (id) =>
+            {
                 if (id == 2) OnCreateTestSkin?.Invoke();
                 else if (id == 3) OnBakeTestPattern?.Invoke();
                 else if (id == 0) OnToggleWireframe?.Invoke();
                 else if (id == 1) OnMeasureRenderBaseline?.Invoke();
+                else if (id == 4) OnOpenMaterialLab?.Invoke();
             };
             menuBar.AddChild(devMenu);
         }

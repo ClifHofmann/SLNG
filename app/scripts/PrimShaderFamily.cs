@@ -39,6 +39,9 @@ namespace SLNG.App;
 public static class PrimShaderFamily
 {
     private const string OpaquePath = "res://materials/prim/prim_opaque.gdshader";
+    // Material lab experiment: prim_opaque with a custom light() adding the viewer's own sun highlight.
+    // Never chosen by Select(); ObjectRenderer swaps a specular-map face onto it while the lab is on.
+    private const string OpaqueViewerSpecPath = "res://materials/prim/prim_opaque_vspec.gdshader";
     private const string ScissorPath = "res://materials/prim/prim_scissor.gdshader";
     private const string BlendPath = "res://materials/prim/prim_blend.gdshader";
     // BUG-RENDER-09: hashed alpha -- prim_scissor's depth behaviour with prim_blend's smooth
@@ -93,6 +96,7 @@ public static class PrimShaderFamily
     // load — and the shader compile it triggers — doesn't land inside the first frame's material
     // build.
     private static readonly Lazy<Shader> _opaque = MakeLazy(OpaquePath);
+    private static readonly Lazy<Shader> _opaqueViewerSpec = MakeLazy(OpaqueViewerSpecPath);
     private static readonly Lazy<Shader> _scissor = MakeLazy(ScissorPath);
     private static readonly Lazy<Shader> _blend = MakeLazy(BlendPath);
     private static readonly Lazy<Shader> _hash = MakeLazy(HashPath);
@@ -122,6 +126,10 @@ public static class PrimShaderFamily
     /// <summary>Fully opaque, back-face culled. Never writes ALPHA, so it stays in the opaque
     /// pass. Replaces <c>TransparencyEnum.Disabled</c>.</summary>
     public static Shader Opaque => _opaque.Value;
+
+    /// <summary>Material lab: <see cref="Opaque"/> plus the reference viewer's own sun highlight, via a
+    /// custom <c>light()</c>. Only for a specular-map face while the lab checkbox is on.</summary>
+    public static Shader OpaqueViewerSpec => _opaqueViewerSpec.Value;
 
     /// <summary>BUG-RENDER-32: the planar mirror. Assigned to the one chosen mirror's
     /// qualifying surfaces and swapped back when it stops being chosen.</summary>
@@ -267,6 +275,7 @@ public static class PrimShaderFamily
     public static void Preload()
     {
         _ = Opaque;
+        _ = OpaqueViewerSpec;
         _ = Scissor;
         _ = Blend;
         _ = Hash;

@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using SLNG.App;
@@ -302,6 +302,7 @@ public partial class Boot : Control
     /// keeps its position (PersistId "about_window").</summary>
     private SLNG.App.UI.AboutWindow? _aboutWindow;
     private SLNG.App.UI.ActiveAnimationsWindow? _activeAnimationsWindow;
+    private SLNG.App.UI.MaterialLabWindow? _materialLabWindow;
     // Created lazily on first use -- see the Developer menu wiring below. Dev tooling only,
     // costs nothing until someone actually takes a measurement.
     private RenderBaselineSampler? _renderBaselineSampler;
@@ -398,7 +399,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.25.8-alpha";
+    public const string AppVersion = "v0.25.13-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -762,6 +763,21 @@ public partial class Boot : Control
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
         _topMenu.OnOpenHoverHeight = () => ActivateLauncher(_avatarHoverWindow, _avatarHoverWindow.Toggle);
+        _topMenu.OnOpenMaterialLab = () =>
+        {
+            _materialLabWindow ??= new SLNG.App.UI.MaterialLabWindow();
+            if (_materialLabWindow.GetParent() == null)
+            {
+                var hud = GetNodeOrNull<CanvasLayer>("HudLayer");
+                if (hud != null) hud.AddChild(_materialLabWindow);
+                else AddChild(_materialLabWindow);
+            }
+            _materialLabWindow.Refresh();
+            _materialLabWindow.Unminimize();
+            _materialLabWindow.Visible = true;
+            _materialLabWindow.EnsureOnScreen();
+            _materialLabWindow.BringToFront();
+        };
         _topMenu.OnOpenActiveAnimations = () =>
         {
             _activeAnimationsWindow ??= new SLNG.App.UI.ActiveAnimationsWindow();

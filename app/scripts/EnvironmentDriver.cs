@@ -242,6 +242,7 @@ public sealed class EnvironmentDriver
 
         ApplySun(sun, sky, lighting, lightDirectionZ);
         ApplyAmbient(env, sky, lighting);
+        if (Diagnostics.Enabled) ReportLightBalance(sky, lighting, lightDirectionZ, sun, env);
         ApplySkyDome(env, sky, lighting, lightDirectionZ);
         ApplyFog(env, sky, lighting);
         ApplyWater(waterMaterial, water);
@@ -642,6 +643,74 @@ public sealed class EnvironmentDriver
             $"at 90deg={MeasureSkyGradientR(90.0f):0.###}");
     }
 
+    private string _lastBalanceSig = "";
+
+    /// <summary>--diag: the numbers behind "the floor is pale and the shadows are not dark". For a
+    /// horizontal white surface, the radiance the viewer puts in sun and in shadow
+    /// (<see cref="SLNG.Core.ClassicLightBalance"/>, a mirror of softenLightF's classic path) next to
+    /// what this Godot setup produces from the same sky, the settings that add light that is not the
+    /// sun or the ambient (reflection probe, SSIL, SSAO, SSR, glow), and the specular veil a legacy
+    /// glossy face carries in each renderer. Printed when the sky's lighting changes, not per frame.
+    /// The viewer's sunlit green and blue are real here (SunDiffuse is logged in full).</summary>
+    private void ReportLightBalance(SkySettings sky, SkyLighting lighting, float lightDirectionZ,
+        DirectionalLight3D? sun, Godot.Environment env)
+    {
+        float sine = Math.Clamp(MathF.Abs(lightDirectionZ), 0f, 1f);
+        var balance = SLNG.Core.ClassicLightBalance.Compute(lighting.SurfaceSunlit, lighting.SunAmbient, sine);
+        var v = balance.Viewer;
+        var g = balance.Godot;
+
+        string sig = $"{lighting.SurfaceSunlit:0.###}|{lighting.SunAmbient:0.###}|{sine:0.##}|{sky.IsLegacy}";
+        if (sig == _lastBalanceSig) return;
+        _lastBalanceSig = sig;
+
+        static string F(System.Numerics.Vector3 x) => $"({x.X:0.###},{x.Y:0.###},{x.Z:0.###})";
+
+        var probe = sun?.GetTree()?.Root.FindChild("ReflectionProbe", true, false) as ReflectionProbe;
+        float probeIntensity = probe?.Intensity ?? 0f;
+        float veilGodot = SLNG.Core.ClassicLightBalance.GodotSpecularWeight(0.81f * MaterialLab.LegacySpecularScale, probeIntensity);
+        float veilViewer = SLNG.Core.ClassicLightBalance.ViewerGlossEnvWeight(0.81f, 30f / 255f);
+
+        Console.Error.WriteLine(
+            $"[LightBalance] legacySky={sky.IsLegacy} sunElevation={MathF.Asin(sine) * 180f / MathF.PI:0.#}deg " +
+            $"surfaceSunlit={F(lighting.SurfaceSunlit)} (sunDiffuse incl. transmittance, disc only: {F(lighting.SunDiffuse)}) tmpAmbient={F(lighting.SunAmbient)} | " +
+            $"albedo-1 horizontal, linear: viewer shadow={F(v.Shadow)} lit={F(v.Lit)} lit/shadow={F(v.Ratio)} | " +
+            $"godot shadow={F(g.Shadow)} lit={F(g.Lit)} lit/shadow={F(g.Ratio)}");
+
+        string sunDesc = sun == null
+            ? "no sun"
+            : $"sun color=({sun.LightColor.R:0.###},{sun.LightColor.G:0.###},{sun.LightColor.B:0.###}) energy={sun.LightEnergy:0.###} " +
+              $"shadow={sun.ShadowEnabled} mode={sun.DirectionalShadowMode} maxDist={sun.DirectionalShadowMaxDistance:0} " +
+              $"blur={sun.ShadowBlur:0.##} bias={sun.ShadowBias:0.###} normalBias={sun.ShadowNormalBias:0.##} opacity={sun.ShadowOpacity:0.##}";
+        Console.Error.WriteLine(
+            $"[LightBalance] godot: {sunDesc} | ambient source={env.AmbientLightSource} color=({env.AmbientLightColor.R:0.###},{env.AmbientLightColor.G:0.###},{env.AmbientLightColor.B:0.###}) " +
+            $"energy={env.AmbientLightEnergy:0.###} | ssil={env.SsilEnabled} intensity={env.SsilIntensity:0.##} ssao={env.SsaoEnabled} " +
+            $"ssr={env.SsrEnabled} glow={env.GlowEnabled} tonemap={env.TonemapMode} adjustments={env.AdjustmentEnabled} | " +
+            $"probe={(probe == null ? "none" : $"intensity={probeIntensity:0.##} ambientMode={probe.AmbientMode} visible={probe.Visible}")}");
+        Console.Error.WriteLine(
+            $"[LightBalance] specular veil of the terrace-floor legacy material (gloss 30/255, specular luminance 0.81), " +
+            $"as a multiple of the reflected radiance: godot F0*probe = {veilGodot:0.####} (SPECULAR 0.81 x lab scale) vs viewer applyGlossEnv upper bound = {veilViewer:0.####} " +
+            $"({(veilViewer > 0f ? veilGodot / veilViewer : 0f):0}x) | lab: {MaterialLab.Describe()}");
+
+        // What the nodes ACTUALLY carry, read back (Godot treats light and ambient colours as sRGB and
+        // linearises them): ambient = shadow endpoint, sun = lit@N.L=1 minus shadow. The viewer column
+        // is the mirror of softenLightF for a horizontal albedo-1 surface.
+        static float L(float c) => SLNG.Core.ClassicLightBalance.SrgbToLinear(c);
+        var appliedAmbient = new System.Numerics.Vector3(L(env.AmbientLightColor.R), L(env.AmbientLightColor.G), L(env.AmbientLightColor.B)) * env.AmbientLightEnergy;
+        var appliedSun = sun == null ? System.Numerics.Vector3.Zero
+            : new System.Numerics.Vector3(L(sun.LightColor.R), L(sun.LightColor.G), L(sun.LightColor.B)) * sun.LightEnergy;
+        var appliedLit = appliedAmbient + appliedSun * sine;
+        Console.Error.WriteLine(
+            $"[LightBalance] APPLIED (read back from the nodes, albedo-1 horizontal, linear): shadow=ambient={F(appliedAmbient)} sun radiance={F(appliedSun)} lit=ambient+sun*N.L={F(appliedLit)} | " +
+            $"VIEWER shadow={F(v.Shadow)} lit={F(v.Lit)} | godot/viewer shadow={F(appliedAmbient / v.Shadow)} lit={F(appliedLit / v.Lit)}");
+
+        // The highlight colour is a different quantity from the diffuse sun radiance above: the viewer
+        // builds the diffuse in sRGB on top of the ambient, the highlight from the bare sunlit colour.
+        var viewerSunlit = SLNG.Core.ClassicLightBalance.ViewerSunlitForSpecular(lighting.SurfaceSunlit);
+        Console.Error.WriteLine(
+            $"[LightBalance] sun colour for the specular lobe (slng_viewer_sunlit): viewer sunlit_linear*1.1={F(viewerSunlit)}");
+    }
+
     /// <summary>The sun direction in Godot world space, as last pushed to
     /// <c>slng_sun_direction</c>. Read by the camera to derive the view-space copy the atmospherics
     /// seam needs.</summary>
@@ -679,8 +748,9 @@ public sealed class EnvironmentDriver
         //
         // Publishing SunDiffuse here meant the dome attenuated an already-attenuated colour, and
         // that is the third time calculateLightSettings' output has been fed somewhere the viewer
-        // feeds a raw setting. Its outputs drive the Godot DirectionalLight and the ambient energy
-        // (ApplyLighting below) and nothing else — see ADR 0003.
+        // feeds a raw setting. Its SunDiffuse then drove the Godot DirectionalLight as well, which
+        // was a fourth (the transmittance it carries is not in the surface shaders) -- the light now
+        // takes SkyLighting.SurfaceSunlit; SunDiffuse stays for the sun disc only — see ADR 0003.
         RenderingServer.GlobalShaderParameterSet("slng_sunlight_color", ToColorFast(sky.SunlightColor));
         RenderingServer.GlobalShaderParameterSet("slng_moonlight_color", ToColorFast(sky.SunlightColor));
 
@@ -794,7 +864,20 @@ public sealed class EnvironmentDriver
         if (sun == null) return;
 
         bool moonUp = lightDirectionZ <= 0f;
-        var diffuse = moonUp ? lighting.MoonDiffuse * MoonLightScale : lighting.SunDiffuse;
+        // SurfaceSunlit, not SunDiffuse: the viewer's surface shaders never apply the Beer's-law
+        // transmittance SunDiffuse carries (it exists only in calculateLightSettings, whose output
+        // reaches the sun disc and nothing that lights geometry -- atmosphericsFuncs.glsl:60-73 sets
+        // `sunlit = sunlight.rgb` straight after the exp(-light_atten) step). Feeding SunDiffuse here
+        // made the sun ~27% too dim on the logged sky (transmittance 0.725) and is why a lit floor
+        // barely brightened against Firestorm's.
+        var diffuse = moonUp ? lighting.MoonDiffuse * MoonLightScale : lighting.SurfaceSunlit;
+
+        // The viewer's highlight colour (softenLightF.glsl:226-232, :263): the bare sunlit colour, not
+        // the diffuse sun radiance. Read by prim_opaque_vspec; zero while the moon is the light.
+        var specSun = moonUp
+            ? System.Numerics.Vector3.Zero
+            : SLNG.Core.ClassicLightBalance.ViewerSunlitForSpecular(diffuse * SkySunlightScale);
+        RenderingServer.GlobalShaderParameterSet("slng_viewer_sunlit", new Godot.Vector3(specSun.X, specSun.Y, specSun.Z));
 
         System.Numerics.Vector3 radiance;
         if (sky.IsLegacy)
@@ -866,7 +949,8 @@ public sealed class EnvironmentDriver
         return new System.Numerics.Vector3(
             MathF.Pow(MathF.Max(amb.X, 0f), 0.9f),
             MathF.Pow(MathF.Max(amb.Y, 0f), 0.9f),
-            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f)) * (0.57f * SkyAmbientScale * ClassicAmbientScale);
+            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f))
+            * (0.57f * SkyAmbientScale * ClassicAmbientScale * SLNG.Core.ClassicLightBalance.OrientationAveragedAmbientFactor);
     }
 
     /// <summary>The linear radiance a fully shadowed surface receives in the viewer's classic
@@ -897,7 +981,8 @@ public sealed class EnvironmentDriver
         var amblitSrgb = new System.Numerics.Vector3(
             MathF.Pow(MathF.Max(amb.X, 0f), 0.9f),
             MathF.Pow(MathF.Max(amb.Y, 0f), 0.9f),
-            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f)) * (0.57f * SkyAmbientScale);
+            MathF.Pow(MathF.Max(amb.Z, 0f), 0.9f))
+            * (0.57f * SkyAmbientScale * SLNG.Core.ClassicLightBalance.OrientationAveragedAmbientFactor);
 
         var linear = SrgbToLinearVec(amblitSrgb);
         float grey = linear.X * 0.2126f + linear.Y * 0.7152f + linear.Z * 0.0722f;
