@@ -4740,7 +4740,8 @@ public partial class ObjectRenderer : Node3D
             int[]? faceIndices = null;
             MainThreadWorkQueue.Measure("mesh.build", () =>
             {
-                built = BuildArrayMesh(data, flipV, plan.RunStart, out var fi);
+                built = BuildArrayMesh(data, flipV, plan.RunStart, out var fi,
+                    () => $"prim entity={state.EntityId:N} mesh={key:N} geometry={geometryKey:N}");
                 faceIndices = fi;
             });
             mesh = built;
@@ -5359,10 +5360,14 @@ public partial class ObjectRenderer : Node3D
     /// the run becomes one surface whose triangles are drawn in authored index order and are never
     /// sorted against each other. With every entry true this emits exactly one surface per
     /// submesh, i.e. the pre-merge behaviour.</summary>
-    private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, bool[] runStart, out int[] faceIndices)
+    private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, bool[] runStart, out int[] faceIndices,
+        Func<string>? label = null)
     {
         var arrayMesh = new ArrayMesh();
         var indices = new List<int>(mesh.Submeshes.Count);
+        // BUG-RENDER-40: a non-finite vertex value is repaired on its way into the SurfaceTool and the
+        // mesh is named once, instead of Godot printing anonymous normalize warnings later.
+        var guard = new MeshArrayGuard.VertexGuard();
 
         SurfaceTool? st = null;
         int runVertexBase = 0;
@@ -5436,11 +5441,11 @@ public partial class ObjectRenderer : Node3D
                 var n = sub.Normals[i];
                 var uv = sub.UVs[i];
 
-                st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
+                st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), i));
                 var tg = tangents[i];
                 st.SetTangent(new Godot.Plane(tg.X, tg.Y, tg.Z, tg.W));
-                st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
-                st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y), i));
+                st.AddVertex(guard.Position(new Godot.Vector3(p.X, p.Z, -p.Y), i));
             }
 
             // Shifted past whatever this run already holds. Zero unless a previous submesh was
@@ -5457,6 +5462,7 @@ public partial class ObjectRenderer : Node3D
         }
         FlushRun();
 
+        guard.Report(label ?? (() => "prim mesh (unlabelled)"));
         faceIndices = indices.ToArray();
         return arrayMesh;
     }

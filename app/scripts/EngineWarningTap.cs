@@ -25,11 +25,23 @@ internal sealed partial class EngineWarningTap : Godot.Logger
     private const double ReportEverySeconds = 5.0;
     private const int MaxLines = 6;
 
+    /// <summary>Warnings in ONE frame that call for a scene scan (<see cref="NonFiniteSceneScan"/>).
+    /// The flood this exists for lands 300 a frame; an ordinary stray warning never gets near it.</summary>
+    internal const int BurstThreshold = 50;
+
     private readonly ConcurrentDictionary<string, int> _counts = new();
     private readonly ConcurrentDictionary<ulong, byte> _frames = new();
     private readonly ulong _mainThread = OS.GetMainThreadId();
     private long _total;
     private double _sinceReport;
+
+    // Per-frame warning count, for the burst trigger. _LogError can fire on any thread, so the
+    // frame bookkeeping is under a lock; the flag the main thread reads is volatile.
+    private readonly object _burstLock = new();
+    private ulong _burstFrame = ulong.MaxValue;
+    private int _burstCount;
+    private volatile bool _scanRequested;
+    private int _scanBurstSize;
 
     /// <summary>Every warning counted since the client started.</summary>
     public long Total => Interlocked.Read(ref _total);
@@ -51,8 +63,19 @@ internal sealed partial class EngineWarningTap : Godot.Logger
 
             string key = $"{kind}: {text} @ {function} ({ShortFile(file)}:{line}) | during: {during} | {thread}{OurFrame(scriptBacktraces)}";
             _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
-            _frames[Engine.GetProcessFrames()] = 0;
+            ulong frame = Engine.GetProcessFrames();
+            _frames[frame] = 0;
             Interlocked.Increment(ref _total);
+
+            lock (_burstLock)
+            {
+                if (frame != _burstFrame) { _burstFrame = frame; _burstCount = 0; }
+                if (++_burstCount >= BurstThreshold)
+                {
+                    _scanBurstSize = _burstCount;
+                    _scanRequested = true;
+                }
+            }
         }
         catch
         {
@@ -64,6 +87,15 @@ internal sealed partial class EngineWarningTap : Godot.Logger
     /// warned in between.</summary>
     public void Flush(double deltaSeconds)
     {
+        // A burst of warnings in one frame: look at the scene once, on the main thread, from here --
+        // never from the logger callback, which may be on any thread and must not touch the tree.
+        // The scan rate-limits itself, so a sustained flood costs one walk per 30 s.
+        if (_scanRequested)
+        {
+            _scanRequested = false;
+            NonFiniteSceneScan.TryRun(Engine.GetMainLoop() as SceneTree, _scanBurstSize);
+        }
+
         _sinceReport += deltaSeconds;
         if (_sinceReport < ReportEverySeconds) return;
         _sinceReport = 0;

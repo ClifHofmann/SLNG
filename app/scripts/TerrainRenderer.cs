@@ -826,6 +826,9 @@ public partial class TerrainRenderer : Node3D
         arrays[(int)Mesh.ArrayType.Vertex] = vertArray;
         arrays[(int)Mesh.ArrayType.Normal] = normalArray;
         arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
+        // BUG-RENDER-40: a non-finite height (or an overflowing normal sum) would otherwise reach
+        // the engine; repaired and named once per region.
+        MeshArrayGuard.Sanitize(arrays, () => $"terrain region={regionHandle}");
 
         MainThreadWorkQueue.Measure("terrain.mesh", () =>
         {

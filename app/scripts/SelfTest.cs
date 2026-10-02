@@ -170,6 +170,8 @@ public static class SelfTest
         }
         results.AddRange(CheckWindlightPresets());
         results.Add(CheckInstanceSlotMap());
+        results.Add(CheckMeshArrayGuard());
+        results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
         results.Add(CheckLoginScreenCoversTheWorld());
         results.Add(CheckAvatarAnimationPlayer());
@@ -1174,6 +1176,141 @@ public static class SelfTest
 
         return new Check("instance slot map", problems.Count == 0,
             problems.Count == 0 ? "swap-remove keeps indices dense" : string.Join("; ", problems));
+    }
+
+    /// <summary>
+    /// BUG-RENDER-40: <see cref="MeshArrayGuard"/> turns every kind of non-finite surface data into a
+    /// safe value, reports that it did, and leaves clean data byte-for-byte alone. Arrays are Godot
+    /// types, so --selftest is the one harness that can run it.
+    /// </summary>
+    private static Check CheckMeshArrayGuard()
+    {
+        const string Name = "mesh array guard";
+        var problems = new List<string>();
+        float nan = float.NaN, inf = float.PositiveInfinity;
+
+        Godot.Collections.Array Build(bool bad)
+        {
+            var arrays = new Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = new[] { new Vector3(1, 2, 3), bad ? new Vector3(nan, 0, 0) : new Vector3(4, 5, 6), new Vector3(7, 8, 9) };
+            arrays[(int)Mesh.ArrayType.Normal] = new[] { new Vector3(0, 1, 0), bad ? new Vector3(0, inf, 0) : new Vector3(0, 0, 1), new Vector3(1, 0, 0) };
+            arrays[(int)Mesh.ArrayType.Tangent] = new[] { 1f, 0f, 0f, 1f, bad ? nan : 0f, 1f, 0f, -1f, 0f, 0f, 1f, 1f };
+            arrays[(int)Mesh.ArrayType.TexUV] = new[] { new Vector2(0, 0), bad ? new Vector2(inf, 0) : new Vector2(0.5f, 0.5f), new Vector2(1, 1) };
+            arrays[(int)Mesh.ArrayType.TexUV2] = new[] { new Vector2(0, 0), bad ? new Vector2(0, nan) : new Vector2(0.5f, 0.5f), new Vector2(1, 1) };
+            arrays[(int)Mesh.ArrayType.Weights] = new[] { 1f, 0f, 0f, 0f, bad ? nan : 0.5f, 0.5f, 0f, 0f, 0.25f, 0.75f, 0f, 0f };
+            arrays[(int)Mesh.ArrayType.Index] = new[] { 0, 1, 2 };
+            return arrays;
+        }
+
+        bool AllFinite(Godot.Collections.Array arrays)
+        {
+            foreach (var v in arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array()) if (!v.IsFinite()) return false;
+            foreach (var v in arrays[(int)Mesh.ArrayType.Normal].AsVector3Array()) if (!v.IsFinite()) return false;
+            foreach (var f in arrays[(int)Mesh.ArrayType.Tangent].AsFloat32Array()) if (!float.IsFinite(f)) return false;
+            foreach (var v in arrays[(int)Mesh.ArrayType.TexUV].AsVector2Array()) if (!v.IsFinite()) return false;
+            foreach (var v in arrays[(int)Mesh.ArrayType.TexUV2].AsVector2Array()) if (!v.IsFinite()) return false;
+            foreach (var f in arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array()) if (!float.IsFinite(f)) return false;
+            return true;
+        }
+
+        // Each array kind on its own, so a miss names the kind.
+        foreach (var (slot, label) in new[]
+        {
+            (Mesh.ArrayType.Vertex, "vertex"), (Mesh.ArrayType.Normal, "normal"), (Mesh.ArrayType.Tangent, "tangent"),
+            (Mesh.ArrayType.TexUV, "uv"), (Mesh.ArrayType.TexUV2, "uv2"), (Mesh.ArrayType.Weights, "weights"),
+        })
+        {
+            var clean = Build(bad: false);
+            var dirty = Build(bad: false);
+            var badArrays = Build(bad: true);
+            // Keep only this kind's bad data: copy it over the clean set.
+            dirty[(int)slot] = badArrays[(int)slot];
+            if (AllFinite(dirty)) problems.Add($"{label}: test data was not bad");
+            if (!MeshArrayGuard.SanitizeCore(dirty, () => label, log: false)) problems.Add($"{label}: bad data not reported");
+            if (!AllFinite(dirty)) problems.Add($"{label}: still non-finite after Sanitize");
+            if (MeshArrayGuard.SanitizeCore(clean, () => label, log: false)) problems.Add($"{label}: clean data reported as bad");
+        }
+
+        // Everything bad at once, and the replacements are the documented ones.
+        var all = Build(bad: true);
+        if (!MeshArrayGuard.SanitizeCore(all, () => "all", log: false)) problems.Add("all-bad set not reported");
+        if (!AllFinite(all)) problems.Add("all-bad set still non-finite");
+        if (all[(int)Mesh.ArrayType.Vertex].AsVector3Array()[1] != Vector3.Zero) problems.Add("bad vertex not zeroed");
+        if (all[(int)Mesh.ArrayType.Normal].AsVector3Array()[1] != Vector3.Up) problems.Add("bad normal not up");
+        var tangents = all[(int)Mesh.ArrayType.Tangent].AsFloat32Array();
+        if (tangents[4] != 1f || tangents[5] != 0f || tangents[7] != 1f) problems.Add("bad tangent not (1,0,0,1)");
+        var weights = all[(int)Mesh.ArrayType.Weights].AsFloat32Array();
+        if (MathF.Abs(weights[4] + weights[5] + weights[6] + weights[7] - 1f) > 1e-5f) problems.Add("repaired weights do not sum to 1");
+        if (weights[0] != 1f || weights[8] != 0.25f || weights[9] != 0.75f) problems.Add("clean weights were touched");
+
+        // A clean set is untouched, element for element.
+        var untouched = Build(bad: false);
+        var reference = Build(bad: false);
+        MeshArrayGuard.SanitizeCore(untouched, () => "clean", log: false);
+        if (!untouched[(int)Mesh.ArrayType.Vertex].AsVector3Array().AsSpan().SequenceEqual(reference[(int)Mesh.ArrayType.Vertex].AsVector3Array())
+            || !untouched[(int)Mesh.ArrayType.Tangent].AsFloat32Array().AsSpan().SequenceEqual(reference[(int)Mesh.ArrayType.Tangent].AsFloat32Array())
+            || !untouched[(int)Mesh.ArrayType.Weights].AsFloat32Array().AsSpan().SequenceEqual(reference[(int)Mesh.ArrayType.Weights].AsFloat32Array()))
+            problems.Add("clean data was modified");
+
+        // A weight set with nothing usable pins the first influence rather than leaving zeros.
+        var allNan = new[] { nan, nan, nan, nan };
+        MeshArrayGuard.FixWeights(allNan, 4, out _);
+        if (allNan[0] != 1f || allNan[1] != 0f) problems.Add("all-NaN weights not pinned to the first influence");
+
+        // The SurfaceTool-side guard.
+        var guard = new MeshArrayGuard.VertexGuard();
+        bool ok = guard.Position(new Vector3(nan, 1, 1), 3) == Vector3.Zero
+            && guard.Normal(new Vector3(inf, 0, 0), 3) == Vector3.Up
+            && guard.Uv(new Vector2(nan, 0), 3) == Vector2.Zero
+            && guard.Position(new Vector3(1, 2, 3), 4) == new Vector3(1, 2, 3);
+        if (!ok || !guard.AnyBad) problems.Add("VertexGuard did not repair / flag");
+        if (new MeshArrayGuard.VertexGuard().AnyBad) problems.Add("fresh VertexGuard reports bad");
+
+        return new Check(Name, problems.Count == 0,
+            problems.Count == 0
+                ? "NaN/Inf in vertex, normal, tangent, uv, uv2 and weights are repaired and reported; clean data is untouched"
+                : string.Join("; ", problems));
+    }
+
+    /// <summary>
+    /// BUG-RENDER-40: the scene scan finds a zero-scale and a NaN node. Runs on a throwaway set of
+    /// nodes it adds to and removes from the tree.
+    /// </summary>
+    private static Check CheckNonFiniteSceneScan(SceneTree tree)
+    {
+        const string Name = "non-finite scene scan";
+        var host = new Node3D { Name = "ScanProbeHost" };
+        var zero = new Node3D { Name = "ScanProbeZeroScale", Scale = Vector3.Zero };
+        var child = new Node3D { Name = "ScanProbeChildOfZero" };
+        var nan = new Node3D { Name = "ScanProbeNaN" };
+        try
+        {
+            zero.AddChild(child);
+            host.AddChild(zero);
+            host.AddChild(nan);
+            tree.Root.AddChild(host);
+            nan.Position = new Vector3(float.NaN, 0, 0);
+
+            bool ran = NonFiniteSceneScan.TryRun(tree, 0, ignoreRateLimit: true);
+            var (nonFinite, singular, _) = NonFiniteSceneScan.LastResult;
+            var problems = new List<string>();
+            if (!ran) problems.Add("scan did not run");
+            // The zero-scale node and its child are both singular; only one is a root cause but both count.
+            if (singular < 2) problems.Add($"expected >= 2 singular nodes, found {singular}");
+            if (nonFinite < 1) problems.Add($"expected >= 1 non-finite node, found {nonFinite}");
+            return new Check(Name, problems.Count == 0,
+                problems.Count == 0 ? $"found {singular} singular and {nonFinite} non-finite probe node(s)" : string.Join("; ", problems));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (host.GetParent() != null) tree.Root.RemoveChild(host);
+            host.Free();
+        }
     }
 
     private static Check CheckAvatarAnimationPlayer()
