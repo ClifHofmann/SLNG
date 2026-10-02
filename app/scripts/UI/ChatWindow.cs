@@ -194,6 +194,42 @@ public partial class ChatWindow : SLNGWindow
         ScrollLogToBottom(); // was missing -- left the log sitting at the top after preload
     }
 
+    /// <summary>BUG-GRID-01: forgets the previous session's conversations and shows the new
+    /// account's own history. A chat log now belongs to one account on one grid, and everything
+    /// this window holds in memory -- the Main tab's lines, every IM and group tab -- came from the
+    /// session before, which may have been another account on another grid. Call it after
+    /// <see cref="ChatLogger.UseDirectory"/> pointed the logger at the new account's directory.
+    /// Group chat is not left explicitly: the old session is already gone, and leaving would be sent
+    /// through the new one.</summary>
+    public void ResetForNewSession()
+    {
+        var main = _chatTabs.Find(t => t.Id == "main");
+        if (main == null) return;
+
+        foreach (var tab in _chatTabs.ToArray())
+        {
+            if (tab == main) continue;
+            _chatTabs.Remove(tab);
+            tab.RowPanel.QueueFree();
+        }
+
+        main.Lines.Clear();
+        main.UnreadCount = 0;
+        UpdateUnreadBadge(main);
+        PreloadRecentHistory(main);
+        main.FollowingBottom = true;
+
+        if (_activeChatTab == main)
+        {
+            RebuildLogContent(main);
+            ScrollLogToBottom();
+        }
+        else
+        {
+            SelectChatTab(main);
+        }
+    }
+
     /// <summary>Called by Boot after each successful login (session is a fresh instance per
     /// login, unlike ChatLogger/OnSendLocalChat which are wired once). Also used to tell the
     /// local agent's own chat lines apart by name (see FormatChatLine).</summary>

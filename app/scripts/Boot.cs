@@ -361,6 +361,13 @@ public partial class Boot : Control
     private readonly WindlightPresetLibrary _windlightPresets = new();
     private SLNG.Core.Services.ChatLogger _chatLogger = null!;
 
+    // BUG-GRID-01: who and where the running session logged in as, captured at the login click.
+    // What a session writes to disk per grid (the last-session picture on logout) is keyed by THESE,
+    // not by whatever the login form says by the time it is written.
+    private string _sessionGridUri = "";
+    private string _sessionFirstName = "";
+    private string _sessionLastName = "";
+
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
     private SLNG.App.UI.SelectionGizmo3D? _selectionGizmo;
@@ -399,7 +406,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.12-alpha";
+    public const string AppVersion = "v0.26.13-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1570,7 +1577,7 @@ public partial class Boot : Control
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
         networkPage.Initialize(
             ProjectSettings.GlobalizePath("user://cache/assets"),
-            ProjectSettings.GlobalizePath("user://cache/objects"),
+            GridData.AllObjectCacheDirectories, // BUG-GRID-01: one object cache per grid, plus the old shared one
             () => _session?.ClearObjectCache()); // FEAT-NET-04: one button clears both caches
 
         // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
@@ -3254,8 +3261,17 @@ public partial class Boot : Control
 
         LogMessage($"Connecting to {_gridInput.Text} as {firstName} {lastName}...");
 
-        // Load the user's specific last session screenshot as the loading background (FEAT-UI-21)
-        var bgPath = $"user://last_session_bg_{firstName}_{lastName}.png";
+        // BUG-GRID-01: from here on this session is "this account on this grid". Everything it keeps
+        // per grid is keyed by both -- the same account name exists on Second Life and on OSGrid.
+        _sessionGridUri = _gridInput.Text;
+        _sessionFirstName = firstName;
+        _sessionLastName = lastName;
+        GridData.LogFirstUse(_sessionGridUri);
+
+        // Load the last session screenshot of THIS account on THIS grid as the loading background
+        // (FEAT-UI-21). It used to be keyed by the account name alone, so logging into Second Life
+        // showed the picture of the OSGrid session of the same name.
+        var bgPath = GridData.LoginBackgroundPath(_sessionGridUri, firstName, lastName);
         if (FileAccess.FileExists(bgPath))
         {
             using var img = Image.LoadFromFile(bgPath);
@@ -3323,6 +3339,19 @@ public partial class Boot : Control
         _inventoryOfferActionKeys.Clear();
 
         _lastArrivalRegionShown = ""; // MVP2-3: a relogin into the same region must still toast
+
+        // BUG-GRID-01: chat logs belong to one account on one grid, so the logger is pointed at this
+        // account's own directory and the window forgets the previous session's conversations --
+        // which may have been another account on another grid. Before the first message can arrive.
+        _chatLogger.UseDirectory(GridData.ChatLogDirectory(_sessionGridUri, firstName, lastName));
+        _chatWindow.ResetForNewSession();
+
+        // BUG-GRID-01: the region environment is only replaced when a region SENDS one. A grid with
+        // none (plain OpenSim) never does, so the last session's sky -- possibly Second Life's --
+        // stayed until the process ended. Back to the default cycle at every login; a sky preset the
+        // USER picked is theirs and stays.
+        System.Threading.Interlocked.Exchange(ref _pendingRegionEnvironment, null);
+        _environmentDriver.SetCycle(SLNG.Core.DayCycle.Default, SLNG.Core.EnvironmentSource.Default);
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         // BUG-AVATAR-07 A/B switch — see Diagnostics.NoReattach.
@@ -3363,7 +3392,11 @@ public partial class Boot : Control
         // FEAT-NET-04: the object cache is on; --no-object-cache puts the session back exactly as it
         // was (handshake says "cache empty", every cached object is asked for). Read before login.
         _session.ObjectCacheEnabled = !System.Array.Exists(OS.GetCmdlineUserArgs(), a => a == "--no-object-cache");
-        _session.UseObjectCacheDirectory(ProjectSettings.GlobalizePath("user://cache/objects"));
+        // BUG-GRID-01: one directory per grid. Files are named by region handle and the grid's cache
+        // id, and the pruning in ObjectCacheDisk deletes "the same region under another cache id" --
+        // so two grids sharing a directory (OSGrid's default region sits at 1000,1000, a real Second
+        // Life region too) wiped each other's files.
+        _session.UseObjectCacheDirectory(GridData.ObjectCacheDirectory(_sessionGridUri));
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
@@ -3383,7 +3416,7 @@ public partial class Boot : Control
         // different tiles -- built here because it needs this login's GPU cache and asset service.
         _mapTileTextures?.Clear();
         _mapTileTextures = new MapTileTextures(_session, _gpuCache, _assetService,
-            ProjectSettings.GlobalizePath("user://cache/maptiles"));
+            GridData.MapTileDirectory(_sessionGridUri));
         _minimapOverlay.Initialize(_world, _session, _mapTileTextures);
         _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
 
@@ -4875,12 +4908,22 @@ public partial class Boot : Control
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
 
             // Capture viewport
-            var firstName = _firstInput.Text.Trim();
-            var lastName = _lastInput.Text.Trim();
+            // BUG-GRID-01: the session's own account and grid, as captured at login -- never the
+            // account name alone (it exists on every grid), and never a form field that could have
+            // changed since.
             using var img = GetViewport().GetTexture().GetImage();
-            if (img != null)
+            if (img != null && _sessionGridUri.Length > 0)
             {
-                img.SavePng($"user://last_session_bg_{firstName}_{lastName}.png");
+                string bgFile = GridData.LoginBackgroundPath(_sessionGridUri, _sessionFirstName, _sessionLastName);
+                try
+                {
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(bgFile)!);
+                    img.SavePng(bgFile);
+                }
+                catch (System.Exception ex) when (ex is System.IO.IOException or System.UnauthorizedAccessException)
+                {
+                    GD.PrintErr($"[GridData] could not save the last-session picture {bgFile}: {ex.Message}");
+                }
             }
 
             // Show "Logging out..." screen
@@ -4937,9 +4980,10 @@ public partial class Boot : Control
             if (bg != null)
             {
                 bg.Visible = true;
-                var firstName = _firstInput.Text.Trim();
-                var lastName = _lastInput.Text.Trim();
-                var bgPath = $"user://last_session_bg_{firstName}_{lastName}.png";
+                // BUG-GRID-01: the account and grid the form shows now (the form's selection is what
+                // the next login uses), keyed the same way the picture was saved.
+                var bgPath = GridData.LoginBackgroundPath(
+                    _gridInput.Text, _firstInput.Text.Trim(), _lastInput.Text.Trim());
                 if (FileAccess.FileExists(bgPath))
                 {
                     using var bgImg = Image.LoadFromFile(bgPath);

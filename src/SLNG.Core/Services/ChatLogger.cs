@@ -27,21 +27,41 @@ public enum ChatLogKind
 /// </summary>
 public sealed class ChatLogger
 {
-    private readonly string _rootDir;
+    // Where the logs go RIGHT NOW. Changes at every login (BUG-GRID-01): a log belongs to one
+    // account on one grid, and the account is only known once the user logs in. Null = no account
+    // yet, so nothing is written and nothing is read. Written on the main thread, read from the
+    // fire-and-forget appends, hence volatile.
+    private volatile string? _rootDir;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _fileLocks = new();
 
     /// <summary>Global on/off switch (Preferences "Enable Chat Logging", default on). When false,
     /// <see cref="AppendAsync"/> is a no-op — reads still work against whatever was logged before.</summary>
     public bool Enabled { get; set; } = true;
 
+    /// <param name="rootDir">The directory to log into, or null to start with none: the app attaches
+    /// the account's own directory at login with <see cref="UseDirectory"/>. (This used to fall back
+    /// to one directory shared by every account on every grid.)</param>
     public ChatLogger(string? rootDir = null)
     {
-        _rootDir = rootDir ?? DefaultLogDirectory();
+        _rootDir = rootDir;
+    }
+
+    /// <summary>The directory logs are written to and read from, or null before a login attached one.</summary>
+    public string? RootDirectory => _rootDir;
+
+    /// <summary>Points the logger at another directory -- the one for the account that just logged
+    /// in -- or at none (null). Appends already in flight finish where they started; everything
+    /// after this goes to, and reads come from, the new directory.</summary>
+    public void UseDirectory(string? directory)
+    {
+        _rootDir = string.IsNullOrWhiteSpace(directory) ? null : directory;
     }
 
     /// <summary>%APPDATA%\SLNG\logs\chat\ on Windows, ~/.config/slng/logs/chat/ on Linux/macOS —
     /// <see cref="Environment.SpecialFolder.ApplicationData"/> already resolves to the right base
-    /// on each platform (Windows roaming AppData vs. XDG ~/.config).</summary>
+    /// on each platform (Windows roaming AppData vs. XDG ~/.config). This is the root the per-grid,
+    /// per-account directories live under (<c>GridDataPaths.AccountDirectory</c>); logs written by
+    /// builds before BUG-GRID-01 sit directly in it and are not read any more.</summary>
     public static string DefaultLogDirectory()
     {
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -49,8 +69,10 @@ public sealed class ChatLogger
         return Path.Combine(appData, appDirName, "logs", "chat");
     }
 
-    public string FilePathFor(ChatLogKind kind, string conversationName) =>
-        Path.Combine(_rootDir, FileNameFor(kind, conversationName));
+    /// <summary>The log file for a conversation in the current directory, or null before a login
+    /// attached one.</summary>
+    public string? FilePathFor(ChatLogKind kind, string conversationName)
+        => _rootDir is { } root ? Path.Combine(root, FileNameFor(kind, conversationName)) : null;
 
     private static string FileNameFor(ChatLogKind kind, string conversationName) => kind switch
     {
@@ -74,7 +96,10 @@ public sealed class ChatLogger
     {
         if (!Enabled) return;
 
-        string path = FilePathFor(kind, conversationName);
+        // Taken once: the directory can change between here and the write.
+        string? root = _rootDir;
+        if (root is null) return;
+        string path = Path.Combine(root, FileNameFor(kind, conversationName));
         // "/" in a .NET custom format string is a locale-dependent date-separator placeholder,
         // not a literal slash -- without InvariantCulture this renders as "." on e.g. German
         // Windows instead of the SL log format's fixed "yyyy/MM/dd".
@@ -84,7 +109,7 @@ public sealed class ChatLogger
         await gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            Directory.CreateDirectory(_rootDir);
+            Directory.CreateDirectory(root);
             await File.AppendAllTextAsync(path, line + Environment.NewLine).ConfigureAwait(false);
         }
         finally
@@ -98,8 +123,8 @@ public sealed class ChatLogger
     /// in-memory buffer — this is the on-disk record of record.</summary>
     public IReadOnlyList<string> GetPage(ChatLogKind kind, string conversationName, int pageIndex, int pageSize, out int totalPages)
     {
-        string path = FilePathFor(kind, conversationName);
-        if (!File.Exists(path))
+        string? path = FilePathFor(kind, conversationName);
+        if (path is null || !File.Exists(path))
         {
             totalPages = 1;
             return Array.Empty<string>();

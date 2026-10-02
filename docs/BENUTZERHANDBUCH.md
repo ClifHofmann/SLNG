@@ -27,6 +27,7 @@ Unser Login-Bildschirm nutzt das moderne "Puris Glassmorphism"-Design.
 - Geben Sie Ihren Benutzernamen und Ihr Passwort ein.
 - Wählen Sie Ihr Ziel-Grid (z.B. Second Life Main Grid oder OSGrid) aus.
 - Der Viewer merkt sich Ihre Login-Profile und Fenstergrößen und startet bei zukünftigen Sitzungen direkt mit Ihren persönlichen Einstellungen.
+- **Jedes Grid für sich:** Das Hintergrundbild Ihres letzten Besuchs, der Objekt- und der Kartenspeicher sowie die Chat-Protokolle werden für jedes Grid (und jedes Konto) getrennt abgelegt. Ein Konto mit demselben Namen auf Second Life und auf OSGrid sieht dadurch nie die Daten des jeweils anderen Grids. Was frühere Versionen gemeinsam gespeichert haben, wird nicht mehr benutzt und nicht gelöscht: Das Hintergrundbild und die Chat-Protokolle beginnen pro Grid neu, der Objekt-Cache füllt sich beim nächsten Besuch einer Region von selbst wieder.
 
 ---
 

@@ -186,6 +186,7 @@ public static class SelfTest
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
         results.Add(CheckTooltipStyle());
+        results.Add(CheckPerGridPaths());
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -199,6 +200,58 @@ public static class SelfTest
         GD.Print(failed == 0 ? "[SelfTest] PASS" : "[SelfTest] FAIL");
 
         tree.Quit(failed == 0 ? 0 : 1);
+    }
+
+    /// <summary>
+    /// BUG-GRID-01: every per-grid path the app builds (<see cref="GridData"/>) differs between two
+    /// grids for the SAME account name -- the login-screen background, the object cache, the map tiles
+    /// and the chat logs -- and sits under the grids root. The same account on Second Life and OSGrid
+    /// is the reported bug, so that is the pair probed. Building a path must also touch nothing on
+    /// disk: a grid nobody ever logged into gets no directory from this check, which is what keeps it
+    /// safe next to "user data untouched".
+    /// </summary>
+    private static Check CheckPerGridPaths()
+    {
+        const string Name = "per-grid paths";
+        const string Agni = "https://login.agni.lindenlab.com/cgi-bin/login.cgi";
+        const string OsGrid = "http://hg.osgrid.org/";
+        const string Unused = "http://selftest-grid.invalid/";
+
+        string root = GridData.User.Root;
+        string unusedDir = GridData.User.GridDirectory(Unused);
+        bool existedBefore = System.IO.Directory.Exists(unusedDir);
+
+        string[] sl = {
+            GridData.LoginBackgroundPath(Agni, "Clifton", "Howlett"), GridData.ObjectCacheDirectory(Agni),
+            GridData.MapTileDirectory(Agni), GridData.ChatLogDirectory(Agni, "Clifton", "Howlett"),
+        };
+        string[] os = {
+            GridData.LoginBackgroundPath(OsGrid, "Clifton", "Howlett"), GridData.ObjectCacheDirectory(OsGrid),
+            GridData.MapTileDirectory(OsGrid), GridData.ChatLogDirectory(OsGrid, "Clifton", "Howlett"),
+        };
+        // Same grid written two ways is one grid.
+        bool sameGrid = GridData.ObjectCacheDirectory("http://hg.osgrid.org:80") == os[1]
+                        && GridData.LoginBackgroundPath("HG.OSGrid.org", " clifton ", "HOWLETT") == os[0];
+
+        var wrong = new List<string>();
+        for (int i = 0; i < sl.Length; i++)
+        {
+            if (sl[i] == os[i]) wrong.Add($"path {i} is the same on both grids: {sl[i]}");
+        }
+        // The two user:// paths and the picture live under the grids root; the chat log under its own.
+        foreach (int i in new[] { 0, 1, 2 })
+        {
+            if (!sl[i].StartsWith(root + "/") || !os[i].StartsWith(root + "/")) wrong.Add($"path {i} is outside {root}");
+        }
+        if (!sl[3].StartsWith(GridData.Chat.Root + "/")) wrong.Add("chat log directory is outside the chat root");
+        if (!sameGrid) wrong.Add("one grid written two ways gave two directories");
+
+        bool existsAfter = System.IO.Directory.Exists(unusedDir);
+        if (existedBefore != existsAfter) wrong.Add("building a path created a directory");
+
+        return wrong.Count == 0
+            ? new Check(Name, true, $"agni -> {sl[1]} ; osgrid -> {os[1]}")
+            : new Check(Name, false, string.Join("; ", wrong));
     }
 
     /// <summary>
