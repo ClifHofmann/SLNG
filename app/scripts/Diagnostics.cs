@@ -34,6 +34,13 @@ public static class Diagnostics
     /// <see cref="Initialize"/>.</summary>
     public static bool NoGroundDrop { get; private set; }
 
+    /// <summary>The sim UUID given with <c>--trace-object=&lt;uuid&gt;</c>, or empty. The object and
+    /// every part linked to it are reported every few seconds (see ObjectRenderer.TraceLinkset):
+    /// "object X is not shown" cannot be told apart from a screenshot, because a part that was never
+    /// built, one that is culled, one with an empty mesh and one with an invisible material all
+    /// look the same.</summary>
+    public static System.Guid TraceObject { get; private set; }
+
     /// <summary>Call once at startup, before anything that logs. Godot puts arguments after a bare
     /// <c>--</c> into GetCmdlineUserArgs and the rest into GetCmdlineArgs; both are checked so the
     /// flag works whether or not it is passed after the separator.</summary>
@@ -63,6 +70,10 @@ public static class Diagnostics
         // avatar rendered 0.69 m low as a result.
         NoGroundDrop = HasFlag(OS.GetCmdlineArgs(), "--no-ground-drop")
                     || HasFlag(OS.GetCmdlineUserArgs(), "--no-ground-drop");
+
+        string? traceArg = FindValueArg("--trace-object=", OS.GetCmdlineArgs())
+                        ?? FindValueArg("--trace-object=", OS.GetCmdlineUserArgs());
+        if (traceArg != null && System.Guid.TryParse(traceArg, out var traceId)) TraceObject = traceId;
 
         // BUG-RENDER-16: read once here, alongside --diag, since this is already the "parse the
         // command line at startup" site. See RenderConfig.HighFrequencyFoliageAlpha for what each
