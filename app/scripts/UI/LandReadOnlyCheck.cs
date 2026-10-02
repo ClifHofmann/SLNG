@@ -28,6 +28,9 @@ internal sealed partial class LandReadOnlyCheck : HBoxContainer
     {
         MouseFilter = MouseFilterEnum.Pass;
         TooltipText = L10n.Tr("ui.land.read_only_hint");
+        // Without a horizontal share the autowrapping "unknown" label below gets no width at all and
+        // wraps one letter per line (seen in-world on the MOAP row).
+        SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
         _box = new CheckBox
         {
@@ -41,7 +44,13 @@ internal sealed partial class LandReadOnlyCheck : HBoxContainer
         _box.AddThemeColorOverride("font_disabled_color", UiTheme.SecondaryText.Lightened(0.35f));
         AddChild(_box);
 
-        _unknown = new Label { Visible = false, AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        _unknown = new Label
+        {
+            Visible = false,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(160, 0), // a floor, so a narrow cell wraps by words, never by letters
+        };
         _unknown.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         AddChild(_unknown);
 
