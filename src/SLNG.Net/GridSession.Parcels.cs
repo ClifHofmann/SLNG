@@ -118,7 +118,7 @@ public sealed partial class GridSession
                 return;
             }
 
-            var info = ParcelInfoMapper.From(e.Parcel, sim.Handle, sim.Access, sim.ProductName);
+            var info = ParcelInfoMapper.From(e.Parcel, sim.Handle, sim.Access, sim.ProductName, sim.Flags);
             var raised = _parcelInfoTracker.OnProperties(info, requested);
             if (raised == null) return;
 

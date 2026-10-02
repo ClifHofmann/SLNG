@@ -1,7 +1,9 @@
+using System.Numerics;
+
 namespace SLNG.Core;
 
-/// <summary>Everything the Land-Info "General" tab shows about one parcel, as engine- and
-/// protocol-neutral data (FEAT-LAND-01). Built from one <c>ParcelProperties</c> message plus,
+/// <summary>Everything the Land-Info "General", "Options", "Media" and "Sound" tabs show about one
+/// parcel, as engine- and protocol-neutral data (FEAT-LAND-01, FEAT-LAND-02). Built from one <c>ParcelProperties</c> message plus,
 /// later, the <c>ParcelDwellReply</c> for the same parcel; <c>SLNG.Net</c> raises the record twice
 /// when the dwell arrives (second time with <see cref="Dwell"/> and <see cref="ParcelId"/> filled).
 ///
@@ -87,4 +89,72 @@ public sealed record ParcelInfo
     /// <c>%.0f</c> (<c>llfloaterland.cpp</c>:786). Null until the <c>ParcelDwellReply</c> arrives
     /// (the viewer shows "Loading..."), and null for local id 0, which is never asked.</summary>
     public float? Dwell { get; init; }
+
+    // ---- Options / Media / Sound tabs (FEAT-LAND-02) -----------------------------------------
+    // Sources: LLPanelLandOptions::refresh (llfloaterland.cpp:1996), LLPanelLandMedia::refresh
+    // (llpanellandmedia.cpp:120), LLPanelLandAudio::refresh (llpanellandaudio.cpp:108) and the parcel
+    // decode LLParcel::unpackMessage (llparcel.cpp:549). Like everything above, these are what the sim
+    // SAID, never what the agent may do: the sim stays the authority on rights.
+
+    /// <summary>Every on/off setting of the Options and Sound tabs; see <see cref="ParcelOptions"/> for
+    /// which control each bit is and where the viewer derives a displayed value from it.</summary>
+    public ParcelOptions Options { get; init; }
+
+    /// <summary>Options tab "Teleport Routing" combo (<c>LLParcel::getLandingType</c>). Null when the sim
+    /// sent a value outside 0..2, which the viewer shows as no selection (<c>llfloaterland.cpp</c>:2095).</summary>
+    public ParcelLandingType? TeleportRouting { get; init; }
+
+    /// <summary>Options tab "Landing Point": the region-local spot (metres) arrivals are sent to when
+    /// <see cref="TeleportRouting"/> is <see cref="ParcelLandingType.LandingPoint"/>. Null when the
+    /// parcel has none: the sim sends (0,0,0), which the viewer prints as "(none)"
+    /// (<c>llfloaterland.cpp</c>:2109; the Clear button writes that same zero, :2368).</summary>
+    public Vector3? LandingPoint { get; init; }
+
+    /// <summary>The direction the agent faces on arrival (<c>UserLookAt</c>), a vector in the region's
+    /// frame. Meaningless when <see cref="LandingPoint"/> is null; see <see cref="LandingHeadingDegrees"/>.</summary>
+    public Vector3 LandingLookAt { get; init; }
+
+    /// <summary>The compass heading the Options tab prints after the landing point, in whole degrees
+    /// 0..359 (0 = north, 90 = east), computed exactly as the viewer does from
+    /// <see cref="LandingLookAt"/> (<c>llfloaterland.cpp</c>:2106). Null when there is no landing point.</summary>
+    public int? LandingHeadingDegrees
+    {
+        get
+        {
+            if (LandingPoint is null) return null;
+            // atan2(y, -x) + 2*pi is always in [pi, 3*pi], so the degree count is >= 180 and the
+            // viewer's unsigned "- 90" never wraps.
+            double deg = (Math.Atan2(LandingLookAt.Y, -LandingLookAt.X) + Math.PI * 2) * (180.0 / Math.PI);
+            return (int)(((uint)(deg + 0.5) - 90u) % 360u);
+        }
+    }
+
+    /// <summary>Options tab search category (<c>LLParcel::getCategory</c>), only meaningful while
+    /// <see cref="ParcelOptions.ShowInSearch"/> is set. Null for a wire value that is not a known
+    /// category.</summary>
+    public ParcelCategory? Category { get; init; }
+
+    /// <summary>Options tab "Snapshot": the parcel picture (<c>SnapshotID</c>); null when nil, which the
+    /// viewer shows as the default land picture.</summary>
+    public Guid? SnapshotId { get; init; }
+
+    /// <summary>Media tab; <see cref="ParcelMedia.None"/> when the parcel has no media.</summary>
+    public ParcelMedia Media { get; init; } = ParcelMedia.None;
+
+    /// <summary>Sound tab "Music URL" (<c>MusicURL</c>). Empty when none.</summary>
+    public string MusicUrl { get; init; } = string.Empty;
+
+    /// <summary>Sound tab voice box: whether the REGION allows voice at all (<c>REGION_FLAGS_ALLOW_VOICE</c>
+    /// from the region handshake, <c>LLViewerRegion::isVoiceEnabled</c>). When false the viewer replaces
+    /// "Enable Voice" with a disabled "Enable Voice (established by the Estate)" and greys the
+    /// restrict-voice box (<c>llpanellandaudio.cpp</c>:129-148). Null when the region flags are not
+    /// known yet; show the plain "Enable Voice" box then.</summary>
+    public bool? RegionVoiceEnabled { get; init; }
+
+    /// <summary>Sound tab "Media: Restrict MOAP to this parcel" (the parcel's obscure-media-on-a-prim
+    /// flag, <c>ParcelExtendedFlags.Flags</c> in the parcel message,
+    /// <c>llviewerparcelmgr.cpp</c>:1681-1684 and :1748). ALWAYS null for now: LibreMetaverse 3.1.6 drops
+    /// that block when it decodes the message and exposes no per-parcel value, so SLNG cannot read it. A UI
+    /// must show the box as "unknown" (or leave it out), never as unticked.</summary>
+    public bool? ObscureMoap { get; init; }
 }
