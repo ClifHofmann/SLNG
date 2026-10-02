@@ -488,7 +488,7 @@ public static class SelfTest
     /// </summary>
     private static IEnumerable<Check> CheckShaderVariants()
     {
-        string[] suffixes = { "_avatar.gdshader", "_hud.gdshader" };
+        string[] suffixes = { "_avatar.gdshader", "_hud.gdshader", "_vspec.gdshader" };
 
         foreach (string path in EnumerateResources("res://materials", ".gdshader").OrderBy(p => p))
         {

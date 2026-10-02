@@ -399,7 +399,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.25.15-alpha";
+    public const string AppVersion = "v0.25.16-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1856,7 +1856,7 @@ public partial class Boot : Control
             //
             // Known trade-off, unchanged: intensity is per-PROBE, so genuinely physical glTF/PBR
             // content in range is scaled by the same factor.
-            Intensity = 1.5f,
+            Intensity = SLNG.Core.LegacyShadeMirror.ReflectionProbeIntensity,
         };
         AddChild(reflectionProbe);
         _reflectionProbe = reflectionProbe;

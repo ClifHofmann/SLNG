@@ -24,14 +24,43 @@ public static class LegacyShadeMirror
     /// Declared in prim_common.gdshaderinc and registered in project.godot.</summary>
     public const string LegacySpecularScaleUniform = "slng_legacy_specular_scale";
 
-    /// <summary>The default since v0.25.13: 0 -- no sky/probe veil on a legacy specular-map face (the
-    /// user's A/B choice against the reference viewer, used with <see cref="DefaultViewerSunSpecular"/>).
-    /// The project.godot value and the lab's initial state are pinned to it by a test. It applies only
-    /// to the Opaque variants (prim_opaque, prim_opaque_vspec); every other variant is unscaled.</summary>
-    public const float DefaultLegacySpecularScale = 0.0f;
+    /// <summary>The default since v0.25.16: 1 = viewer-faithful. On a viewer-specular twin (the *_vspec
+    /// variants, which the default <see cref="DefaultViewerSunSpecular"/> puts every legacy specular-map
+    /// face on) it multiplies the viewer's gloss/environment reflection weight
+    /// (<see cref="ViewerGlossEnvSpecular"/>), which is ~0 at the terrace floor's glossiness 30 and
+    /// grows with glossiness; on the stock prim_opaque (checkbox off) it multiplies Godot's own F0
+    /// reflection, so 1 is the stock look. v0.25.13-15 shipped 0 (a constant veil of nothing) because
+    /// the only reflection available was Godot's, whose strength is not a function of glossiness. The
+    /// project.godot value and the lab's initial state are pinned to it by a test. Every variant
+    /// without a twin (double-sided opaque, avatar, HUD...) is unscaled.</summary>
+    public const float DefaultLegacySpecularScale = 1.0f;
 
-    /// <summary>The viewer sun highlight (prim_opaque_vspec) is ON by default since v0.25.13.</summary>
+    /// <summary>The viewer sun highlight and gloss/environment reflection (the *_vspec twins) are ON by
+    /// default since v0.25.13, for the opaque variant; since v0.25.16 also for the alpha-masked and
+    /// alpha-blended world-prim variants.</summary>
     public const bool DefaultViewerSunSpecular = true;
+
+    /// <summary>The Intensity of the follow ReflectionProbe (Boot.cs). The viewer-specular twins divide
+    /// the reflection weight they want by Godot's F0 times this, so the two have to agree; the shader
+    /// constant <c>VSPEC_PROBE_INTENSITY</c> is pinned to it by a test.</summary>
+    public const float ReflectionProbeIntensity = 1.5f;
+
+    /// <summary>What Godot reflects of the environment at normal incidence for a dielectric:
+    /// <c>F0 = 0.08 * SPECULAR</c> (the same factor as <see cref="ClassicLightBalance.GodotSpecularWeight"/>).</summary>
+    public const float GodotF0PerSpecular = 0.08f;
+
+    /// <summary>The SPECULAR the *_vspec twins hand to Godot so that its probe/sky reflection is as strong
+    /// as the viewer's <c>applyGlossEnv</c> (reflectionProbeF.glsl:893-902) for this pixel:
+    /// <c>0.25 * specLum * clamp(1 - N.V, 0.3, 1)^2 * glossiness * (1 - albedoLum)</c> divided by
+    /// <c>0.08 * probe intensity</c>, times the lab scale, clamped to [0, 1]. Linear in glossiness: about
+    /// 0.002 at gloss 30 head-on (no veil), 0.019 at gloss 220. Mirrors
+    /// <c>slng_viewer_gloss_env_specular</c> in prim_common.gdshaderinc.</summary>
+    public static float ViewerGlossEnvSpecular(float specLuminance, float glossiness, float nv, float albedoLuminance, float scale = 1f)
+    {
+        float weight = ClassicLightBalance.ViewerGlossEnvWeight(specLuminance, glossiness, 1f - nv)
+            * (1f - Math.Clamp(albedoLuminance, 0f, 1f));
+        return Math.Clamp(weight * scale / (GodotF0PerSpecular * ReflectionProbeIntensity), 0f, 1f);
+    }
 
     /// <summary>Upper end of the lab slider (the lower end is 0: no highlight and no reflection).</summary>
     public const float MaxLegacySpecularScale = 1.5f;

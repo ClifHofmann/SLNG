@@ -432,25 +432,32 @@ public partial class ObjectRenderer : Node3D
     // flicker hunt needs, so it must not be deduped away.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _faceAlphaLogged = new();
 
-    private static string PrimShaderKindName(Shader? s) =>
-        ReferenceEquals(s, PrimShaderFamily.Blend) ? "Blend"
-        : ReferenceEquals(s, PrimShaderFamily.Scissor) ? "Scissor"
-        : ReferenceEquals(s, PrimShaderFamily.Hash) ? "Hash"
-        : ReferenceEquals(s, PrimShaderFamily.BlendPrepass) ? "BlendPrepass"
-        : ReferenceEquals(s, PrimShaderFamily.ScissorEdge) ? "ScissorEdge"
-        : ReferenceEquals(s, PrimShaderFamily.BlendDepth) ? "BlendDepth"
-        : ReferenceEquals(s, PrimShaderFamily.Opaque) ? "Opaque"
-        : ReferenceEquals(s, PrimShaderFamily.OpaqueViewerSpec) ? "OpaqueViewerSpec"
-        : "other";
+    // A viewer-specular twin (BUG-RENDER-44) reports its base's name plus "+vspec".
+    private static string PrimShaderKindName(Shader? s)
+    {
+        var b = PrimShaderFamily.BaseVariant(s);
+        string name = ReferenceEquals(b, PrimShaderFamily.Blend) ? "Blend"
+            : ReferenceEquals(b, PrimShaderFamily.Scissor) ? "Scissor"
+            : ReferenceEquals(b, PrimShaderFamily.Hash) ? "Hash"
+            : ReferenceEquals(b, PrimShaderFamily.BlendPrepass) ? "BlendPrepass"
+            : ReferenceEquals(b, PrimShaderFamily.ScissorEdge) ? "ScissorEdge"
+            : ReferenceEquals(b, PrimShaderFamily.BlendDepth) ? "BlendDepth"
+            : ReferenceEquals(b, PrimShaderFamily.Opaque) ? "Opaque"
+            : "other";
+        return ReferenceEquals(b, s) ? name : name + "+vspec";
+    }
 
     /// <summary>BUG-RENDER-16: true for the shader kinds that render in Godot's SORTED transparent
     /// queue, i.e. the ones whose draw order the alpha comparator decides. The cutout kinds
     /// (Scissor, ScissorEdge, Hash) write depth and render in the opaque queue, so they are
     /// order-independent and cannot flicker however many surfaces an object has.</summary>
-    private static bool IsSortedTransparent(Shader? s) =>
-        ReferenceEquals(s, PrimShaderFamily.Blend)
-        || ReferenceEquals(s, PrimShaderFamily.BlendPrepass)
-        || ReferenceEquals(s, PrimShaderFamily.BlendDepth);
+    private static bool IsSortedTransparent(Shader? s)
+    {
+        s = PrimShaderFamily.BaseVariant(s);   // a viewer-specular twin sorts exactly like its base
+        return ReferenceEquals(s, PrimShaderFamily.Blend)
+            || ReferenceEquals(s, PrimShaderFamily.BlendPrepass)
+            || ReferenceEquals(s, PrimShaderFamily.BlendDepth);
+    }
 
     /// <summary>BUG-RENDER-17: true for the alpha-TESTED cutout kinds (Scissor, ScissorEdge,
     /// Hash) — these stay in the opaque queue and were assumed instancing-safe on that basis, but
@@ -466,11 +473,14 @@ public partial class ObjectRenderer : Node3D
     /// reading as a black hole rather than the intended soft fade. Excluded from instancing
     /// pending a real Godot-side fix or workaround; a plain <see cref="PrimShaderFamily.Opaque"/>
     /// face (no discard at all) is unaffected and stays eligible.</summary>
-    private static bool HasAlphaDiscard(Shader? s) =>
-        ReferenceEquals(s, PrimShaderFamily.Scissor)
-        || ReferenceEquals(s, PrimShaderFamily.ScissorEdge)
-        || ReferenceEquals(s, PrimShaderFamily.Hash)
-        || ReferenceEquals(s, PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.WorldPrim, doubleSided: true));
+    private static bool HasAlphaDiscard(Shader? s)
+    {
+        s = PrimShaderFamily.BaseVariant(s);   // a viewer-specular twin discards exactly like its base
+        return ReferenceEquals(s, PrimShaderFamily.Scissor)
+            || ReferenceEquals(s, PrimShaderFamily.ScissorEdge)
+            || ReferenceEquals(s, PrimShaderFamily.Hash)
+            || ReferenceEquals(s, PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.WorldPrim, doubleSided: true));
+    }
 
     private void LogFaceAlpha(Guid texId, string decision)
     {
@@ -1424,6 +1434,19 @@ public partial class ObjectRenderer : Node3D
             gloss, env, shiny, metallic, roughness,
             new System.Numerics.Vector3(albedo.R, albedo.G, albedo.B)));
 
+        // A viewer-specular twin (BUG-RENDER-44) hands Godot the viewer's gloss-reflection weight instead of
+        // the map luminance, and its sun highlight comes from light(), so the roughness/specular above are
+        // for the stock path. Head-on value of the SPECULAR the twin writes, from the same mirror.
+        string vspecDesc = "";
+        if (PrimShaderFamily.ViewerSpecBase(shader) != null)
+        {
+            float glossForVeil = hasSpec ? gloss * (hasNormal ? normalAlpha : 1f) : 0f;
+            float veil = SLNG.Core.LegacyShadeMirror.ViewerGlossEnvSpecular(
+                predicted.Specular, glossForVeil, 1f, 0.2126f * albedo.R + 0.7152f * albedo.G + 0.0722f * albedo.B,
+                MaterialLab.LegacySpecularScale);
+            vspecDesc = $" vspec(gloss-env SPECULAR head-on)={veil:0.####}";
+        }
+
         return $"shader={shaderName}{nextPass} fullbright={B(P(mat, PrimShaderFamily.Fullbright))} " +
                $"albedoColor=({albedo.R:0.##},{albedo.G:0.##},{albedo.B:0.##},{albedo.A:0.##}) albedoTex={albedoTex} | " +
                $"has_specular_texture={hasSpec} specular_tint=({tint.X:0.###},{tint.Y:0.###},{tint.Z:0.###}) " +
@@ -1433,7 +1456,7 @@ public partial class ObjectRenderer : Node3D
                $"normalTex={normalDesc} | " +
                $"PREDICTED (C# mirror of slng_shade, not a GPU readback): glossiness={predicted.Glossiness:0.###} " +
                $"roughness={predicted.Roughness:0.###} metallic={predicted.Metallic:0.###} specular={predicted.Specular:0.###} " +
-               $"env={predicted.EnvIntensity:0.####} | lab: {MaterialLab.Describe()}";
+               $"env={predicted.EnvIntensity:0.####}{vspecDesc} | lab: {MaterialLab.Describe()}";
     }
 
     /// <summary>Size, format and a pixel summary of a texture bound to a surface: what the GPU copy
@@ -4144,13 +4167,16 @@ public partial class ObjectRenderer : Node3D
         // explicitly-double-sided GLTF materials), so an alpha face is not a reason to render
         // an object's interior surfaces.
 
+        // The branches above may have replaced a viewer-specular twin by a plain variant: put it back.
+        ApplyViewerSpecularVariant(material);
+
         LogFaceAlpha(texId, $"noMat detectAlpha={alphaMode} maskable={(GpuCache.TryGetIsAlphaMaskable(texId, out _) ? maskable.ToString() : "?")} img={imgW}x{imgH} " +
             // BUG-RENDER-14: the flag that now decides between blending and cutting. Without it in
             // the line, "why is this face hard-edged" cannot be answered from the log.
             $"fullbright={fullbright} " +
             $"tintTranslucent={tintIsTranslucent} -> {PrimShaderKindName(material.Shader)}" +
-            (ReferenceEquals(material.Shader, PrimShaderFamily.Scissor) ? $" @{(maskable ? 0.5f : 0.33f)}" : "") +
-            (ReferenceEquals(material.Shader, PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : "") +
+            (ReferenceEquals(PrimShaderFamily.BaseVariant(material.Shader), PrimShaderFamily.Scissor) ? $" @{(maskable ? 0.5f : 0.33f)}" : "") +
+            (ReferenceEquals(PrimShaderFamily.BaseVariant(material.Shader), PrimShaderFamily.Blend) ? " (SORTED transparent pass)" : "") +
             (hiFreqBlend ? $" [BUG-RENDER-16 --foliage-alpha={RenderConfig.HighFrequencyFoliageAlpha}]" : "") +
             (depthCore ? $" +DepthCore@{RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)}" : ""));
     }
@@ -4802,6 +4828,7 @@ public partial class ObjectRenderer : Node3D
     /// silently leaving a double-sided face back-face culled.</summary>
     private static Shader DoubleSidedTwin(Shader current)
     {
+        current = PrimShaderFamily.BaseVariant(current)!;
         if (current == PrimShaderFamily.Scissor)
             return PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.WorldPrim, doubleSided: true);
         if (current == PrimShaderFamily.Blend)
@@ -4896,24 +4923,26 @@ public partial class ObjectRenderer : Node3D
     private ShaderMaterial? _hiddenMaterial;
     private ShaderMaterial HiddenMaterial => _hiddenMaterial ??= new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
 
-    /// <summary>Material lab: puts a face that takes the has_specular_texture legacy branch on the
-    /// Opaque variant with the viewer's sun highlight while the lab checkbox is on, and back on
-    /// plain Opaque when it is off. Anything that is not exactly one of those two shaders (alpha
-    /// kinds, double-sided, mirror...) is left alone -- the experiment covers the Opaque variant only.
+    /// <summary>Puts a face that takes the has_specular_texture legacy branch on the viewer-specular twin
+    /// of whatever world-prim variant it currently uses (opaque, alpha-mask, alpha-blend; BUG-RENDER-41,
+    /// BUG-RENDER-44) while the lab checkbox is on, and back on the base variant when it is off. A face
+    /// without a specular map, a double-sided opaque, an avatar, a HUD or the mirror has no twin and is
+    /// left alone. Idempotent, so every place that (re)assigns a face's shader may call it afterwards.
     /// Main thread only.</summary>
     private static void ApplyViewerSpecularVariant(ShaderMaterial mat)
     {
         var shader = mat.Shader;
         if (MaterialLab.ViewerSunSpecular)
         {
-            if (!ReferenceEquals(shader, PrimShaderFamily.Opaque)) return;
+            var twin = PrimShaderFamily.ViewerSpecTwin(shader);
+            if (twin == null) return;
             var has = mat.GetShaderParameter(PrimShaderFamily.HasSpecularTexture);
             if (has.VariantType == Variant.Type.Nil || !has.AsBool()) return;
-            mat.Shader = PrimShaderFamily.OpaqueViewerSpec;
+            mat.Shader = twin;
         }
-        else if (ReferenceEquals(shader, PrimShaderFamily.OpaqueViewerSpec))
+        else if (PrimShaderFamily.ViewerSpecBase(shader) is { } baseShader)
         {
-            mat.Shader = PrimShaderFamily.Opaque;
+            mat.Shader = baseShader;
         }
     }
 

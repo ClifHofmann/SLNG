@@ -39,9 +39,20 @@ namespace SLNG.App;
 public static class PrimShaderFamily
 {
     private const string OpaquePath = "res://materials/prim/prim_opaque.gdshader";
-    // Material lab experiment: prim_opaque with a custom light() adding the viewer's own sun highlight.
-    // Never chosen by Select(); ObjectRenderer swaps a specular-map face onto it while the lab is on.
+    // BUG-RENDER-41 / BUG-RENDER-44: "viewer-specular" twins of the world-prim variants. Each is its base
+    // shader plus `#define SLNG_VIEWER_SPEC` (prim_common.gdshaderinc): a custom light() adding the
+    // reference viewer's own sun highlight, and the viewer's gloss/environment reflection as SPECULAR.
+    // Never chosen by Select(); ObjectRenderer swaps a legacy-specular-map face onto the twin of
+    // whatever it currently uses, via ViewerSpecTwin(), while the lab checkbox is on.
     private const string OpaqueViewerSpecPath = "res://materials/prim/prim_opaque_vspec.gdshader";
+    private const string ScissorViewerSpecPath = "res://materials/prim/prim_scissor_vspec.gdshader";
+    private const string ScissorDoubleSidedViewerSpecPath = "res://materials/prim/prim_scissor_doublesided_vspec.gdshader";
+    private const string ScissorEdgeViewerSpecPath = "res://materials/prim/prim_scissor_edge_vspec.gdshader";
+    private const string HashViewerSpecPath = "res://materials/prim/prim_hash_vspec.gdshader";
+    private const string BlendViewerSpecPath = "res://materials/prim/prim_blend_vspec.gdshader";
+    private const string BlendDoubleSidedViewerSpecPath = "res://materials/prim/prim_blend_doublesided_vspec.gdshader";
+    private const string BlendDepthViewerSpecPath = "res://materials/prim/prim_blend_depth_vspec.gdshader";
+    private const string BlendPrepassViewerSpecPath = "res://materials/prim/prim_blend_prepass_vspec.gdshader";
     private const string ScissorPath = "res://materials/prim/prim_scissor.gdshader";
     private const string BlendPath = "res://materials/prim/prim_blend.gdshader";
     // BUG-RENDER-09: hashed alpha -- prim_scissor's depth behaviour with prim_blend's smooth
@@ -97,6 +108,14 @@ public static class PrimShaderFamily
     // build.
     private static readonly Lazy<Shader> _opaque = MakeLazy(OpaquePath);
     private static readonly Lazy<Shader> _opaqueViewerSpec = MakeLazy(OpaqueViewerSpecPath);
+    private static readonly Lazy<Shader> _scissorViewerSpec = MakeLazy(ScissorViewerSpecPath);
+    private static readonly Lazy<Shader> _scissorDoubleSidedViewerSpec = MakeLazy(ScissorDoubleSidedViewerSpecPath);
+    private static readonly Lazy<Shader> _scissorEdgeViewerSpec = MakeLazy(ScissorEdgeViewerSpecPath);
+    private static readonly Lazy<Shader> _hashViewerSpec = MakeLazy(HashViewerSpecPath);
+    private static readonly Lazy<Shader> _blendViewerSpec = MakeLazy(BlendViewerSpecPath);
+    private static readonly Lazy<Shader> _blendDoubleSidedViewerSpec = MakeLazy(BlendDoubleSidedViewerSpecPath);
+    private static readonly Lazy<Shader> _blendDepthViewerSpec = MakeLazy(BlendDepthViewerSpecPath);
+    private static readonly Lazy<Shader> _blendPrepassViewerSpec = MakeLazy(BlendPrepassViewerSpecPath);
     private static readonly Lazy<Shader> _scissor = MakeLazy(ScissorPath);
     private static readonly Lazy<Shader> _blend = MakeLazy(BlendPath);
     private static readonly Lazy<Shader> _hash = MakeLazy(HashPath);
@@ -127,9 +146,52 @@ public static class PrimShaderFamily
     /// pass. Replaces <c>TransparencyEnum.Disabled</c>.</summary>
     public static Shader Opaque => _opaque.Value;
 
-    /// <summary>Material lab: <see cref="Opaque"/> plus the reference viewer's own sun highlight, via a
-    /// custom <c>light()</c>. Only for a specular-map face while the lab checkbox is on.</summary>
+    /// <summary><see cref="Opaque"/> plus the reference viewer's own sun highlight, via a custom
+    /// <c>light()</c>. Only for a specular-map face while the lab checkbox is on. The alpha-masked and
+    /// alpha-blended variants have the same twins; see <see cref="ViewerSpecTwin"/>.</summary>
     public static Shader OpaqueViewerSpec => _opaqueViewerSpec.Value;
+
+    /// <summary>BUG-RENDER-44: the viewer-specular twin of a WORLD-PRIM variant (opaque, alpha-mask,
+    /// alpha-blend, including double-sided and the foliage re-routes), or null when
+    /// <paramref name="shader"/> has none (avatar, HUD, mirror, double-sided opaque, a twin itself).
+    /// The twin is the base shader plus <c>#define SLNG_VIEWER_SPEC</c>, so its uniforms are the
+    /// base's: swapping <see cref="ShaderMaterial.Shader"/> keeps every parameter.</summary>
+    public static Shader? ViewerSpecTwin(Shader? shader)
+    {
+        if (shader == null) return null;
+        if (ReferenceEquals(shader, _opaque.Value)) return _opaqueViewerSpec.Value;
+        if (ReferenceEquals(shader, _scissor.Value)) return _scissorViewerSpec.Value;
+        if (ReferenceEquals(shader, _scissorDoubleSided.Value)) return _scissorDoubleSidedViewerSpec.Value;
+        if (ReferenceEquals(shader, _scissorEdge.Value)) return _scissorEdgeViewerSpec.Value;
+        if (ReferenceEquals(shader, _hash.Value)) return _hashViewerSpec.Value;
+        if (ReferenceEquals(shader, _blend.Value)) return _blendViewerSpec.Value;
+        if (ReferenceEquals(shader, _blendDoubleSided.Value)) return _blendDoubleSidedViewerSpec.Value;
+        if (ReferenceEquals(shader, _blendDepth.Value)) return _blendDepthViewerSpec.Value;
+        if (ReferenceEquals(shader, _blendPrepass.Value)) return _blendPrepassViewerSpec.Value;
+        return null;
+    }
+
+    /// <summary>The inverse of <see cref="ViewerSpecTwin"/>: the base variant of a twin, or null when
+    /// <paramref name="shader"/> is not one.</summary>
+    public static Shader? ViewerSpecBase(Shader? shader)
+    {
+        if (shader == null) return null;
+        if (ReferenceEquals(shader, _opaqueViewerSpec.Value)) return _opaque.Value;
+        if (ReferenceEquals(shader, _scissorViewerSpec.Value)) return _scissor.Value;
+        if (ReferenceEquals(shader, _scissorDoubleSidedViewerSpec.Value)) return _scissorDoubleSided.Value;
+        if (ReferenceEquals(shader, _scissorEdgeViewerSpec.Value)) return _scissorEdge.Value;
+        if (ReferenceEquals(shader, _hashViewerSpec.Value)) return _hash.Value;
+        if (ReferenceEquals(shader, _blendViewerSpec.Value)) return _blend.Value;
+        if (ReferenceEquals(shader, _blendDoubleSidedViewerSpec.Value)) return _blendDoubleSided.Value;
+        if (ReferenceEquals(shader, _blendDepthViewerSpec.Value)) return _blendDepth.Value;
+        if (ReferenceEquals(shader, _blendPrepassViewerSpec.Value)) return _blendPrepass.Value;
+        return null;
+    }
+
+    /// <summary>The variant a twin stands for, or <paramref name="shader"/> itself. Use this before any
+    /// "which treatment is this face" test (sorted transparent, alpha discard, double-sided...), so a
+    /// viewer-specular twin answers exactly like its base.</summary>
+    public static Shader? BaseVariant(Shader? shader) => ViewerSpecBase(shader) ?? shader;
 
     /// <summary>BUG-RENDER-32: the planar mirror. Assigned to the one chosen mirror's
     /// qualifying surfaces and swapped back when it stops being chosen.</summary>
@@ -276,6 +338,14 @@ public static class PrimShaderFamily
     {
         _ = Opaque;
         _ = OpaqueViewerSpec;
+        _ = _scissorViewerSpec.Value;
+        _ = _scissorDoubleSidedViewerSpec.Value;
+        _ = _scissorEdgeViewerSpec.Value;
+        _ = _hashViewerSpec.Value;
+        _ = _blendViewerSpec.Value;
+        _ = _blendDoubleSidedViewerSpec.Value;
+        _ = _blendDepthViewerSpec.Value;
+        _ = _blendPrepassViewerSpec.Value;
         _ = Scissor;
         _ = Blend;
         _ = Hash;
