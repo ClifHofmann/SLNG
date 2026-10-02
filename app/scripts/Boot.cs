@@ -4382,7 +4382,8 @@ public partial class Boot : Control
     private void OnFriendshipEnded(object? sender, SLNG.Core.FriendshipEndedEvent e)
     {
         string name = string.IsNullOrEmpty(e.FromName) ? e.FromId.ToString() : e.FromName;
-        _notifications.Add(SLNG.Core.NotificationKind.Invitation, e.FromId,
+        // A statement, not an offer: it belongs under System, not under Invitations.
+        _notifications.Add(SLNG.Core.NotificationKind.System, e.FromId,
             SLNG.App.UI.L10n.TrFormat("ui.notifications.friendship_ended", name),
             senderName: name);
     }
