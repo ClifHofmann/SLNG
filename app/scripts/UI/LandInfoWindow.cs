@@ -9,8 +9,8 @@ namespace SLNG.App.UI;
 
 /// <summary>
 /// FEAT-LAND-01: "About Land" -- what the sim says about the parcel the agent stands on, in the
-/// tabbed shape of the reference viewer's floater. Today it has one tab (General) and is read-only;
-/// Covenant, Objects, Options, Media, Sound and Access follow in FEAT-LAND-02..05, each as one more
+/// tabbed shape of the reference viewer's floater. Today it has General, Options, Media and Sound and is
+/// read-only; Covenant, Objects and Access follow in FEAT-LAND-03..05, each as one more
 /// <see cref="ILandInfoTab"/> and one more <see cref="AddTab"/> call in <see cref="_Ready"/>.
 ///
 /// <para><b>It follows the agent.</b> The data layer raises <c>ParcelInfoReceived</c> for the answer to
@@ -42,6 +42,9 @@ public partial class LandInfoWindow : SLNGWindow
     private TabContainer _tabContainer = null!;
     private Label _status = null!;
     private LandGeneralTab _general = null!;
+    private LandOptionsTab _options = null!;
+    private LandMediaTab _media = null!;
+    private LandSoundTab _sound = null!;
 
     // True once a parcel has arrived since the last request, so a late timeout cannot blank a parcel
     // that a push already put on screen.
@@ -86,6 +89,12 @@ public partial class LandInfoWindow : SLNGWindow
         _general = new LandGeneralTab();
         _general.Initialize(LookupName);
         AddTab(_general);
+        _options = new LandOptionsTab();
+        AddTab(_options);
+        _media = new LandMediaTab();
+        AddTab(_media);
+        _sound = new LandSoundTab();
+        AddTab(_sound);
 
         ShowStatus(L10n.Tr("ui.land.loading_parcel"));
     }
@@ -174,6 +183,15 @@ public partial class LandInfoWindow : SLNGWindow
     internal string? StatusText => _status.Visible ? _status.Text : null;
 
     internal LandGeneralTab General => _general;
+
+    internal LandOptionsTab Options => _options;
+
+    internal LandMediaTab Media => _media;
+
+    internal LandSoundTab Sound => _sound;
+
+    /// <summary>The tab titles in order. Selftest only.</summary>
+    internal IEnumerable<string> TabTitles => _tabs.ConvertAll(t => t.TabTitle);
 
     // --- network-thread handlers: queue, never touch a Control -------------------------------------
 

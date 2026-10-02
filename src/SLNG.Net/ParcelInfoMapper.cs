@@ -1,6 +1,9 @@
 using LibreMetaverse;
 using SLNG.Core;
-using ParcelInfo = SLNG.Core.ParcelInfo; // LibreMetaverse has a ParcelInfo too
+using ParcelCategory = SLNG.Core.ParcelCategory; // LibreMetaverse has these too
+using ParcelInfo = SLNG.Core.ParcelInfo;
+using ParcelMedia = SLNG.Core.ParcelMedia;
+using Vector3 = System.Numerics.Vector3; // and an OpenMetaverse-style Vector3
 
 namespace SLNG.Net;
 
@@ -71,9 +74,14 @@ internal static class ParcelInfoMapper
         _ => ParcelOwnership.Unknown,
     };
 
-    /// <summary>Builds the record for one parcel. <paramref name="access"/> and
-    /// <paramref name="productName"/> are the REGION's (the parcel message carries neither).</summary>
-    internal static ParcelInfo From(Parcel parcel, ulong regionHandle, SimAccess access, string? productName)
+    /// <summary>Builds the record for one parcel. <paramref name="access"/>, <paramref name="productName"/>
+    /// and <paramref name="regionFlags"/> are the REGION's (the parcel message carries none of them).
+    /// <paramref name="obscureMoap"/> is the parcel's "Restrict MOAP" flag, which LibreMetaverse's typed
+    /// message drops (see <see cref="ParcelInfo.ObscureMoap"/>); a caller that can read it some other way
+    /// passes it, everyone else leaves it null.</summary>
+    internal static ParcelInfo From(
+        Parcel parcel, ulong regionHandle, SimAccess access, string? productName,
+        RegionFlags regionFlags = RegionFlags.None, bool? obscureMoap = null)
     {
         bool isPublic = parcel.OwnerID == UUID.Zero; // LLParcel::isPublic, llparcel.cpp:1072
         bool forSale = (parcel.Flags & ParcelFlags.ForSale) != 0; // PF_FOR_SALE, llparcelflags.h:34
@@ -97,8 +105,99 @@ internal static class ParcelInfoMapper
             Ownership = OwnershipFrom(parcel.Status),
             Rating = RatingFrom(access),
             LandType = productName ?? string.Empty,
+
+            // Options / Media / Sound tabs (FEAT-LAND-02)
+            Options = OptionsFrom(parcel),
+            TeleportRouting = LandingFrom(parcel.Landing),
+            LandingPoint = IsZero(parcel.UserLocation) ? null : ToNumerics(parcel.UserLocation),
+            LandingLookAt = ToNumerics(parcel.UserLookAt),
+            Category = CategoryFrom((int)parcel.Category),
+            SnapshotId = parcel.SnapshotID == UUID.Zero ? null : parcel.SnapshotID.Guid,
+            Media = MediaFrom(parcel.Media),
+            MusicUrl = parcel.MusicURL ?? string.Empty,
+            RegionVoiceEnabled = regionFlags == RegionFlags.None
+                ? null
+                : (regionFlags & RegionFlags.AllowVoice) != 0, // REGION_FLAGS_ALLOW_VOICE, llregionflags.h:87
+            ObscureMoap = obscureMoap,
         };
     }
+
+    /// <summary>The on/off settings of the Options and Sound tabs. One bit per control, raw: the
+    /// "Group implied by Everyone" and inverted-box rules are display matters (see
+    /// <see cref="ParcelOptions"/>). Flag values are checked against <c>llparcelflags.h</c>:32-63.</summary>
+    internal static ParcelOptions OptionsFrom(Parcel parcel)
+    {
+        var f = parcel.Flags;
+        var o = ParcelOptions.None;
+        void Set(bool on, ParcelOptions bit) { if (on) o |= bit; }
+
+        Set((f & ParcelFlags.AllowFly) != 0, ParcelOptions.AllowFly);                          // PF_ALLOW_FLY
+        Set((f & ParcelFlags.CreateObjects) != 0, ParcelOptions.BuildEveryone);                // PF_CREATE_OBJECTS
+        Set((f & ParcelFlags.CreateGroupObjects) != 0, ParcelOptions.BuildGroup);              // PF_CREATE_GROUP_OBJECTS
+        Set((f & ParcelFlags.AllowAPrimitiveEntry) != 0, ParcelOptions.ObjectEntryEveryone);   // PF_ALLOW_ALL_OBJECT_ENTRY
+        Set((f & ParcelFlags.AllowGroupObjectEntry) != 0, ParcelOptions.ObjectEntryGroup);     // PF_ALLOW_GROUP_OBJECT_ENTRY
+        Set((f & ParcelFlags.AllowOtherScripts) != 0, ParcelOptions.ScriptsEveryone);          // PF_ALLOW_OTHER_SCRIPTS
+        Set((f & ParcelFlags.AllowGroupScripts) != 0, ParcelOptions.ScriptsGroup);             // PF_ALLOW_GROUP_SCRIPTS
+        Set((f & ParcelFlags.AllowDamage) != 0, ParcelOptions.AllowDamage);                    // PF_ALLOW_DAMAGE
+        Set((f & ParcelFlags.RestrictPushObject) != 0, ParcelOptions.RestrictPush);            // PF_RESTRICT_PUSHOBJECT
+        Set(parcel.RegionPushOverride, ParcelOptions.RegionPushOverride);                      // message field, not a flag
+        Set((f & ParcelFlags.ShowDirectory) != 0, ParcelOptions.ShowInSearch);                 // PF_SHOW_DIRECTORY
+        Set((f & ParcelFlags.MaturePublish) != 0, ParcelOptions.MaturePublish);                // PF_MATURE_PUBLISH
+        Set(parcel.SeeAVs, ParcelOptions.SeeAvatars);                                          // message field SeeAVs
+        Set((f & ParcelFlags.SoundLocal) != 0, ParcelOptions.SoundLocal);                      // PF_SOUND_LOCAL
+        Set((f & ParcelFlags.AllowVoiceChat) != 0, ParcelOptions.AllowVoice);                  // PF_ALLOW_VOICE_CHAT
+        Set((f & ParcelFlags.UseEstateVoiceChan) != 0, ParcelOptions.UseEstateVoiceChannel);   // PF_USE_ESTATE_VOICE_CHAN
+        Set(parcel.AnyAVSounds, ParcelOptions.AvatarSoundsEveryone);                           // message field AnyAVSounds
+        Set(parcel.GroupAVSounds, ParcelOptions.AvatarSoundsGroup);                            // message field GroupAVSounds
+        return o;
+    }
+
+    /// <summary>LibreMetaverse's <c>LandingType</c> byte to the neutral enum; a value the viewer has no
+    /// combo item for (outside 0..2) is null (<c>LLParcel::ELandingType</c>, <c>llparcel.h</c>:201).</summary>
+    internal static ParcelLandingType? LandingFrom(LandingType landing) => landing switch
+    {
+        LandingType.None => ParcelLandingType.Blocked,
+        LandingType.LandingPoint => ParcelLandingType.LandingPoint,
+        LandingType.Direct => ParcelLandingType.Anywhere,
+        _ => null,
+    };
+
+    /// <summary>The wire category number to the neutral enum. Done on the NUMBER because LibreMetaverse's
+    /// own <c>ParcelCategory</c> has no "Rental" (14) member, which the viewer does
+    /// (<c>llparcel.h</c>:166-182); anything outside 0..14 (the viewer's -1 "any" is query-only) is null.</summary>
+    internal static ParcelCategory? CategoryFrom(int wire) =>
+        wire is >= (int)ParcelCategory.None and <= (int)ParcelCategory.Rental ? (ParcelCategory)wire : null;
+
+    /// <summary>The Media tab's data. Null strings (a default-constructed LibreMetaverse struct) become
+    /// empty; an empty MIME type, or the viewer's own "none/none" placeholder, becomes null, exactly as
+    /// <c>LLPanelLandMedia::refresh</c> folds both into "None" (<c>llpanellandmedia.cpp</c>:142). The
+    /// <c>MediaData</c> block (type, description, size, loop) is absent on an old sim, which leaves those
+    /// at their empty defaults here; the viewer then invents "video/vnd.secondlife.qt.legacy" and a loop
+    /// flag (<c>llparcel.cpp</c>:613-618), which is deliberately not copied: it is a placeholder, not data.</summary>
+    internal static ParcelMedia MediaFrom(LibreMetaverse.ParcelMedia media)
+    {
+        string? mime = string.IsNullOrWhiteSpace(media.MediaType) || media.MediaType == NoMimeType
+            ? null
+            : media.MediaType;
+        return new ParcelMedia
+        {
+            Url = media.MediaURL ?? string.Empty,
+            MimeType = mime,
+            Description = media.MediaDesc ?? string.Empty,
+            TextureId = media.MediaID == UUID.Zero ? null : media.MediaID.Guid,
+            Width = media.MediaWidth,
+            Height = media.MediaHeight,
+            AutoScale = media.MediaAutoScale,
+            Loop = media.MediaLoop,
+        };
+    }
+
+    /// <summary>The viewer's placeholder for "no media type" (<c>DEFAULT_MIME_TYPE</c>, <c>llmimetypes.cpp</c>:47).</summary>
+    private const string NoMimeType = "none/none";
+
+    private static bool IsZero(LibreMetaverse.Vector3 v) => v.X == 0f && v.Y == 0f && v.Z == 0f; // isExactlyZero
+
+    private static Vector3 ToNumerics(LibreMetaverse.Vector3 v) => new(v.X, v.Y, v.Z);
 
     /// <summary>LibreMetaverse hands back the Unix-seconds claim date as an epoch-based
     /// <see cref="DateTime"/> of unspecified kind (it is UTC). Zero means "no claim".</summary>

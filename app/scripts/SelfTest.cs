@@ -509,8 +509,16 @@ public static class SelfTest
             win.OnParcelInfoFailed(null, new SLNG.Net.ParcelInfoFailure(0, SLNG.Net.ParcelInfoFailureReason.TimedOut)); win._Process(0);
             Expect(win.StatusText == null, "a late timeout blanked a parcel that had arrived");
 
+            // 8. FEAT-LAND-02: the Options, Media and Sound tabs.
+            Expect(win.TabTitles.SequenceEqual(new[]
+            {
+                UI.L10n.Tr("ui.land.tab_general"), UI.L10n.Tr("ui.land.tab_options"),
+                UI.L10n.Tr("ui.land.tab_media"), UI.L10n.Tr("ui.land.tab_sound"),
+            }), "the tab order is not General, Options, Media, Sound");
+            CheckLandOptionsMediaSound(win, publicLand, Expect);
+
             return problems.Count == 0
-                ? new Check(Name, true, "public / group-owned+pending / for-sale rows, traffic null vs 0, names loading then resolved, off-thread push via the inbox, write buttons disabled, SL-time claim date")
+                ? new Check(Name, true, "public / group-owned+pending / for-sale rows, traffic null vs 0, names loading then resolved, off-thread push via the inbox, write buttons disabled, SL-time claim date, Options / Media / Sound tabs")
                 : new Check(Name, false, string.Join("; ", problems));
         }
         catch (Exception ex)
@@ -521,6 +529,129 @@ public static class SelfTest
         {
             if (GodotObject.IsInstanceValid(win)) win.QueueFree();
         }
+    }
+
+    /// <summary>
+    /// FEAT-LAND-02: the read-only Options, Media and Sound tabs show what the viewer's refresh code
+    /// derives from a parcel -- Group follows Everyone, Safe is the inverse of damage, the push override
+    /// and the Adult-region relabel, "(none)" for no landing point, the media gating by MIME type, the
+    /// voice override by the estate, and MOAP as a third "unknown" state -- and nothing can be toggled.
+    /// </summary>
+    private static void CheckLandOptionsMediaSound(UI.LandInfoWindow win, SLNG.Core.ParcelInfo baseParcel, Action<bool, string> expect)
+    {
+        static string T(string key) => UI.L10n.Tr(key);
+        var opt = win.Options;
+        var media = win.Media;
+        var sound = win.Sound;
+        var o = SLNG.Core.ParcelOptions.None;
+
+        void Push(SLNG.Core.ParcelInfo p) { win.OnParcelInfoReceived(null, p); win._Process(0); }
+
+        // A: fly, build for everyone (Group must follow), entry and scripts for the group only, no damage.
+        o = SLNG.Core.ParcelOptions.AllowFly | SLNG.Core.ParcelOptions.BuildEveryone
+            | SLNG.Core.ParcelOptions.ObjectEntryGroup | SLNG.Core.ParcelOptions.ScriptsGroup;
+        Push(baseParcel with { Options = o, Rating = MaturityLevel.Moderate, Category = SLNG.Core.ParcelCategory.Business });
+        expect(opt.Check(UI.LandOption.Fly).Value == true, "Fly not ticked");
+        expect(opt.Check(UI.LandOption.BuildEveryone).Value == true, "Build Everyone not ticked");
+        expect(opt.Check(UI.LandOption.BuildGroup).Value == true, "Build Group does not follow Everyone");
+        expect(opt.Check(UI.LandOption.EntryEveryone).Value == false && opt.Check(UI.LandOption.EntryGroup).Value == true, "Object Entry Group-only wrong");
+        expect(opt.Check(UI.LandOption.ScriptsEveryone).Value == false && opt.Check(UI.LandOption.ScriptsGroup).Value == true, "Run Scripts Group-only wrong");
+        expect(opt.Check(UI.LandOption.Safe).Value == true, "Safe not ticked when damage is off");
+        expect(opt.Check(UI.LandOption.NoPushing).Value == false && opt.Check(UI.LandOption.NoPushing).Label == T("ui.land.opt_no_push"), "No Pushing wrong without a restriction");
+        expect(opt.Check(UI.LandOption.ShowInSearch).Value == false, "Show in Search ticked on a parcel that is not listed");
+        expect(opt.Check(UI.LandOption.SeeAvatars).Value == false, "See avatars ticked unexpectedly");
+        expect(opt.Check(UI.LandOption.Moderate).Value == false, "Moderate ticked in a Moderate region without the parcel bit");
+        expect(opt.RowText(UI.LandOptionRow.Category) == T("ui.land.cat_business"), $"category '{opt.RowText(UI.LandOptionRow.Category)}'");
+        expect(opt.RowText(UI.LandOptionRow.LandingPoint) == T("ui.land.none"), $"landing point without one reads '{opt.RowText(UI.LandOptionRow.LandingPoint)}'");
+        expect(opt.RowText(UI.LandOptionRow.Snapshot) == T("ui.land.none"), $"snapshot without one reads '{opt.RowText(UI.LandOptionRow.Snapshot)}'");
+
+        // B: damage on, region push override, listed, own Moderate bit, a landing point with routing.
+        var snapshot = Guid.NewGuid();
+        o = SLNG.Core.ParcelOptions.AllowDamage | SLNG.Core.ParcelOptions.RegionPushOverride | SLNG.Core.ParcelOptions.ShowInSearch
+            | SLNG.Core.ParcelOptions.MaturePublish | SLNG.Core.ParcelOptions.SeeAvatars;
+        Push(baseParcel with
+        {
+            Options = o, Rating = MaturityLevel.Moderate, SnapshotId = snapshot,
+            TeleportRouting = SLNG.Core.ParcelLandingType.LandingPoint,
+            LandingPoint = new System.Numerics.Vector3(10.4f, 20.5f, 30.6f), LandingLookAt = new System.Numerics.Vector3(1, 0, 0),
+        });
+        expect(opt.Check(UI.LandOption.Safe).Value == false, "Safe ticked while damage is allowed");
+        expect(opt.Check(UI.LandOption.NoPushing).Value == true && opt.Check(UI.LandOption.NoPushing).Label == T("ui.land.opt_no_push_override"), "region push override not shown ticked and relabelled");
+        expect(opt.Check(UI.LandOption.ShowInSearch).Value == true && opt.Check(UI.LandOption.SeeAvatars).Value == true, "Show in Search / See avatars not ticked");
+        expect(opt.Check(UI.LandOption.Moderate).Value == true && !opt.Check(UI.LandOption.Moderate).Dimmed, "own Moderate bit not shown in a Moderate region");
+        expect(opt.RowText(UI.LandOptionRow.LandingPoint) == "10, 21, 31 (90°)", $"landing point '{opt.RowText(UI.LandOptionRow.LandingPoint)}'");
+        expect(opt.RowText(UI.LandOptionRow.Routing) == T("ui.land.route_landing_point"), $"routing '{opt.RowText(UI.LandOptionRow.Routing)}'");
+        expect(opt.RowText(UI.LandOptionRow.Snapshot) == snapshot.ToString(), $"snapshot '{opt.RowText(UI.LandOptionRow.Snapshot)}'");
+
+        // C: Adult region -> ticked and relabelled whatever the parcel bit says; General region -> unticked
+        // even with the bit. Adult/Stage categories have no combo item in the viewer but are not blank here.
+        Push(baseParcel with { Options = SLNG.Core.ParcelOptions.None, Rating = MaturityLevel.Adult, Category = SLNG.Core.ParcelCategory.Stage });
+        expect(opt.Check(UI.LandOption.Moderate).Value == true && opt.Check(UI.LandOption.Moderate).Label == T("ui.land.opt_adult"), "Adult region not shown as ticked 'Adult Content'");
+        expect(opt.RowText(UI.LandOptionRow.Category) == T("ui.land.cat_stage"), "Stage category blank");
+        Push(baseParcel with { Options = SLNG.Core.ParcelOptions.MaturePublish, Rating = MaturityLevel.General });
+        expect(opt.Check(UI.LandOption.Moderate).Value == false, "Moderate ticked in a General region");
+        expect(LandFormatPure(), "LandInfoFormat pure rules");
+
+        // Nothing in any of the tabs can be toggled, and no label is a raw key.
+        var all = new List<UI.LandReadOnlyCheck>();
+        foreach (var option in Enum.GetValues<UI.LandOption>()) all.Add(opt.Check(option));
+        all.AddRange(new[] { media.AutoScale, media.Loop, sound.SoundLocal, sound.AvatarEveryone, sound.AvatarGroup, sound.VoiceEnable, sound.VoiceLocal, sound.Moap });
+        expect(all.All(c => !c.Toggleable), "a check box in Options / Media / Sound can be toggled");
+        expect(all.All(c => !c.Label.StartsWith('[') && !c.UnknownText.StartsWith('[')), "a check box shows a raw key");
+
+        // Media: a web page uses the size and not the loop box; a movie the other way round; none says so.
+        var tex = Guid.NewGuid();
+        var web = new SLNG.Core.ParcelMedia { Url = "https://example.org/", MimeType = "text/html", Description = "Home", TextureId = tex, Width = 800, Height = 600, AutoScale = true, Loop = true };
+        Push(baseParcel with { Media = web });
+        expect(!media.NoMediaVisible, "no-media line shown for a parcel with media");
+        expect(media.RowText(UI.LandMediaRow.Type) == "text/html" && media.RowText(UI.LandMediaRow.HomePage) == "https://example.org/", "media type / URL");
+        expect(media.RowText(UI.LandMediaRow.Texture) == tex.ToString() && media.RowText(UI.LandMediaRow.Description) == "Home", "media texture / description");
+        expect(media.RowText(UI.LandMediaRow.Size) == UI.L10n.TrFormat("ui.land.media_size_value", 800, 600), $"web size '{media.RowText(UI.LandMediaRow.Size)}'");
+        expect(media.Loop.Value == false && media.Loop.Dimmed, "loop ticked / live for web content");
+        expect(media.AutoScale.Value == true, "auto scale not ticked");
+
+        var movie = web with { MimeType = "video/mp4", Width = 640, Height = 480, Loop = true };
+        Push(baseParcel with { Media = movie });
+        expect(media.Loop.Value == true && !media.Loop.Dimmed, "loop not shown for a movie");
+        expect(media.RowText(UI.LandMediaRow.Size) == UI.LandInfoFormat.Unknown, $"movie size '{media.RowText(UI.LandMediaRow.Size)}'");
+
+        Push(baseParcel);
+        expect(media.NoMediaVisible && media.NoMediaText == T("ui.land.media_none"), "no-media line missing");
+        expect(media.RowText(UI.LandMediaRow.Type) == T("ui.land.mime_none"), $"type without media '{media.RowText(UI.LandMediaRow.Type)}'");
+
+        // Sound: group sounds follow Everyone; estate voice override; MOAP unknown, never unticked.
+        Push(baseParcel with
+        {
+            Options = SLNG.Core.ParcelOptions.SoundLocal | SLNG.Core.ParcelOptions.AvatarSoundsEveryone | SLNG.Core.ParcelOptions.AllowVoice,
+            MusicUrl = "http://radio.example/stream", RegionVoiceEnabled = null, ObscureMoap = null,
+        });
+        expect(sound.MusicUrlText == "http://radio.example/stream", "music URL");
+        expect(sound.SoundLocal.Value == true, "sound-local not ticked");
+        expect(sound.AvatarEveryone.Value == true && sound.AvatarGroup.Value == true, "avatar sounds Group does not follow Everyone");
+        expect(sound.Moap.IsUnknown && sound.Moap.Value == null && sound.Moap.UnknownText.Contains(T("ui.land.snd_moap")), "MOAP is not drawn as unknown");
+        expect(sound.VoiceEnable.Label == T("ui.land.snd_voice_enable") && sound.VoiceEnable.Value == true, "plain Enable Voice box (region voice unknown)");
+        // UseEstateVoiceChannel is clear here, so "Restrict voice to this parcel" is ticked (inverse), and live (voice is on).
+        expect(sound.VoiceLocal.Value == true && !sound.VoiceLocal.Dimmed, "restrict-voice not the inverse of the estate channel");
+
+        Push(baseParcel with { Options = SLNG.Core.ParcelOptions.AllowVoice | SLNG.Core.ParcelOptions.UseEstateVoiceChannel, RegionVoiceEnabled = false });
+        expect(sound.VoiceEnable.Label == T("ui.land.snd_voice_estate") && sound.VoiceEnable.Dimmed, "voice 'established by the estate' state missing");
+        expect(sound.VoiceLocal.Value == false && sound.VoiceLocal.Dimmed, "restrict-voice live while the estate disables voice");
+        Push(baseParcel with { Options = SLNG.Core.ParcelOptions.UseEstateVoiceChannel, RegionVoiceEnabled = true });
+        expect(sound.VoiceEnable.Value == false && sound.VoiceLocal.Dimmed, "restrict-voice live while voice is off for the parcel");
+        Push(baseParcel with { ObscureMoap = true });
+        expect(sound.Moap.Value == true && !sound.Moap.IsUnknown, "a known MOAP value is not shown as a box");
+    }
+
+    /// <summary>The MIME classification and the no-window rules of <c>LandInfoFormat</c>.</summary>
+    private static bool LandFormatPure()
+    {
+        return UI.LandInfoFormat.ClassifyMime("text/html") == UI.LandInfoFormat.MediaClass.Web
+            && UI.LandInfoFormat.ClassifyMime("TEXT/HTML ") == UI.LandInfoFormat.MediaClass.Web
+            && UI.LandInfoFormat.ClassifyMime("video/mp4") == UI.LandInfoFormat.MediaClass.Playable
+            && UI.LandInfoFormat.ClassifyMime("audio/mpeg") == UI.LandInfoFormat.MediaClass.Playable
+            && UI.LandInfoFormat.ClassifyMime("image/png") == UI.LandInfoFormat.MediaClass.Static
+            && UI.LandInfoFormat.ClassifyMime(null) == UI.LandInfoFormat.MediaClass.Static
+            && UI.LandInfoFormat.ClassifyMime("none/none") == UI.LandInfoFormat.MediaClass.Static;
     }
 
     /// <summary>

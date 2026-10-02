@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Numerics;
 using SLNG.Core;
 
 namespace SLNG.App.UI;
@@ -85,6 +86,151 @@ internal static class LandInfoFormat
 
     internal static string ObjectsText(ParcelInfo p) =>
         L10n.Tr(p.SellWithObjects ? "ui.land.objects_included" : "ui.land.objects_not_included");
+
+    // --- Options tab (FEAT-LAND-02) -----------------------------------------------------------------
+    // Sources: LLPanelLandOptions::refresh (llfloaterland.cpp:2036-2160), LLPanelLandAudio::refresh
+    // (llpanellandaudio.cpp:108-166), LLPanelLandMedia::refresh (llpanellandmedia.cpp:120-170).
+
+    /// <summary>How one read-only check box is drawn: whether it is ticked, which label it carries, and
+    /// whether the setting applies at all (an inapplicable box is drawn dimmed, like the viewer's greyed one).</summary>
+    internal readonly record struct CheckState(bool Ticked, string LabelKey, bool Applicable = true);
+
+    internal static bool Has(ParcelOptions o, ParcelOptions flag) => (o & flag) != 0;
+
+    /// <summary>The "Group" half of an Everyone/Group pair: the viewer ticks it whenever "Everyone" is on
+    /// (llfloaterland.cpp:2055, :2061, :2070; llpanellandaudio.cpp:161).</summary>
+    internal static bool GroupTicked(ParcelOptions o, ParcelOptions everyone, ParcelOptions group) =>
+        Has(o, everyone) || Has(o, group);
+
+    /// <summary>"Safe (no damage)" is the inverse of the damage flag (llfloaterland.cpp:2064).</summary>
+    internal static bool SafeTicked(ParcelOptions o) => !Has(o, ParcelOptions.AllowDamage);
+
+    /// <summary>"No Pushing": the region override ticks it and relabels it (llfloaterland.cpp:2076-2082).</summary>
+    internal static CheckState NoPushing(ParcelOptions o) =>
+        Has(o, ParcelOptions.RegionPushOverride)
+            ? new CheckState(true, "ui.land.opt_no_push_override")
+            : new CheckState(Has(o, ParcelOptions.RestrictPush), "ui.land.opt_no_push");
+
+    /// <summary>The "Moderate Content" box follows the REGION's rating (llfloaterland.cpp:2148-2158):
+    /// General region -> unticked; Moderate -> the parcel's own bit; Adult -> ticked and relabelled "Adult
+    /// Content". The first and last are greyed in the viewer, so they are not "applicable". An unknown
+    /// rating is drawn like General (nothing to claim).</summary>
+    internal static CheckState ModerateContent(MaturityLevel? rating, ParcelOptions o) => rating switch
+    {
+        MaturityLevel.Moderate => new CheckState(Has(o, ParcelOptions.MaturePublish), "ui.land.opt_moderate"),
+        MaturityLevel.Adult => new CheckState(true, "ui.land.opt_adult", false),
+        _ => new CheckState(false, "ui.land.opt_moderate", false),
+    };
+
+    /// <summary>The category combo's text. Adult and Stage are wire values the viewer's combo has no item
+    /// for; they are shown by name rather than hidden.</summary>
+    internal static string CategoryText(ParcelCategory? category) => category switch
+    {
+        ParcelCategory.None => L10n.Tr("ui.land.cat_none"),
+        ParcelCategory.Linden => L10n.Tr("ui.land.cat_linden"),
+        ParcelCategory.Adult => L10n.Tr("ui.land.cat_adult"),
+        ParcelCategory.Arts => L10n.Tr("ui.land.cat_arts"),
+        ParcelCategory.Business => L10n.Tr("ui.land.cat_business"),
+        ParcelCategory.Educational => L10n.Tr("ui.land.cat_educational"),
+        ParcelCategory.Gaming => L10n.Tr("ui.land.cat_gaming"),
+        ParcelCategory.Hangout => L10n.Tr("ui.land.cat_hangout"),
+        ParcelCategory.Newcomer => L10n.Tr("ui.land.cat_newcomer"),
+        ParcelCategory.Park => L10n.Tr("ui.land.cat_park"),
+        ParcelCategory.Residential => L10n.Tr("ui.land.cat_residential"),
+        ParcelCategory.Shopping => L10n.Tr("ui.land.cat_shopping"),
+        ParcelCategory.Stage => L10n.Tr("ui.land.cat_stage"),
+        ParcelCategory.Other => L10n.Tr("ui.land.cat_other"),
+        ParcelCategory.Rental => L10n.Tr("ui.land.cat_rental"),
+        _ => Unknown,
+    };
+
+    internal static string RoutingText(ParcelLandingType? routing) => routing switch
+    {
+        ParcelLandingType.Blocked => L10n.Tr("ui.land.route_blocked"),
+        ParcelLandingType.LandingPoint => L10n.Tr("ui.land.route_landing_point"),
+        ParcelLandingType.Anywhere => L10n.Tr("ui.land.route_anywhere"),
+        _ => Unknown,
+    };
+
+    /// <summary>"x, y, z (heading°)" with each metre rounded half-up like the viewer's ll_round, or
+    /// "(none)" when the parcel has no landing point (llfloaterland.cpp:2109-2118).</summary>
+    internal static string LandingPointText(Vector3? point, int? headingDegrees)
+    {
+        if (point is not { } p) return L10n.Tr("ui.land.none");
+        static int R(float v) => (int)Math.Floor(v + 0.5f);
+        return string.Create(CultureInfo.InvariantCulture, $"{R(p.X)}, {R(p.Y)}, {R(p.Z)} ({headingDegrees ?? 0}°)");
+    }
+
+    /// <summary>A texture id shown as selectable text (there is no texture preview in this window yet);
+    /// "(none)" when nil.</summary>
+    internal static string TextureIdText(Guid? id) =>
+        id is { } g && g != Guid.Empty ? g.ToString() : L10n.Tr("ui.land.none");
+
+    // --- Media tab -----------------------------------------------------------------------------------
+
+    /// <summary>What a media MIME type allows in the Media tab.</summary>
+    internal enum MediaClass
+    {
+        /// <summary>Static or unknown content (images, documents, none): neither size nor loop.</summary>
+        Static,
+
+        /// <summary>Web content: the size fields apply, looping does not.</summary>
+        Web,
+
+        /// <summary>Movie or audio: looping applies, the size fields do not.</summary>
+        Playable,
+    }
+
+    /// <summary>Which widget set a MIME type belongs to. The viewer reads a ~100-entry table
+    /// (mime_types.xml, LLMIMETypes::widgetType, llmimetypes.cpp:168) whose sets are web (resize),
+    /// movie and audio (loop), image and none (neither); an unlisted type falls into "none". This ports
+    /// only the part that matters for parcels: text/html, XHTML and JavaScript -> Web; video/*, audio/*,
+    /// Ogg and SMIL -> Playable; everything else, an unknown type and the "none" placeholder (null) ->
+    /// Static. Deliberately NOT "unknown -> Web": the viewer disables the size fields for those.</summary>
+    internal static MediaClass ClassifyMime(string? mime)
+    {
+        if (string.IsNullOrWhiteSpace(mime)) return MediaClass.Static;
+        string m = mime.Trim().ToLowerInvariant();
+        if (m is "text/html" or "application/xhtml+xml" or "application/javascript") return MediaClass.Web;
+        if (m.StartsWith("video/", StringComparison.Ordinal) || m.StartsWith("audio/", StringComparison.Ordinal)
+            || m is "application/ogg" or "application/smil")
+            return MediaClass.Playable;
+        return MediaClass.Static;
+    }
+
+    internal static string MimeText(string? mime) =>
+        string.IsNullOrWhiteSpace(mime) ? L10n.Tr("ui.land.mime_none") : mime;
+
+    internal static bool LoopApplies(ParcelMedia m) => ClassifyMime(m.MimeType) == MediaClass.Playable;
+
+    /// <summary>The viewer shows the loop box unticked when looping does not apply (llpanellandmedia.cpp:155).</summary>
+    internal static bool LoopTicked(ParcelMedia m) => LoopApplies(m) && m.Loop;
+
+    internal static bool SizeApplies(ParcelMedia m) => ClassifyMime(m.MimeType) == MediaClass.Web;
+
+    /// <summary>"800 × 600 pixels"; "default" when both are 0 (the viewer's "leave 0 for default"); a dash
+    /// when the type does not allow a size.</summary>
+    internal static string SizeText(ParcelMedia m)
+    {
+        if (!SizeApplies(m)) return Unknown;
+        if (m.Width == 0 && m.Height == 0) return L10n.Tr("ui.land.media_size_default");
+        return L10n.TrFormat("ui.land.media_size_value", m.Width, m.Height);
+    }
+
+    // --- Sound tab -----------------------------------------------------------------------------------
+
+    /// <summary>The voice boxes (llpanellandaudio.cpp:125-152). When the region does not allow voice,
+    /// "Enable Voice" becomes "Enable Voice (established by the Estate)" and the restrict box is greyed;
+    /// the restrict box is otherwise only live while voice is on for the parcel. An unknown region state
+    /// (null) draws the plain box. "Restrict Voice to this parcel" is the inverse of UseEstateVoiceChannel.</summary>
+    internal static (CheckState Enable, CheckState Restrict) VoiceStates(ParcelOptions o, bool? regionVoice)
+    {
+        bool allow = Has(o, ParcelOptions.AllowVoice);
+        bool estateOff = regionVoice == false;
+        var enable = new CheckState(allow, estateOff ? "ui.land.snd_voice_estate" : "ui.land.snd_voice_enable", !estateOff);
+        var restrict = new CheckState(!Has(o, ParcelOptions.UseEstateVoiceChannel), "ui.land.snd_voice_local", !estateOff && allow);
+        return (enable, restrict);
+    }
 
     // --- the claim date, in Second Life time ------------------------------------------------------
 
