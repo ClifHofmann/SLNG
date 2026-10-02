@@ -363,7 +363,7 @@ public static class SelfTest
         var windows = new[]
         {
             W<UI.AboutWindow>(), W<UI.ActiveAnimationsWindow>(), W<UI.AvatarHoverWindow>(), W<UI.CameraHUD>(), W<UI.CreateLandmarkWindow>(),
-            W<UI.EnvironmentWindow>(), W<UI.InventoryPanel>(), W<UI.ItemPropertiesWindow>(), W<UI.MinimapOverlay>(), W<UI.SnapshotWindow>(), W<UI.WorldMapWindow>(),
+            W<UI.EnvironmentWindow>(), W<UI.MaterialLabWindow>(), W<UI.InventoryPanel>(), W<UI.ItemPropertiesWindow>(), W<UI.MinimapOverlay>(), W<UI.SnapshotWindow>(), W<UI.WorldMapWindow>(),
             W<UI.BuyObjectWindow>(w => w.Initialize(session, 0, 1, "Chair", PrimSaleType.Copy, 250)),
             W<UI.ChatHistoryWindow>(w => w.Open(log, SLNG.Core.Services.ChatLogKind.Local, "", "Local chat")), W<UI.ChatWindow>(w => w.Initialize(log)),
             W<UI.ConfirmWindow>(w => w.Initialize("Title", "Really do that?", "Do it")), W<UI.TextPromptWindow>(w => w.Initialize("Rename", "Name:", "Old", "OK")),

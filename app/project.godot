@@ -40,6 +40,10 @@ reflections/reflection_atlas/reflection_count=4
 
 [shader_globals]
 
+slng_legacy_specular_scale={
+"type": "float",
+"value": 1.0
+}
 slng_ambient={
 "type": "color",
 "value": Color(0.25, 0.25, 0.25, 1)

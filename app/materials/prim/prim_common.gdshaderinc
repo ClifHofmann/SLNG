@@ -294,6 +294,12 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
 // smallest value the build tool produces. Mirrored by LegacyShadeMirror.MirrorFullSharpnessEnvironment.
 const float MIRROR_FULL_SHARPNESS_ENV = 0.25;
 
+// Material lab (Entwickler > Material-Labor): scales the SPECULAR a face with a specular MAP hands
+// to Godot. Default 1.0 = unchanged. Godot's SPECULAR drives the sun highlight AND the sky/probe
+// reflection (the "veil") together, so this moves both -- that coupling is what the lab exists to
+// make visible. A dev knob, not persisted, never written by anything but the lab window.
+global uniform float slng_legacy_specular_scale;
+
 float slng_glossiness_to_roughness(float glossiness) {
     float n = glossiness * glossiness * 368.0;
     float ggx_alpha = sqrt(2.0 / (n + 2.0));
@@ -401,6 +407,10 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         // with its own value (llvovolume.cpp:5556).
         env_intensity = specular_environment;
         out_metallic = clamp(metallic_factor + env_intensity * out_specular, 0.0, 1.0);
+
+        // After the metallic fold above on purpose: the lab scales only what Godot reads as the
+        // dielectric F0, never the Environment-slider mirror path.
+        out_specular *= slng_legacy_specular_scale;
     }
     else if (legacy_shininess > 0.0) {
         // No specular map -- with or without a legacy material. `legacy_shininess` is already the

@@ -19,6 +19,18 @@ public static class LegacyShadeMirror
     /// as sharp as it always was. Same constant as <c>MIRROR_FULL_SHARPNESS_ENV</c> in the shader.</summary>
     public const float MirrorFullSharpnessEnvironment = 0.25f;
 
+    /// <summary>The material lab's global shader uniform that scales the SPECULAR of a face with a
+    /// specular map (Godot's SPECULAR drives the sun highlight AND the sky/probe reflection).
+    /// Declared in prim_common.gdshaderinc and registered in project.godot.</summary>
+    public const string LegacySpecularScaleUniform = "slng_legacy_specular_scale";
+
+    /// <summary>1 = today's behaviour; the shader default and the project.godot value are pinned to
+    /// it by a test, so merely shipping the lab changes nothing.</summary>
+    public const float DefaultLegacySpecularScale = 1.0f;
+
+    /// <summary>Upper end of the lab slider (the lower end is 0: no highlight and no reflection).</summary>
+    public const float MaxLegacySpecularScale = 1.5f;
+
     public readonly record struct Inputs(
         bool HasSpecularTexture,
         Vector3 SpecularTexel,      // RGB of the specular map where it is sampled (white for IMG_WHITE)

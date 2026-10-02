@@ -34,6 +34,7 @@
       "measure_render_baseline": "Measure Render Baseline (10s)",
       "create_test_skin": "Create test skin (Ctrl+Alt+T)",
       "bake_test_pattern": "Bake test pattern",
+      "material_lab": "Material lab",
       "sculpt_v_nudge_down": "Nudge sculpt V: -1 grid row",
       "sculpt_v_nudge_up": "Nudge sculpt V: +1 grid row",
       "sculpt_v_nudge_down_coarse": "Nudge sculpt V: -16 grid rows",
@@ -581,6 +582,13 @@
         "show_original": "Show Original"
       },
       "original_missing": "The original is no longer in your inventory."
+    },
+    "material_lab": {
+      "title": "Material lab",
+      "intro": "Developer tool for A/B comparison against Firestorm. Values are not saved; after a restart the normal behaviour applies again.",
+      "legacy_specular": "Legacy reflection (veil)",
+      "legacy_specular_hint": "Scales the specular of faces that have a specular map (e.g. the terrace floor). 1.00 = normal. At 0 both the pale sky veil AND the sun highlight disappear.",
+      "reset": "Reset (1.00)"
     },
     "active_animations": {
       "title": "Active Animations",

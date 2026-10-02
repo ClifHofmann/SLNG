@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
@@ -1369,7 +1369,7 @@ public partial class ObjectRenderer : Node3D
                $"normalTex={normalDesc} | " +
                $"PREDICTED (C# mirror of slng_shade, not a GPU readback): glossiness={predicted.Glossiness:0.###} " +
                $"roughness={predicted.Roughness:0.###} metallic={predicted.Metallic:0.###} specular={predicted.Specular:0.###} " +
-               $"env={predicted.EnvIntensity:0.####}";
+               $"env={predicted.EnvIntensity:0.####} | lab: {MaterialLab.Describe()}";
     }
 
     /// <summary>Size, format and a pixel summary of a texture bound to a surface: what the GPU copy

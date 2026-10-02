@@ -122,4 +122,32 @@ public class LegacyShadeMirrorTests
         Assert.DoesNotContain("out_roughness = 0.0;" + Environment.NewLine + "        out_metallic", shader);
         Assert.DoesNotContain("out_roughness = 0.0;\n        out_metallic", shader);
     }
+
+    [Fact]
+    public void TheMaterialLabScaleIsDeclaredRegisteredAtItsDefaultAndAppliedAfterTheMetallicFold()
+    {
+        // The lab must change nothing until the slider is moved: the project.godot initial value is
+        // the default, and the shader multiplies SPECULAR only inside the specular-map branch and
+        // only AFTER the Environment-slider metallic fold (so the mirror path is untouched).
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "app", "project.godot")))
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        var shader = File.ReadAllText(Path.Combine(dir!.FullName, "app", "materials", "prim", "prim_common.gdshaderinc"));
+        var project = File.ReadAllText(Path.Combine(dir.FullName, "app", "project.godot"));
+        string name = LegacyShadeMirror.LegacySpecularScaleUniform;
+
+        Assert.Contains("global uniform float " + name + ";", shader);
+        string value = LegacyShadeMirror.DefaultLegacySpecularScale.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+        var entry = System.Text.RegularExpressions.Regex.Match(project,
+            System.Text.RegularExpressions.Regex.Escape(name) + @"=\{\s*""type"": ""float"",\s*""value"": " + System.Text.RegularExpressions.Regex.Escape(value) + @"\s*\}");
+        Assert.True(entry.Success, name + " must be registered in project.godot as a float with the default value");
+
+        int fold = shader.IndexOf("out_metallic = clamp(metallic_factor + env_intensity * out_specular, 0.0, 1.0);", StringComparison.Ordinal);
+        int scale = shader.IndexOf("out_specular *= " + name + ";", StringComparison.Ordinal);
+        int legacyBranch = shader.IndexOf("else if (legacy_shininess > 0.0)", StringComparison.Ordinal);
+        Assert.True(fold > 0 && scale > fold && scale < legacyBranch, "the scale must follow the metallic fold inside the specular-map branch");
+        Assert.Equal(1, shader.Split("out_specular *= " + name).Length - 1);
+        Assert.Equal(1.0f, LegacyShadeMirror.DefaultLegacySpecularScale);
+    }
 }
