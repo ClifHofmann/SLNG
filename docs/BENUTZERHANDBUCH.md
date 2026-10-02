@@ -100,6 +100,7 @@ Der Puris Viewer bündelt Ihre soziale Interaktion in einem kompakten Kommunikat
 
 - **Tabbed Chat:** Der lokale Umgebungs-Chat, private Instant Messages (IMs) und Gruppen-Chats werden übersichtlich in Reitern (Tabs) parallel gebündelt.
 - **Freundesliste:** Sehen Sie auf einen Blick, wer online ist, und öffnen Sie per Rechtsklick das Avatar-Profil, um einen Teleport anzubieten oder eine Nachricht zu schreiben.
+- **Teleport-Angebote und -Anfragen:** Bietet Ihnen jemand einen Teleport an, öffnet sich ein Fenster mit dem Namen und der Nachricht der Person; **Teleportieren** bringt Sie zu ihr, **Ablehnen** sagt ihr ab. Bittet jemand darum, zu Ihnen teleportiert zu werden, lautet die Antwort **Teleport anbieten** oder **Ablehnen**. Schließen Sie das Fenster mit dem Kreuz, wird nichts gesendet: Die Anfrage bleibt im Benachrichtigungsfenster unter „Einladungen“ stehen, und Sie können sie von dort wieder öffnen.
 - **Gruppen (Group Chat):** Treten Sie Gruppenchats bei, lesen Sie Nachrichten (die als eigene Chat-Tabs erscheinen) und verwalten Sie Ihre Mitgliedschaften.
   - *Stummschalten (Mute):* Wenn ein Gruppenchat zu viel spammt, können Sie ihn direkt stummschalten. Der Tab öffnet sich dann nicht mehr von selbst.
 - **Skript-Dialoge (llDialog):** Popups von In-World-Skripten (z. B. Teleporter-Menüs oder Optionen von Möbeln) erscheinen als übersichtliche UI-Fenster mit interaktiven Buttons.

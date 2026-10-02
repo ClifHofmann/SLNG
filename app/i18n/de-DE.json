@@ -278,6 +278,21 @@
       "join": "Beitreten",
       "decline": "Ablehnen"
     },
+    "teleport_offer": {
+      "title_offer": "TELEPORT-ANGEBOT",
+      "title_request": "TELEPORT-ANFRAGE",
+      "from_offer": "{0} bietet an, dich zu sich zu teleportieren.",
+      "from_request": "{0} bittet darum, zu dir teleportiert zu werden.",
+      "godlike": "Mit Administratorrechten gesendet.",
+      "destination": "Einstufung des Ziels: {0}",
+      "rating_general": "Allgemein",
+      "rating_moderate": "Moderat",
+      "rating_adult": "Adult",
+      "teleport": "Teleportieren",
+      "offer_teleport": "Teleport anbieten",
+      "decline": "Ablehnen",
+      "send_failed": "Die Antwort konnte gerade nicht gesendet werden. Bitte versuche es gleich noch einmal."
+    },
     "groups": {
       "filter": "Gruppen filtern...",
       "empty": "Du bist noch in keiner Gruppe.",
@@ -835,6 +850,12 @@
       "inventory_offer_declined": "{0} bietet dir „{1}“ an — abgelehnt.",
       "group_invite": "{0} hat dich in eine Gruppe eingeladen.",
       "inventory_offer": "{0} bietet dir „{1}“ an.",
+      "teleport_offer": "{0} bietet an, dich zu sich zu teleportieren.",
+      "teleport_offer_accepted": "{0} bot an, dich zu sich zu teleportieren — angenommen.",
+      "teleport_offer_declined": "{0} bot an, dich zu sich zu teleportieren — abgelehnt.",
+      "teleport_request": "{0} bittet darum, zu dir teleportiert zu werden.",
+      "teleport_request_offered": "{0} bat darum, zu dir teleportiert zu werden — Teleport angeboten.",
+      "teleport_request_declined": "{0} bat darum, zu dir teleportiert zu werden — abgelehnt.",
       "script_permission": "„{0}“ von {1} bittet um Berechtigungen.",
       "display_name_changed": "{0} ({1}) heißt jetzt {2}."
     }

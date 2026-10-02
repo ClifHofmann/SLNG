@@ -176,6 +176,42 @@ public record InventoryOfferEvent(
     Guid OfferId, Guid FromId, string FromName, string ItemName,
     Guid ItemId, int AssetType, bool FromTask);
 
+/// <summary>Which way a <see cref="TeleportOfferEvent"/> points.</summary>
+public enum TeleportOfferKind
+{
+    /// <summary>Somebody offers to teleport the agent to them (the viewer's <c>IM_LURE_USER</c>,
+    /// dialog 22). Accepting teleports the agent.</summary>
+    Offer,
+
+    /// <summary>Somebody asks to be teleported to the agent (<c>IM_TELEPORT_REQUEST</c>, dialog 26).
+    /// "Yes" sends them an offer of our own; nothing moves the agent.</summary>
+    Request,
+}
+
+/// <summary>BUG-NET-27: an incoming teleport offer (a "lure") or a teleport request. Answer with
+/// <c>GridSession.AcceptTeleportOffer</c> / <c>DeclineTeleportOffer</c> for an
+/// <see cref="TeleportOfferKind.Offer"/>, <c>GridSession.AnswerTeleportRequest</c> for a
+/// <see cref="TeleportOfferKind.Request"/>; until then nothing is sent, like the viewer's
+/// unanswered notification. Decoded by hand from the instant message, never through a
+/// LibreMetaverse event: nothing there answers for us, but nothing there raises it either.</summary>
+/// <param name="Kind">Offer or request.</param>
+/// <param name="LureId">The message's <c>ID</c> field (llviewermessage.cpp:2150 <c>session_id</c>,
+/// stored as <c>payload["lure_id"]</c>, llimprocessing.cpp:1286). For an offer this is what the
+/// accept (<c>TeleportLureRequest.LureID</c>) and the decline (the IM's id) both echo.</param>
+/// <param name="FromId">Who is offering or asking. The decline is addressed to them, and an offer
+/// made in answer to a request goes to them.</param>
+/// <param name="FromName">Their name as the message carried it, for display.</param>
+/// <param name="Message">Their text. For an offer the viewer's own text ends in the destination's
+/// SLURL on a second line, which is shown as it came.</param>
+/// <param name="Godlike">True for <c>IM_GODLIKE_LURE_USER</c> (dialog 25). The viewer teleports on
+/// it without asking; SLNG asks, and an accept sends the godlike teleport flags.</param>
+/// <param name="Maturity">The destination's rating from the offer's binary bucket, or null when the
+/// bucket carries none (or none that parses — and always for a request, whose bucket is empty).
+/// Informational: the grid refuses a destination the account may not enter.</param>
+public record TeleportOfferEvent(
+    TeleportOfferKind Kind, Guid LureId, Guid FromId, string FromName, string Message,
+    bool Godlike = false, MaturityLevel? Maturity = null);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object

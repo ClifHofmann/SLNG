@@ -512,6 +512,18 @@ public sealed partial class GridSession
             return;
         }
 
+        // A teleport offer (22 / 25) and a teleport request (26) are dialogs of their own and fell
+        // through the MessageFromAgent guard at the bottom just like the two above -- "ich kann
+        // kein TP request annehmen" (BUG-NET-27). Hand-decoded, see TryDecodeTeleportIm; there is
+        // no LibreMetaverse event for either to subscribe to, let alone one that answers for us.
+        if (TryDecodeTeleportIm(
+                e.IM.Dialog, e.IM.IMSessionID.Guid, e.IM.FromAgentID.Guid,
+                e.IM.FromAgentName, e.IM.Message, e.IM.BinaryBucket) is { } teleport)
+        {
+            TeleportOfferReceived?.Invoke(this, teleport);
+            return;
+        }
+
         // Group chat first, and NOT by inspecting the dialog byte: it arrives as
         // InstantMessageDialog.SessionSend, not MessageFromAgent, and its GroupIM flag is only set
         // on the first message of a session -- a later one carries just the session id. Both the
