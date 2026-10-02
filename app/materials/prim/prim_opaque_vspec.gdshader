@@ -20,9 +20,12 @@
 //              color += lit * scol * sunlit * spec.rgb
 //            LUT is the viewer's Blinn-Phong table (pipeline.cpp:1466-1475), n = glossiness^2 * 368.
 //            `shadow` is ATTENUATION, so the lobe is shadowed like the sun. `sunlit` is replaced by
-//            LIGHT_COLOR / PI, i.e. Godot's own radiance for that light (SLNG calibrates the sun so
-//            that equals the viewer's sunlit_linear * 1.1 to ~0.1% for the logged terrace sky --
-//            ClassicLightBalance.ViewerSunlitForSpecular).
+//            the viewer's own highlight colour for the DIRECTIONAL light while the sun is up:
+//            srgb_to_linear(sunlit * 1.35) * 1.1 (softenLightF.glsl:152-153, :226-232, :280-281),
+//            published per frame as slng_viewer_sunlit (ClassicLightBalance.ViewerSunlitForSpecular).
+//            It is NOT Godot's sun radiance: the viewer builds its diffuse in sRGB on top of the
+//            ambient, which whitens it, but the highlight from the bare (reddened) sunlit colour.
+//            Any other light, and the moon (slng_viewer_sunlit = 0), uses LIGHT_COLOR / PI.
 //            Godot's own GGX lobe is NOT added (light() owns SPECULAR_LIGHT), so there is no double
 //            highlight. spec.rgb is srgb_to_linear(texel_srgb * tint), as materialF.glsl:245-246,:315.
 //
@@ -32,6 +35,9 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
 #include "res://materials/prim/prim_common.gdshaderinc"
+
+// The viewer's highlight sun colour for the sun, zero while the moon is the light.
+global uniform vec3 slng_viewer_sunlit;
 
 varying vec3 v_view_position;
 // Written in fragment(), read in light(): the specular colour and the per-texel glossiness the viewer
@@ -121,6 +127,10 @@ void light() {
         float lut = pow(nh, n) * ((n + 2.0) * (n + 4.0)) / (8.0 * PI * (exp2(-n / 2.0) + n));
 
         float scol = ATTENUATION * fres * lut * gt / (nh * nl);
-        SPECULAR_LIGHT += lit * scol * (LIGHT_COLOR / PI) * v_vspec_rgb;
+        vec3 radiance = LIGHT_COLOR / PI;
+        if (LIGHT_IS_DIRECTIONAL && dot(slng_viewer_sunlit, vec3(1.0)) > 0.0) {
+            radiance = slng_viewer_sunlit;
+        }
+        SPECULAR_LIGHT += lit * scol * radiance * v_vspec_rgb;
     }
 }

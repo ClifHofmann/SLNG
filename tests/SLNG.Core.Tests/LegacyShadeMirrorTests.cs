@@ -206,20 +206,6 @@ public class LegacyShadeMirrorTests
     }
 
     [Fact]
-    public void TheViewerSunColourAndGodotsSunRadianceAgreeForTheLoggedSky()
-    {
-        // Why the shader may use LIGHT_COLOR / PI for the viewer's `sunlit_linear`: for the logged
-        // terrace sky (red SunDiffuse 0.565) the two differ by about 0.1%.
-        var ambient = new Vector3(0.4753f, 0.5708f, 0.6344f);
-        var sun = new Vector3(0.565f, 0.38f, 0.31f);
-        var godot = ClassicLightBalance.Compute(sun, ambient, 1f).Godot;
-        float godotSunR = godot.Lit.X - godot.Shadow.X;
-        float viewerSunlitR = ClassicLightBalance.ViewerSunlitForSpecular(sun).X;
-        Assert.Equal(0.5969f, viewerSunlitR, 3);
-        Assert.InRange(godotSunR / viewerSunlitR, 0.99f, 1.01f);
-    }
-
-    [Fact]
     public void TheViewerSpecShaderCarriesTheSameConstantsAndOnlyReplacesLightingInItsOwnVariant()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -237,7 +223,9 @@ public class LegacyShadeMirrorTests
         Assert.Contains("float gt = max(0.0, min(2.0 * nh * nv / vh, 2.0 * nh * nl / vh));", vspec);
         Assert.Contains("float lut = pow(nh, n) * ((n + 2.0) * (n + 4.0)) / (8.0 * PI * (exp2(-n / 2.0) + n));", vspec);
         Assert.Contains("float scol = ATTENUATION * fres * lut * gt / (nh * nl);", vspec);
-        Assert.Contains("SPECULAR_LIGHT += lit * scol * (LIGHT_COLOR / PI) * v_vspec_rgb;", vspec);
+        Assert.Contains("SPECULAR_LIGHT += lit * scol * radiance * v_vspec_rgb;", vspec);
+        Assert.Contains("global uniform vec3 slng_viewer_sunlit;", vspec);
+        Assert.Contains("radiance = slng_viewer_sunlit;", vspec);
         Assert.Contains("if (v_vspec_gloss > 0.0)", vspec);
 
         // light() is defined in this variant and ONLY this one: it replaces Godot's whole direct

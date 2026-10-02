@@ -40,6 +40,10 @@ reflections/reflection_atlas/reflection_count=4
 
 [shader_globals]
 
+slng_viewer_sunlit={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
 slng_legacy_specular_scale={
 "type": "float",
 "value": 1.0

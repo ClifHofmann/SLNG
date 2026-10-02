@@ -48,14 +48,34 @@ public static class ClassicLightBalance
     public static float LinearToSrgb(float c) =>
         c <= 0.0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1f / 2.4f) - 0.055f;
 
-    /// <param name="sunDiffuse"><see cref="SkyLighting.SunDiffuse"/>.</param>
+    /// <summary>The ambient attenuation <c>calcAtmosphericVarsLinear</c> applies to <c>amblit</c> before
+    /// anything else (atmosphericsFuncs.glsl:170, <c>ambientLighting</c> at :143-151):
+    /// <c>1 - (0.5 * min(|N.L|, 1))^2</c>, i.e. 1 for a surface edge-on to the sun and 0.75 for one
+    /// facing it. It lowers the ambient (and so the shadow) of anything turned toward the sun.</summary>
+    public static float AmbientLightingFactor(float nDotL)
+    {
+        float a = MathF.Min(MathF.Abs(nDotL), 1f) * 0.5f;
+        return 1f - a * a;
+    }
+
+    /// <summary>Godot's ambient has no direction, so it cannot carry <see cref="AmbientLightingFactor"/>
+    /// per surface. The factor averaged over all orientations (|N.L| is uniform on [0,1] over a sphere)
+    /// is <c>1 - 0.25/3 = 11/12</c>; a floor under a 35 degree sun happens to sit at 0.918.</summary>
+    public const float OrientationAveragedAmbientFactor = 11f / 12f;
+
+    /// <param name="sunlit"><see cref="SkyLighting.SurfaceSunlit"/> -- the viewer's per-channel
+    /// <c>sunlit</c> (NOT <see cref="SkyLighting.SunDiffuse"/>, which carries a transmittance factor
+    /// the surface shaders never apply).</param>
     /// <param name="sunAmbient"><see cref="SkyLighting.SunAmbient"/> (tmpAmbient).</param>
     /// <param name="sunElevationSine">The sun's elevation as sin(angle), i.e. N.L of a horizontal
     /// surface.</param>
-    public static Result Compute(Vector3 sunDiffuse, Vector3 sunAmbient, float sunElevationSine)
+    public static Result Compute(Vector3 sunlit, Vector3 sunAmbient, float sunElevationSine)
     {
         float da = Math.Clamp(sunElevationSine, 0f, 1f);
         float viewerSun = LinearToSrgb(MathF.Pow(da, 1.2f));
+        // The viewer's own ambient factor for THIS (horizontal) surface; Godot gets the orientation average.
+        float viewerAmbFactor = AmbientLightingFactor(da);
+        float godotAmbFactor = OrientationAveragedAmbientFactor;
 
         var shadow = Vector3.Zero;
         var lit = Vector3.Zero;
@@ -64,25 +84,39 @@ public static class ClassicLightBalance
 
         for (int c = 0; c < 3; c++)
         {
-            float amb = MathF.Pow(MathF.Max(Channel(sunAmbient, c), 0f), 0.9f) * AmblitScale * AmbientMix;
-            float sun = Channel(sunDiffuse, c) * SunlitBoost * SunlitMix;
+            float tmp = MathF.Pow(MathF.Max(Channel(sunAmbient, c), 0f), 0.9f) * AmblitScale * AmbientMix;
+            float ambV = tmp * viewerAmbFactor;
+            float ambG = tmp * godotAmbFactor;
+            float sun = Channel(sunlit, c) * SunlitBoost * SunlitMix;
 
-            float vShadow = SrgbToLinear(amb) * FinalScale;
-            float vLit = SrgbToLinear(amb + viewerSun * sun) * FinalScale;
+            float vShadow = SrgbToLinear(ambV) * FinalScale;
+            float vLit = SrgbToLinear(ambV + viewerSun * sun) * FinalScale;
 
             // SLNG: ambient = the shadow endpoint; sun radiance = (lit at N.L=1) - shadow, scaled
             // by N.L in linear light.
-            float vLitFull = SrgbToLinear(amb + sun) * FinalScale;
-            float sunRadiance = MathF.Max(vLitFull - vShadow, 0f);
+            float gShadow = SrgbToLinear(ambG) * FinalScale;
+            float gLitFull = SrgbToLinear(ambG + sun) * FinalScale;
+            float sunRadiance = MathF.Max(gLitFull - gShadow, 0f);
 
             Set(ref shadow, c, vShadow);
             Set(ref lit, c, vLit);
-            Set(ref godotShadow, c, vShadow);
-            Set(ref godotLit, c, vShadow + sunRadiance * da);
+            Set(ref godotShadow, c, gShadow);
+            Set(ref godotLit, c, gShadow + sunRadiance * da);
         }
 
         return new Result(new Balance(shadow, lit), new Balance(godotShadow, godotLit));
     }
+
+    /// <summary>The sun colour the viewer feeds its legacy highlight with: <c>sunlit_linear</c> after
+    /// the classic-mode <c>* 1.35</c> and <c>srgb_to_linear</c> (softenLightF.glsl:152-153, :226-232),
+    /// times the final <c>* 1.1</c> (:280-281). The material lab's "viewer sun highlight" shader takes
+    /// this as a global (<c>slng_viewer_sunlit</c>). It is NOT the same thing as the diffuse sun radiance
+    /// (lit minus shadow): the viewer builds the diffuse in sRGB on top of the ambient, the highlight
+    /// from the bare sunlit colour, and the two differ per channel.</summary>
+    public static Vector3 ViewerSunlitForSpecular(Vector3 sunlit) => new(
+        SrgbToLinear(sunlit.X * SunlitBoost) * FinalScale,
+        SrgbToLinear(sunlit.Y * SunlitBoost) * FinalScale,
+        SrgbToLinear(sunlit.Z * SunlitBoost) * FinalScale);
 
     /// <summary>The weight the viewer gives the environment reflection of a legacy glossy face (the
     /// <c>applyGlossEnv</c> term, reflectionProbeF.glsl:893-902), at the view angle where its Fresnel
@@ -101,17 +135,6 @@ public static class ClassicLightBalance
     /// <c>Intensity</c>. Multiply by the reflected radiance to get the added light.</summary>
     public static float GodotSpecularWeight(float specular, float probeIntensity) =>
         0.08f * specular * probeIntensity;
-
-    /// <summary>The sun colour the viewer feeds its legacy highlight with: <c>sunlit_linear</c> after
-    /// the classic-mode <c>* 1.35</c> and <c>srgb_to_linear</c> (softenLightF.glsl:152-153, :226-232),
-    /// times the final <c>* 1.1</c> (:280-281). The material lab's "viewer sun highlight" uses Godot's
-    /// own sun radiance (<c>LIGHT_COLOR / PI</c>) in its place; <see cref="Compute"/>'s Godot sun
-    /// radiance (lit at N.L = 1 minus shadow) is within about 0.1% of this for the red channel of the
-    /// logged terrace sky, which is what makes that substitution defensible.</summary>
-    public static Vector3 ViewerSunlitForSpecular(Vector3 sunDiffuse) => new(
-        SrgbToLinear(sunDiffuse.X * SunlitBoost) * FinalScale,
-        SrgbToLinear(sunDiffuse.Y * SunlitBoost) * FinalScale,
-        SrgbToLinear(sunDiffuse.Z * SunlitBoost) * FinalScale);
 
     private static float Channel(Vector3 v, int c) => c == 0 ? v.X : c == 1 ? v.Y : v.Z;
 
