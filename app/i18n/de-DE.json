@@ -278,6 +278,11 @@
       "join": "Beitreten",
       "decline": "Ablehnen"
     },
+    "friend_remove": {
+      "title": "FREUND ENTFERNEN",
+      "prompt": "{0} aus deiner Freundesliste entfernen? Ihr seht den Online-Status des anderen dann nicht mehr, und du verschwindest auch aus seiner Liste.",
+      "ok": "Freund entfernen"
+    },
     "friendship_offer": {
       "title": "FREUNDSCHAFTSANGEBOT",
       "from": "{0} bietet dir die Freundschaft an.",

@@ -278,6 +278,11 @@
       "join": "Join",
       "decline": "Decline"
     },
+    "friend_remove": {
+      "title": "REMOVE FRIEND",
+      "prompt": "Remove {0} from your friends? You will no longer see each other's online status, and they will be removed from their list too.",
+      "ok": "Remove friend"
+    },
     "friendship_offer": {
       "title": "FRIENDSHIP OFFER",
       "from": "{0} is offering friendship.",

@@ -81,6 +81,25 @@ public sealed partial class GridSession
     /// Raised on a LibreMetaverse network thread — marshal before touching a scene node.</summary>
     public event EventHandler? FriendListChanged;
 
+    // The other side ended the friendship (TerminateFriendship, from any viewer). LibreMetaverse's
+    // own handler has already dropped them from FriendList; the UI has to be told to re-read it,
+    // or the friend stays on screen until the next relog.
+    private void OnFriendshipTerminated(object? sender, FriendshipTerminatedEventArgs e) =>
+        FriendListChanged?.Invoke(this, EventArgs.Empty);
+
+    /// <summary>Ends the friendship with <paramref name="agentId"/> (the viewer's
+    /// <c>LLAvatarTracker::terminateBuddy</c>: a <c>TerminateFriendship</c> message). Returns false,
+    /// and sends nothing, when not connected or the avatar is not on the friend list.</summary>
+    public bool RemoveFriend(Guid agentId)
+    {
+        if (agentId == Guid.Empty || !_client.Network.Connected) return false;
+        var id = new UUID(agentId);
+        if (!_client.Friends.FriendList.ContainsKey(id)) return false;
+        _client.Friends.TerminateFriendship(id);
+        FriendListChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     /// <summary>BUG-NET-28: somebody offered the agent friendship. Answer with
     /// <see cref="AcceptFriendshipOffer"/> / <see cref="DeclineFriendshipOffer"/>. Raised on a
     /// LibreMetaverse network thread — marshal before touching a scene node.</summary>

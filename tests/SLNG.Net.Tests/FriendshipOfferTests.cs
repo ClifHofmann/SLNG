@@ -208,4 +208,16 @@ public class FriendshipOfferTests
         Assert.False(session.AcceptFriendshipOffer(offer));
         Assert.False(session.DeclineFriendshipOffer(offer));
     }
+
+    [Fact]
+    public void Nobody_is_removed_without_a_connection_or_without_an_id()
+    {
+        using var session = new GridSession();
+        bool changed = false;
+        session.FriendListChanged += (_, _) => changed = true;
+
+        Assert.False(session.RemoveFriend(Guid.NewGuid()));
+        Assert.False(session.RemoveFriend(Guid.Empty));
+        Assert.False(changed);
+    }
 }

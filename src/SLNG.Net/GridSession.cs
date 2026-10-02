@@ -788,6 +788,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Appearance.AppearanceSet += OnAppearanceSet;
         _client.Friends.FriendOnline += OnFriendOnline;
         _client.Friends.FriendOffline += OnFriendOffline;
+        _client.Friends.FriendshipTerminated += OnFriendshipTerminated;
         _client.Self.IM += OnInstantMessage;
         _client.Self.ScriptDialog += OnScriptDialog;
         // Without this subscription the simulator's question is never even seen: LibreMetaverse's
@@ -896,6 +897,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Appearance.AppearanceSet -= OnAppearanceSet;
         _client.Friends.FriendOnline -= OnFriendOnline;
         _client.Friends.FriendOffline -= OnFriendOffline;
+        _client.Friends.FriendshipTerminated -= OnFriendshipTerminated;
         _client.Self.IM -= OnInstantMessage;
         _client.Self.ScriptDialog -= OnScriptDialog;
         _client.Self.MoneyBalanceReply -= OnMoneyBalanceReply;
