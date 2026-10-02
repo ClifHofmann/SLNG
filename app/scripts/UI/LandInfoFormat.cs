@@ -264,4 +264,72 @@ internal static class LandInfoFormat
     }
 
     private static string Stamp(DateTime t) => t.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+    // --- Covenant tab (FEAT-LAND-05) ----------------------------------------------------------------
+    // Sources: process_covenant_reply / onCovenantLoadComplete (llviewermessage.cpp:6782-6947),
+    // LLPanelLandCovenant / LLPanelEstateCovenant (llfloaterland.cpp:2997, llfloaterregioninfo.cpp:2565),
+    // strings.xml (RegionNoCovenant, RegionNoCovenantOtherOwner, covenant_last_modified, never_text).
+
+    /// <summary>What the body of the covenant view says and how it is drawn.</summary>
+    internal enum CovenantBodyKind
+    {
+        /// <summary>The covenant text itself, shown in a selectable text box.</summary>
+        Text,
+
+        /// <summary>A line of ours in place of the text: loading, "no covenant provided".</summary>
+        Notice,
+
+        /// <summary>A line of ours that says something went wrong. Drawn so it cannot pass for a covenant
+        /// or for "none set".</summary>
+        Problem,
+    }
+
+    /// <summary>The covenant body for one record. No covenant set prints the viewer's fixed sentence,
+    /// the longer one when the estate has an owner (the land is then sold by the estate owner, not by
+    /// Linden Lab: <c>llviewermessage.cpp</c>:6853-6861). A fetched text is returned as it is; an empty
+    /// one stays empty, which is not "none set".</summary>
+    internal static (CovenantBodyKind Kind, string Text) CovenantBody(CovenantInfo c) => c.TextState switch
+    {
+        CovenantTextState.Loaded => (CovenantBodyKind.Text, c.Text ?? string.Empty),
+        CovenantTextState.None => (
+            CovenantBodyKind.Notice,
+            L10n.Tr(c.EstateOwnerId == Guid.Empty ? "ui.land.cov_none" : "ui.land.cov_none_other_owner")),
+        CovenantTextState.Failed => (CovenantBodyKind.Problem, L10n.Tr("ui.land.cov_text_failed")),
+        _ => (CovenantBodyKind.Notice, L10n.Tr("ui.land.cov_loading")),
+    };
+
+    /// <summary>The body before any record arrived, and after a request that got no reply.</summary>
+    internal static (CovenantBodyKind Kind, string Text) CovenantBodyLoading() =>
+        (CovenantBodyKind.Notice, L10n.Tr("ui.land.cov_loading"));
+
+    internal static (CovenantBodyKind Kind, string Text) CovenantBodyFailed() =>
+        (CovenantBodyKind.Problem, L10n.Tr("ui.land.cov_failed"));
+
+    internal static string CovenantEstateText(CovenantInfo c) => OrDash(c.EstateName);
+
+    /// <summary>The estate owner: "(none)" for a nil id, otherwise the name, or "(loading…)" while it
+    /// is still being looked up. The viewer treats the id as an avatar's, so no group lookup.</summary>
+    internal static string CovenantOwnerText(CovenantInfo c, NameLookup lookup) =>
+        c.EstateOwnerId == Guid.Empty
+            ? L10n.Tr("ui.land.none")
+            : lookup(c.EstateOwnerId, false) ?? L10n.Tr("ui.land.loading");
+
+    internal static string CovenantModifiedText(DateTime? timestampUtc) =>
+        CovenantModifiedText(timestampUtc, TimeZoneInfo.Local);
+
+    /// <summary>"Last modified: 2023-11-14 23:13:20 (UTC+01:00)", or "Last modified: (never)" for a
+    /// timestamp of 0. The reference viewer prints this in the USER's local time (<c>llstring.cpp</c>:1474,
+    /// the <c>local</c> parameter of <c>LTime*</c> in <c>language_settings.xml</c>), not in SL time like
+    /// the General tab's claim date, so the offset is spelled out. UTC when no zone is given.</summary>
+    internal static string CovenantModifiedText(DateTime? timestampUtc, TimeZoneInfo? zone)
+    {
+        if (timestampUtc is not { } utc) return L10n.Tr("ui.land.cov_modified_never");
+        utc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+
+        var offset = zone?.GetUtcOffset(utc) ?? TimeSpan.Zero;
+        string sign = offset < TimeSpan.Zero ? "-" : "+";
+        string stamp = Stamp(utc + offset) + " "
+            + L10n.TrFormat("ui.land.cov_utc_offset", sign + offset.Duration().ToString(@"hh\:mm", CultureInfo.InvariantCulture));
+        return L10n.TrFormat("ui.land.cov_modified", stamp);
+    }
 }

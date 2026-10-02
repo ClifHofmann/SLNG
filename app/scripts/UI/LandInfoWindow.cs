@@ -9,8 +9,8 @@ namespace SLNG.App.UI;
 
 /// <summary>
 /// FEAT-LAND-01: "About Land" -- what the sim says about the parcel the agent stands on, in the
-/// tabbed shape of the reference viewer's floater. Today it has General, Options, Media and Sound and is
-/// read-only; Covenant, Objects and Access follow in FEAT-LAND-03..05, each as one more
+/// tabbed shape of the reference viewer's floater. Today it has General, Covenant, Options, Media and Sound
+/// and is read-only; Objects and Access follow in FEAT-LAND-03 and -04, each as one more
 /// <see cref="ILandInfoTab"/> and one more <see cref="AddTab"/> call in <see cref="_Ready"/>.
 ///
 /// <para><b>It follows the agent.</b> The data layer raises <c>ParcelInfoReceived</c> for the answer to
@@ -42,6 +42,7 @@ public partial class LandInfoWindow : SLNGWindow
     private TabContainer _tabContainer = null!;
     private Label _status = null!;
     private LandGeneralTab _general = null!;
+    private LandCovenantTab _covenant = null!;
     private LandOptionsTab _options = null!;
     private LandMediaTab _media = null!;
     private LandSoundTab _sound = null!;
@@ -89,6 +90,9 @@ public partial class LandInfoWindow : SLNGWindow
         _general = new LandGeneralTab();
         _general.Initialize(LookupName);
         AddTab(_general);
+        _covenant = new LandCovenantTab();
+        _covenant.Initialize(LookupName);
+        AddTab(_covenant);
         _options = new LandOptionsTab();
         AddTab(_options);
         _media = new LandMediaTab();
@@ -116,6 +120,7 @@ public partial class LandInfoWindow : SLNGWindow
         session.NameResolved += OnNameResolved;
         session.DisplayNameResolved += OnDisplayNameResolved;
         _subscribed = true;
+        _covenant.Bind(session);
 
         // What the session already knows is on screen at once; the request below refreshes it.
         if (session.LastParcelInfo is { } last) ShowParcel(last);
@@ -183,6 +188,8 @@ public partial class LandInfoWindow : SLNGWindow
     internal string? StatusText => _status.Visible ? _status.Text : null;
 
     internal LandGeneralTab General => _general;
+
+    internal LandCovenantTab Covenant => _covenant;
 
     internal LandOptionsTab Options => _options;
 

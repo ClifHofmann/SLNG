@@ -907,7 +907,17 @@
       "snd_voice_estate": "Enable voice (established by the estate)",
       "snd_voice_local": "Restrict voice to this parcel",
       "snd_media": "Media",
-      "snd_moap": "Restrict MOAP to this parcel"
+      "snd_moap": "Restrict MOAP to this parcel",
+      "tab_covenant": "Covenant",
+      "cov_estate": "Estate",
+      "cov_loading": "Loading the estate covenant…",
+      "cov_none": "There is no Covenant provided for this Estate.",
+      "cov_none_other_owner": "There is no Covenant provided for this Estate. The land on this estate is being sold by the Estate owner, not Linden Lab. Please contact the Estate Owner for sales details.",
+      "cov_text_failed": "The covenant text could not be loaded.",
+      "cov_failed": "The estate covenant could not be requested. The sim did not answer.",
+      "cov_modified": "Last modified: {0}",
+      "cov_modified_never": "Last modified: (never)",
+      "cov_utc_offset": "(UTC{0})"
     },
     "notifications": {
       "title": "Notifications",
