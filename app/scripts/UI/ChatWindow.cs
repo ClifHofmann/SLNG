@@ -407,7 +407,10 @@ public partial class ChatWindow : SLNGWindow
     /// away rather than preloaded in full, to keep tab-open cheap.</summary>
     private void PreloadRecentHistory(ChatTab tab)
     {
-        var lines = _logger.GetPage(tab.LogKind, tab.DisplayName, int.MaxValue, PreloadHistoryLines, out _);
+        // FEAT-UI-41: the last N messages from the end of the file (real logs are tens of megabytes), in
+        // the file's own, Firestorm-compatible, format. This used to ask for "the last page", which is
+        // not the last N lines but whatever partial page happens to be at the end.
+        var lines = _logger.GetTail(tab.LogKind, tab.DisplayName, PreloadHistoryLines);
         foreach (var line in lines)
             tab.Lines.Add($"[color=#777777][i]{BbEscape(line)}[/i][/color]");
     }
@@ -448,7 +451,9 @@ public partial class ChatWindow : SLNGWindow
         tab.OfflineNoticeShown = true;
         string notice = $"{tab.DisplayName} is offline. They'll see this message next time they log in.";
         AppendLineToTab(tab, $"[color=#E0A030][i]{BbEscape(notice)}[/i][/color]");
-        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, "System", notice, DateTime.Now);
+        // FEAT-UI-41: an empty sender is a system line -- written under the grid's system name
+        // ("Second Life" / "Grid"), as Firestorm writes its own.
+        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, "", notice, DateTime.Now);
     }
 
     // Own messages get the same blue accent used for "selected" elsewhere in this window, so a

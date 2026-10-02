@@ -42,7 +42,7 @@ per-grid rule (see the table).
       give two; hostile input (separators, `..`, unicode, empty, control characters, very long) gives one safe,
       stable, non-empty path segment; a host cannot impersonate a Linden grid.
 - [x] One path builder (`GridDataPaths`, wrapped for the app by `GridData`); every store classed unsafe goes
-      through it: last-session background, object cache, map tiles, chat logs.
+      through it: last-session background, object cache, map tiles, chat logs (the chat logs only until v0.26.14; FEAT-UI-41 moved them to Firestorm's layout).
 - [x] Same account name + same region handle on two grids give different directories (unit tests, including
       the real `ObjectCacheDisk`, and a `--selftest` check).
 - [x] The object cache no longer prunes across grids.
@@ -94,6 +94,8 @@ never a wrong answer -- the side to err on.
 <root>/<slug>/<account>/                    AccountDirectory(uri, first, last)
 ```
 
+(Since v0.26.14 the second root, the chat-log root, is only read -- by the import of old logs -- see FEAT-UI-41.)
+
 Two roots, one rule: `user://grids` (resolved to a real directory) and the chat-log root
 `%APPDATA%\SLNG\logs\chat`. The grid is the one in the login form (`LoginCredentials.GridLoginUri`), so paths
 are chosen **per login**, never at startup. Building a path touches nothing on disk; the writer creates the
@@ -107,7 +109,7 @@ directory. `kind` and `base` are fixed lower-case names chosen by the caller, va
 |---|---|---|---|---|---|
 | Login / loading background | `user://last_session_bg_<first>_<last>.png` (`Boot.cs` logout save; read at login click and after logout) | account name | **Yes** -- the reported bug | UNSAFE | `user://grids/<slug>/last_session_bg_<account>.png`; saved with the account+grid captured at login |
 | Object cache | `user://cache/objects/<handle>-<cacheId>.slobj` (`ObjectCacheDisk`) | region handle + the simulator's cache id (file name and header both checked on read) | Serving the wrong grid's objects needs handle **and** cache id to match -- not observed, and I did not verify what OpenSim sends as cache id. **Mutual deletion is certain**: a save removes every file of the same handle under another cache id, trimming and "Clear" are directory-wide. Test: `ObjectCachePerGridTests` | UNSAFE | `user://grids/<slug>/cache/objects` |
-| Chat logs | `%APPDATA%\SLNG\logs\chat\chat.txt`, `<conversation name>.txt` (`ChatLogger`) | none / conversation display name | **Yes** -- every account on every grid appends to the same files; History and the Main tab preload read them back | UNSAFE | `<chat root>/<slug>/<account>/` attached at login (`ChatLogger.UseDirectory`); window forgets the previous session's tabs |
+| Chat logs | `%APPDATA%\SLNG\logs\chat\chat.txt`, `<conversation name>.txt` (`ChatLogger`) | none / conversation display name | **Yes** -- every account on every grid appends to the same files; History and the Main tab preload read them back | UNSAFE | v0.26.13: `<chat root>/<slug>/<account>/` attached at login (`ChatLogger.UseDirectory`); window forgets the previous session's tabs. **Superseded by [FEAT-UI-41](FEAT-UI-41-firestorm-compatible-chat-logs.md) (v0.26.14): chat logs now live in Firestorm's layout, `<base>/<first_last[.gridlabel]>/`, which is per account and per grid by the same rule -- the folder name carries the grid. The `<slug>/<account>` folders are no longer written, only read by the import.** |
 | Map tiles | `user://cache/maptiles/<map host[_port]>/map-1-<x>-<y>-objects.jpg` (`MapTileService`) | map-server host + grid coordinates | Only if two grids share a map host. One real gap: `ChooseMapServerUrl` falls back to `map.secondlife.com` for **any** Linden grid whose login lacks `map-server-url`, i.e. Aditi would read Agni's tiles | SAFE in practice, moved anyway | `user://grids/<slug>/cache/maptiles` (keeps the host folder inside) |
 | Asset cache | `user://cache/assets/<uuid>.mesh`, `<uuid>_v5.j2c`, `<uuid>.anim` (`AssetService`) | asset UUID | Only if one UUID means different bytes on two grids | SAFE -- **assumption, see below** | unchanged |
 | LibreMetaverse asset cache (wearables, animations, gestures, sounds) | `%LOCALAPPDATA%\SLNG\lmv-asset-cache\<uuid>` | asset UUID (file name per LMV `AssetCache.FileName`; read from the vendored v3.0.2 source, not the pinned 3.1.6) | as above | SAFE -- same assumption | unchanged |
@@ -153,8 +155,8 @@ per grid and the library sharing.
 - `user://cache/objects`: left in place, unused; per-grid directories start empty and fill as regions are visited.
   The Preferences -> Network "Clear cache" button now also removes it (user-initiated), and reports the size of
   all object caches including the old one.
-- `%APPDATA%\SLNG\logs\chat\*.txt` written by older builds: left in place, no longer shown. A person who wants an
-  old log in an account's history can copy the file into `<chat root>/<slug>/<account>/`.
+- `%APPDATA%\SLNG\logs\chat\*.txt` written by older builds: left in place, no longer shown. (FEAT-UI-41: they are
+  offered for an explicit, tested import into the Firestorm layout -- Preferences -> Chat logs; never moved or deleted.)
 - `GridData.LogFirstUse` creates the empty grid directory and prints one `[GridData]` line the first time a grid is
   logged into -- on the login path, never on the boot path. Everything else only builds strings.
 
@@ -165,7 +167,7 @@ building a path creates no directory.
 ### Affected files
 
 - `src/SLNG.Core/GridIdentity.cs`, `src/SLNG.Core/GridDataPaths.cs` (new)
-- `src/SLNG.Core/Services/ChatLogger.cs` (`UseDirectory`; starts detached instead of in the shared directory)
+- `src/SLNG.Core/Services/ChatLogger.cs` (`UseDirectory`; starts detached instead of in the shared directory; reworked by FEAT-UI-41)
 - `app/scripts/GridData.cs` (new), `app/scripts/Boot.cs`, `app/scripts/UI/ChatWindow.cs`,
   `app/scripts/UI/NetworkPreferencesPage.cs`, `app/scripts/SelfTest.cs`
 - `tests/SLNG.Core.Tests/GridIdentityTests.cs`, `GridDataPathsTests.cs`, `Services/ChatLoggerTests.cs`,

@@ -12,8 +12,8 @@ namespace SLNG.App;
 ///
 /// <para>Two roots, one rule (<see cref="GridDataPaths"/>): <c>user://grids/&lt;grid&gt;/...</c> for
 /// what the client keeps in its own data directory, and
-/// <c>%APPDATA%\SLNG\logs\chat\&lt;grid&gt;\&lt;account&gt;\</c> for the chat logs, which live outside
-/// <c>user://</c> so a person can open them. The grid is always the one the user logs into
+/// <c>%APPDATA%\SLNG\logs\chat\&lt;grid&gt;\&lt;account&gt;\</c> for the chat logs of v0.26.13 (FEAT-UI-41 then moved
+/// chat logs to Firestorm's layout, see <see cref="ChatLogPaths"/>; the root stays for the import). The grid is always the one the user logs into
 /// (<see cref="SLNG.Net.LoginCredentials.GridLoginUri"/>, i.e. what is in the grid box), so a path is
 /// chosen per login, never at startup.</para>
 ///
@@ -39,7 +39,8 @@ public static class GridData
     /// merely touching this class before the engine has its project settings does nothing.</summary>
     public static GridDataPaths User => _user ??= new GridDataPaths(ProjectSettings.GlobalizePath("user://grids"));
 
-    /// <summary>The chat-log root (<see cref="ChatLogger.DefaultLogDirectory"/>).</summary>
+    /// <summary>The chat-log root (<see cref="ChatLogger.DefaultLogDirectory"/>), under which v0.26.13 kept
+    /// per-grid folders. Kept only for <see cref="LegacyChatLogDirectory"/>.</summary>
     public static GridDataPaths Chat => _chat ??= new GridDataPaths(ChatLogger.DefaultLogDirectory());
 
     /// <summary>Where this grid's object cache (<c>.slobj</c>, one file per region) lives.</summary>
@@ -54,8 +55,10 @@ public static class GridData
     public static string LoginBackgroundPath(string? gridUri, string firstName, string lastName)
         => User.AccountFile(gridUri, firstName, lastName, LoginBackgroundName, ".png");
 
-    /// <summary>The directory this account's chat logs on this grid go into.</summary>
-    public static string ChatLogDirectory(string? gridUri, string firstName, string lastName)
+    /// <summary>Where v0.26.13 kept this account's chat logs on this grid
+    /// (<c>&lt;chat root&gt;\&lt;grid&gt;\&lt;account&gt;\</c>). Since FEAT-UI-41 logs live in Firestorm's
+    /// layout instead (<see cref="ChatLogPaths"/>); this is only where the import looks for the old ones.</summary>
+    public static string LegacyChatLogDirectory(string? gridUri, string firstName, string lastName)
         => Chat.AccountDirectory(gridUri, firstName, lastName);
 
     /// <summary>The object caches of every grid, plus the shared one older builds wrote -- for

@@ -187,6 +187,7 @@ public static class SelfTest
         results.Add(CheckWindowInsets(tree));
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
+        results.Add(CheckChatLogPaths());
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -223,11 +224,11 @@ public static class SelfTest
 
         string[] sl = {
             GridData.LoginBackgroundPath(Agni, "Clifton", "Howlett"), GridData.ObjectCacheDirectory(Agni),
-            GridData.MapTileDirectory(Agni), GridData.ChatLogDirectory(Agni, "Clifton", "Howlett"),
+            GridData.MapTileDirectory(Agni), GridData.LegacyChatLogDirectory(Agni, "Clifton", "Howlett"),
         };
         string[] os = {
             GridData.LoginBackgroundPath(OsGrid, "Clifton", "Howlett"), GridData.ObjectCacheDirectory(OsGrid),
-            GridData.MapTileDirectory(OsGrid), GridData.ChatLogDirectory(OsGrid, "Clifton", "Howlett"),
+            GridData.MapTileDirectory(OsGrid), GridData.LegacyChatLogDirectory(OsGrid, "Clifton", "Howlett"),
         };
         // Same grid written two ways is one grid.
         bool sameGrid = GridData.ObjectCacheDirectory("http://hg.osgrid.org:80") == os[1]
@@ -251,6 +252,52 @@ public static class SelfTest
 
         return wrong.Count == 0
             ? new Check(Name, true, $"agni -> {sl[1]} ; osgrid -> {os[1]}")
+            : new Check(Name, false, string.Join("; ", wrong));
+    }
+
+    /// <summary>
+    /// FEAT-UI-41: the app-side path helper resolves the base folder and the account folder of a fake
+    /// login the way Firestorm names them (Second Life without a suffix, OSGrid and a grid unknown to
+    /// Firestorm with one, the beta grid), for each of the three locations, and building them creates
+    /// nothing on disk -- folders that do not exist stay that way, which is what keeps it safe next to
+    /// "user data untouched" (the smoke test boots against the real data).
+    /// </summary>
+    private static Check CheckChatLogPaths()
+    {
+        const string Name = "chat log paths";
+        string fake = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "slng-selftest-chatlog-" + Guid.NewGuid().ToString("N"));
+        string profile = System.IO.Path.Combine(fake, "Firestorm_x64");
+        string own = System.IO.Path.Combine(fake, "own");
+        string chosen = System.IO.Path.Combine(fake, "chosen");
+
+        SLNG.Core.ChatLogs.ChatLogTarget T(string uri, string? probed, SLNG.Core.ChatLogs.ChatLogMode mode)
+            => ChatLogPaths.Resolve(uri, "Clifton", "Howlett", probed, mode, SLNG.Core.ChatLogs.ImNamesChoice.Auto, chosen, profile, own);
+
+        var fs = SLNG.Core.ChatLogs.ChatLogMode.Firestorm;
+        var wrong = new List<string>();
+        void Expect(string what, string actual, string expected)
+        {
+            if (actual != expected) wrong.Add($"{what}: {actual} (wanted {expected})");
+        }
+
+        Expect("Second Life", T("https://login.agni.lindenlab.com/cgi-bin/login.cgi", null, fs).Directory, System.IO.Path.Combine(profile, "clifton_howlett"));
+        Expect("beta grid", T("https://login.aditi.lindenlab.com/cgi-bin/login.cgi", null, fs).Directory, System.IO.Path.Combine(profile, "clifton_howlett.second_life_beta"));
+        Expect("a grid that told its name", T("http://hg.osgrid.org/", "OSGrid", fs).Directory, System.IO.Path.Combine(profile, "clifton_howlett.osgrid"));
+        Expect("a grid that told nothing", T("http://grid.example:9000/", null, fs).Directory, System.IO.Path.Combine(profile, "clifton_howlett.grid.example_9000"));
+        Expect("SLNG's own folder", T("http://hg.osgrid.org/", "OSGrid", SLNG.Core.ChatLogs.ChatLogMode.Slng).Directory, System.IO.Path.Combine(own, "clifton_howlett.osgrid"));
+        Expect("a chosen folder", T("http://hg.osgrid.org/", "OSGrid", SLNG.Core.ChatLogs.ChatLogMode.Custom).Directory, System.IO.Path.Combine(chosen, "clifton_howlett.osgrid"));
+        Expect("system name on a Linden grid", ChatLogPaths.SystemName("https://login.agni.lindenlab.com/cgi-bin/login.cgi"), "Second Life");
+        Expect("system name elsewhere", ChatLogPaths.SystemName("http://hg.osgrid.org/"), "Grid");
+
+        // The real settings must resolve too, without writing: the computed default only reads.
+        var effective = ChatLogSettings.EffectiveMode;
+        var live = ChatLogPaths.ResolveCurrent("http://hg.osgrid.org/", "Clifton", "Howlett", "OSGrid");
+        if (live.Directory.Length == 0) wrong.Add("the live resolution is empty");
+
+        if (System.IO.Directory.Exists(fake)) wrong.Add("resolving a login created a directory");
+
+        return wrong.Count == 0
+            ? new Check(Name, true, $"default location {effective}; this machine would log OSGrid to {live.Directory} ({live.Why})")
             : new Check(Name, false, string.Join("; ", wrong));
     }
 

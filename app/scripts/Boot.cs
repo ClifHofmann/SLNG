@@ -367,6 +367,8 @@ public partial class Boot : Control
     private string _sessionGridUri = "";
     private string _sessionFirstName = "";
     private string _sessionLastName = "";
+    // FEAT-UI-41: where this session's chat logs go, as resolved at login. Null before the first login.
+    private SLNG.Core.ChatLogs.ChatLogTarget? _chatTarget;
 
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
@@ -406,7 +408,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.13-alpha";
+    public const string AppVersion = "v0.26.14-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -899,6 +901,7 @@ public partial class Boot : Control
         _avatarHoverSettings.Load();
         _snapshotSettings.Load();
         MediaSettings.Load();
+        ChatLogSettings.Load(); // FEAT-UI-41: reads only; the default is written at the first login, never here
 
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
@@ -1579,6 +1582,17 @@ public partial class Boot : Control
             ProjectSettings.GlobalizePath("user://cache/assets"),
             GridData.AllObjectCacheDirectories, // BUG-GRID-01: one object cache per grid, plus the old shared one
             () => _session?.ClearObjectCache()); // FEAT-NET-04: one button clears both caches
+
+        // FEAT-UI-41: where chat logs are kept and the import of older SLNG logs. The page asks for the
+        // running session's folder each time it needs it -- there is none before a login.
+        var chatLogPage = new SLNG.App.UI.ChatLogPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_chat_logs"), chatLogPage);
+        chatLogPage.Initialize(
+            () => _chatTarget,
+            () => _chatTarget != null && _session?.IsConnected == true
+                ? new SLNG.App.UI.ChatLogImportContext(_chatLogger, _chatTarget.Directory, _chatTarget.Naming,
+                    ChatLogPaths.OldSources(_sessionGridUri, _sessionFirstName, _sessionLastName))
+                : null);
 
         // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
         // Rebound to the live session per login in BindSession, once a session exists to read
@@ -3340,12 +3354,6 @@ public partial class Boot : Control
 
         _lastArrivalRegionShown = ""; // MVP2-3: a relogin into the same region must still toast
 
-        // BUG-GRID-01: chat logs belong to one account on one grid, so the logger is pointed at this
-        // account's own directory and the window forgets the previous session's conversations --
-        // which may have been another account on another grid. Before the first message can arrive.
-        _chatLogger.UseDirectory(GridData.ChatLogDirectory(_sessionGridUri, firstName, lastName));
-        _chatWindow.ResetForNewSession();
-
         // BUG-GRID-01: the region environment is only replaced when a region SENDS one. A grid with
         // none (plain OpenSim) never does, so the last session's sky -- possibly Second Life's --
         // stayed until the process ended. Back to the default cycle at every login; a sky preset the
@@ -3591,6 +3599,26 @@ public partial class Boot : Control
         // (World/GridSession/WorldSimulation/AssetService/GpuCache, renderer Initialize calls)
         // already ran synchronously on the main thread.
         CompleteLoadingStep(0);
+
+        // BUG-GRID-01 / FEAT-UI-41: chat logs belong to one account on one grid, and live where
+        // Firestorm keeps them (<base>/<first_last[.gridlabel]>/), so the logger is pointed at this
+        // account's folder and the window forgets the previous session's conversations -- which may
+        // have been another account on another grid. Before the first message can arrive, hence before
+        // the login. The grid's label (the folder suffix) is known offline for the Linden grids and
+        // for anything in Firestorm's own grid list; only an unknown OpenSim grid costs one small
+        // request, with a short timeout, and never delays or fails the login for longer than that.
+        {
+            string? probedGridName = null;
+            if (ChatLogPaths.NeedsProbe(_sessionGridUri))
+                probedGridName = await SLNG.Net.GridInfoProbe.TryGetGridNameAsync(_sessionGridUri, System.TimeSpan.FromSeconds(3));
+
+            ChatLogSettings.DecideIfNeeded();
+            _chatTarget = ChatLogPaths.ResolveCurrent(_sessionGridUri, firstName, lastName, probedGridName);
+            _chatLogger.UseDirectory(_chatTarget.Directory, _chatTarget.Naming);
+            _chatWindow.ResetForNewSession();
+            GD.Print($"[ChatLog] {_chatTarget.Directory} ({_chatTarget.Why}; IM files named {_chatTarget.Naming.ImStyle}" +
+                     $"{(_chatTarget.Naming.DateSuffix ? ", dated" : "")}; grid name from {(probedGridName is null ? "the Linden/Firestorm lists or the host" : "the grid")})");
+        }
 
         var result = await _session.LoginAsync(creds);
 
