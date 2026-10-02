@@ -142,6 +142,12 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 - Nutzen Sie Landmarken aus Ihrem Inventar per Doppelklick zum Teleportieren.
 - Aktuelle Regionen lassen sich mühelos als neue Landmarke abspeichern.
 
+### Land-Info (Über das Land)
+Über das Menü **Welt → Über das Land …** öffnet sich ein Fenster mit den Angaben zur Parzelle, auf der Ihr Avatar gerade steht. Der Reiter **Allgemein** zeigt Name, Parzellen-ID (zum Markieren und Kopieren), Beschreibung, Typ, Einstufung, Besitzer, Gruppe, Beanspruchungsdatum (in Second-Life-Zeit, also US-Pazifikzeit; fehlt diese Zeitzone auf Ihrem Rechner, steht die Zeit in UTC und das Fenster sagt es), Preis, Fläche und Verkehr. Steht die Parzelle zum Verkauf, kommen der berechtigte Käufer und die Angabe hinzu, ob Objekte mitverkauft werden.
+- Das Fenster folgt Ihnen: Betreten Sie eine andere Parzelle, aktualisiert es sich von selbst. Namen und der Verkehrswert erscheinen, sobald das Grid sie geliefert hat; bis dahin steht dort „(wird geladen …)“ bzw. „–“.
+- Kann das Grid die Angaben nicht liefern, oder sind Sie nicht angemeldet, steht dort eine Zeile „Parzelleninformationen sind nicht verfügbar“ statt eines leeren Formulars.
+- Das Fenster ist vorerst nur zum Lesen. Die Knöpfe für Kauf, Verkauf, Gruppe und Ähnliches sind sichtbar, aber ausgegraut („Noch nicht verfügbar“); weitere Reiter folgen.
+
 ### Regions-Neustart
 Kündigt das Grid einen Neustart der Region an, in der Sie stehen, öffnet sich das Fenster **Regions-Neustart**:
 - Es nennt die Region und zählt die Zeit bis zum Neustart herunter (ab zehn Sekunden Restzeit wird die Zahl rot). Die Taskleiste blinkt, falls der Viewer im Hintergrund ist.

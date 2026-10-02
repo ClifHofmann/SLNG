@@ -177,6 +177,7 @@ public static class SelfTest
         results.Add(CheckAvatarAnimationFreeze());
         results.Add(CheckAvatarAnimationLocalOverlay());
         results.Add(CheckRegionRestartWindow(tree));
+        results.Add(CheckLandInfoWindow(tree));
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -237,6 +238,138 @@ public static class SelfTest
                      $"{destinations} destination(s) (want 1 = Home), Teleport enabled={canTeleport} (want True)");
         }
         catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(win)) win.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-LAND-01: the Land-Info window builds in a real tree and its General tab shows what
+    /// <see cref="SLNG.Core.ParcelInfo"/> says -- public land, group-owned and sale-pending land, a
+    /// parcel for sale, traffic unknown (null) versus zero, names that are still loading and then
+    /// arrive -- and a parcel pushed from a NETWORK thread reaches the window only through its
+    /// main-thread inbox. The write buttons stay disabled. This is the one test a window gets: a
+    /// Control tree that throws in <c>_Ready</c>, or a row that prints a raw key, would otherwise only
+    /// show up when the first parcel arrives in-world.
+    /// </summary>
+    private static Check CheckLandInfoWindow(SceneTree tree)
+    {
+        const string Name = "land info window";
+        var win = new UI.LandInfoWindow();
+        try
+        {
+            tree.Root.AddChild(win);
+            win.Initialize(null);
+            var problems = new List<string>();
+            void Expect(bool ok, string what) { if (!ok) problems.Add(what); }
+
+            // Not connected: one line, not an empty form.
+            string? unavailable = win.StatusText;
+            Expect(!string.IsNullOrEmpty(unavailable) && !unavailable.StartsWith('['), $"unavailable state reads '{unavailable}'");
+
+            var owner = Guid.NewGuid();
+            var group = Guid.NewGuid();
+            var buyer = Guid.NewGuid();
+            var names = new Dictionary<Guid, string> { [owner] = "Resident One", [group] = "The Group", [buyer] = "Buyer Two" };
+            var tab = win.General;
+            tab.Initialize((id, _) => names.TryGetValue(id, out var n) ? n : null);
+
+            string Row(UI.LandRow r) => tab.RowText(r);
+            string loading = UI.L10n.Tr("ui.land.loading");
+
+            // 1. Public land, traffic not known yet. Pushed from a worker thread, as the session does.
+            var publicLand = new SLNG.Core.ParcelInfo { Name = "Commons", Description = "Open to all", AreaSqm = 1024, LocalId = 3, Rating = MaturityLevel.Moderate, LandType = "Mainland" };
+            System.Threading.Tasks.Task.Run(() => win.OnParcelInfoReceived(null, publicLand)).Wait();
+            Expect(win.StatusText != null, "a parcel pushed off-thread reached the UI before the main thread drained it");
+            win._Process(0);
+            Expect(win.StatusText == null, "the status line is still shown after a parcel arrived");
+            Expect(Row(UI.LandRow.Name) == "Commons", $"name '{Row(UI.LandRow.Name)}'");
+            Expect(Row(UI.LandRow.Owner) == UI.L10n.Tr("ui.land.owner_public"), $"public owner '{Row(UI.LandRow.Owner)}'");
+            Expect(Row(UI.LandRow.Group) == UI.L10n.Tr("ui.land.none"), $"no group '{Row(UI.LandRow.Group)}'");
+            Expect(Row(UI.LandRow.Traffic) == "–", $"traffic null '{Row(UI.LandRow.Traffic)}'");
+            Expect(Row(UI.LandRow.Claimed) == "–", $"claimed none '{Row(UI.LandRow.Claimed)}'");
+            Expect(Row(UI.LandRow.ParcelId) == "–", $"parcel id unknown '{Row(UI.LandRow.ParcelId)}'");
+            Expect(Row(UI.LandRow.Type) == "Mainland", $"type '{Row(UI.LandRow.Type)}'");
+            Expect(Row(UI.LandRow.Rating) == UI.L10n.Tr("ui.land.rating_moderate"), $"rating '{Row(UI.LandRow.Rating)}'");
+            Expect(Row(UI.LandRow.Description) == "Open to all", $"description '{Row(UI.LandRow.Description)}'");
+            Expect(Row(UI.LandRow.Price) == UI.L10n.Tr("ui.land.not_for_sale"), $"price '{Row(UI.LandRow.Price)}'");
+            Expect(!tab.RowVisible(UI.LandRow.Buyer) && !tab.RowVisible(UI.LandRow.Auction), "buyer/auction rows shown on land that is not for sale");
+
+            // 2. Group-owned, sale pending, traffic exactly zero (not "unknown").
+            var guid = Guid.NewGuid();
+            var groupLand = publicLand with
+            {
+                ParcelId = guid, OwnerId = group, IsGroupOwned = true, GroupId = group,
+                Ownership = ParcelOwnership.LeasePending, Dwell = 0f,
+                ClaimDateUtc = new DateTime(2006, 8, 15, 20, 47, 25, DateTimeKind.Utc),
+            };
+            win.OnParcelInfoReceived(null, groupLand); win._Process(0);
+            string groupOwner = Row(UI.LandRow.Owner);
+            Expect(groupOwner.Contains(UI.L10n.TrFormat("ui.land.owner_group", "The Group")), $"group-owned text missing in '{groupOwner}'");
+            Expect(groupOwner.EndsWith(UI.L10n.Tr("ui.land.sale_pending")), $"sale-pending suffix missing in '{groupOwner}'");
+            Expect(Row(UI.LandRow.Group) == "The Group", $"group '{Row(UI.LandRow.Group)}'");
+            Expect(Row(UI.LandRow.Traffic) == "0", $"traffic zero '{Row(UI.LandRow.Traffic)}'");
+            Expect(Row(UI.LandRow.ParcelId) == guid.ToString(), $"parcel id '{Row(UI.LandRow.ParcelId)}'");
+            Expect(Row(UI.LandRow.Claimed) != "–", $"claimed '{Row(UI.LandRow.Claimed)}'");
+
+            // 3. For sale to one avatar, at auction; fractional traffic rounds like %.0f.
+            var forSale = publicLand with
+            {
+                OwnerId = owner, ForSale = true, SalePriceL = 1500, AuthorizedBuyerId = buyer,
+                SellWithObjects = true, AuctionId = 77, Dwell = 12.4f,
+            };
+            win.OnParcelInfoReceived(null, forSale); win._Process(0);
+            Expect(Row(UI.LandRow.Owner) == "Resident One", $"avatar owner '{Row(UI.LandRow.Owner)}'");
+            Expect(Row(UI.LandRow.Price).Contains("L$") && Row(UI.LandRow.Price).Contains('1'), $"price '{Row(UI.LandRow.Price)}'");
+            Expect(tab.RowVisible(UI.LandRow.Buyer) && Row(UI.LandRow.Buyer) == "Buyer Two", $"buyer '{Row(UI.LandRow.Buyer)}'");
+            Expect(tab.RowVisible(UI.LandRow.Objects), "objects row hidden on a parcel for sale");
+            Expect(tab.RowVisible(UI.LandRow.Auction) && Row(UI.LandRow.Auction) == "77", $"auction '{Row(UI.LandRow.Auction)}'");
+            Expect(Row(UI.LandRow.Traffic) == "12", $"traffic 12.4 '{Row(UI.LandRow.Traffic)}'");
+            win.OnParcelInfoReceived(null, forSale with { AuthorizedBuyerId = null }); win._Process(0);
+            Expect(Row(UI.LandRow.Buyer) == UI.L10n.Tr("ui.land.anyone"), $"anyone '{Row(UI.LandRow.Buyer)}'");
+
+            // 4. A name still loading shows a placeholder, then the name once it arrives.
+            names.Remove(owner);
+            tab.RefreshNames();
+            Expect(Row(UI.LandRow.Owner) == loading, $"owner while loading '{Row(UI.LandRow.Owner)}'");
+            names[owner] = "Resident One";
+            tab.RefreshNames();
+            Expect(Row(UI.LandRow.Owner) == "Resident One", $"owner once resolved '{Row(UI.LandRow.Owner)}'");
+
+            // 5. Nothing prints a raw key; the write buttons are present and disabled with a tooltip.
+            foreach (var r in Enum.GetValues<UI.LandRow>())
+                Expect(!Row(r).Contains("[ui."), $"row {r} shows a raw key '{Row(r)}'");
+            Expect(tab.ActionButtons.Count == 10 && tab.ActionButtons.All(b => b.Disabled && b.TooltipText.Length > 0 && !b.Text.StartsWith('[')),
+                "the write buttons are not all present, disabled and explained");
+
+            // 6. The claim date is SL time (US Pacific, with daylight saving); UTC only when the zone is missing.
+            var pacific = UI.LandInfoFormat.FindSlTimeZone();
+            var summer = new DateTime(2006, 8, 15, 20, 47, 25, DateTimeKind.Utc);
+            var winter = new DateTime(2006, 1, 15, 20, 47, 25, DateTimeKind.Utc);
+            if (pacific != null)
+            {
+                Expect(UI.LandInfoFormat.ClaimedText(summer, pacific).Contains("2006-08-15 13:47:25"), $"summer claim '{UI.LandInfoFormat.ClaimedText(summer, pacific)}'");
+                Expect(UI.LandInfoFormat.ClaimedText(winter, pacific).Contains("2006-01-15 12:47:25"), $"winter claim '{UI.LandInfoFormat.ClaimedText(winter, pacific)}'");
+            }
+            Expect(UI.LandInfoFormat.ClaimedText(summer, null).Contains("2006-08-15 20:47:25"), "UTC fallback does not show the UTC time");
+
+            // 7. Not connected on a refresh: the state, not a stale form. A late failure must not blank a
+            // parcel a push has already put on screen.
+            win.RequestRefresh();
+            Expect(win.StatusText != null, "a refresh without a session left the old parcel showing");
+            win.OnParcelInfoReceived(null, publicLand); win._Process(0);
+            win.OnParcelInfoFailed(null, new SLNG.Net.ParcelInfoFailure(0, SLNG.Net.ParcelInfoFailureReason.TimedOut)); win._Process(0);
+            Expect(win.StatusText == null, "a late timeout blanked a parcel that had arrived");
+
+            return problems.Count == 0
+                ? new Check(Name, true, "public / group-owned+pending / for-sale rows, traffic null vs 0, names loading then resolved, off-thread push via the inbox, write buttons disabled, SL-time claim date")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex)
         {
             return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
         }
@@ -363,7 +496,8 @@ public static class SelfTest
         var windows = new[]
         {
             W<UI.AboutWindow>(), W<UI.ActiveAnimationsWindow>(), W<UI.AvatarHoverWindow>(), W<UI.CameraHUD>(), W<UI.CreateLandmarkWindow>(),
-            W<UI.EnvironmentWindow>(), W<UI.MaterialLabWindow>(), W<UI.InventoryPanel>(), W<UI.ItemPropertiesWindow>(), W<UI.MinimapOverlay>(), W<UI.SnapshotWindow>(), W<UI.WorldMapWindow>(),
+            W<UI.EnvironmentWindow>(), W<UI.MaterialLabWindow>(), W<UI.InventoryPanel>(), W<UI.ItemPropertiesWindow>(),
+            W<UI.LandInfoWindow>(w => { w.Initialize(null); w.ShowParcel(new SLNG.Core.ParcelInfo { Name = "Testland", Description = "A parcel.", AreaSqm = 512 }); }), W<UI.MinimapOverlay>(), W<UI.SnapshotWindow>(), W<UI.WorldMapWindow>(),
             W<UI.BuyObjectWindow>(w => w.Initialize(session, 0, 1, "Chair", PrimSaleType.Copy, 250)),
             W<UI.ChatHistoryWindow>(w => w.Open(log, SLNG.Core.Services.ChatLogKind.Local, "", "Local chat")), W<UI.ChatWindow>(w => w.Initialize(log)),
             W<UI.ConfirmWindow>(w => w.Initialize("Title", "Really do that?", "Do it")), W<UI.TextPromptWindow>(w => w.Initialize("Rename", "Name:", "Old", "OK")),

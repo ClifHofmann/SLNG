@@ -399,7 +399,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.0-alpha";
+    public const string AppVersion = "v0.26.1-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -754,6 +754,8 @@ public partial class Boot : Control
         _topMenu.OnOpenEnvironment = () => InvokeLauncher("environment");
         _topMenu.OnOpenWorldMap = () => InvokeLauncher("worldmap");
         _topMenu.OnOpenMinimap = () => InvokeLauncher("minimap");
+
+        _topMenu.OnOpenLandInfo = OpenLandInfoWindow;
 
         _topMenu.OnCreateLandmark = () =>
         {
@@ -4043,6 +4045,43 @@ public partial class Boot : Control
         GD.Print($"[RegionRestart] \"{restart.RegionName}\" restarts in {restart.Seconds} s");
     }
 
+    // ---- FEAT-LAND-01: Land-Info (About Land) ----------------------------------------------------
+
+    /// <summary>The one open Land-Info window, if any. Bound to the session it was opened with, so it is
+    /// closed when that session ends (a re-login builds a new GridSession).</summary>
+    private SLNG.App.UI.LandInfoWindow? _landInfoWindow;
+
+    private void OpenLandInfoWindow()
+    {
+        if (_landInfoWindow != null && IsInstanceValid(_landInfoWindow))
+        {
+            _landInfoWindow.Unminimize();
+            _landInfoWindow.Visible = true;
+            _landInfoWindow.EnsureOnScreen();
+            _landInfoWindow.BringToFront();
+            _landInfoWindow.RequestRefresh();
+            return;
+        }
+
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer == null) return;
+
+        var win = new SLNG.App.UI.LandInfoWindow();
+        hudLayer.AddChild(win);
+        win.Closed += () => { if (_landInfoWindow == win) _landInfoWindow = null; };
+        _landInfoWindow = win;
+        win.Initialize(_session);
+        win.EnsureOnScreen();
+        win.BringToFront();
+    }
+
+    private void CloseLandInfoWindow()
+    {
+        if (_landInfoWindow != null && IsInstanceValid(_landInfoWindow))
+            _landInfoWindow.Close();
+        _landInfoWindow = null;
+    }
+
     private void CloseRegionRestartWindow()
     {
         if (_regionRestartWindow != null && IsInstanceValid(_regionRestartWindow))
@@ -4547,6 +4586,7 @@ public partial class Boot : Control
         // The restart popup's teleport needs a live session. Left open it also sits exactly under
         // the dialog below and the two read as one garbled window.
         CloseRegionRestartWindow();
+        CloseLandInfoWindow();
 
         var reason = (SLNG.Core.SessionEndReason)reasonValue;
         string text = reason switch
@@ -4597,6 +4637,7 @@ public partial class Boot : Control
         if (_isQuitting) return;
         _isQuitting = true;
         CloseRegionRestartWindow();
+        CloseLandInfoWindow();
         // Stop the _Process open-window snapshot: this method hides every window, and on a
         // disconnect (quitProcess == false) it also clears _isQuitting again afterwards, so
         // without this the throttle would persist an all-closed layout (BUG-UI-07).
