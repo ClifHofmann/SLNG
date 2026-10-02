@@ -512,13 +512,16 @@ public static class SelfTest
             // 8. FEAT-LAND-02: the Options, Media and Sound tabs.
             Expect(win.TabTitles.SequenceEqual(new[]
             {
-                UI.L10n.Tr("ui.land.tab_general"), UI.L10n.Tr("ui.land.tab_options"),
+                UI.L10n.Tr("ui.land.tab_general"), UI.L10n.Tr("ui.land.tab_covenant"), UI.L10n.Tr("ui.land.tab_options"),
                 UI.L10n.Tr("ui.land.tab_media"), UI.L10n.Tr("ui.land.tab_sound"),
-            }), "the tab order is not General, Options, Media, Sound");
+            }), "the tab order is not General, Covenant, Options, Media, Sound");
             CheckLandOptionsMediaSound(win, publicLand, Expect);
 
+            // 9. FEAT-LAND-05: the Covenant tab (the shared CovenantView).
+            CheckLandCovenant(win, Expect);
+
             return problems.Count == 0
-                ? new Check(Name, true, "public / group-owned+pending / for-sale rows, traffic null vs 0, names loading then resolved, off-thread push via the inbox, write buttons disabled, SL-time claim date, Options / Media / Sound tabs")
+                ? new Check(Name, true, "public / group-owned+pending / for-sale rows, traffic null vs 0, names loading then resolved, off-thread push via the inbox, write buttons disabled, SL-time claim date, Options / Media / Sound tabs, Covenant tab")
                 : new Check(Name, false, string.Join("; ", problems));
         }
         catch (Exception ex)
@@ -529,6 +532,118 @@ public static class SelfTest
         {
             if (GodotObject.IsInstanceValid(win)) win.QueueFree();
         }
+    }
+
+    /// <summary>
+    /// FEAT-LAND-05: the Covenant tab, i.e. the shared <see cref="UI.CovenantView"/> -- loading, the header
+    /// with the text still on its way, the owner's name arriving late, the text, "no covenant set" (both
+    /// wordings), a text that failed (header kept, shown as a problem), a request that failed (shown as a
+    /// failure, not as "none"), a late timeout that must not blank a shown covenant, the timestamp in the
+    /// user's zone with its offset ("never" for 0), an off-thread push that only the main-thread inbox
+    /// applies, an answer for another region that is dropped, and one request per region (a new parcel in
+    /// the same region leaves the shown covenant alone).
+    /// </summary>
+    private static void CheckLandCovenant(UI.LandInfoWindow win, Action<bool, string> expect)
+    {
+        static string T(string key) => UI.L10n.Tr(key);
+        var tab = win.Covenant;
+        var view = tab.View;
+        var owner = Guid.NewGuid();
+        var names = new Dictionary<Guid, string>();
+        tab.Initialize((id, _) => names.TryGetValue(id, out var n) ? n : null);
+
+        // Before anything arrived: a loading line, not an empty form.
+        view.ShowLoading();
+        expect(view.BodyKind == UI.LandInfoFormat.CovenantBodyKind.Notice && view.BodyText == T("ui.land.cov_loading"), $"loading body '{view.BodyText}'");
+        expect(view.EstateText == "–" && view.OwnerText == "–" && view.ModifiedText == string.Empty, "loading state shows values");
+        expect(((UI.ILandInfoTab)tab).TabTitle == T("ui.land.tab_covenant"), "covenant tab title");
+
+        // Follow a region (no session in the selftest, so nothing is requested), then the header arrives.
+        const ulong Region = 4242;
+        tab.ShowParcel(new SLNG.Core.ParcelInfo { RegionHandle = Region });
+        expect(view.Followed == Region, "the tab does not follow its parcel's region");
+
+        var covId = Guid.NewGuid();
+        var stamp = new DateTime(2023, 11, 14, 22, 13, 20, DateTimeKind.Utc);
+        var header = new SLNG.Core.CovenantInfo
+        {
+            RegionHandle = Region, EstateName = "My Estate", EstateOwnerId = owner, CovenantId = covId,
+            TimestampUtc = stamp, TextState = SLNG.Core.CovenantTextState.Loading,
+        };
+        System.Threading.Tasks.Task.Run(() => view.OnCovenantReceived(null, header)).Wait();
+        expect(view.EstateText == "–", "a covenant pushed off-thread reached the UI before the main thread drained it");
+        view._Process(0);
+        expect(view.EstateText == "My Estate", $"estate '{view.EstateText}'");
+        expect(view.OwnerText == T("ui.land.loading"), $"owner while loading '{view.OwnerText}'");
+        expect(view.BodyKind == UI.LandInfoFormat.CovenantBodyKind.Notice && view.BodyText == T("ui.land.cov_loading"), "header with the text pending is not a loading line");
+        expect(view.ModifiedText == UI.LandInfoFormat.CovenantModifiedText(stamp, TimeZoneInfo.Local), $"modified '{view.ModifiedText}'");
+
+        // The owner's name arrives late.
+        names[owner] = "Estate Owner";
+        tab.RefreshNames();
+        expect(view.OwnerText == "Estate Owner", $"owner once resolved '{view.OwnerText}'");
+
+        // The text arrives: shown in a selectable, read-only box.
+        view.OnCovenantReceived(null, header with { TextState = SLNG.Core.CovenantTextState.Loaded, Text = "No fences.\nNo mining." });
+        view._Process(0);
+        expect(view.BodyKind == UI.LandInfoFormat.CovenantBodyKind.Text && view.TextBoxVisible && !view.TextBoxEditable, "text is not shown in a read-only text box");
+        expect(view.BodyText == "No fences.\nNo mining.", $"body '{view.BodyText}'");
+
+        // An empty notecard is an empty covenant, not "none set".
+        view.OnCovenantReceived(null, header with { TextState = SLNG.Core.CovenantTextState.Loaded, Text = string.Empty });
+        view._Process(0);
+        expect(view.BodyKind == UI.LandInfoFormat.CovenantBodyKind.Text && view.BodyText == string.Empty, "an empty covenant text was turned into a notice");
+
+        // The text failed to load: the header stays, the body says so as a problem.
+        view.OnCovenantReceived(null, header with { TextState = SLNG.Core.CovenantTextState.Failed });
+        view._Process(0);
+        expect(view.BodyKind == UI.LandInfoFormat.CovenantBodyKind.Problem && view.BodyText == T("ui.land.cov_text_failed"), $"failed text body '{view.BodyText}'");
+        expect(view.EstateText == "My Estate" && view.OwnerText == "Estate Owner", "a failed text dropped the header");
+
+        // No covenant set: the viewer's two sentences, chosen by whether the estate has an owner.
+        var none = header with { CovenantId = null, TextState = SLNG.Core.CovenantTextState.None };
+        view.OnCovenantReceived(null, none);
+        view._Process(0);
+        expect(view.BodyKind == UI.LandInfoFormat.CovenantBodyKind.Notice && view.BodyText == T("ui.land.cov_none_other_owner"), $"none, owned estate '{view.BodyText}'");
+        view.OnCovenantReceived(null, none with { EstateOwnerId = Guid.Empty });
+        view._Process(0);
+        expect(view.BodyText == T("ui.land.cov_none") && view.OwnerText == T("ui.land.none"), $"none, no owner '{view.BodyText}' / '{view.OwnerText}'");
+
+        // A late timeout must not blank a covenant that is on screen; with nothing shown it is a failure.
+        view.OnCovenantFailed(null, new SLNG.Net.CovenantFailure(Region));
+        view._Process(0);
+        expect(view.EstateText == "My Estate", "a late timeout blanked a covenant that had arrived");
+        view.ShowLoading();
+        view.OnCovenantFailed(null, new SLNG.Net.CovenantFailure(Region));
+        view._Process(0);
+        expect(view.BodyKind == UI.LandInfoFormat.CovenantBodyKind.Problem && view.BodyText == T("ui.land.cov_failed"), $"request failure body '{view.BodyText}'");
+        expect(view.BodyText != T("ui.land.cov_none"), "a failed request reads like 'no covenant'");
+
+        // An answer for another region than the one followed is dropped.
+        view.OnCovenantReceived(null, header with { RegionHandle = Region + 1, EstateName = "Elsewhere" });
+        view._Process(0);
+        expect(view.EstateText != "Elsewhere", "an answer for another region replaced the shown one");
+
+        // One request per region: another parcel in the same region leaves the covenant alone, a new region resets it.
+        view.OnCovenantReceived(null, header with { TextState = SLNG.Core.CovenantTextState.Loaded, Text = "Kept." });
+        view._Process(0);
+        tab.ShowParcel(new SLNG.Core.ParcelInfo { RegionHandle = Region, LocalId = 99 });
+        expect(view.BodyText == "Kept.", "a new parcel in the same region reset the covenant");
+        tab.ShowParcel(new SLNG.Core.ParcelInfo { RegionHandle = Region + 7 });
+        expect(view.Followed == Region + 7 && view.BodyText == T("ui.land.cov_loading"), "a new region did not reset to loading");
+
+        // The timestamp: the user's zone with its offset, UTC without a zone, "never" for none.
+        var plus2 = TimeZoneInfo.CreateCustomTimeZone("t+2", TimeSpan.FromHours(2), "t+2", "t+2");
+        var minus330 = TimeZoneInfo.CreateCustomTimeZone("t-3:30", TimeSpan.FromMinutes(-210), "t-3:30", "t-3:30");
+        string Off(string o) => UI.L10n.TrFormat("ui.land.cov_utc_offset", o);
+        expect(UI.LandInfoFormat.CovenantModifiedText(stamp, plus2) == UI.L10n.TrFormat("ui.land.cov_modified", "2023-11-15 00:13:20 " + Off("+02:00")), $"+2 '{UI.LandInfoFormat.CovenantModifiedText(stamp, plus2)}'");
+        expect(UI.LandInfoFormat.CovenantModifiedText(stamp, minus330) == UI.L10n.TrFormat("ui.land.cov_modified", "2023-11-14 18:43:20 " + Off("-03:30")), $"-3:30 '{UI.LandInfoFormat.CovenantModifiedText(stamp, minus330)}'");
+        expect(UI.LandInfoFormat.CovenantModifiedText(stamp, null) == UI.L10n.TrFormat("ui.land.cov_modified", "2023-11-14 22:13:20 " + Off("+00:00")), "no zone is not UTC");
+        expect(UI.LandInfoFormat.CovenantModifiedText(null, plus2) == T("ui.land.cov_modified_never"), "timestamp 0 is not 'never'");
+
+        // Nothing prints a raw key.
+        foreach (string text in new[] { view.EstateText, view.OwnerText, view.ModifiedText, view.BodyText, T("ui.land.cov_failed"), T("ui.land.cov_none"), T("ui.land.cov_none_other_owner"), T("ui.land.cov_text_failed") })
+            expect(!text.Contains("[ui."), $"covenant tab shows a raw key '{text}'");
     }
 
     /// <summary>
@@ -816,7 +931,10 @@ public static class SelfTest
                     }
                 }
                 Walk(win.ContentContainer);
-                float h = win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH, v = UI.SLNGWindow.DefaultContentMarginV; // radar: map is full-bleed
+                // The insets scale with the user's UI scale (Display preferences), and this check boots on the real
+        // preferences -- so expect the scaled value, or a 125 % setting fails a perfectly consistent client.
+        float scale = UI.SLNGWindow.GlobalUiScale;
+        float h = (win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH) * scale, v = UI.SLNGWindow.DefaultContentMarginV * scale; // radar: map is full-bleed
                 if (new[] { h, h, v, v }.Zip(got).Any(p => Math.Abs(p.First - p.Second) > 2))
                     failures.Add($"{win.GetType().Name} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
             }

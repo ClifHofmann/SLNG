@@ -907,7 +907,17 @@
       "snd_voice_estate": "Voice aktivieren (vom Grundbesitz festgelegt)",
       "snd_voice_local": "Voice auf diese Parzelle beschränken",
       "snd_media": "Medien",
-      "snd_moap": "MOAP auf diese Parzelle beschränken"
+      "snd_moap": "MOAP auf diese Parzelle beschränken",
+      "tab_covenant": "Vertrag",
+      "cov_estate": "Grundbesitz",
+      "cov_loading": "Der Grundbesitzvertrag wird geladen …",
+      "cov_none": "Für diesen Grundbesitz gibt es keinen Vertrag.",
+      "cov_none_other_owner": "Für diesen Grundbesitz gibt es keinen Vertrag. Das Land wird vom Grundbesitzeigentümer verkauft, nicht von Linden Lab. Für Verkaufsdetails bitte den Grundbesitzeigentümer kontaktieren.",
+      "cov_text_failed": "Der Text des Grundbesitzvertrags konnte nicht geladen werden.",
+      "cov_failed": "Der Grundbesitzvertrag konnte nicht abgefragt werden. Die Sim hat nicht geantwortet.",
+      "cov_modified": "Zuletzt geändert: {0}",
+      "cov_modified_never": "Zuletzt geändert: (nie)",
+      "cov_utc_offset": "(UTC{0})"
     },
     "notifications": {
       "title": "Benachrichtigungen",
