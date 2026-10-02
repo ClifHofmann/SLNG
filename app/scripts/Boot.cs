@@ -399,7 +399,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.5-alpha";
+    public const string AppVersion = "v0.26.6-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3401,6 +3401,7 @@ public partial class Boot : Control
         // answered without a click, an answer only lands in the notification history.
         _session.FriendshipOfferReceived += OnFriendshipOfferReceived;
         _session.FriendshipAnswered += OnFriendshipAnswered;
+        _session.FriendshipEnded += OnFriendshipEnded;
         // FEAT-NET-01: llRequestPermissions. Same buffering; never answered without a click.
         _session.ScriptPermissionRequested += OnScriptPermissionRequested;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
@@ -4376,6 +4377,14 @@ public partial class Boot : Control
                 e.Accepted ? "ui.notifications.friendship_answer_accepted" : "ui.notifications.friendship_answer_declined",
                 e.FromName),
             senderName: e.FromName);
+    }
+
+    private void OnFriendshipEnded(object? sender, SLNG.Core.FriendshipEndedEvent e)
+    {
+        string name = string.IsNullOrEmpty(e.FromName) ? e.FromId.ToString() : e.FromName;
+        _notifications.Add(SLNG.Core.NotificationKind.Invitation, e.FromId,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.friendship_ended", name),
+            senderName: name);
     }
 
     // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------

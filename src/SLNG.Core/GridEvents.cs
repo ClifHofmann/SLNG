@@ -240,6 +240,12 @@ public record FriendshipOfferEvent(Guid FromId, string FromName, string Message,
 /// <param name="Accepted">True for an acceptance.</param>
 public record FriendshipAnsweredEvent(Guid FromId, string FromName, bool Accepted);
 
+/// <summary>Somebody ended their friendship with us (the sim's <c>TerminateFriendship</c>, sent when
+/// they remove us in any viewer). Never raised for a friendship WE ended.</summary>
+/// <param name="FromId">The former friend.</param>
+/// <param name="FromName">Their name, from the friend list or the name cache; empty if neither knew it.</param>
+public record FriendshipEndedEvent(Guid FromId, string FromName);
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object

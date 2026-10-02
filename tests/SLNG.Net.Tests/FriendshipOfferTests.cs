@@ -220,4 +220,12 @@ public class FriendshipOfferTests
         Assert.False(session.RemoveFriend(Guid.Empty));
         Assert.False(changed);
     }
+
+    [Fact]
+    public void A_removal_we_never_made_is_not_swallowed()
+    {
+        using var session = new GridSession();
+
+        Assert.False(session.ConsumeSelfRemoval(Guid.NewGuid()));
+    }
 }

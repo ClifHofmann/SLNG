@@ -84,8 +84,32 @@ public sealed partial class GridSession
     // The other side ended the friendship (TerminateFriendship, from any viewer). LibreMetaverse's
     // own handler has already dropped them from FriendList; the UI has to be told to re-read it,
     // or the friend stays on screen until the next relog.
-    private void OnFriendshipTerminated(object? sender, FriendshipTerminatedEventArgs e) =>
+    private void OnFriendshipTerminated(object? sender, FriendshipTerminatedEventArgs e)
+    {
         FriendListChanged?.Invoke(this, EventArgs.Empty);
+
+        Guid id = e.AgentID.Guid;
+        if (ConsumeSelfRemoval(id)) return;
+        string name = e.AgentName ?? string.Empty;
+        if (string.IsNullOrEmpty(name)) TryGetCachedName(id, out name!);
+        FriendshipEnded?.Invoke(this, new FriendshipEndedEvent(id, name ?? string.Empty));
+    }
+
+    /// <summary>Raised on a NETWORK thread when somebody removes us as a friend. Not raised for a
+    /// friendship we ended ourselves with <see cref="RemoveFriend"/>.</summary>
+    public event EventHandler<FriendshipEndedEvent>? FriendshipEnded;
+
+    // Friendships WE ended, so that a TerminateFriendship the grid echoes back is not reported as
+    // somebody else removing us. Consumed by the first echo; one that never comes is dropped by age.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTime> _selfRemovedFriends = new();
+    private static readonly TimeSpan SelfRemovalEchoWindow = TimeSpan.FromSeconds(30);
+
+    /// <summary>True, and forgets it, when <paramref name="agentId"/> was removed by us just now.</summary>
+    internal bool ConsumeSelfRemoval(Guid agentId)
+    {
+        if (!_selfRemovedFriends.TryRemove(agentId, out var when)) return false;
+        return DateTime.UtcNow - when <= SelfRemovalEchoWindow;
+    }
 
     /// <summary>Ends the friendship with <paramref name="agentId"/> (the viewer's
     /// <c>LLAvatarTracker::terminateBuddy</c>: a <c>TerminateFriendship</c> message). Returns false,
@@ -95,6 +119,7 @@ public sealed partial class GridSession
         if (agentId == Guid.Empty || !_client.Network.Connected) return false;
         var id = new UUID(agentId);
         if (!_client.Friends.FriendList.ContainsKey(id)) return false;
+        _selfRemovedFriends[agentId] = DateTime.UtcNow;
         _client.Friends.TerminateFriendship(id);
         FriendListChanged?.Invoke(this, EventArgs.Empty);
         return true;

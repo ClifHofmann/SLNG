@@ -874,6 +874,7 @@
       "friendship_offer_declined": "{0} bot dir die Freundschaft an — abgelehnt.",
       "friendship_answer_accepted": "{0} hat dein Freundschaftsangebot angenommen.",
       "friendship_answer_declined": "{0} hat dein Freundschaftsangebot abgelehnt.",
+      "friendship_ended": "{0} hat dich als Freund entfernt.",
       "script_permission": "„{0}“ von {1} bittet um Berechtigungen.",
       "display_name_changed": "{0} ({1}) heißt jetzt {2}."
     }
