@@ -3,8 +3,7 @@ using Godot;
 namespace SLNG.App.UI;
 
 /// <summary>
-/// "Display" tab content for PreferencesWindow (FEAT-UI-07): a single slider controlling the
-/// global SLNGWindow scale, bound to UiSettings. Kept as its own reusable Control (mirrors
+/// "Display" tab content for PreferencesWindow (FEAT-UI-07): the interface scale (an "automatic" checkbox plus a slider), bound to UiSettings. Kept as its own reusable Control (mirrors
 /// ToolbarPreferencesPage) so PreferencesWindow itself stays generic -- see
 /// PreferencesWindow.AddTab.
 /// </summary>
@@ -131,9 +130,20 @@ public partial class DisplayPreferencesPage : VBoxContainer
         AddChild(separator);
 
         // --- Scale Settings ---
+        // FEAT-UI-42: automatic (follows the display) or a chosen number. The slider shows the scale
+        // in force either way; it is only editable while automatic is off.
         var heading = new Label { Text = L10n.Tr("ui.preferences.ui_scale_heading") };
         heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         AddChild(heading);
+
+        var autoCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.ui_scale_auto"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            ButtonPressed = _settings.ScaleAutomatic,
+            TooltipText = L10n.Tr("ui.preferences.ui_scale_auto_tip"),
+        };
+        AddChild(autoCheck);
 
         var row = new HBoxContainer();
         row.AddThemeConstantOverride("separation", 12);
@@ -141,10 +151,11 @@ public partial class DisplayPreferencesPage : VBoxContainer
 
         var slider = new HSlider
         {
-            MinValue = SLNGWindow.MinUiScale,
-            MaxValue = SLNGWindow.MaxUiScale,
-            Step = 0.05,
+            MinValue = SLNG.Core.UiScalePolicy.Min,
+            MaxValue = SLNG.Core.UiScalePolicy.Max,
+            Step = SLNG.Core.UiScalePolicy.Step,
             Value = _settings.Scale,
+            Editable = !_settings.ScaleAutomatic,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(200, 0),
         };
@@ -158,11 +169,38 @@ public partial class DisplayPreferencesPage : VBoxContainer
         _valueLabel.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
         row.AddChild(_valueLabel);
 
+        // The slider's value is shown live but applied on release. Applying every step would resize
+        // the very control being dragged, and the handle would chase the cursor.
+        bool dragging = false;
+        bool syncing = false; // true while the code, not the user, moves the slider
+        slider.DragStarted += () => dragging = true;
+        slider.DragEnded += changed =>
+        {
+            dragging = false;
+            if (changed) _settings.SetScale((float)slider.Value);
+        };
         slider.ValueChanged += value =>
         {
-            float scale = (float)value;
-            _valueLabel.Text = FormatPercent(scale);
-            _settings.SetScale(scale);
+            _valueLabel.Text = FormatPercent((float)value);
+            if (!dragging && !syncing) _settings.SetScale((float)value); // keyboard / click on the track
+        };
+
+        var detected = new Label();
+        detected.AddThemeColorOverride("font_color", new Color(0.62f, 0.72f, 0.82f));
+        detected.AddThemeFontSizeOverride("font_size", 12);
+        AddChild(detected);
+        void ShowDetected() => detected.Text = L10n.TrFormat("ui.preferences.ui_scale_detected", FormatPercent(UiScale.OsScale));
+        ShowDetected();
+
+        autoCheck.Toggled += on =>
+        {
+            _settings.SetScaleAutomatic(on);
+            slider.Editable = !on;
+            syncing = true;
+            slider.Value = _settings.Scale; // automatic: the display's; off: the scale just in force
+            syncing = false;
+            _valueLabel.Text = FormatPercent(_settings.Scale);
+            ShowDetected();
         };
 
         var hint = new Label

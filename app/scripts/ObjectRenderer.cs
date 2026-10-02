@@ -4312,7 +4312,9 @@ public partial class ObjectRenderer : Node3D
         var vp = GetViewport();
         if (camera != null && IsInstanceValid(camera) && vp != null)
         {
-            float viewportHeight = vp.GetVisibleRect().Size.Y;
+            // Physical pixels: this is a texel budget for the real render, and must not shrink when
+            // the UI scale (which only changes the visible rect) goes up (FEAT-UI-42).
+            float viewportHeight = SLNG.App.UI.UiScale.RenderSize(vp).Y;
             // Camera3D.Fov is the VERTICAL fov in degrees under the default KeepHeight aspect mode.
             float fovRadians = Mathf.DegToRad(camera.Fov);
             if (viewportHeight > 0f && fovRadians > 0.0001f)

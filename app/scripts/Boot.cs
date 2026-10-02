@@ -361,6 +361,15 @@ public partial class Boot : Control
     private readonly WindlightPresetLibrary _windlightPresets = new();
     private SLNG.Core.Services.ChatLogger _chatLogger = null!;
 
+    // BUG-GRID-01: who and where the running session logged in as, captured at the login click.
+    // What a session writes to disk per grid (the last-session picture on logout) is keyed by THESE,
+    // not by whatever the login form says by the time it is written.
+    private string _sessionGridUri = "";
+    private string _sessionFirstName = "";
+    private string _sessionLastName = "";
+    // FEAT-UI-41: where this session's chat logs go, as resolved at login. Null before the first login.
+    private SLNG.Core.ChatLogs.ChatLogTarget? _chatTarget;
+
     // M5-2 Object Editing UI
     private ObjectSelectionController _objectSelectionController = null!;
     private SLNG.App.UI.SelectionGizmo3D? _selectionGizmo;
@@ -399,7 +408,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.12-alpha";
+    public const string AppVersion = "v0.26.18-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -467,6 +476,15 @@ public partial class Boot : Control
 
         GetTree().AutoAcceptQuit = false;
         MouseFilter = MouseFilterEnum.Ignore;
+
+        // FEAT-UI-42: the interface scale goes on the root window FIRST, before the login screen or
+        // any other Control is laid out, so the first frame is already at the right size instead of
+        // starting tiny and jumping. Load() only reads preferences.cfg (it writes nothing), so this
+        // is safe under --selftest.
+        _uiSettings = new SLNG.App.UI.UiSettings();
+        _uiSettings.Load();
+        AddChild(new SLNG.App.UI.UiScaleWatcher(_uiSettings));
+        GD.Print($"[Boot] UI scale {_uiSettings.Scale:0.##}x ({(_uiSettings.ScaleAutomatic ? "automatic" : "chosen")}, display reports {SLNG.App.UI.UiScale.OsScale:0.##}x)");
 
         _localizationManager = LoadLocalizationManager();
         SLNG.App.UI.L10n.Initialize(_localizationManager);
@@ -877,11 +895,7 @@ public partial class Boot : Control
 
     private void SetupHud()
     {
-        // Loaded before any SLNGWindow is constructed below, so CameraHUD/InventoryPanel/
-        // ChatWindow etc. all pick up the saved scale in their own _Ready() instead of
-        // flashing at 1.0x first (FEAT-UI-07).
-        _uiSettings = new SLNG.App.UI.UiSettings();
-        _uiSettings.Load();
+        // _uiSettings was loaded at the top of _Ready (FEAT-UI-42), before any UI existed.
 
         // Same reason, one bug later: the Graphics tab builds its checkboxes and dropdowns from
         // whatever the settings object holds AT CONSTRUCTION. Loading afterwards left the world
@@ -892,6 +906,7 @@ public partial class Boot : Control
         _avatarHoverSettings.Load();
         _snapshotSettings.Load();
         MediaSettings.Load();
+        ChatLogSettings.Load(); // FEAT-UI-41: reads only; a folder is written when the person chooses one
 
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
@@ -1570,8 +1585,21 @@ public partial class Boot : Control
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
         networkPage.Initialize(
             ProjectSettings.GlobalizePath("user://cache/assets"),
-            ProjectSettings.GlobalizePath("user://cache/objects"),
+            GridData.AllObjectCacheDirectories, // BUG-GRID-01: one object cache per grid, plus the old shared one
             () => _session?.ClearObjectCache()); // FEAT-NET-04: one button clears both caches
+
+        // FEAT-UI-41: where chat logs are kept and the import of older SLNG logs. The page asks for the
+        // running session's folder each time it needs it -- there is none before a login.
+        var chatLogPage = new SLNG.App.UI.ChatLogPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_chat_logs"), chatLogPage);
+        chatLogPage.Initialize(
+            ChatLogAccounts,
+            () => _chatTarget != null ? SLNG.Core.ChatLogs.ChatLogAccountKey.Of(_sessionGridUri, _sessionFirstName, _sessionLastName) : null,
+            () => _chatTarget,
+            () => _chatTarget != null && _session?.IsConnected == true
+                ? new SLNG.App.UI.ChatLogImportContext(_chatLogger, _chatTarget.Directory, _chatTarget.Naming,
+                    ChatLogPaths.OldSources(_sessionGridUri, _sessionFirstName, _sessionLastName))
+                : null);
 
         // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
         // Rebound to the live session per login in BindSession, once a session exists to read
@@ -2745,8 +2773,19 @@ public partial class Boot : Control
         _loginsConfig.Save("user://logins.cfg");
     }
 
+    private Vector2I _lastSavedWindowSize;
+
     private void OnWindowSizeChanged()
     {
+        // Never under --selftest: it writes logins.cfg, which is the developer's real data.
+        if (IsSelfTest) return;
+
+        // The root viewport also reports a size change when only the UI SCALE changed (its logical
+        // size is physical / scale), and the saved value is the physical window -- unchanged then.
+        // Skipping that is what keeps a slider drag from rewriting logins.cfg on every step.
+        var size = DisplayServer.WindowGetSize();
+        if (size == _lastSavedWindowSize) return;
+        _lastSavedWindowSize = size;
         SaveWindowSettings();
     }
 
@@ -2757,6 +2796,38 @@ public partial class Boot : Control
             SaveWindowSettings();
             QuitGracefully(true);
         }
+    }
+
+    /// <summary>FEAT-UI-41: the accounts the Chat logs tab can set a folder for -- the login screen's
+    /// saved profiles in the same order and with the same grid names -- plus, first, the account that is
+    /// logged in when it was never saved (a one-off login still needs a folder). Read from the profiles
+    /// as they are NOW, so a login saved a minute ago is in it.</summary>
+    private System.Collections.Generic.IReadOnlyList<SLNG.App.UI.ChatLogAccount> ChatLogAccounts()
+    {
+        var list = new System.Collections.Generic.List<SLNG.App.UI.ChatLogAccount>();
+        foreach (var profile in _loginsConfig.GetSections())
+        {
+            if (profile == "Settings" || profile == "Window") continue;
+            string first = (string)_loginsConfig.GetValue(profile, "first", "");
+            string last = (string)_loginsConfig.GetValue(profile, "last", "");
+            string grid = (string)_loginsConfig.GetValue(profile, "grid", "");
+            AddChatLogAccount(list, first, last, grid);
+        }
+
+        if (_chatTarget != null)
+        {
+            var current = new System.Collections.Generic.List<SLNG.App.UI.ChatLogAccount>();
+            AddChatLogAccount(current, _sessionFirstName, _sessionLastName, _sessionGridUri);
+            if (current.Count == 1 && !list.Exists(a => a.Key == current[0].Key)) list.Insert(0, current[0]);
+        }
+        return list;
+    }
+
+    private void AddChatLogAccount(System.Collections.Generic.List<SLNG.App.UI.ChatLogAccount> into, string first, string last, string grid)
+    {
+        string key = SLNG.Core.ChatLogs.ChatLogAccountKey.Of(grid, first, last);
+        if (into.Exists(a => a.Key == key)) return; // two spellings of one login are one account
+        into.Add(new SLNG.App.UI.ChatLogAccount(key, first, last, grid, $"{first} {last} — {GetGridDisplayName(grid)}"));
     }
 
     /// <summary>Maps a login URI to the short grid name GridDropdown already uses for it
@@ -3254,8 +3325,17 @@ public partial class Boot : Control
 
         LogMessage($"Connecting to {_gridInput.Text} as {firstName} {lastName}...");
 
-        // Load the user's specific last session screenshot as the loading background (FEAT-UI-21)
-        var bgPath = $"user://last_session_bg_{firstName}_{lastName}.png";
+        // BUG-GRID-01: from here on this session is "this account on this grid". Everything it keeps
+        // per grid is keyed by both -- the same account name exists on Second Life and on OSGrid.
+        _sessionGridUri = _gridInput.Text;
+        _sessionFirstName = firstName;
+        _sessionLastName = lastName;
+        GridData.LogFirstUse(_sessionGridUri);
+
+        // Load the last session screenshot of THIS account on THIS grid as the loading background
+        // (FEAT-UI-21). It used to be keyed by the account name alone, so logging into Second Life
+        // showed the picture of the OSGrid session of the same name.
+        var bgPath = GridData.LoginBackgroundPath(_sessionGridUri, firstName, lastName);
         if (FileAccess.FileExists(bgPath))
         {
             using var img = Image.LoadFromFile(bgPath);
@@ -3323,6 +3403,13 @@ public partial class Boot : Control
         _inventoryOfferActionKeys.Clear();
 
         _lastArrivalRegionShown = ""; // MVP2-3: a relogin into the same region must still toast
+
+        // BUG-GRID-01: the region environment is only replaced when a region SENDS one. A grid with
+        // none (plain OpenSim) never does, so the last session's sky -- possibly Second Life's --
+        // stayed until the process ended. Back to the default cycle at every login; a sky preset the
+        // USER picked is theirs and stays.
+        System.Threading.Interlocked.Exchange(ref _pendingRegionEnvironment, null);
+        _environmentDriver.SetCycle(SLNG.Core.DayCycle.Default, SLNG.Core.EnvironmentSource.Default);
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
         // BUG-AVATAR-07 A/B switch — see Diagnostics.NoReattach.
@@ -3363,7 +3450,11 @@ public partial class Boot : Control
         // FEAT-NET-04: the object cache is on; --no-object-cache puts the session back exactly as it
         // was (handshake says "cache empty", every cached object is asked for). Read before login.
         _session.ObjectCacheEnabled = !System.Array.Exists(OS.GetCmdlineUserArgs(), a => a == "--no-object-cache");
-        _session.UseObjectCacheDirectory(ProjectSettings.GlobalizePath("user://cache/objects"));
+        // BUG-GRID-01: one directory per grid. Files are named by region handle and the grid's cache
+        // id, and the pruning in ObjectCacheDisk deletes "the same region under another cache id" --
+        // so two grids sharing a directory (OSGrid's default region sits at 1000,1000, a real Second
+        // Life region too) wiped each other's files.
+        _session.UseObjectCacheDirectory(GridData.ObjectCacheDirectory(_sessionGridUri));
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
@@ -3383,7 +3474,7 @@ public partial class Boot : Control
         // different tiles -- built here because it needs this login's GPU cache and asset service.
         _mapTileTextures?.Clear();
         _mapTileTextures = new MapTileTextures(_session, _gpuCache, _assetService,
-            ProjectSettings.GlobalizePath("user://cache/maptiles"));
+            GridData.MapTileDirectory(_sessionGridUri));
         _minimapOverlay.Initialize(_world, _session, _mapTileTextures);
         _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
 
@@ -3558,6 +3649,26 @@ public partial class Boot : Control
         // (World/GridSession/WorldSimulation/AssetService/GpuCache, renderer Initialize calls)
         // already ran synchronously on the main thread.
         CompleteLoadingStep(0);
+
+        // BUG-GRID-01 / FEAT-UI-41: chat logs belong to one account on one grid, and live where
+        // Firestorm keeps them (<base>/<first_last[.gridlabel]>/) -- the base being the folder chosen for
+        // THIS account (Preferences -> Chat logs) or SLNG's default -- so the logger is pointed at this
+        // account's folder and the window forgets the previous session's conversations -- which may
+        // have been another account on another grid. Before the first message can arrive, hence before
+        // the login. The grid's label (the folder suffix) is known offline for the Linden grids, OSGrid
+        // and a local OpenSim on port 9000; any other grid costs one small request (get_grid_info), with
+        // a short timeout, and never delays or fails the login for longer than that.
+        {
+            string? probedGridName = null;
+            if (ChatLogPaths.NeedsProbe(_sessionGridUri))
+                probedGridName = await SLNG.Net.GridInfoProbe.TryGetGridNameAsync(_sessionGridUri, System.TimeSpan.FromSeconds(3));
+
+            _chatTarget = ChatLogPaths.ResolveCurrent(_sessionGridUri, firstName, lastName, probedGridName);
+            _chatLogger.UseDirectory(_chatTarget.Directory, _chatTarget.Naming);
+            _chatWindow.ResetForNewSession();
+            GD.Print($"[ChatLog] {_chatTarget.Directory} ({_chatTarget.Why}; IM files named {_chatTarget.Naming.ImStyle}" +
+                     $"; grid name from {(probedGridName is null ? "the built-in table or the host" : "the grid")})");
+        }
 
         var result = await _session.LoginAsync(creds);
 
@@ -4875,12 +4986,22 @@ public partial class Boot : Control
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
 
             // Capture viewport
-            var firstName = _firstInput.Text.Trim();
-            var lastName = _lastInput.Text.Trim();
+            // BUG-GRID-01: the session's own account and grid, as captured at login -- never the
+            // account name alone (it exists on every grid), and never a form field that could have
+            // changed since.
             using var img = GetViewport().GetTexture().GetImage();
-            if (img != null)
+            if (img != null && _sessionGridUri.Length > 0)
             {
-                img.SavePng($"user://last_session_bg_{firstName}_{lastName}.png");
+                string bgFile = GridData.LoginBackgroundPath(_sessionGridUri, _sessionFirstName, _sessionLastName);
+                try
+                {
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(bgFile)!);
+                    img.SavePng(bgFile);
+                }
+                catch (System.Exception ex) when (ex is System.IO.IOException or System.UnauthorizedAccessException)
+                {
+                    GD.PrintErr($"[GridData] could not save the last-session picture {bgFile}: {ex.Message}");
+                }
             }
 
             // Show "Logging out..." screen
@@ -4937,9 +5058,10 @@ public partial class Boot : Control
             if (bg != null)
             {
                 bg.Visible = true;
-                var firstName = _firstInput.Text.Trim();
-                var lastName = _lastInput.Text.Trim();
-                var bgPath = $"user://last_session_bg_{firstName}_{lastName}.png";
+                // BUG-GRID-01: the account and grid the form shows now (the form's selection is what
+                // the next login uses), keyed the same way the picture was saved.
+                var bgPath = GridData.LoginBackgroundPath(
+                    _gridInput.Text, _firstInput.Text.Trim(), _lastInput.Text.Trim());
                 if (FileAccess.FileExists(bgPath))
                 {
                     using var bgImg = Image.LoadFromFile(bgPath);

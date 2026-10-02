@@ -194,6 +194,42 @@ public partial class ChatWindow : SLNGWindow
         ScrollLogToBottom(); // was missing -- left the log sitting at the top after preload
     }
 
+    /// <summary>BUG-GRID-01: forgets the previous session's conversations and shows the new
+    /// account's own history. A chat log now belongs to one account on one grid, and everything
+    /// this window holds in memory -- the Main tab's lines, every IM and group tab -- came from the
+    /// session before, which may have been another account on another grid. Call it after
+    /// <see cref="ChatLogger.UseDirectory"/> pointed the logger at the new account's directory.
+    /// Group chat is not left explicitly: the old session is already gone, and leaving would be sent
+    /// through the new one.</summary>
+    public void ResetForNewSession()
+    {
+        var main = _chatTabs.Find(t => t.Id == "main");
+        if (main == null) return;
+
+        foreach (var tab in _chatTabs.ToArray())
+        {
+            if (tab == main) continue;
+            _chatTabs.Remove(tab);
+            tab.RowPanel.QueueFree();
+        }
+
+        main.Lines.Clear();
+        main.UnreadCount = 0;
+        UpdateUnreadBadge(main);
+        PreloadRecentHistory(main);
+        main.FollowingBottom = true;
+
+        if (_activeChatTab == main)
+        {
+            RebuildLogContent(main);
+            ScrollLogToBottom();
+        }
+        else
+        {
+            SelectChatTab(main);
+        }
+    }
+
     /// <summary>Called by Boot after each successful login (session is a fresh instance per
     /// login, unlike ChatLogger/OnSendLocalChat which are wired once). Also used to tell the
     /// local agent's own chat lines apart by name (see FormatChatLine).</summary>
@@ -371,7 +407,10 @@ public partial class ChatWindow : SLNGWindow
     /// away rather than preloaded in full, to keep tab-open cheap.</summary>
     private void PreloadRecentHistory(ChatTab tab)
     {
-        var lines = _logger.GetPage(tab.LogKind, tab.DisplayName, int.MaxValue, PreloadHistoryLines, out _);
+        // FEAT-UI-41: the last N messages from the end of the file (real logs are tens of megabytes), in
+        // the file's own, Firestorm-compatible, format. This used to ask for "the last page", which is
+        // not the last N lines but whatever partial page happens to be at the end.
+        var lines = _logger.GetTail(tab.LogKind, tab.DisplayName, PreloadHistoryLines);
         foreach (var line in lines)
             tab.Lines.Add($"[color=#777777][i]{BbEscape(line)}[/i][/color]");
     }
@@ -412,7 +451,9 @@ public partial class ChatWindow : SLNGWindow
         tab.OfflineNoticeShown = true;
         string notice = $"{tab.DisplayName} is offline. They'll see this message next time they log in.";
         AppendLineToTab(tab, $"[color=#E0A030][i]{BbEscape(notice)}[/i][/color]");
-        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, "System", notice, DateTime.Now);
+        // FEAT-UI-41: an empty sender is a system line -- written under the grid's system name
+        // ("Second Life" / "Grid"), as Firestorm writes its own.
+        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, "", notice, DateTime.Now);
     }
 
     // Own messages get the same blue accent used for "selected" elsewhere in this window, so a

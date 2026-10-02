@@ -27,6 +27,7 @@ Unser Login-Bildschirm nutzt das moderne "Puris Glassmorphism"-Design.
 - Geben Sie Ihren Benutzernamen und Ihr Passwort ein.
 - Wählen Sie Ihr Ziel-Grid (z.B. Second Life Main Grid oder OSGrid) aus.
 - Der Viewer merkt sich Ihre Login-Profile und Fenstergrößen und startet bei zukünftigen Sitzungen direkt mit Ihren persönlichen Einstellungen.
+- **Jedes Grid für sich:** Das Hintergrundbild Ihres letzten Besuchs, der Objekt- und der Kartenspeicher sowie die Chat-Protokolle werden für jedes Grid (und jedes Konto) getrennt abgelegt (die Protokolle in der Ordnerstruktur von Firestorm, siehe Abschnitt 5). Ein Konto mit demselben Namen auf Second Life und auf OSGrid sieht dadurch nie die Daten des jeweils anderen Grids. Was frühere Versionen gemeinsam gespeichert haben, wird nicht mehr benutzt und nicht gelöscht: Das Hintergrundbild beginnt pro Grid neu, der Objekt-Cache füllt sich beim nächsten Besuch einer Region von selbst wieder. Für die Chat-Protokolle gilt seit Version 0.26.14 die Ordnerstruktur von Firestorm (siehe Abschnitt 5).
 
 ---
 
@@ -39,7 +40,10 @@ Alle Menüs und schwebenden Fenster (UI-Fenster) bestehen aus ansprechenden, hal
 - **Positionen merken:** Jedes schwebende Fenster (z.B. Chat, Freunde, Inventar) speichert beim Schließen oder beim Beenden des Viewers automatisch seine Größe und Position.
 - **Sitzung wiederherstellen:** Welche der Werkzeug-Fenster (Chat, Kamera, Inventar, Schnappschuss, Umgebung, Minikarte, Weltkarte) beim letzten Beenden offen waren, werden bei der nächsten Anmeldung automatisch wieder geöffnet – an derselben Stelle und in derselben Größe. Das geschieht erst, nachdem der Ladebildschirm verschwunden ist, damit kein Fenster über dem Start-Overlay auftaucht.
 - **Sichtbarkeit:** Sollte sich Ihre Bildschirmauflösung oder die Fenstergröße des Viewers ändern, zwingt der Viewer alle Fenster automatisch zurück in den sichtbaren Bereich. Ein versehentliches "Verschwinden" von Fenstern am Rand ist somit ausgeschlossen.
-- **UI-Skalierung:** Unter `Preferences` (Einstellungen) -> `Anzeige` können Sie die Größe der gesamten Benutzeroberfläche stufenlos zwischen 80% und 160% anpassen.
+- **UI-Skalierung:** Unter `Preferences` (Einstellungen) -> `Anzeige` stellen Sie die Größe der gesamten Benutzeroberfläche ein: Menüleiste, Anmelde- und Ladebildschirm, alle Fenster, Menüs, Kurzinfos und Namensschilder. Die 3D-Ansicht bleibt dabei unverändert und wird nicht unschärfer.
+  - **Automatisch (folgt der Anzeige):** Das ist die Voreinstellung. Der Viewer übernimmt die Skalierung, die Windows für Ihren Bildschirm eingestellt hat (z. B. 150 % auf einem hochauflösenden Laptop), damit die Schrift dort nicht winzig ist. Zieht man das Fenster auf einen anderen Bildschirm, folgt die Größe nach. Darunter steht, welche Anzeigeskalierung erkannt wurde.
+  - **Eigene Größe:** Nehmen Sie das Häkchen bei `Automatisch` heraus, dann bestimmt der Regler die Größe, stufenlos von 80 % bis 400 %, auf jedem Bildschirm gleich. Der Wert gilt, sobald Sie den Regler loslassen, und bleibt gespeichert. Mit dem Häkchen kehren Sie jederzeit zur automatischen Größe zurück.
+  - Hatten Sie die Größe schon früher selbst gewählt, bleibt dieser Wert erhalten; Fensterpositionen bleiben an derselben Stelle auf dem Bildschirm.
 - **Minimieren / Wiederherstellen:** Ein Doppelklick auf die Titelleiste eines Fensters (oder ein Klick auf `_`) klappt es auf die Titelleiste zusammen; ein erneuter Doppelklick klappt es wieder auf. Ein zusammengeklapptes Fenster lässt sich außerdem über seinen Knopf in der unteren Leiste oder im Schnellmenü wieder aufklappen.
 
 ### Inventar
@@ -105,6 +109,16 @@ Der Puris Viewer bündelt Ihre soziale Interaktion in einem kompakten Kommunikat
 - **Gruppen (Group Chat):** Treten Sie Gruppenchats bei, lesen Sie Nachrichten (die als eigene Chat-Tabs erscheinen) und verwalten Sie Ihre Mitgliedschaften.
   - *Stummschalten (Mute):* Wenn ein Gruppenchat zu viel spammt, können Sie ihn direkt stummschalten. Der Tab öffnet sich dann nicht mehr von selbst.
 - **Skript-Dialoge (llDialog):** Popups von In-World-Skripten (z. B. Teleporter-Menüs oder Optionen von Möbeln) erscheinen als übersichtliche UI-Fenster mit interaktiven Buttons.
+
+### Chat-Protokolle (gemeinsam mit Firestorm)
+
+Der Puris Viewer schreibt Ihre Chats im Format und in der Ordnerstruktur von Firestorm. Dadurch können Sie zwischen beiden Viewern wechseln und sehen in beiden denselben Verlauf: gleicher Ordner, gleiche Dateinamen, gleiche Zeilen.
+
+- **Wo die Protokolle liegen:** Pro Konto und Grid gibt es einen eigenen Unterordner, benannt wie bei Firestorm, zum Beispiel `clifton_howlett` (Second Life) oder `clifton_howlett.osgrid` (OSGrid). Darin liegt eine Datei je Unterhaltung: `chat.txt` für den lokalen Chat, `<Name>.txt` für Instant Messages und `<Gruppenname> (group).txt` für Gruppenchats. Die Zeilen sehen aus wie bei Firestorm (`[2026/04/11 08:07]  Name: Text`); die Uhrzeit ist, wie bei Firestorm, die Second-Life-Zeit (Pazifische Zeit), nicht Ihre Ortszeit.
+- **Einstellung (pro Konto):** Unter `Preferences` -> `Chat-Protokolle` wählen Sie zuerst ein gespeichertes Konto aus der Liste (wie auf dem Login-Bildschirm, zum Beispiel „Clifton Howlett — Second Life“; ein Konto, mit dem Sie gerade angemeldet sind, steht auch dann dort, wenn Sie es nicht gespeichert haben). Für dieses Konto legen Sie mit `Wählen...` den Ordner fest, in dem die Protokolle liegen sollen; `Standard verwenden` stellt den Standardordner von SLNG wieder her (`%APPDATA%\SLNG\logs\chat`). Darunter sehen Sie, welcher Ordner tatsächlich gilt, einschließlich des Konto-Unterordners, der darin angelegt wird. Der Puris Viewer sucht nicht nach Firestorm und liest dessen Einstellungen nicht: Wenn beide Viewer einen gemeinsamen Verlauf haben sollen, wählen Sie hier für das Konto den Ordner, den Firestorm für dasselbe Konto benutzt. Dort stellen Sie auch ein, wie die Dateien der Instant Messages heißen (`Vorname Nachname.txt` oder `vorname_nachname.txt`); diese Einstellung gilt für alle Konten und sollte zu der in Firestorm passen. Eine Änderung gilt ab der nächsten Anmeldung.
+- **Alte SLNG-Protokolle übernehmen:** Protokolle früherer Versionen werden nie gelöscht oder verschoben. Mit `Alte SLNG-Protokolle importieren...` (nach der Anmeldung) hängen Sie sie ans Ende der passenden Dateien im Ordner des angemeldeten Kontos an. Vor dem Import wird Ihnen angezeigt, wie viele Nachrichten übernommen werden, und Sie müssen bestätigen. Der Import fügt nichts doppelt ein: Er kann gefahrlos wiederholt werden. Weil die alten Protokolle nicht pro Konto geführt wurden, landet alles unter dem Konto, mit dem Sie angemeldet sind. Ob eine Datei eine private Unterhaltung oder ein Gruppenchat war, lässt sich nur aus ihrem Inhalt erraten; Dateien, die nur aus einer Kennung bestehen, werden übersprungen.
+- **Nicht gleichzeitig:** Lassen Sie Firestorm und den Puris Viewer nicht gleichzeitig mit demselben Protokollordner laufen. Jeder Viewer hängt an seine Dateien an, ohne vom anderen zu wissen; nacheinander ist es unproblematisch.
+- **Unterhaltungsliste von Firestorm:** Der Puris Viewer ändert die Datei `conversation.log` nicht. Unterhaltungen, die Sie nur im Puris Viewer geführt haben, erscheinen deshalb nicht in der Unterhaltungsliste von Firestorm. Die Protokolldateien selbst liegen im gemeinsamen Ordner.
 
 ---
 

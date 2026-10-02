@@ -185,7 +185,10 @@ public static class SelfTest
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
+        results.Add(CheckUiScale(tree));
         results.Add(CheckTooltipStyle());
+        results.Add(CheckPerGridPaths());
+        results.Add(CheckChatLogPaths());
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
@@ -199,6 +202,107 @@ public static class SelfTest
         GD.Print(failed == 0 ? "[SelfTest] PASS" : "[SelfTest] FAIL");
 
         tree.Quit(failed == 0 ? 0 : 1);
+    }
+
+    /// <summary>
+    /// BUG-GRID-01: every per-grid path the app builds (<see cref="GridData"/>) differs between two
+    /// grids for the SAME account name -- the login-screen background, the object cache, the map tiles
+    /// and the chat logs -- and sits under the grids root. The same account on Second Life and OSGrid
+    /// is the reported bug, so that is the pair probed. Building a path must also touch nothing on
+    /// disk: a grid nobody ever logged into gets no directory from this check, which is what keeps it
+    /// safe next to "user data untouched".
+    /// </summary>
+    private static Check CheckPerGridPaths()
+    {
+        const string Name = "per-grid paths";
+        const string Agni = "https://login.agni.lindenlab.com/cgi-bin/login.cgi";
+        const string OsGrid = "http://hg.osgrid.org/";
+        const string Unused = "http://selftest-grid.invalid/";
+
+        string root = GridData.User.Root;
+        string unusedDir = GridData.User.GridDirectory(Unused);
+        bool existedBefore = System.IO.Directory.Exists(unusedDir);
+
+        string[] sl = {
+            GridData.LoginBackgroundPath(Agni, "Clifton", "Howlett"), GridData.ObjectCacheDirectory(Agni),
+            GridData.MapTileDirectory(Agni), GridData.LegacyChatLogDirectory(Agni, "Clifton", "Howlett"),
+        };
+        string[] os = {
+            GridData.LoginBackgroundPath(OsGrid, "Clifton", "Howlett"), GridData.ObjectCacheDirectory(OsGrid),
+            GridData.MapTileDirectory(OsGrid), GridData.LegacyChatLogDirectory(OsGrid, "Clifton", "Howlett"),
+        };
+        // Same grid written two ways is one grid.
+        bool sameGrid = GridData.ObjectCacheDirectory("http://hg.osgrid.org:80") == os[1]
+                        && GridData.LoginBackgroundPath("HG.OSGrid.org", " clifton ", "HOWLETT") == os[0];
+
+        var wrong = new List<string>();
+        for (int i = 0; i < sl.Length; i++)
+        {
+            if (sl[i] == os[i]) wrong.Add($"path {i} is the same on both grids: {sl[i]}");
+        }
+        // The two user:// paths and the picture live under the grids root; the chat log under its own.
+        foreach (int i in new[] { 0, 1, 2 })
+        {
+            if (!sl[i].StartsWith(root + "/") || !os[i].StartsWith(root + "/")) wrong.Add($"path {i} is outside {root}");
+        }
+        if (!sl[3].StartsWith(GridData.Chat.Root + "/")) wrong.Add("chat log directory is outside the chat root");
+        if (!sameGrid) wrong.Add("one grid written two ways gave two directories");
+
+        bool existsAfter = System.IO.Directory.Exists(unusedDir);
+        if (existedBefore != existsAfter) wrong.Add("building a path created a directory");
+
+        return wrong.Count == 0
+            ? new Check(Name, true, $"agni -> {sl[1]} ; osgrid -> {os[1]}")
+            : new Check(Name, false, string.Join("; ", wrong));
+    }
+
+    /// <summary>
+    /// FEAT-UI-41: the app-side path helper resolves the base folder and the account folder of a fake
+    /// login the way Firestorm names them (Second Life without a suffix, OSGrid, a local OpenSim, a grid
+    /// that told its name, one that told nothing, the beta grid), for an account with and without a
+    /// chosen folder, and two accounts get two keys; building them creates nothing on disk -- folders
+    /// that do not exist stay that way, which is what keeps it safe next to "user data untouched" (the
+    /// smoke test boots against the real data). Nothing here reads any other viewer's files.
+    /// </summary>
+    private static Check CheckChatLogPaths()
+    {
+        const string Name = "chat log paths";
+        string fake = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "slng-selftest-chatlog-" + Guid.NewGuid().ToString("N"));
+        string own = System.IO.Path.Combine(fake, "own");
+        string chosen = System.IO.Path.Combine(fake, "chosen");
+        var legacy = SLNG.Core.ChatLogs.ImLogNameStyle.Legacy;
+
+        SLNG.Core.ChatLogs.ChatLogTarget T(string uri, string? probed, string? choice)
+            => ChatLogPaths.Resolve(uri, "Clifton", "Howlett", probed, choice, legacy, own);
+
+        var wrong = new List<string>();
+        void Expect(string what, string actual, string expected)
+        {
+            if (actual != expected) wrong.Add($"{what}: {actual} (wanted {expected})");
+        }
+
+        const string Agni = "https://login.agni.lindenlab.com/cgi-bin/login.cgi";
+        Expect("Second Life", T(Agni, null, null).Directory, System.IO.Path.Combine(own, "clifton_howlett"));
+        Expect("beta grid", T("https://login.aditi.lindenlab.com/cgi-bin/login.cgi", null, null).Directory, System.IO.Path.Combine(own, "clifton_howlett.second_life_beta"));
+        Expect("OSGrid, no network", T("http://hg.osgrid.org/", null, null).Directory, System.IO.Path.Combine(own, "clifton_howlett.osgrid"));
+        Expect("local OpenSim", T("http://127.0.0.1:9000/", null, null).Directory, System.IO.Path.Combine(own, "clifton_howlett.localhost"));
+        Expect("a grid that told its name", T("http://www.alifevirtual.com:8002/", "Alife Virtual", null).Directory, System.IO.Path.Combine(own, "clifton_howlett.alife_virtual"));
+        Expect("a grid that told nothing", T("http://grid.example:9000/", null, null).Directory, System.IO.Path.Combine(own, "clifton_howlett.grid.example_9000"));
+        Expect("a chosen folder", T("http://hg.osgrid.org/", null, chosen).Directory, System.IO.Path.Combine(chosen, "clifton_howlett.osgrid"));
+        Expect("system name on a Linden grid", ChatLogPaths.SystemName(Agni), "Second Life");
+        Expect("system name elsewhere", ChatLogPaths.SystemName("http://hg.osgrid.org/"), "Grid");
+        if (SLNG.Core.ChatLogs.ChatLogAccountKey.Of(Agni, "Clifton", "Howlett") == SLNG.Core.ChatLogs.ChatLogAccountKey.Of("http://hg.osgrid.org/", "Clifton", "Howlett"))
+            wrong.Add("one account name on two grids gave one key");
+
+        // The live resolution only reads the stored choice; it must not make a folder.
+        var live = ChatLogPaths.ResolveCurrent("http://hg.osgrid.org/", "Clifton", "Howlett", null);
+        if (live.Directory.Length == 0) wrong.Add("the live resolution is empty");
+
+        if (System.IO.Directory.Exists(fake)) wrong.Add("resolving a login created a directory");
+
+        return wrong.Count == 0
+            ? new Check(Name, true, $"this machine would log OSGrid to {live.Directory} ({live.Why})")
+            : new Check(Name, false, string.Join("; ", wrong));
     }
 
     /// <summary>
@@ -1027,6 +1131,56 @@ public static class SelfTest
         }
     }
 
+    /// <summary>
+    /// FEAT-UI-42: the interface scale reaches the whole UI through the ROOT window and nowhere else, and
+    /// leaves the 3D render at the window's pixels. Applied in memory only (UiScale.Apply never writes the
+    /// preferences), and the user's real scale is put back.
+    /// </summary>
+    private static Check CheckUiScale(SceneTree tree)
+    {
+        const string Name = "ui scale";
+        var root = tree.Root;
+        float restore = UI.UiScale.Current;
+        var probe = new Control { Position = new Vector2(10, 20), CustomMinimumSize = new Vector2(100, 50), Size = new Vector2(100, 50) };
+        try
+        {
+            var problems = new List<string>();
+            if (root.ContentScaleMode != Window.ContentScaleModeEnum.Disabled)
+                problems.Add($"root content scale mode is {root.ContentScaleMode}, not Disabled (the 3D view would be resampled)");
+            if (!Mathf.IsEqualApprox(root.ContentScaleFactor, restore))
+                problems.Add($"root ContentScaleFactor {root.ContentScaleFactor} is not the effective scale {restore}");
+            if (!(UI.UiScale.OsScale > 0f))
+                problems.Add($"detected OS scale {UI.UiScale.OsScale} is not usable");
+
+            root.AddChild(probe);
+            foreach (float s in new[] { 1.0f, 1.5f, 2.0f, 3.0f })
+            {
+                UI.UiScale.Apply(s);
+                var physical = new Vector2(root.Size.X, root.Size.Y);
+                var visible = root.GetVisibleRect().Size;
+                if (!visible.IsEqualApprox(physical / s))
+                    problems.Add($"@{s}: visible rect {visible} is not the window {physical} / {s}");
+                if (!UI.UiScale.RenderSize(root).IsEqualApprox(physical))
+                    problems.Add($"@{s}: RenderSize {UI.UiScale.RenderSize(root)} is not the window's pixels {physical}");
+                // A Control keeps its own coordinates (no scaling in its own transform) while the root's
+                // final transform carries the whole scale -- one scale, applied once.
+                if (!probe.GetGlobalRect().Size.IsEqualApprox(new Vector2(100, 50)))
+                    problems.Add($"@{s}: a 100x50 Control reports {probe.GetGlobalRect().Size} in UI units");
+                if (!root.GetFinalTransform().Scale.IsEqualApprox(new Vector2(s, s)))
+                    problems.Add($"@{s}: root final transform scale is {root.GetFinalTransform().Scale}");
+            }
+            return problems.Count == 0
+                ? new Check(Name, true, $"root content scale (Disabled mode) carries the scale; effective {restore:0.##}x, display reports {UI.UiScale.OsScale:0.##}x; render size stays the window's pixels at 1x..3x")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(probe)) { probe.GetParent()?.RemoveChild(probe); probe.QueueFree(); }
+            UI.UiScale.Apply(restore);
+        }
+    }
+
     /// <summary>Tooltips get the app's dark, near-opaque box (Boot applies UiTheme.ApplyTooltipStyle to the
     /// engine's default theme); the stock one is 50 % black and unreadable over a bright world.</summary>
     private static Check CheckTooltipStyle()
@@ -1051,7 +1205,7 @@ public static class SelfTest
         var log = new SLNG.Core.Services.ChatLogger(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "slng-selftest-no-chat"));
         static (UI.SLNGWindow, Action) W<T>(Action<T>? init = null) where T : UI.SLNGWindow, new() { var w = new T(); return (w, () => init?.Invoke(w)); }
         Guid id() => Guid.NewGuid();
-        var windows = new[]
+        (UI.SLNGWindow, Action)[] Build() => new[]
         {
             W<UI.AboutWindow>(), W<UI.ActiveAnimationsWindow>(), W<UI.AvatarHoverWindow>(), W<UI.CameraHUD>(), W<UI.CreateLandmarkWindow>(),
             W<UI.EnvironmentWindow>(), W<UI.MaterialLabWindow>(), W<UI.InventoryPanel>(), W<UI.ItemPropertiesWindow>(),
@@ -1075,8 +1229,22 @@ public static class SelfTest
             W<UI.TermsOfServiceWindow>(w => w.Initialize("https://grid.invalid/login", "Accept the terms.", false)),
             W<UI.UserProfileWindow>(w => w.Initialize(id(), "Someone", session, null, null)),
         };
+        int windowCount = 0;
         static void Layout(Control c) { if (c is Container) c.Notification((int)Container.NotificationSortChildren); foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc); }
         var failures = new List<string>();
+        // FEAT-UI-42: the interface scale is the root window's content scale, which moves every Control
+        // together, so the inset between a frame and its content must come out the same (14/12 in UI
+        // units) at ANY scale. The check used to scale its expectation by the window's own Scale; a
+        // window that still scaled itself on top of the root would now fail it (double scaling).
+        // Scales are applied in memory only (UiScale.Apply never writes) and the real one restored.
+        float restoreScale = UI.UiScale.Current;
+        try
+        {
+        foreach (float uiScale in new[] { 1.0f, 1.25f, 2.0f })
+        {
+        UI.UiScale.Apply(uiScale);
+        var windows = Build();
+        windowCount = windows.Length;
         foreach (var (win, init) in windows)
         {
             try
@@ -1099,19 +1267,26 @@ public static class SelfTest
                     }
                 }
                 Walk(win.ContentContainer);
-                // The insets scale with the user's UI scale (Display preferences), and this check boots on the real
-        // preferences -- so expect the scaled value, or a 125 % setting fails a perfectly consistent client.
-        float scale = UI.SLNGWindow.GlobalUiScale;
-        float h = (win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH) * scale, v = UI.SLNGWindow.DefaultContentMarginV * scale; // radar: map is full-bleed
+                float h = win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH, v = UI.SLNGWindow.DefaultContentMarginV; // radar: map is full-bleed
                 if (new[] { h, h, v, v }.Zip(got).Any(p => Math.Abs(p.First - p.Second) > 2))
-                    failures.Add($"{win.GetType().Name} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
+                    failures.Add($"{win.GetType().Name} @{uiScale:0.##} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
+                if (win.Scale != Vector2.One)
+                    failures.Add($"{win.GetType().Name} @{uiScale:0.##} carries its own Scale {win.Scale} on top of the root's content scale (scales twice)");
             }
             catch (Exception ex) { failures.Add($"{win.GetType().Name} threw {ex.GetType().Name}: {ex.Message}"); }
-            finally { if (GodotObject.IsInstanceValid(win)) win.QueueFree(); }
+            finally
+            {
+                // Out of the tree at once, not queued: a window still in the tree when the next scale is
+                // applied would hear the viewport resize and could re-clamp and SAVE its geometry.
+                if (GodotObject.IsInstanceValid(win)) { win.GetParent()?.RemoveChild(win); win.QueueFree(); }
+            }
         }
+        }
+        }
+        finally { UI.UiScale.Apply(restoreScale); }
         return failures.Count == 0
-            ? new Check("window insets", true, $"{windows.Length} windows: 14/14/12/12 px from frame to content (radar map excepted)")
-            : new Check("window insets", false, $"off the standard 14/14/12/12 by more than 2 px: {string.Join("; ", failures)}");
+            ? new Check("window insets", true, $"{windowCount} windows: 14/14/12/12 px from frame to content at 100 %, 125 % and 200 % (radar map excepted), none scales itself")
+            : new Check("window insets", false, $"off the standard 14/14/12/12 by more than 2 px, or scaling itself: {string.Join("; ", failures)}");
     }
 
     /// <summary>

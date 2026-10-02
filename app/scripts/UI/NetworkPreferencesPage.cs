@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using Godot;
 
@@ -6,7 +7,7 @@ namespace SLNG.App.UI;
 public partial class NetworkPreferencesPage : VBoxContainer
 {
     private string _cacheDir = null!;
-    private string _objectCacheDir = "";
+    private System.Func<IReadOnlyList<string>> _objectCacheDirs = () => System.Array.Empty<string>();
     private System.Action? _clearObjectCache;
     private Label _sizeLabel = null!;
 
@@ -16,13 +17,16 @@ public partial class NetworkPreferencesPage : VBoxContainer
     }
 
     /// <param name="cacheDir">The asset cache directory.</param>
-    /// <param name="objectCacheDir">FEAT-NET-04: where the object cache keeps one file per region.</param>
+    /// <param name="objectCacheDirs">FEAT-NET-04: where the object cache keeps one file per region.
+    /// BUG-GRID-01: there is one such directory per grid, so this is asked each time rather than
+    /// fixed at startup, before any login has said which grid.</param>
     /// <param name="clearObjectCache">Forgets what the running session holds of the object cache in
     /// memory (there may be no session yet); the files are removed here either way.</param>
-    public void Initialize(string cacheDir, string objectCacheDir = "", System.Action? clearObjectCache = null)
+    public void Initialize(string cacheDir, System.Func<IReadOnlyList<string>>? objectCacheDirs = null,
+        System.Action? clearObjectCache = null)
     {
         _cacheDir = cacheDir;
-        _objectCacheDir = objectCacheDir;
+        if (objectCacheDirs != null) _objectCacheDirs = objectCacheDirs;
         _clearObjectCache = clearObjectCache;
 
         var heading = new Label { Text = L10n.Tr("ui.preferences.network_heading") };
@@ -50,7 +54,8 @@ public partial class NetworkPreferencesPage : VBoxContainer
             // FEAT-NET-04: the object cache goes with it. The running session first, so it does not
             // write back what it still holds in memory; then whatever is on disk.
             _clearObjectCache?.Invoke();
-            DeleteFiles(_objectCacheDir, "*.slobj*");
+            foreach (var dir in _objectCacheDirs())
+                DeleteFiles(dir, "*.slobj*");
 
             _sizeLabel.Text = GetCacheSizeText();
         }
@@ -73,7 +78,15 @@ public partial class NetworkPreferencesPage : VBoxContainer
     private string GetCacheSizeText()
         => L10n.TrFormat("ui.preferences.cache_size",
             FormatSize(DirectorySize(_cacheDir, "*")),
-            FormatSize(DirectorySize(_objectCacheDir, "*.slobj")));
+            FormatSize(ObjectCacheSize()));
+
+    private long ObjectCacheSize()
+    {
+        long total = 0;
+        foreach (var dir in _objectCacheDirs())
+            total += DirectorySize(dir, "*.slobj");
+        return total;
+    }
 
     private static long DirectorySize(string directory, string pattern)
     {
