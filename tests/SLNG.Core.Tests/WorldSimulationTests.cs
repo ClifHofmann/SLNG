@@ -323,6 +323,54 @@ public class WorldSimulationTests
         Assert.Equal(realAgentId, avatar.AgentId);
     }
 
+    /// <summary>The own avatar's AvatarAppearance can arrive long before its entity exists -- on a
+    /// heavy region load the first full ObjectUpdate for the agent came ~20 s after the relay. The
+    /// event was dropped and the avatar stayed a blank mannequin (no bake, no shape) until a relog,
+    /// because the watchdog believed the bakes had been seen. The world keeps the last appearance
+    /// per agent until that agent's entity is created, then applies it.</summary>
+    [Fact]
+    public void AvatarAppearanceEvent_ThatArrivesBeforeTheEntity_IsAppliedWhenTheEntityAppears()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        var visualParams = new byte[] { 9, 8, 7 };
+        var bakes = new Dictionary<int, Guid> { [8] = Guid.NewGuid() };
+        session.RaiseAvatarAppearance(new AvatarAppearanceEvent(123ul, agentId, visualParams, bakes));
+        simulation.Pump();
+        Assert.Null(world.GetEntity(123ul, 42));
+
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(123ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "A", "B", true));
+        simulation.Pump();
+
+        var avatar = world.GetEntity(123ul, 42)!.GetComponent<AvatarComponent>()!;
+        Assert.Equal(visualParams, avatar.VisualParams);
+        Assert.Equal(bakes[8], avatar.BakedTextures![8]);
+    }
+
+    /// <summary>A held appearance belongs to the region it came from: after a teleport the same
+    /// agent id can appear in another region, and the old region's textures must not be applied.</summary>
+    [Fact]
+    public void AHeldAvatarAppearance_IsNotAppliedToAnEntityInAnotherRegion()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        var agentId = Guid.NewGuid();
+        session.RaiseAvatarAppearance(new AvatarAppearanceEvent(111ul, agentId, new byte[] { 1 },
+            new Dictionary<int, Guid> { [8] = Guid.NewGuid() }));
+        simulation.Pump();
+
+        session.RaiseAvatarUpdate(new AvatarUpdateEvent(222ul, 42, agentId, Vector3.Zero, Quaternion.Identity, "A", "B", true));
+        simulation.Pump();
+
+        var avatar = world.GetEntity(222ul, 42)!.GetComponent<AvatarComponent>()!;
+        Assert.True((avatar.BakedTextures?.Count ?? 0) == 0);
+    }
+
     /// <summary>Regression test (round 5 of the remote-avatar float investigation): a resolved
     /// AgentId must never regress back to Guid.Empty from a later AvatarUpdateEvent that failed to
     /// resolve it (e.g. a bare TerseObjectUpdate whose Prim isn't an Avatar). Before this fix,

@@ -961,6 +961,9 @@ public sealed class WorldSimulation : IDisposable
         }
         _world.NotifyComponentUpdated(entity, avatar);
 
+        // An appearance that arrived before this entity existed is applied now.
+        ApplyHeldAppearance(avatar.AgentId, e.RegionHandle);
+
         // Link any worn mesh that arrived before this avatar entity existed.
         LinkPendingAttachments(e.RegionHandle, e.LocalId, entity.Id);
     }
@@ -1002,28 +1005,70 @@ public sealed class WorldSimulation : IDisposable
         return entity;
     }
 
+    /// <summary>The last <c>AvatarAppearance</c> per agent whose avatar entity did not exist yet. The
+    /// sim sends it once and does not repeat it, but the entity only appears with the agent's first
+    /// full ObjectUpdate -- on a heavy region load that was ~20 s after the relay, and an event that
+    /// finds no entity used to be dropped for good: the avatar stayed a blank mannequin (no bake, no
+    /// shape) until a relog, and <c>GridSession</c> believed the bakes had been delivered so its
+    /// watchdog never recovered them. Same shape as <see cref="_displayNames"/>. Drain thread only.</summary>
+    private readonly Dictionary<System.Guid, AvatarAppearanceEvent> _heldAppearance = new();
+
+    /// <summary>A bound so agents that never get an entity (left the interest list first) cannot pile up.</summary>
+    private const int MaxHeldAppearances = 128;
+
+    private void HoldAppearance(AvatarAppearanceEvent e)
+    {
+        if (e.AgentId == System.Guid.Empty) return;
+        // An event that carries no shape (a bake-only update) must not blank the shape an earlier
+        // one brought -- the same rule ApplyAvatarAppearance follows for a live entity.
+        if (e.VisualParams is not { Length: > 0 }
+            && _heldAppearance.TryGetValue(e.AgentId, out var earlier)
+            && earlier.RegionHandle == e.RegionHandle
+            && earlier.VisualParams is { Length: > 0 })
+        {
+            e = e with { VisualParams = earlier.VisualParams };
+        }
+        if (_heldAppearance.Count >= MaxHeldAppearances && !_heldAppearance.ContainsKey(e.AgentId))
+            _heldAppearance.Clear();
+        _heldAppearance[e.AgentId] = e;
+    }
+
+    /// <summary>Applies the held appearance of <paramref name="agentId"/> to its now-existing entity.
+    /// Only if it came from <paramref name="regionHandle"/>: after a teleport the same agent id turns
+    /// up in another region, and the old region's textures say nothing about the new body.</summary>
+    private void ApplyHeldAppearance(System.Guid agentId, ulong regionHandle)
+    {
+        if (agentId == System.Guid.Empty || !_heldAppearance.TryGetValue(agentId, out var held)) return;
+        if (held.RegionHandle != regionHandle) return;
+        _heldAppearance.Remove(agentId);
+        ApplyAvatarAppearance(held);
+    }
+
     private void ApplyAvatarAppearance(AvatarAppearanceEvent e)
     {
         var entity = FindAvatarEntityByAgentId(e.AgentId);
 
-        if (entity != null)
+        if (entity == null)
         {
-            var avatar = entity.GetComponent<AvatarComponent>()!;
-            // An empty parameter array means "this event carries no shape", NOT "use the default
-            // shape" -- clobbering a good set with it would visibly reset the avatar's proportions.
-            // A bake-completion event legitimately carries fresh textures but no shape of its own
-            // (FEAT-AVATAR-01: GridSession.OnAppearanceSet), so keep whatever shape we already had.
-            if (e.VisualParams is { Length: > 0 })
-            {
-                avatar.VisualParams = e.VisualParams;
-                if (e.VisualParams.Length > 31)
-                    avatar.IsMale = e.VisualParams[31] > 127;
-            }
-            avatar.BakedTextures = e.BakedTextures;
-            avatar.HoverOffsetZ = e.HoverOffsetZ;
-            entity.SetComponent(avatar);
-            _world.NotifyComponentUpdated(entity, avatar);
+            HoldAppearance(e);
+            return;
         }
+
+        var avatar = entity.GetComponent<AvatarComponent>()!;
+        // An empty parameter array means "this event carries no shape", NOT "use the default
+        // shape" -- clobbering a good set with it would visibly reset the avatar's proportions.
+        // A bake-completion event legitimately carries fresh textures but no shape of its own
+        // (FEAT-AVATAR-01: GridSession.OnAppearanceSet), so keep whatever shape we already had.
+        if (e.VisualParams is { Length: > 0 })
+        {
+            avatar.VisualParams = e.VisualParams;
+            if (e.VisualParams.Length > 31)
+                avatar.IsMale = e.VisualParams[31] > 127;
+        }
+        avatar.BakedTextures = e.BakedTextures;
+        avatar.HoverOffsetZ = e.HoverOffsetZ;
+        entity.SetComponent(avatar);
+        _world.NotifyComponentUpdated(entity, avatar);
     }
 
     /// <summary>Display Names resolved so far, by agent id, whether or not that agent is in the
