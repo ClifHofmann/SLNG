@@ -585,12 +585,12 @@
     },
     "material_lab": {
       "title": "Material lab",
-      "intro": "Developer tool for A/B comparison against Firestorm. Values are not saved; after a restart the defaults apply again (veil 0.00, viewer sun highlight on).",
-      "legacy_specular": "Legacy reflection (veil)",
-      "legacy_specular_hint": "Scales the specular of opaque faces with a specular map (e.g. the terrace floor): the pale sky veil and, without the viewer sun highlight, the sun highlight too. Default 0.00 (no veil). 1.00 = the full veil as before v0.25.13. Other face kinds (alpha, double-sided, avatar) are not affected.",
+      "intro": "Developer tool for A/B comparison against Firestorm. Values are not saved; after a restart the defaults apply again (reflection 1.00, viewer sun highlight on).",
+      "legacy_specular": "Legacy reflection (environment)",
+      "legacy_specular_hint": "Scales the sky/environment reflection of faces with a specular map. With the viewer sun highlight on (default) 1.00 is the viewer's own gloss reflection: none at low glossiness (the terrace floor), growing with glossiness. With it off it scales Godot's own reflection, and 1.00 is the stock look (pale sky veil). Applies to opaque, alpha-mask and alpha-blend faces; avatar and HUD faces are not affected.",
       "viewer_spec": "Viewer sun highlight",
-      "viewer_spec_hint": "Default: on. For opaque faces with a specular map, replaces the sun highlight with the reference viewer's own formula (wide Blinn-Phong lobe, tinted) instead of Godot's own highlight. Off = Godot's highlight, and the veil slider then also scales it.",
-      "reset": "Reset (0.00)"
+      "viewer_spec_hint": "Default: on. For opaque, alpha-mask and alpha-blend faces with a specular map, replaces the sun highlight with the reference viewer's own formula (wide Blinn-Phong lobe, tinted) instead of Godot's own highlight, and takes the viewer's gloss-dependent reflection. Off = Godot's highlight, and the reflection slider then scales that.",
+      "reset": "Reset (1.00)"
     },
     "active_animations": {
       "title": "Active Animations",

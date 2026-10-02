@@ -8,16 +8,18 @@ namespace SLNG.App;
 /// <summary>
 /// State of the developer "Material lab" window: live render knobs for A/B-ing the legacy
 /// material path against the reference viewer. A dev tool -- nothing here is saved; every launch
-/// starts at the defaults (veil 0, viewer sun highlight on), which are the shipped rendering.
+/// starts at the defaults (reflection scale 1, viewer sun highlight on), which are the shipped rendering.
 /// </summary>
 public static class MaterialLab
 {
-    /// <summary>Multiplier on the SPECULAR a face with a specular map gives Godot (see
-    /// <see cref="LegacyShadeMirror.LegacySpecularScaleUniform"/>). 1 = unchanged.</summary>
+    /// <summary>Multiplier on the environment reflection of a face with a specular map (see
+    /// <see cref="LegacyShadeMirror.LegacySpecularScaleUniform"/>): the viewer's gloss reflection on a
+    /// viewer-specular twin, Godot's own F0 on the stock Opaque. 1 = viewer-faithful / unchanged.</summary>
     public static float LegacySpecularScale { get; private set; } = LegacyShadeMirror.DefaultLegacySpecularScale;
 
-    /// <summary>Default ON: faces with a specular map on the Opaque variant take the
-    /// reference viewer's own sun highlight (prim_opaque_vspec.gdshader) instead of Godot's GGX lobe.</summary>
+    /// <summary>Default ON: faces with a specular map on a world-prim variant (opaque, alpha-mask,
+    /// alpha-blend) take the reference viewer's own sun highlight and gloss reflection (the *_vspec
+    /// twins) instead of Godot's GGX lobe.</summary>
     public static bool ViewerSunSpecular { get; private set; } = LegacyShadeMirror.DefaultViewerSunSpecular;
 
     /// <summary>Raised on the main thread when <see cref="ViewerSunSpecular"/> changes; ObjectRenderer

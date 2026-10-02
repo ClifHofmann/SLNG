@@ -149,22 +149,29 @@ public class LegacyShadeMirrorTests
         Assert.True(fold > 0 && scale > fold && scale < legacyBranch, "the scale must follow the metallic fold inside the specular-map branch");
         Assert.Equal(1, shader.Split("out_specular *= " + name).Length - 1);
 
-        // The shipped defaults (v0.25.13): veil 0, viewer sun highlight on.
-        Assert.Equal(0.0f, LegacyShadeMirror.DefaultLegacySpecularScale);
+        // The shipped defaults (v0.25.16): reflection scale 1 (viewer-faithful), viewer sun highlight on.
+        Assert.Equal(1.0f, LegacyShadeMirror.DefaultLegacySpecularScale);
         Assert.True(LegacyShadeMirror.DefaultViewerSunSpecular);
-        Assert.Equal("0.0", value);
+        Assert.Equal("1.0", value);
 
-        // The scale is compiled in ONLY where the lab owns the highlight or can switch it off: the
-        // two Opaque variants. Every other variant (scissor, hash, blend, double-sided, avatar, HUD,
-        // mirror...) must stay unscaled so those faces keep the specular they always had.
+        // Godot's own F0 is scaled ONLY by the stock Opaque variant (the checkbox-off fallback). The
+        // viewer-specular twins scale the viewer's gloss reflection instead, inside
+        // slng_viewer_gloss_env_specular, and every other variant (double-sided opaque, avatar, HUD,
+        // mirror...) stays unscaled so those faces keep the specular they always had.
         var normalized = System.Text.RegularExpressions.Regex.Replace(shader, @"\s+", " ");
         Assert.Contains("#ifdef SLNG_LAB_SPECULAR_SCALE out_specular *= " + name + "; #endif", normalized);
+        Assert.Contains("weight * " + name + " / (VSPEC_GODOT_F0_PER_SPECULAR * VSPEC_PROBE_INTENSITY)", normalized);
         var primDir = Path.Combine(dir.FullName, "app", "materials", "prim");
         foreach (var f in Directory.GetFiles(primDir, "*.gdshader"))
         {
-            bool defines = File.ReadAllText(f).Contains("#define SLNG_LAB_SPECULAR_SCALE");
-            bool expected = Path.GetFileName(f) is "prim_opaque.gdshader" or "prim_opaque_vspec.gdshader";
-            Assert.True(defines == expected, Path.GetFileName(f) + (expected ? " must" : " must not") + " define SLNG_LAB_SPECULAR_SCALE");
+            var text = File.ReadAllText(f);
+            string file = Path.GetFileName(f);
+            bool labExpected = file == "prim_opaque.gdshader";
+            Assert.True(text.Contains("#define SLNG_LAB_SPECULAR_SCALE") == labExpected,
+                file + (labExpected ? " must" : " must not") + " define SLNG_LAB_SPECULAR_SCALE");
+            bool vspecExpected = file.EndsWith("_vspec.gdshader", StringComparison.Ordinal);
+            Assert.True(text.Contains("#define SLNG_VIEWER_SPEC") == vspecExpected,
+                file + (vspecExpected ? " must" : " must not") + " define SLNG_VIEWER_SPEC");
         }
     }
 
@@ -222,38 +229,125 @@ public class LegacyShadeMirrorTests
         Assert.Equal(0.4770f, rgb.Z, 3);
     }
 
-    [Fact]
-    public void TheViewerSpecShaderCarriesTheSameConstantsAndOnlyReplacesLightingInItsOwnVariant()
+    private static string PrimDir()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "app", "materials", "prim", "prim_opaque_vspec.gdshader")))
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "app", "materials", "prim", "prim_common.gdshaderinc")))
             dir = dir.Parent;
         Assert.NotNull(dir);
-        var prim = Path.Combine(dir!.FullName, "app", "materials", "prim");
-        var vspec = File.ReadAllText(Path.Combine(prim, "prim_opaque_vspec.gdshader"));
+        return Path.Combine(dir!.FullName, "app", "materials", "prim");
+    }
+
+    [Fact]
+    public void TheViewerSpecIncludeCarriesTheSameConstantsAndOnlyReplacesLightingInTheTwins()
+    {
+        var prim = PrimDir();
+        var inc = File.ReadAllText(Path.Combine(prim, "prim_common.gdshaderinc"));
         var inv = System.Globalization.CultureInfo.InvariantCulture;
 
-        Assert.Contains("const float VSPEC_EXPONENT_SCALE = " + LegacyShadeMirror.ViewerSpecularExponentScale.ToString("0.0", inv) + ";", vspec);
-        Assert.Contains("const float VSPEC_LIT_NL_SCALE = 6.0;", vspec);
-        Assert.Contains("const float VSPEC_FRESNEL_BASE = 0.5;", vspec);
-        Assert.Contains("const float VSPEC_FRESNEL_SCALE = 0.4;", vspec);
-        Assert.Contains("float gt = max(0.0, min(2.0 * nh * nv / vh, 2.0 * nh * nl / vh));", vspec);
-        Assert.Contains("float lut = pow(nh, n) * ((n + 2.0) * (n + 4.0)) / (8.0 * PI * (exp2(-n / 2.0) + n));", vspec);
-        Assert.Contains("float scol = ATTENUATION * fres * lut * gt / (nh * nl);", vspec);
-        Assert.Contains("SPECULAR_LIGHT += lit * scol * radiance * v_vspec_rgb;", vspec);
-        Assert.Contains("global uniform vec3 slng_viewer_sunlit;", vspec);
-        Assert.Contains("radiance = slng_viewer_sunlit;", vspec);
-        Assert.Contains("if (v_vspec_gloss > 0.0)", vspec);
+        Assert.Contains("const float VSPEC_EXPONENT_SCALE = " + LegacyShadeMirror.ViewerSpecularExponentScale.ToString("0.0", inv) + ";", inc);
+        Assert.Contains("const float VSPEC_LIT_NL_SCALE = 6.0;", inc);
+        Assert.Contains("const float VSPEC_FRESNEL_BASE = 0.5;", inc);
+        Assert.Contains("const float VSPEC_FRESNEL_SCALE = 0.4;", inc);
+        Assert.Contains("float gt = max(0.0, min(2.0 * nh * nv / vh, 2.0 * nh * nl / vh));", inc);
+        Assert.Contains("float lut = pow(nh, n) * ((n + 2.0) * (n + 4.0)) / (8.0 * PI * (exp2(-n / 2.0) + n));", inc);
+        Assert.Contains("float scol = ATTENUATION * fres * lut * gt / (nh * nl);", inc);
+        Assert.Contains("SPECULAR_LIGHT += lit * scol * radiance * v_vspec_rgb;", inc);
+        Assert.Contains("global uniform vec3 slng_viewer_sunlit;", inc);
+        Assert.Contains("radiance = slng_viewer_sunlit;", inc);
+        Assert.Contains("if (v_vspec_gloss > 0.0)", inc);
 
-        // light() is defined in this variant and ONLY this one: it replaces Godot's whole direct
-        // lighting, so every shipped variant must keep the built-in.
-        foreach (var f in Directory.GetFiles(prim, "*.gdshader*"))
-        {
-            if (Path.GetFileName(f) == "prim_opaque_vspec.gdshader") continue;
+        // the gloss/environment reflection constants, and the probe intensity they divide by
+        Assert.Contains("const float VSPEC_GLOSS_ENV_WEIGHT = 0.25;", inc);
+        Assert.Contains("const float VSPEC_GLOSS_ENV_FRESNEL_MIN = 0.3;", inc);
+        Assert.Contains("const float VSPEC_GODOT_F0_PER_SPECULAR = " + LegacyShadeMirror.GodotF0PerSpecular.ToString("0.00", inv) + ";", inc);
+        Assert.Contains("const float VSPEC_PROBE_INTENSITY = " + LegacyShadeMirror.ReflectionProbeIntensity.ToString("0.0", inv) + ";", inc);
+        Assert.Contains("float fresnel = clamp(1.0 - nv, VSPEC_GLOSS_ENV_FRESNEL_MIN, 1.0);", inc);
+        Assert.Contains("VSPEC_GLOSS_ENV_WEIGHT * spec_lum * fresnel * fresnel * glossiness * (1.0 - clamp(albedo_lum, 0.0, 1.0))", inc);
+
+        // light() exists once, inside the SLNG_VIEWER_SPEC block of the include, and in NO shader file:
+        // it replaces Godot's whole direct lighting, so only a twin may carry it.
+        Assert.Equal(1, inc.Split("void light()").Length - 1);
+        Assert.True(inc.IndexOf("#ifdef SLNG_VIEWER_SPEC", StringComparison.Ordinal) < inc.IndexOf("void light()", StringComparison.Ordinal));
+        foreach (var f in Directory.GetFiles(prim, "*.gdshader"))
             Assert.DoesNotContain("void light()", File.ReadAllText(f));
-        }
+
         // and the stock Opaque variant is untouched by the experiment
         var opaque = File.ReadAllText(Path.Combine(prim, "prim_opaque.gdshader"));
-        Assert.DoesNotContain("vspec", opaque);
+        Assert.DoesNotContain("vspec", opaque, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EveryViewerSpecTwinIsItsBaseShaderPlusTheDefine()
+    {
+        // The twins are copies kept in lockstep by hand (Godot has no way to parametrise render_mode),
+        // so pin them: from `shader_type` on, a twin must equal its base with the define in front of
+        // the include. A uniform or a fragment() line added to a base and not to its twin fails here.
+        var prim = PrimDir();
+        string[] bases =
+        {
+            "prim_opaque", "prim_scissor", "prim_scissor_doublesided", "prim_scissor_edge", "prim_hash",
+            "prim_blend", "prim_blend_doublesided", "prim_blend_depth", "prim_blend_prepass",
+        };
+        static string Body(string text)
+        {
+            text = text.Replace("\r\n", "\n");
+            text = text.Substring(text.IndexOf("shader_type spatial;", StringComparison.Ordinal));
+            // the stock Opaque's lab define belongs to the base only
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"// Material lab: this variant takes[^\n]*\n#define SLNG_LAB_SPECULAR_SCALE\n", "");
+            text = text.Replace("// The viewer's legacy-specular lighting (custom light() + gloss/environment reflection).\n#define SLNG_VIEWER_SPEC\n", "");
+            // and the twin's one block in fragment(): what light() reads back
+            text = text.Replace("\n    // Twin only: what light() reads back (a varying can be assigned in fragment() only).\n"
+                + "    vec4 vspec = slng_viewer_spec_capture(UV);\n"
+                + "    v_vspec_rgb = vspec.rgb;\n"
+                + "    v_vspec_gloss = vspec.a;\n", "");
+            return text;
+        }
+        foreach (var b in bases)
+        {
+            var baseText = File.ReadAllText(Path.Combine(prim, b + ".gdshader"));
+            var twinText = File.ReadAllText(Path.Combine(prim, b + "_vspec.gdshader"));
+            Assert.Contains("#define SLNG_VIEWER_SPEC\n#include", twinText.Replace("\r\n", "\n"));
+            Assert.Contains("v_vspec_gloss = vspec.a;", twinText);
+            Assert.Equal(Body(baseText), Body(twinText));
+        }
+    }
+
+    [Fact]
+    public void TheViewerGlossEnvironmentReflectionIsNothingAtTheTerraceFloorAndGrowsWithGlossiness()
+    {
+        // applyGlossEnv: 0.25 * spec * fresnel^2 * glossiness * (1 - color), head-on fresnel = 0.3.
+        // Terrace floor, gloss 30, specular luminance 0.81: ~0.0021 -- the upper bound the earlier probe
+        // measured, i.e. no glass-like veil. (A pure white map: 0.0026.)
+        Assert.Equal(0.0021f, ClassicLightBalance.ViewerGlossEnvWeight(0.81f, 30f / 255f), 4);   // the terrace floor's specular luminance
+        Assert.Equal(0.00265f, ClassicLightBalance.ViewerGlossEnvWeight(1f, 30f / 255f), 4);   // a pure white map
+        float g30 = LegacyShadeMirror.ViewerGlossEnvSpecular(1f, 30f / 255f, 1f, 0f);
+        float g128 = LegacyShadeMirror.ViewerGlossEnvSpecular(1f, 128f / 255f, 1f, 0f);
+        float g220 = LegacyShadeMirror.ViewerGlossEnvSpecular(1f, 220f / 255f, 1f, 0f);
+        // SPECULAR = weight / (0.08 * 1.5)
+        Assert.Equal(0.00265f / 0.12f, g30, 3);
+        Assert.True(g30 < 0.03f, "gloss 30 must not bring the constant veil back");
+        Assert.True(g128 > g30 * 4f && g220 > g128, "linear in glossiness");
+        Assert.Equal(220f / 30f, g220 / g30, 2);
+    }
+
+    [Fact]
+    public void TheViewerGlossEnvironmentReflectionFollowsTheFresnelRampAndTheOtherFactors()
+    {
+        float g = 220f / 255f;
+        // fresnel = clamp(1 - N.V, 0.3, 1): flat below 1 - nv = 0.3, then (1 - nv)^2
+        float head = LegacyShadeMirror.ViewerGlossEnvSpecular(1f, g, 1f, 0f);
+        Assert.Equal(head, LegacyShadeMirror.ViewerGlossEnvSpecular(1f, g, 0.85f, 0f), 5);
+        float mid = LegacyShadeMirror.ViewerGlossEnvSpecular(1f, g, 0.5f, 0f);
+        Assert.Equal(head * (0.5f * 0.5f) / (0.3f * 0.3f), mid, 4);
+        // saturates at SPECULAR 1 (F0 0.08 * probe 1.5 = 0.12 of the viewer's 0.22 peak)
+        Assert.Equal(1f, LegacyShadeMirror.ViewerGlossEnvSpecular(1f, 1f, 0f, 0f));
+        // no gloss, no reflection; a bright surface reflects less (1 - color); the colour scales it; the lab scales it
+        Assert.Equal(0f, LegacyShadeMirror.ViewerGlossEnvSpecular(1f, 0f, 0.5f, 0f));
+        Assert.Equal(head * 0.5f, LegacyShadeMirror.ViewerGlossEnvSpecular(1f, g, 1f, 0.5f), 5);
+        Assert.Equal(0f, LegacyShadeMirror.ViewerGlossEnvSpecular(1f, g, 1f, 1f));
+        Assert.Equal(head * 0.5f, LegacyShadeMirror.ViewerGlossEnvSpecular(0.5f, g, 1f, 0f), 5);
+        Assert.Equal(head * 0.5f, LegacyShadeMirror.ViewerGlossEnvSpecular(1f, g, 1f, 0f, scale: 0.5f), 5);
+        Assert.Equal(0f, LegacyShadeMirror.ViewerGlossEnvSpecular(1f, g, 1f, 0f, scale: 0f));
     }
 }

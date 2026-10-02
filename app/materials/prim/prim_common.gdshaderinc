@@ -295,16 +295,173 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
 const float MIRROR_FULL_SHARPNESS_ENV = 0.25;
 
 // Material lab (Entwickler > Material-Labor): scales the SPECULAR a face with a specular MAP hands
-// to Godot. Default 0.0 (the user's A/B choice, with the viewer sun highlight on): no sky/probe
-// "veil" -- the viewer's own environment term for these materials is ~45x smaller than Godot's F0
-// reflection. Godot's SPECULAR drives the sun highlight AND that reflection together, so on the
-// stock Opaque variant 0 also removes the highlight; prim_opaque_vspec owns the highlight itself.
-// A dev knob, not persisted, never written by anything but the lab window and project.godot.
+// to Godot. A dev knob, not persisted, never written by anything but the lab window and project.godot.
 //
-// Applied ONLY by the variants that define SLNG_LAB_SPECULAR_SCALE before including this file
-// (prim_opaque and prim_opaque_vspec). Scissor, hash, blend, double-sided, avatar and HUD faces
-// have no viewer-highlight variant, so they keep the specular they always had (scale 1).
+// Two meanings, chosen by the variant (both are scale 1 = "viewer-faithful for this variant"):
+//   * SLNG_LAB_SPECULAR_SCALE (prim_opaque, the checkbox-off fallback): multiplies Godot's own F0
+//     reflection, which also drives Godot's GGX sun highlight. 1 = the stock look from before
+//     v0.25.13; 0 removes the sky/probe "veil" (and with it the highlight).
+//   * SLNG_VIEWER_SPEC (the *_vspec twins): multiplies the viewer's gloss/environment reflection
+//     weight, see slng_viewer_gloss_env_specular. 1 = the viewer's applyGlossEnv.
+//
+// Every other variant (double-sided opaque, avatar, HUD...) is unscaled and keeps the specular it
+// always had.
 global uniform float slng_legacy_specular_scale;
+
+#ifdef SLNG_VIEWER_SPEC
+// ==============================================================================================
+// The reference viewer's legacy-specular lighting, for every WORLD-PRIM variant that has a
+// *_vspec twin (opaque, alpha-mask, alpha-blend; BUG-RENDER-41, extended by BUG-RENDER-44).
+// A twin differs from its base shader by exactly `#define SLNG_VIEWER_SPEC` before including this
+// file; nothing else is copied, so the maths below exists once.
+//
+// It has two halves:
+//
+// 1. light(): the viewer's sun highlight. Defining light() REPLACES Godot's built-in direct lighting
+//    for the whole material (diffuse and specular), so it cannot be a toggle inside a shared
+//    variant -- hence the twins. Per light:
+//      DIFFUSE  Lambert: NdotL * ATTENUATION * LIGHT_COLOR / PI. Godot's LIGHT_COLOR is colour *
+//               energy * PI, hence the division. The built-in uses Burley diffuse (render_mode
+//               diffuse_burley); Lambert differs from it only at grazing angles / high roughness.
+//      SPECULAR the viewer's term, softenLightF.glsl:243-263 (materialF.glsl:154-170 for local
+//               lights; materialF.glsl:355-368 is the same expression in the ALPHA-BLEND branch):
+//                 lit  = min(nl * 6, 1)
+//                 fres = (1 - vh)^5 * 0.4 + 0.5
+//                 gt   = max(0, min(2 nh nv / vh, 2 nh nl / vh))
+//                 scol = shadow * fres * LUT(nh, glossiness) * gt / (nh * nl)
+//                 color += lit * scol * sunlit * spec.rgb
+//               LUT is the viewer's Blinn-Phong table (pipeline.cpp:1466-1475), n = glossiness^2 *
+//               368. `shadow` is ATTENUATION, so the lobe is shadowed like the sun. `sunlit` is
+//               replaced by the viewer's own highlight colour for the DIRECTIONAL light while the
+//               sun is up: srgb_to_linear(sunlit * 1.35) * 1.1 (softenLightF.glsl:152-153,
+//               :226-232, :280-281), published per frame as slng_viewer_sunlit
+//               (ClassicLightBalance.ViewerSunlitForSpecular). It is NOT Godot's sun radiance: the
+//               viewer builds its diffuse in sRGB on top of the ambient, which whitens it, but the
+//               highlight from the bare (reddened) sunlit colour. Any other light, and the moon
+//               (slng_viewer_sunlit = 0), uses LIGHT_COLOR / PI. Godot's own GGX lobe is NOT added
+//               (light() owns SPECULAR_LIGHT), so there is no double highlight. spec.rgb is
+//               srgb_to_linear(texel_srgb * tint), as materialF.glsl:245-246,:315.
+//    On an alpha-BLENDED twin the highlight is blended with the face alpha like the rest of the
+//    colour: the viewer's blend branch outputs `vec4(color_incl_spec, al)` into SRC_ALPHA /
+//    ONE_MINUS_SRC_ALPHA (materialF.glsl:446, lldrawpoolalpha.cpp:254, llrender.cpp:1313), and
+//    Godot's blend_mix does the same with the SPECULAR_LIGHT it is given. (`al` is only lifted by
+//    `glare`, the Environment term, never by the sun highlight.)
+//
+// 2. SPECULAR for Godot's image-based light: the viewer's gloss/environment reflection, see
+//    slng_viewer_gloss_env_specular. With light() owning the direct specular, SPECULAR only steers
+//    Godot's sky/probe reflection, so it can carry exactly that term.
+//
+// A twin's fragment() is its base's plus one block, after `EMISSION = emission;`, that hands light()
+// the face's specular colour and glossiness (see slng_viewer_spec_capture).
+//
+// Mirrored (constants and formulas) by SLNG.Core.LegacyShadeMirror; the constants below are pinned
+// against it by a test.
+// ==============================================================================================
+
+// The viewer's highlight sun colour for the sun, zero while the moon is the light.
+global uniform vec3 slng_viewer_sunlit;
+
+// Written by the twin's fragment() from slng_viewer_spec_capture, read in light(): the specular
+// colour and the per-texel glossiness the viewer would have packed into its G-buffer.
+varying vec3 v_vspec_rgb;
+varying float v_vspec_gloss;
+
+const float VSPEC_EXPONENT_SCALE = 368.0;
+const float VSPEC_LIT_NL_SCALE = 6.0;
+const float VSPEC_FRESNEL_BASE = 0.5;
+const float VSPEC_FRESNEL_SCALE = 0.4;
+const float VSPEC_EPS = 0.000001;
+
+// applyGlossEnv (reflectionProbeF.glsl:893-902) adds, to the lit colour,
+//     glossenv * 0.5 (fudge) * spec.rgb * fresnel^2 * spec.a * (1 - color) * 0.5
+// with fresnel = clamp(1 + dot(normalize(pos), n), 0.3, 1) = clamp(1 - N.V, 0.3, 1) and
+// glossenv = the probe sampled at lod (1 - glossiness) * reflection_lods (:857). So the reflection
+// weight is LINEAR in glossiness: ~0.002 at gloss 30 (the terrace floor), ~0.019 at gloss 220,
+// head-on, rising with the fresnel^2 ramp to 0.22 at the silhouette.
+const float VSPEC_GLOSS_ENV_WEIGHT = 0.25;          // 0.5 (fudge) * 0.5 (the final `color += glossenv*0.5`)
+const float VSPEC_GLOSS_ENV_FRESNEL_MIN = 0.3;
+// What Godot reflects of the environment for a dielectric: F0 = 0.08 * SPECULAR, times the
+// ReflectionProbe's Intensity (Boot.cs, mirrored as LegacyShadeMirror.ReflectionProbeIntensity).
+const float VSPEC_GODOT_F0_PER_SPECULAR = 0.08;
+const float VSPEC_PROBE_INTENSITY = 1.5;
+
+vec3 vspec_linear_to_srgb(vec3 c) {
+    c = clamp(c, vec3(0.0), vec3(1.0));
+    vec3 low_range = c * vec3(12.92);
+    vec3 high_range = vec3(1.055) * pow(c, vec3(1.0 / 2.4)) - vec3(0.055);
+    return mix(high_range, low_range, lessThanEqual(c, vec3(0.0031308)));
+}
+
+// What the viewer's lighting pass reads back for this face: rgb = specular colour, a = glossiness;
+// all zero (no sun highlight) for a face without a specular map. Called from the twin's fragment()
+// as `vec4 vspec = slng_viewer_spec_capture(UV); v_vspec_rgb = vspec.rgb; v_vspec_gloss = vspec.a;`
+// -- a varying can only be assigned there, not inside this function or slng_shade.
+vec4 slng_viewer_spec_capture(vec2 uv) {
+    if (!has_specular_texture) {
+        return vec4(0.0);
+    }
+    // materialF.glsl:245-246 multiplies map and colour in sRGB, :315 linearises the product. The
+    // sampler is source_color (already linear), so go back to sRGB for the multiply.
+    vec3 texel = texture(specular_texture, v_specular_uv).rgb;
+    vec3 rgb = slng_srgb_to_linear(vspec_linear_to_srgb(texel) * specular_tint);
+    // materialF.glsl:227: glossiness *= normal map alpha, per texel (the same product slng_shade makes).
+    float glossiness = specular_glossiness;
+    if (has_normal_texture) {
+        glossiness *= texture(normal_texture, has_normal_uv ? v_normal_uv : uv).a;
+    }
+    return vec4(rgb, glossiness);
+}
+
+// The SPECULAR value that makes Godot's probe/sky reflection as strong as the viewer's applyGlossEnv
+// for this pixel. spec_lum is the specular colour's luminance (Godot has one scalar, not an RGB),
+// nv = N.V, albedo_lum stands in for the `(1 - color)` energy-conservation factor (the lit colour is
+// not known at this stage; for a lit surface it is albedo-like).
+//
+// Honest limits: the viewer samples a probe at a LOD that grows with (1 - glossiness); Godot picks
+// the mip from ROUGHNESS, which slng_glossiness_to_roughness derives from the same glossiness, so
+// the two blur curves are only similar. Godot's own Schlick term still adds a grazing rim on top
+// (its f90 scales with F0, so it is small for the small values used here), and F0 saturates at
+// SPECULAR 1 = 0.12 with the probe boost, below the viewer's 0.22 peak at the silhouette of a very
+// glossy face. At gloss 30 the result is ~0.002, i.e. none: the constant veil that made the terrace
+// floor look like glass stays gone.
+float slng_viewer_gloss_env_specular(float spec_lum, float glossiness, float nv, float albedo_lum) {
+    float fresnel = clamp(1.0 - nv, VSPEC_GLOSS_ENV_FRESNEL_MIN, 1.0);
+    float weight = VSPEC_GLOSS_ENV_WEIGHT * spec_lum * fresnel * fresnel * glossiness * (1.0 - clamp(albedo_lum, 0.0, 1.0));
+    return clamp(weight * slng_legacy_specular_scale / (VSPEC_GODOT_F0_PER_SPECULAR * VSPEC_PROBE_INTENSITY), 0.0, 1.0);
+}
+
+void light() {
+    float nl_raw = dot(NORMAL, LIGHT);
+    DIFFUSE_LIGHT += clamp(nl_raw, 0.0, 1.0) * ATTENUATION * LIGHT_COLOR / PI;
+
+    // `if (spec.a > 0.0)`, softenLightF.glsl:243: no glossiness, no highlight.
+    if (v_vspec_gloss > 0.0) {
+        vec3 l = normalize(LIGHT);
+        vec3 v = normalize(VIEW);
+        vec3 h = normalize(l + v);
+        // calcHalfVectors, deferredUtil.glsl:114-128: every dot product clamped to [eps, 1].
+        float nh = clamp(dot(NORMAL, h), VSPEC_EPS, 1.0);
+        float nl = clamp(nl_raw, VSPEC_EPS, 1.0);
+        float nv = clamp(dot(NORMAL, v), VSPEC_EPS, 1.0);
+        float vh = clamp(dot(v, h), VSPEC_EPS, 1.0);
+
+        float lit = min(nl * VSPEC_LIT_NL_SCALE, 1.0);
+        float fres = pow(1.0 - vh, 5.0) * VSPEC_FRESNEL_SCALE + VSPEC_FRESNEL_BASE;
+        float gt = max(0.0, min(2.0 * nh * nv / vh, 2.0 * nh * nl / vh));
+
+        // The viewer's lightFunc lookup (pipeline.cpp:1466-1475).
+        float n = v_vspec_gloss * v_vspec_gloss * VSPEC_EXPONENT_SCALE;
+        float lut = pow(nh, n) * ((n + 2.0) * (n + 4.0)) / (8.0 * PI * (exp2(-n / 2.0) + n));
+
+        float scol = ATTENUATION * fres * lut * gt / (nh * nl);
+        vec3 radiance = LIGHT_COLOR / PI;
+        if (LIGHT_IS_DIRECTIONAL && dot(slng_viewer_sunlit, vec3(1.0)) > 0.0) {
+            radiance = slng_viewer_sunlit;
+        }
+        SPECULAR_LIGHT += lit * scol * radiance * v_vspec_rgb;
+    }
+}
+#endif
 
 float slng_glossiness_to_roughness(float glossiness) {
     float n = glossiness * glossiness * 368.0;
@@ -418,6 +575,18 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         // dielectric F0, never the Environment-slider mirror path.
 #ifdef SLNG_LAB_SPECULAR_SCALE
         out_specular *= slng_legacy_specular_scale;
+#endif
+
+#ifdef SLNG_VIEWER_SPEC
+        // (The viewer's lighting pass reads its colour and glossiness back through
+        // slng_viewer_spec_capture, which the twin's fragment() calls: Godot does not let a function
+        // other than fragment() assign a varying.)
+        //
+        // Godot's SPECULAR now only steers its image-based reflection (light() owns the direct
+        // highlight), so it carries the viewer's applyGlossEnv weight instead of the map luminance.
+        float vspec_nv = clamp(dot(normalize(normal), normalize(-view_position)), 0.0, 1.0);
+        float vspec_albedo_lum = dot(albedo.rgb, vec3(0.2126, 0.7152, 0.0722));
+        out_specular = slng_viewer_gloss_env_specular(out_specular, glossiness, vspec_nv, vspec_albedo_lum);
 #endif
     }
     else if (legacy_shininess > 0.0) {

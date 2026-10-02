@@ -1,6 +1,6 @@
-// prim_opaque_vspec: the viewer-specular twin of prim_opaque.gdshader (BUG-RENDER-41 / BUG-RENDER-44).
+// prim_scissor_edge_vspec: the viewer-specular twin of prim_scissor_edge.gdshader (BUG-RENDER-41 / BUG-RENDER-44).
 //
-// Below the `#define SLNG_VIEWER_SPEC` line this is prim_opaque.gdshader verbatim, bar one block at the end of fragment(), so
+// Below the `#define SLNG_VIEWER_SPEC` line this is prim_scissor_edge.gdshader verbatim, bar one block at the end of fragment(), so
 // that file's comments (alpha treatment, culling, render_mode) apply here unchanged. The define
 // switches on, inside prim_common.gdshaderinc, a custom light() that adds the reference viewer's
 // own sun highlight and routes its gloss/environment reflection into SPECULAR. Because light()
@@ -8,13 +8,16 @@
 //
 // ObjectRenderer swaps a face onto this twin ONLY when it carries a legacy specular MAP and the
 // lab checkbox is on (PrimShaderFamily.ViewerSpecTwin); every other face keeps the base shader.
-// Keep the body in lockstep with prim_opaque.gdshader; SelfTest compares the uniform lists of the pair.
+// Keep the body in lockstep with prim_scissor_edge.gdshader; SelfTest compares the uniform lists of the pair.
 shader_type spatial;
-render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
+render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, alpha_to_coverage;
 
 // The viewer's legacy-specular lighting (custom light() + gloss/environment reflection).
 #define SLNG_VIEWER_SPEC
 #include "res://materials/prim/prim_common.gdshaderinc"
+
+uniform float alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.5;
+uniform float alpha_edge : hint_range(0.0, 1.0) = 0.3;
 
 varying vec3 v_view_position;
 
@@ -35,7 +38,7 @@ void fragment() {
     vec3 normal_map;
     float normal_depth;
     vec3 emission;
-    slng_shade(UV, v_view_position, NORMAL, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
+    float alpha = slng_shade(UV, v_view_position, NORMAL, albedo, metallic, roughness, specular, normal_map, normal_depth, emission);
 
     ALBEDO = albedo;
     METALLIC = metallic;
@@ -49,4 +52,10 @@ void fragment() {
     vec4 vspec = slng_viewer_spec_capture(UV);
     v_vspec_rgb = vspec.rgb;
     v_vspec_gloss = vspec.a;
+    ALPHA = alpha;
+    ALPHA_SCISSOR_THRESHOLD = alpha_scissor_threshold;
+    // Texel-space coordinate of the alpha source, so Godot can take its screen-space derivative
+    // for the coverage ramp. Falls back to a plain UV scale when no albedo texture is bound.
+    ALPHA_TEXTURE_COORDINATE = UV * vec2(has_albedo_texture ? textureSize(albedo_texture, 0) : ivec2(256));
+    ALPHA_ANTIALIASING_EDGE = alpha_edge;
 }

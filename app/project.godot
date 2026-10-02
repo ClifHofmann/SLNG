@@ -46,7 +46,7 @@ slng_viewer_sunlit={
 }
 slng_legacy_specular_scale={
 "type": "float",
-"value": 0.0
+"value": 1.0
 }
 slng_ambient={
 "type": "color",
