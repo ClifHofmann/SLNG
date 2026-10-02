@@ -807,6 +807,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Grid.CoarseLocationUpdate += OnCoarseLocationUpdate;
         _client.Grid.GridRegion += OnGridRegion;
         _client.Parcels.ParcelProperties += OnParcelPropertiesReceived;
+        RegisterParcelInfo(); // FEAT-LAND-01
 
         // Coexists with ObjectManager's own internal ObjectUpdate handler (packet callbacks are
         // multicast) -- see _lightObjects for why this is needed.
@@ -902,6 +903,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Grid.CoarseLocationUpdate -= OnCoarseLocationUpdate;
         _client.Grid.GridRegion -= OnGridRegion;
         _client.Parcels.ParcelProperties -= OnParcelPropertiesReceived;
+        UnregisterParcelInfo();
         _currentParcelName = null;
         _client.Network.UnregisterCallback(PacketType.ObjectUpdate, OnRawObjectUpdatePacket);
         UnregisterRegionStreamProbe();

@@ -18,6 +18,8 @@ namespace SLNG.App.UI
         /// <summary>FEAT-SL-01: opens the About window the TPV Policy §1.g requires.</summary>
         public Action? OnOpenAbout;
         public Action? OnCreateLandmark;
+        /// <summary>FEAT-LAND-01: opens the Land-Info (About Land) window for the parcel the agent stands on.</summary>
+        public Action? OnOpenLandInfo;
         public Action? OnOpenEnvironment;
         // MVP2-3: reachable from World -> World Map / Minimap, not just the bottom toolbar.
         public Action? OnOpenWorldMap;
@@ -502,12 +504,14 @@ namespace SLNG.App.UI
             var worldMenu = new PopupMenu();
             worldMenu.Name = L10n.Tr("ui.menu.world");
             worldMenu.AddItem(L10n.Tr("ui.menu.create_landmark"), 0);
+            worldMenu.AddItem(L10n.Tr("ui.menu.about_land"), 6);
             worldMenu.AddItem(L10n.Tr("ui.menu.environment"), 3);
             worldMenu.AddItem(L10n.Tr("ui.menu.world_map"), 4);
             worldMenu.AddItem(L10n.Tr("ui.menu.minimap"), 5);
             worldMenu.IdPressed += (id) =>
             {
                 if (id == 0) OnCreateLandmark?.Invoke();
+                else if (id == 6) OnOpenLandInfo?.Invoke();
                 else if (id == 3) OnOpenEnvironment?.Invoke();
                 else if (id == 4) OnOpenWorldMap?.Invoke();
                 else if (id == 5) OnOpenMinimap?.Invoke();
