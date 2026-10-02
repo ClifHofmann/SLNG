@@ -37,10 +37,6 @@ public partial class SLNGWindow : MarginContainer
     private Vector2 _resizeStartPos;
     private Vector2 _resizeStartSize;
 
-    public const float MinUiScale = 0.8f;
-    public const float MaxUiScale = 1.6f;
-    private static float _globalUiScale = 1.0f;
-
     private const string GeometryConfigPath = "user://preferences.cfg";
     private const string GeometrySection = "window_geometry";
 
@@ -48,24 +44,6 @@ public partial class SLNGWindow : MarginContainer
     /// persistence across sessions. Left null, a window keeps today's behavior -- reopens at
     /// whatever Position/CustomMinimumSize its own _Ready sets every time.</summary>
     protected string? PersistId;
-
-    /// <summary>Current global window/HUD scale (FEAT-UI-07), shared by every SLNGWindow
-    /// instance. UiSettings owns persistence; this is just the live broadcast value.</summary>
-    public static float GlobalUiScale => _globalUiScale;
-
-    /// <summary>Raised after a change so already-open windows rescale live instead of only
-    /// picking up the new value on next open.</summary>
-    public static event Action<float>? GlobalUiScaleChanged;
-
-    /// <summary>Sets the scale every SLNGWindow (current and future) renders at. Clamped to
-    /// [MinUiScale, MaxUiScale] -- callers (UiSettings) don't need to duplicate the range.</summary>
-    public static void SetGlobalUiScale(float scale)
-    {
-        scale = Mathf.Clamp(scale, MinUiScale, MaxUiScale);
-        if (Mathf.IsEqualApprox(scale, _globalUiScale)) return;
-        _globalUiScale = scale;
-        GlobalUiScaleChanged?.Invoke(scale);
-    }
 
     public string Title
     {
@@ -119,10 +97,12 @@ public partial class SLNGWindow : MarginContainer
         // window" bug this fixes.
         MouseFilter = MouseFilterEnum.Stop;
 
-        // FEAT-UI-07: scale grows from the top-left (PivotOffset default (0,0)), so Position
-        // keeps meaning "where the window's corner sits" regardless of scale.
-        Scale = new Vector2(_globalUiScale, _globalUiScale);
-        GlobalUiScaleChanged += OnGlobalUiScaleChanged;
+        // FEAT-UI-42: a window no longer scales itself. The interface scale is the root window's
+        // ContentScaleFactor (UiScale), which scales every Control in the app at once; a Scale on
+        // top of that would scale twice. Position/Size are therefore in the same logical units as
+        // the rest of the UI. The one thing a window does on a scale change is keep its place on
+        // the physical screen -- see OnUiScaleChanging.
+        UiScale.Changing += OnUiScaleChanging;
 
         // FEAT-UI-11: pull this window back into view whenever the main viewport shrinks, so a
         // resize can't strand a floating window off-screen. Cached because GetViewport() is not
@@ -337,15 +317,19 @@ public partial class SLNGWindow : MarginContainer
 
         if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_pos"))
         {
-            Position = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_pos");
+            // Stored in PHYSICAL pixels. That is what it always was (a scaled window's Position was
+            // never divided by its Scale), so a position saved by the old per-window-Scale mechanism
+            // is still valid here with no migration; and because it does not depend on the scale,
+            // changing the scale never makes the saved value stale.
+            Position = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_pos") / UiScale.Current;
             GeometryRestored = true;
         }
         if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_size"))
         {
             var savedSize = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_size");
             var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? new Vector2(4096, 4096);
-            float maxW = Mathf.Max(CustomMinimumSize.X, vp.X / Mathf.Max(Scale.X, 0.01f));
-            float maxH = Mathf.Max(CustomMinimumSize.Y, vp.Y / Mathf.Max(Scale.Y, 0.01f));
+            float maxW = Mathf.Max(CustomMinimumSize.X, vp.X);
+            float maxH = Mathf.Max(CustomMinimumSize.Y, vp.Y);
             Size = new Vector2(
                 Mathf.Clamp(savedSize.X, CustomMinimumSize.X, maxW),
                 Mathf.Clamp(savedSize.Y, CustomMinimumSize.Y, maxH));
@@ -361,10 +345,14 @@ public partial class SLNGWindow : MarginContainer
     private void SavePersistedGeometry()
     {
         if (string.IsNullOrEmpty(PersistId)) return;
+        // Never under --selftest: it boots the real client on the developer's real preferences, and
+        // the selftest itself resizes the viewport (it sweeps the UI scale), which makes every live
+        // window re-clamp and save. See SelfTest.CheckUserDataUntouched.
+        if (SLNG.App.SelfTest.Requested) return;
 
         var cfg = new ConfigFile();
         cfg.Load(GeometryConfigPath); // preserve sections owned by other features (UiSettings, ToolbarSettings)
-        cfg.SetValue(GeometrySection, $"{PersistId}_pos", Position);
+        cfg.SetValue(GeometrySection, $"{PersistId}_pos", Position * UiScale.Current); // physical px, see RestorePersistedGeometry
         // While minimized the live Size is just the collapsed header; persist the real frame size
         // so the window reopens full-height next session rather than stranded as a tiny bar.
         cfg.SetValue(GeometrySection, $"{PersistId}_size", _isMinimized ? _preMinimizeSize : Size);
@@ -450,7 +438,7 @@ public partial class SLNGWindow : MarginContainer
 
     public override void _ExitTree()
     {
-        GlobalUiScaleChanged -= OnGlobalUiScaleChanged;
+        UiScale.Changing -= OnUiScaleChanging;
         if (_viewport != null) _viewport.SizeChanged -= OnViewportSizeChanged;
         base._ExitTree();
     }
@@ -465,14 +453,14 @@ public partial class SLNGWindow : MarginContainer
 
     /// <summary>Pushes the window back inside the current viewport so a >=40 px sliver stays on
     /// screen on each axis and the top edge never goes above the viewport -- i.e. some of the
-    /// (full-width) title bar is always visible and grab-able. Footprint is <c>Size * Scale</c>
-    /// (FEAT-UI-07). Returns true if it had to move the window.</summary>
+    /// (full-width) title bar is always visible and grab-able. Returns true if it had to move the
+    /// window.</summary>
     private bool ClampToViewport()
     {
         var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? Vector2.Zero;
         if (vp.X <= 0f || vp.Y <= 0f) return false;
 
-        float w = Size.X * Scale.X;
+        float w = Size.X;
         var clamped = new Vector2(
             Mathf.Clamp(Position.X, -w + 40f, Mathf.Max(vp.X - 40f, 0f)),
             Mathf.Clamp(Position.Y, 0f, Mathf.Max(vp.Y - 40f, 0f)));
@@ -507,21 +495,18 @@ public partial class SLNGWindow : MarginContainer
             c.MoveToFront();
     }
 
-    private void OnGlobalUiScaleChanged(float scale)
+    /// <summary>The interface scale is about to change (FEAT-UI-42). Positions are in logical
+    /// units, which are about to get bigger or smaller on screen, so a top-level window would drift
+    /// across the display; scale its Position so it stays where it is physically. A window nested in
+    /// another window is positioned inside its parent, which is already in logical units, and is
+    /// left alone. No clamping here: the viewport resize that follows re-clamps every window against
+    /// the new bounds, and persisting is not needed because saved positions are physical.</summary>
+    private void OnUiScaleChanging(float oldScale, float newScale)
     {
-        var globalMouse = GetGlobalMousePosition();
-        if (GetGlobalRect().HasPoint(globalMouse))
-        {
-            var localMouse = GetLocalMousePosition();
-            var newScale = new Vector2(scale, scale);
-            GlobalPosition = globalMouse - (localMouse * newScale);
-            Scale = newScale;
-            SavePersistedGeometry();
-        }
-        else
-        {
-            Scale = new Vector2(scale, scale);
-        }
+        for (Node? n = GetParent(); n != null; n = n.GetParent())
+            if (n is SLNGWindow) return;
+        if (newScale <= 0f) return;
+        Position *= oldScale / newScale;
     }
 
     private void OnHeaderGuiInput(InputEvent @event)
@@ -589,22 +574,21 @@ public partial class SLNGWindow : MarginContainer
 
     /// <summary>Moves whichever edges/corner is being dragged, computed from the drag's START
     /// state (not incrementally frame-to-frame) so small per-frame rounding never accumulates.
-    /// GlobalPosition/mouseGlobal are screen space; Size/Position are the pre-scale local rect, so
-    /// the screen-space delta must be un-scaled before use, or dragging at e.g. 1.5x UI scale
-    /// would resize 1.5x faster than the cursor moves (FEAT-UI-07). Both a minimum (the window's
+    /// GlobalPosition/mouseGlobal and Size/Position are in the same logical units (FEAT-UI-42 moved
+    /// the UI scale to the root window, so a window carries no Scale of its own). Both a minimum (the window's
     /// own CustomMinimumSize) and a MAXIMUM (the current viewport) are enforced -- the missing
     /// maximum on the single old corner handle is what let a stray drag save an unusable
     /// 480x1236 window in the first place (RestorePersistedGeometry has the matching fix for a
     /// value already saved before this existed).</summary>
     private void ApplyResize(Vector2 mouseGlobal)
     {
-        var delta = (mouseGlobal - _resizeStartMouseGlobal) / Scale;
+        var delta = mouseGlobal - _resizeStartMouseGlobal;
 
         float minW = CustomMinimumSize.X > 0 ? CustomMinimumSize.X : 100;
         float minH = CustomMinimumSize.Y > 0 ? CustomMinimumSize.Y : 100;
         var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? new Vector2(4096, 4096);
-        float maxW = Mathf.Max(minW, vp.X / Mathf.Max(Scale.X, 0.01f));
-        float maxH = Mathf.Max(minH, vp.Y / Mathf.Max(Scale.Y, 0.01f));
+        float maxW = Mathf.Max(minW, vp.X);
+        float maxH = Mathf.Max(minH, vp.Y);
 
         float x = _resizeStartPos.X, y = _resizeStartPos.Y;
         float w = _resizeStartSize.X, h = _resizeStartSize.Y;

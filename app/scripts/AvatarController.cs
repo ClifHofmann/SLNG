@@ -946,7 +946,9 @@ public partial class AvatarController : Camera3D
         {
             _altOrbitActive = false;
             Input.MouseMode = Input.MouseModeEnum.Visible;
-            Input.WarpMouse(_altZoomAnchorPos); // SL-style: cursor reappears where the drag started
+            // Viewport.WarpMouse, not Input.WarpMouse: the anchor is a viewport (logical) position and
+            // Input.WarpMouse takes physical pixels, which differ once the UI scale is not 1 (FEAT-UI-42).
+            GetViewport().WarpMouse(_altZoomAnchorPos); // SL-style: cursor reappears where the drag started
             // No delta is computed again until re-engagement, so this warp's landing latency
             // (see above) can never be misread as a drag -- safe here specifically because it is.
         }
@@ -960,7 +962,9 @@ public partial class AvatarController : Camera3D
             // until reversed -- a minor UX limit, but a fully predictable one, unlike fighting
             // WarpMouse's landing latency.
             var currentPos = GetViewport().GetMousePosition();
-            var orbitDelta = currentPos - _orbitLastMousePos;
+            // Logical -> physical pixels, so the orbit feels the same however the UI is scaled
+            // (FEAT-UI-42): the sensitivity below was tuned per physical pixel of mouse travel.
+            var orbitDelta = (currentPos - _orbitLastMousePos) * SLNG.App.UI.UiScale.Current;
             const float sensitivity = 0.003f;
             _orbitYaw -= orbitDelta.X * sensitivity;
             // BUG-UI-05: dolly toward the Alt+Click hit point (set by FocusOn on engage) rather

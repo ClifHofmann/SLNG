@@ -41,7 +41,7 @@ namespace SLNG.App
             {
                 if (Input.MouseMode == Input.MouseModeEnum.Captured)
                 {
-                    _mouseDelta = mouseMotionEvent.Relative;
+                    _mouseDelta = mouseMotionEvent.ScreenRelative; // physical px: Relative is scaled by the UI scale (FEAT-UI-42)
 
                     _yaw -= _mouseDelta.X * MouseSensitivity;
                     _pitch -= _mouseDelta.Y * MouseSensitivity;

@@ -3697,6 +3697,24 @@ public partial class AvatarRenderer : Node3D
         _ => System.Numerics.Vector3.Zero, // 31 Center 2, 35 Center
     };
 
+    private SubViewportContainer? _hudContainer;
+    private Viewport? _hudMainViewport;
+
+    /// <summary>FEAT-UI-42. The HUD layer is a 3D render in a SubViewport and must stay at the main
+    /// window's physical pixels. Its container is a Control, so it lives in the scaled UI space:
+    /// give it the physical size and a Scale of 1/UI-scale, and it covers exactly the screen with one
+    /// HUD pixel per screen pixel.</summary>
+    private void SyncHudContainer()
+    {
+        if (_hudContainer == null || !IsInstanceValid(_hudContainer)) return;
+        float scale = Mathf.Max(SLNG.App.UI.UiScale.Current, 0.01f);
+        _hudContainer.Position = Godot.Vector2.Zero;
+        _hudContainer.Size = SLNG.App.UI.UiScale.RenderSize(GetViewport());
+        _hudContainer.Scale = new Godot.Vector2(1f / scale, 1f / scale);
+    }
+
+    private void OnHudUiScaleChanged(float scale) => SyncHudContainer();
+
     private void EnsureHudViewport()
     {
         if (_hudViewport != null && IsInstanceValid(_hudViewport)) return;
@@ -3710,8 +3728,17 @@ public partial class AvatarRenderer : Node3D
             Stretch = true,
             MouseFilter = Control.MouseFilterEnum.Ignore,
         };
-        container.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        // FEAT-UI-42: NOT anchored to the full rect. The UI scale makes the root's logical size
+        // smaller than its pixels, and a stretched container sized from it would render the HUD at
+        // the logical size and then enlarge it (a blurry HUD). It is instead sized to the real
+        // pixels and drawn back down by 1/scale -- see SyncHudContainer.
+        container.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
         layer.AddChild(container);
+        _hudContainer = container;
+        SyncHudContainer();
+        _hudMainViewport = GetViewport();
+        _hudMainViewport.SizeChanged += SyncHudContainer;
+        SLNG.App.UI.UiScale.Changed += OnHudUiScaleChanged;
 
         // OwnWorld3D gives the viewport "a unique COPY of the World3D defined in world_3d"
         // (Godot docs, confirmed live the hard way): the World3D property itself stays whatever
@@ -5284,6 +5311,8 @@ public partial class AvatarRenderer : Node3D
 
     public override void _ExitTree()
     {
+        SLNG.App.UI.UiScale.Changed -= OnHudUiScaleChanged;
+        if (_hudMainViewport != null && IsInstanceValid(_hudMainViewport)) _hudMainViewport.SizeChanged -= SyncHudContainer;
         if (_world != null)
         {
             _world.EntityAdded -= OnEntityAdded;
@@ -5379,8 +5408,10 @@ public partial class AvatarRenderer : Node3D
             return false;
         }
 
-        var from = cam.ProjectRayOrigin(screenPos);
-        var dir = cam.ProjectRayNormal(screenPos);
+        // The HUD viewport is in physical pixels, the click in UI units (FEAT-UI-42).
+        var hudScreenPos = screenPos * SLNG.App.UI.UiScale.Current;
+        var from = cam.ProjectRayOrigin(hudScreenPos);
+        var dir = cam.ProjectRayNormal(hudScreenPos);
         var query = PhysicsRayQueryParameters3D.Create(from, from + dir * 20f);
         query.HitBackFaces = false;
         var hit = spaceState.IntersectRay(query);

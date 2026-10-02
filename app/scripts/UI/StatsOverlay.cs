@@ -177,9 +177,6 @@ public partial class StatsOverlay : PanelContainer
         };
         root.AddChild(_graph);
 
-        Scale = new Vector2(SLNGWindow.GlobalUiScale, SLNGWindow.GlobalUiScale);
-        SLNGWindow.GlobalUiScaleChanged += OnGlobalUiScaleChanged;
-
         _gc0 = GC.CollectionCount(0);
         _gc1 = GC.CollectionCount(1);
         _gc2 = GC.CollectionCount(2);
@@ -187,12 +184,9 @@ public partial class StatsOverlay : PanelContainer
 
     public override void _ExitTree()
     {
-        SLNGWindow.GlobalUiScaleChanged -= OnGlobalUiScaleChanged;
         // Stop handing out a reading nothing is refreshing any more.
         CurrentFps = null;
     }
-
-    private void OnGlobalUiScaleChanged(float scale) => Scale = new Vector2(scale, scale);
 
     private void AddRow(GridContainer grid, string key)
     {

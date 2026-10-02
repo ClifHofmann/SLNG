@@ -119,7 +119,9 @@ public partial class MirrorReflection : Node
         float fraction = mirrorRadius / Mathf.Max(eye.DistanceTo(point), 0.1f);
         if (fraction < MinScreenFraction) return false;
 
-        var frame = main.GetViewport().GetVisibleRect().Size;
+        // The render resolution, not the visible rect: the rect is in UI units (physical / UI scale,
+        // FEAT-UI-42) and a mirror sized from it would be blurrier than the world it reflects.
+        var frame = SLNG.App.UI.UiScale.RenderSize(main.GetViewport());
         var wanted = new Vector2I(
             Mathf.Clamp((int)frame.X, 2, MaxDimension),
             Mathf.Clamp((int)frame.Y, 2, MaxDimension));

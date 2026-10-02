@@ -185,6 +185,7 @@ public static class SelfTest
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
+        results.Add(CheckUiScale(tree));
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
         results.Add(CheckChatLogPaths());
@@ -1130,6 +1131,56 @@ public static class SelfTest
         }
     }
 
+    /// <summary>
+    /// FEAT-UI-42: the interface scale reaches the whole UI through the ROOT window and nowhere else, and
+    /// leaves the 3D render at the window's pixels. Applied in memory only (UiScale.Apply never writes the
+    /// preferences), and the user's real scale is put back.
+    /// </summary>
+    private static Check CheckUiScale(SceneTree tree)
+    {
+        const string Name = "ui scale";
+        var root = tree.Root;
+        float restore = UI.UiScale.Current;
+        var probe = new Control { Position = new Vector2(10, 20), CustomMinimumSize = new Vector2(100, 50), Size = new Vector2(100, 50) };
+        try
+        {
+            var problems = new List<string>();
+            if (root.ContentScaleMode != Window.ContentScaleModeEnum.Disabled)
+                problems.Add($"root content scale mode is {root.ContentScaleMode}, not Disabled (the 3D view would be resampled)");
+            if (!Mathf.IsEqualApprox(root.ContentScaleFactor, restore))
+                problems.Add($"root ContentScaleFactor {root.ContentScaleFactor} is not the effective scale {restore}");
+            if (!(UI.UiScale.OsScale > 0f))
+                problems.Add($"detected OS scale {UI.UiScale.OsScale} is not usable");
+
+            root.AddChild(probe);
+            foreach (float s in new[] { 1.0f, 1.5f, 2.0f, 3.0f })
+            {
+                UI.UiScale.Apply(s);
+                var physical = new Vector2(root.Size.X, root.Size.Y);
+                var visible = root.GetVisibleRect().Size;
+                if (!visible.IsEqualApprox(physical / s))
+                    problems.Add($"@{s}: visible rect {visible} is not the window {physical} / {s}");
+                if (!UI.UiScale.RenderSize(root).IsEqualApprox(physical))
+                    problems.Add($"@{s}: RenderSize {UI.UiScale.RenderSize(root)} is not the window's pixels {physical}");
+                // A Control keeps its own coordinates (no scaling in its own transform) while the root's
+                // final transform carries the whole scale -- one scale, applied once.
+                if (!probe.GetGlobalRect().Size.IsEqualApprox(new Vector2(100, 50)))
+                    problems.Add($"@{s}: a 100x50 Control reports {probe.GetGlobalRect().Size} in UI units");
+                if (!root.GetFinalTransform().Scale.IsEqualApprox(new Vector2(s, s)))
+                    problems.Add($"@{s}: root final transform scale is {root.GetFinalTransform().Scale}");
+            }
+            return problems.Count == 0
+                ? new Check(Name, true, $"root content scale (Disabled mode) carries the scale; effective {restore:0.##}x, display reports {UI.UiScale.OsScale:0.##}x; render size stays the window's pixels at 1x..3x")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(probe)) { probe.GetParent()?.RemoveChild(probe); probe.QueueFree(); }
+            UI.UiScale.Apply(restore);
+        }
+    }
+
     /// <summary>Tooltips get the app's dark, near-opaque box (Boot applies UiTheme.ApplyTooltipStyle to the
     /// engine's default theme); the stock one is 50 % black and unreadable over a bright world.</summary>
     private static Check CheckTooltipStyle()
@@ -1154,7 +1205,7 @@ public static class SelfTest
         var log = new SLNG.Core.Services.ChatLogger(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "slng-selftest-no-chat"));
         static (UI.SLNGWindow, Action) W<T>(Action<T>? init = null) where T : UI.SLNGWindow, new() { var w = new T(); return (w, () => init?.Invoke(w)); }
         Guid id() => Guid.NewGuid();
-        var windows = new[]
+        (UI.SLNGWindow, Action)[] Build() => new[]
         {
             W<UI.AboutWindow>(), W<UI.ActiveAnimationsWindow>(), W<UI.AvatarHoverWindow>(), W<UI.CameraHUD>(), W<UI.CreateLandmarkWindow>(),
             W<UI.EnvironmentWindow>(), W<UI.MaterialLabWindow>(), W<UI.InventoryPanel>(), W<UI.ItemPropertiesWindow>(),
@@ -1178,8 +1229,22 @@ public static class SelfTest
             W<UI.TermsOfServiceWindow>(w => w.Initialize("https://grid.invalid/login", "Accept the terms.", false)),
             W<UI.UserProfileWindow>(w => w.Initialize(id(), "Someone", session, null, null)),
         };
+        int windowCount = 0;
         static void Layout(Control c) { if (c is Container) c.Notification((int)Container.NotificationSortChildren); foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc); }
         var failures = new List<string>();
+        // FEAT-UI-42: the interface scale is the root window's content scale, which moves every Control
+        // together, so the inset between a frame and its content must come out the same (14/12 in UI
+        // units) at ANY scale. The check used to scale its expectation by the window's own Scale; a
+        // window that still scaled itself on top of the root would now fail it (double scaling).
+        // Scales are applied in memory only (UiScale.Apply never writes) and the real one restored.
+        float restoreScale = UI.UiScale.Current;
+        try
+        {
+        foreach (float uiScale in new[] { 1.0f, 1.25f, 2.0f })
+        {
+        UI.UiScale.Apply(uiScale);
+        var windows = Build();
+        windowCount = windows.Length;
         foreach (var (win, init) in windows)
         {
             try
@@ -1202,19 +1267,26 @@ public static class SelfTest
                     }
                 }
                 Walk(win.ContentContainer);
-                // The insets scale with the user's UI scale (Display preferences), and this check boots on the real
-        // preferences -- so expect the scaled value, or a 125 % setting fails a perfectly consistent client.
-        float scale = UI.SLNGWindow.GlobalUiScale;
-        float h = (win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH) * scale, v = UI.SLNGWindow.DefaultContentMarginV * scale; // radar: map is full-bleed
+                float h = win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH, v = UI.SLNGWindow.DefaultContentMarginV; // radar: map is full-bleed
                 if (new[] { h, h, v, v }.Zip(got).Any(p => Math.Abs(p.First - p.Second) > 2))
-                    failures.Add($"{win.GetType().Name} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
+                    failures.Add($"{win.GetType().Name} @{uiScale:0.##} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
+                if (win.Scale != Vector2.One)
+                    failures.Add($"{win.GetType().Name} @{uiScale:0.##} carries its own Scale {win.Scale} on top of the root's content scale (scales twice)");
             }
             catch (Exception ex) { failures.Add($"{win.GetType().Name} threw {ex.GetType().Name}: {ex.Message}"); }
-            finally { if (GodotObject.IsInstanceValid(win)) win.QueueFree(); }
+            finally
+            {
+                // Out of the tree at once, not queued: a window still in the tree when the next scale is
+                // applied would hear the viewport resize and could re-clamp and SAVE its geometry.
+                if (GodotObject.IsInstanceValid(win)) { win.GetParent()?.RemoveChild(win); win.QueueFree(); }
+            }
         }
+        }
+        }
+        finally { UI.UiScale.Apply(restoreScale); }
         return failures.Count == 0
-            ? new Check("window insets", true, $"{windows.Length} windows: 14/14/12/12 px from frame to content (radar map excepted)")
-            : new Check("window insets", false, $"off the standard 14/14/12/12 by more than 2 px: {string.Join("; ", failures)}");
+            ? new Check("window insets", true, $"{windowCount} windows: 14/14/12/12 px from frame to content at 100 %, 125 % and 200 % (radar map excepted), none scales itself")
+            : new Check("window insets", false, $"off the standard 14/14/12/12 by more than 2 px, or scaling itself: {string.Join("; ", failures)}");
     }
 
     /// <summary>

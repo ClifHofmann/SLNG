@@ -408,7 +408,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.17-alpha";
+    public const string AppVersion = "v0.26.18-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -476,6 +476,15 @@ public partial class Boot : Control
 
         GetTree().AutoAcceptQuit = false;
         MouseFilter = MouseFilterEnum.Ignore;
+
+        // FEAT-UI-42: the interface scale goes on the root window FIRST, before the login screen or
+        // any other Control is laid out, so the first frame is already at the right size instead of
+        // starting tiny and jumping. Load() only reads preferences.cfg (it writes nothing), so this
+        // is safe under --selftest.
+        _uiSettings = new SLNG.App.UI.UiSettings();
+        _uiSettings.Load();
+        AddChild(new SLNG.App.UI.UiScaleWatcher(_uiSettings));
+        GD.Print($"[Boot] UI scale {_uiSettings.Scale:0.##}x ({(_uiSettings.ScaleAutomatic ? "automatic" : "chosen")}, display reports {SLNG.App.UI.UiScale.OsScale:0.##}x)");
 
         _localizationManager = LoadLocalizationManager();
         SLNG.App.UI.L10n.Initialize(_localizationManager);
@@ -886,11 +895,7 @@ public partial class Boot : Control
 
     private void SetupHud()
     {
-        // Loaded before any SLNGWindow is constructed below, so CameraHUD/InventoryPanel/
-        // ChatWindow etc. all pick up the saved scale in their own _Ready() instead of
-        // flashing at 1.0x first (FEAT-UI-07).
-        _uiSettings = new SLNG.App.UI.UiSettings();
-        _uiSettings.Load();
+        // _uiSettings was loaded at the top of _Ready (FEAT-UI-42), before any UI existed.
 
         // Same reason, one bug later: the Graphics tab builds its checkboxes and dropdowns from
         // whatever the settings object holds AT CONSTRUCTION. Loading afterwards left the world
@@ -2768,8 +2773,19 @@ public partial class Boot : Control
         _loginsConfig.Save("user://logins.cfg");
     }
 
+    private Vector2I _lastSavedWindowSize;
+
     private void OnWindowSizeChanged()
     {
+        // Never under --selftest: it writes logins.cfg, which is the developer's real data.
+        if (IsSelfTest) return;
+
+        // The root viewport also reports a size change when only the UI SCALE changed (its logical
+        // size is physical / scale), and the saved value is the physical window -- unchanged then.
+        // Skipping that is what keeps a slider drag from rewriting logins.cfg on every step.
+        var size = DisplayServer.WindowGetSize();
+        if (size == _lastSavedWindowSize) return;
+        _lastSavedWindowSize = size;
         SaveWindowSettings();
     }
 

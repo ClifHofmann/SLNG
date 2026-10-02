@@ -243,7 +243,7 @@ public partial class SnapshotWindow : SLNGWindow
 
     private void UpdateResolutionLabel()
     {
-        var size = GetViewport().GetVisibleRect().Size;
+        var size = UiScale.RenderSize(GetViewport()); // the captured image is physical pixels (FEAT-UI-42)
         _resolutionLabel.Text = $"{(int)size.X} × {(int)size.Y}";
     }
 

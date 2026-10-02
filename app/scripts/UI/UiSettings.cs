@@ -1,19 +1,36 @@
 using Godot;
+using SLNG.Core;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Global UI scale (FEAT-UI-07), persisted to user://preferences.cfg (same ConfigFile pattern
-/// and file as ToolbarSettings) under its own "display" section. Single source of truth for
-/// SLNGWindow.GlobalUiScale -- Load() pushes the saved value into every SLNGWindow via the
-/// static scale broadcast, SetScale() persists and rebroadcasts on change.
+/// Global UI scale (FEAT-UI-07, reworked in FEAT-UI-42), persisted to user://preferences.cfg (same
+/// ConfigFile pattern and file as ToolbarSettings) under its own "display" section.
+/// <para>The scale is either AUTOMATIC (follows the operating system's scale for the screen the window
+/// is on) or MANUAL (the number the user chose, the same on every screen). Both are stored:
+/// <c>ui_scale_auto</c> says which one is in force, <c>ui_scale</c> keeps the last manual number so
+/// switching automatic off again returns to it. A <c>ui_scale</c> saved before the automatic state
+/// existed has no flag and so counts as manual -- see <see cref="UiScalePolicy.IsAutomatic"/>.</para>
+/// <para>The effective scale is put on the root window by <see cref="UiScale.Apply"/>.</para>
 /// </summary>
 public sealed class UiSettings
 {
     private const string ConfigPath = "user://preferences.cfg";
     private const string Section = "display";
 
+    /// <summary>The scale in force: the display's own when <see cref="ScaleAutomatic"/>, otherwise
+    /// <see cref="ManualScale"/>. Always inside the policy's range.</summary>
     public float Scale { get; private set; } = 1.0f;
+
+    /// <summary>FEAT-UI-42: true while the scale follows the operating system's display scale.</summary>
+    public bool ScaleAutomatic { get; private set; } = true;
+
+    /// <summary>FEAT-UI-42: the number the user chose with the slider (what <see cref="Scale"/> is
+    /// while automatic is off). Starts at the effective scale when the user first takes control, so
+    /// nothing jumps.</summary>
+    public float ManualScale { get; private set; } = 1.0f;
+
+    private bool _hasManualScale;
     public string Language { get; private set; } = "en-US";
     public bool ShowTopBarFps { get; private set; } = true;
 
@@ -59,7 +76,12 @@ public sealed class UiSettings
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) == Error.Ok)
         {
-            Scale = Mathf.Clamp((float)cfg.GetValue(Section, "ui_scale", 1.0), SLNGWindow.MinUiScale, SLNGWindow.MaxUiScale);
+            _hasManualScale = cfg.HasSectionKey(Section, "ui_scale");
+            ManualScale = UiScalePolicy.Clamp((float)cfg.GetValue(Section, "ui_scale", 1.0));
+            bool? savedAuto = cfg.HasSectionKey(Section, "ui_scale_auto")
+                ? (bool)cfg.GetValue(Section, "ui_scale_auto", true)
+                : null;
+            ScaleAutomatic = UiScalePolicy.IsAutomatic(savedAuto, _hasManualScale);
             Language = (string)cfg.GetValue(Section, "language", "en-US");
             ShowTopBarFps = (bool)cfg.GetValue(Section, "show_top_bar_fps", true);
             ShowLegacyNames = (bool)cfg.GetValue(Section, "show_legacy_names", true);
@@ -69,7 +91,41 @@ public sealed class UiSettings
             BuildGridSpacing = Mathf.Clamp((float)cfg.GetValue(Section, "build_grid_spacing", 1.0), 0.01f, 64f);
             BuildRotationSnapDegrees = Mathf.Clamp((float)cfg.GetValue(Section, "build_rotation_snap_degrees", 15.0), 0.1f, 90f);
         }
-        SLNGWindow.SetGlobalUiScale(Scale);
+        // No config file at all = a fresh install: ScaleAutomatic keeps its default (true).
+        UiScale.RefreshOsScale();
+        ApplyScale();
+    }
+
+    /// <summary>Resolves the scale from the current choice and the display, and puts it on the
+    /// window. In memory only -- nothing is written.</summary>
+    private void ApplyScale()
+    {
+        Scale = CommandLineScale ?? UiScalePolicy.Resolve(ScaleAutomatic, ManualScale, UiScale.OsScale);
+        UiScale.Apply(Scale);
+    }
+
+    /// <summary>FEAT-UI-42, a developer aid: <c>-- --ui-scale=2</c> forces the scale for this run only,
+    /// so a layout can be looked at (or screenshotted) at 200 % on a 100 % screen. It wins over both
+    /// the saved choice and the display, is held in memory, and is never written to the preferences.</summary>
+    private static readonly float? CommandLineScale = ParseCommandLineScale();
+
+    private static float? ParseCommandLineScale()
+    {
+        const string prefix = "--ui-scale=";
+        foreach (var args in new[] { OS.GetCmdlineArgs(), OS.GetCmdlineUserArgs() })
+            foreach (string arg in args)
+                if (arg.StartsWith(prefix, System.StringComparison.Ordinal)
+                    && float.TryParse(arg.Substring(prefix.Length), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out float value))
+                    return UiScalePolicy.Clamp(value);
+        return null;
+    }
+
+    /// <summary>FEAT-UI-42: call when the display may have changed (the window moved to another
+    /// screen, the Windows scale was changed). Only has an effect while automatic.</summary>
+    public void OnDisplayChanged()
+    {
+        if (UiScale.RefreshOsScale() && ScaleAutomatic) ApplyScale();
     }
 
     /// <summary>FEAT-UI-31. Raises <see cref="ShowLegacyNamesChanged"/> so the renderer can
@@ -174,16 +230,40 @@ public sealed class UiSettings
         cfg.Save(ConfigPath);
     }
 
+    /// <summary>The user moved the slider: this number now wins, on every screen, until they switch
+    /// back to automatic. Persisted.</summary>
     public void SetScale(float scale)
     {
-        Scale = Mathf.Clamp(scale, SLNGWindow.MinUiScale, SLNGWindow.MaxUiScale);
+        ManualScale = UiScalePolicy.Clamp(scale);
+        _hasManualScale = true;
+        ScaleAutomatic = false;
+        PersistScale();
+        ApplyScale();
+    }
 
+    /// <summary>FEAT-UI-42: the "automatic" checkbox. Turning it OFF keeps the scale the screen is
+    /// at right now as the manual one (unless the user has chosen a number before, which then comes
+    /// back), so the interface does not change size under the cursor.</summary>
+    public void SetScaleAutomatic(bool automatic)
+    {
+        if (automatic == ScaleAutomatic) return;
+        ScaleAutomatic = automatic;
+        if (!automatic && !_hasManualScale)
+        {
+            ManualScale = Scale;
+            _hasManualScale = true;
+        }
+        PersistScale();
+        ApplyScale();
+    }
+
+    private void PersistScale()
+    {
         var cfg = new ConfigFile();
         cfg.Load(ConfigPath); // preserve sections owned by other features (e.g. ToolbarSettings)
-        cfg.SetValue(Section, "ui_scale", Scale);
+        cfg.SetValue(Section, "ui_scale_auto", ScaleAutomatic);
+        if (_hasManualScale) cfg.SetValue(Section, "ui_scale", ManualScale);
         cfg.Save(ConfigPath);
-
-        SLNGWindow.SetGlobalUiScale(Scale);
     }
 
     public void SetLanguage(string language)
