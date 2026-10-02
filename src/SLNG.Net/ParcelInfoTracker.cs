@@ -74,4 +74,24 @@ internal sealed class ParcelInfoTracker
             return merged;
         }
     }
+
+    /// <summary>The region's object capacity (<c>SimStats</c>) arrived or changed (FEAT-LAND-03). Returns
+    /// the record with it filled in, or null when the held parcel is in another region or already carries that
+    /// value. <c>SimStats</c> comes about once a second, so only a real change is raised. A capacity of 0 is
+    /// "unknown" and never overwrites a known one.</summary>
+    internal ParcelInfo? OnRegionCapacity(ulong regionHandle, int capacity)
+    {
+        if (capacity <= 0) return null;
+
+        lock (_gate)
+        {
+            if (_current is not { } held || held.RegionHandle != regionHandle
+                || held.Prims.RegionObjectCapacity == capacity)
+                return null;
+
+            var merged = held with { Prims = held.Prims with { RegionObjectCapacity = capacity } };
+            _current = merged;
+            return merged;
+        }
+    }
 }

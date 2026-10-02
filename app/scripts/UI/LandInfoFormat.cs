@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
 using SLNG.Core;
@@ -331,5 +332,112 @@ internal static class LandInfoFormat
         string stamp = Stamp(utc + offset) + " "
             + L10n.TrFormat("ui.land.cov_utc_offset", sign + offset.Duration().ToString(@"hh\:mm", CultureInfo.InvariantCulture));
         return L10n.TrFormat("ui.land.cov_modified", stamp);
+    }
+
+    // --- Objects tab (FEAT-LAND-03) -------------------------------------------------------------------
+    // Sources: LLPanelLandObjects::refresh (llfloaterland.cpp:1247-1357) for the counts,
+    // processParcelObjectOwnersReply (:1594-1686) for the owner list, floater_about_land.xml
+    // (land_objects_panel) for the wording and the column order, strings.xml (Searching, NoneFound).
+
+    /// <summary>The "Region capacity" row: "N out of M (A available)", or "N out of M (D will be deleted)" when
+    /// the region is over its capacity (<c>llfloaterland.cpp</c>:1318-1327).</summary>
+    internal static string RegionCapacityText(ParcelPrimCounts c) =>
+        c.RegionOverBy > 0
+            ? L10n.TrFormat("ui.land.obj_region_deleted", Count(c.RegionTotalPrims), Count(c.RegionCapacity), Count(c.RegionOverBy))
+            : L10n.TrFormat("ui.land.obj_region_available", Count(c.RegionTotalPrims), Count(c.RegionCapacity), Count(c.RegionAvailable));
+
+    /// <summary>"Region object bonus factor: 1.50", with two decimals like the viewer's <c>%.2f</c>. The line
+    /// is only shown when <see cref="ParcelPrimCounts.HasBonus"/>.</summary>
+    internal static string BonusText(ParcelPrimCounts c) =>
+        L10n.TrFormat("ui.land.obj_bonus", c.ParcelPrimBonus.ToString("F2", CultureInfo.InvariantCulture));
+
+    /// <summary>A whole object count, with the thousands separator of the user's culture.</summary>
+    internal static string Count(int n) => n.ToString("N0");
+
+    /// <summary>The auto-return delay in minutes; 0 is the viewer's "off" and is shown as the number 0 too.</summary>
+    internal static string AutoReturnText(int minutes) => Math.Max(0, minutes).ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>What the owner list's area shows, mutually exclusive.</summary>
+    internal enum OwnersBody
+    {
+        /// <summary>Nothing asked for yet (no session, or the tab was never shown).</summary>
+        NotRequested,
+
+        /// <summary>A request is out: the viewer's "Searching...".</summary>
+        Loading,
+
+        /// <summary>The table with at least one owner.</summary>
+        List,
+
+        /// <summary>An answer with no owners on a parcel with no objects: the viewer's "None found.".</summary>
+        None,
+
+        /// <summary>An answer with no owners although the parcel has objects, or one with the nil-owner row
+        /// Second Life uses to decline: said as a refusal, not as "none". See
+        /// <see cref="ParcelObjectOwners.OwnersWithheld"/>.</summary>
+        NotListed,
+
+        /// <summary>No answer at all in time: how OpenSim declines (and what a lost packet looks like).</summary>
+        NoAnswer,
+    }
+
+    /// <summary>Which of <see cref="OwnersBody.List"/> / <see cref="OwnersBody.None"/> /
+    /// <see cref="OwnersBody.NotListed"/> an answer is. An answer with owners is a list. One without is "none
+    /// found" only when nothing hints at a refusal: the sim's nil-owner row, or objects that the parcel's own
+    /// counts say are there (<paramref name="parcelPrims"/>, which the sim sends to everyone). A parcel with
+    /// objects whose list comes back empty is not an empty parcel.</summary>
+    internal static OwnersBody OwnersAnswer(ParcelObjectOwners answer, int parcelPrims)
+    {
+        if (answer.Owners.Count > 0) return OwnersBody.List;
+        return answer.OwnersWithheld || parcelPrims > 0 ? OwnersBody.NotListed : OwnersBody.None;
+    }
+
+    /// <summary>The one-line notice for a state without a table.</summary>
+    internal static string OwnersNotice(OwnersBody body) => body switch
+    {
+        OwnersBody.Loading => L10n.Tr("ui.land.obj_searching"),
+        OwnersBody.None => L10n.Tr("ui.land.obj_none_found"),
+        OwnersBody.NotListed => L10n.Tr("ui.land.obj_not_listed"),
+        OwnersBody.NoAnswer => L10n.Tr("ui.land.obj_no_answer"),
+        OwnersBody.NotRequested => L10n.Tr("ui.land.obj_not_requested"),
+        _ => string.Empty,
+    };
+
+    /// <summary>True for the two states that say the list was refused or never came, drawn so they cannot pass
+    /// for an empty parcel.</summary>
+    internal static bool OwnersIsProblem(OwnersBody body) => body is OwnersBody.NotListed or OwnersBody.NoAnswer;
+
+    /// <summary>The Type column: the viewer draws an icon (group, online avatar, offline avatar); here a word.
+    /// The online / offline half is deliberately not shown: Second Life's sims no longer send it and OpenSim sends
+    /// "online" for everyone, so it would only ever be wrong (<see cref="ParcelObjectOwner.Online"/>).</summary>
+    internal static string OwnerTypeText(ParcelObjectOwner o) =>
+        L10n.Tr(o.IsGroupOwned ? "ui.land.obj_type_group" : "ui.land.obj_type_resident");
+
+    /// <summary>The Name column: the resolved name, or "(loading…)" while it is still being looked up.</summary>
+    internal static string OwnerNameText(ParcelObjectOwner o, NameLookup lookup) =>
+        lookup(o.OwnerId, o.IsGroupOwned) ?? L10n.Tr("ui.land.loading");
+
+    /// <summary>The "Most recent" column in SL time; a dash when the sim sent none (OpenSim never does).</summary>
+    internal static string OwnerRecentText(DateTime? newestUtc) => ClaimedText(newestUtc);
+
+    /// <summary>The order of the table: most objects first, which is the viewer's default sort
+    /// (<c>sortByColumnIndex(3, false)</c>, <c>llfloaterland.cpp</c>:1202, the Count column descending). The viewer
+    /// compares the counts as TEXT ("9" above "10"); this compares them as numbers, which is what that sort is
+    /// plainly meant to be. Equal counts go by name (names still loading sort by their id, last), then by id, so
+    /// the order is the same every time.</summary>
+    internal static List<ParcelObjectOwner> SortOwners(IEnumerable<ParcelObjectOwner> owners, NameLookup lookup)
+    {
+        var list = new List<(ParcelObjectOwner Owner, string? Name)>();
+        foreach (var o in owners) list.Add((o, lookup(o.OwnerId, o.IsGroupOwned)));
+
+        list.Sort((a, b) =>
+        {
+            int byCount = b.Owner.Count.CompareTo(a.Owner.Count);
+            if (byCount != 0) return byCount;
+            if ((a.Name == null) != (b.Name == null)) return a.Name == null ? 1 : -1;
+            int byName = a.Name == null ? 0 : string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase);
+            return byName != 0 ? byName : a.Owner.OwnerId.CompareTo(b.Owner.OwnerId);
+        });
+        return list.ConvertAll(x => x.Owner);
     }
 }

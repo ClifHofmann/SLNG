@@ -9,9 +9,9 @@ namespace SLNG.App.UI;
 
 /// <summary>
 /// FEAT-LAND-01: "About Land" -- what the sim says about the parcel the agent stands on, in the
-/// tabbed shape of the reference viewer's floater. Today it has General, Covenant, Options, Media and Sound
-/// and is read-only; Objects and Access follow in FEAT-LAND-03 and -04, each as one more
-/// <see cref="ILandInfoTab"/> and one more <see cref="AddTab"/> call in <see cref="_Ready"/>.
+/// tabbed shape of the reference viewer's floater. Today it has General, Covenant, Objects, Options, Media and
+/// Sound and is read-only; Access follows in FEAT-LAND-04, as one more <see cref="ILandInfoTab"/> and one more
+/// <see cref="AddTab"/> call in <see cref="_Ready"/>.
 ///
 /// <para><b>It follows the agent.</b> The data layer raises <c>ParcelInfoReceived</c> for the answer to
 /// the request made on open, again when the traffic figure arrives, and whenever the agent walks into
@@ -43,6 +43,7 @@ public partial class LandInfoWindow : SLNGWindow
     private Label _status = null!;
     private LandGeneralTab _general = null!;
     private LandCovenantTab _covenant = null!;
+    private LandObjectsTab _objects = null!;
     private LandOptionsTab _options = null!;
     private LandMediaTab _media = null!;
     private LandSoundTab _sound = null!;
@@ -93,12 +94,18 @@ public partial class LandInfoWindow : SLNGWindow
         _covenant = new LandCovenantTab();
         _covenant.Initialize(LookupName);
         AddTab(_covenant);
+        _objects = new LandObjectsTab();
+        _objects.Initialize(LookupName);
+        AddTab(_objects);
         _options = new LandOptionsTab();
         AddTab(_options);
         _media = new LandMediaTab();
         AddTab(_media);
         _sound = new LandSoundTab();
         AddTab(_sound);
+
+        // The Objects tab asks for its list only when it is picked (FEAT-LAND-03).
+        _tabContainer.TabChanged += OnTabChanged;
 
         ShowStatus(L10n.Tr("ui.land.loading_parcel"));
     }
@@ -121,6 +128,7 @@ public partial class LandInfoWindow : SLNGWindow
         session.DisplayNameResolved += OnDisplayNameResolved;
         _subscribed = true;
         _covenant.Bind(session);
+        _objects.Bind(session);
 
         // What the session already knows is on screen at once; the request below refreshes it.
         if (session.LastParcelInfo is { } last) ShowParcel(last);
@@ -175,6 +183,8 @@ public partial class LandInfoWindow : SLNGWindow
         _status.Visible = false;
         _tabContainer.Visible = true;
         foreach (var tab in _tabs) tab.ShowParcel(parcel);
+        // After the tabs have the parcel: a tab that becomes visible now asks for THIS parcel, once.
+        UpdateObjectsShown();
     }
 
     private void ShowStatus(string text)
@@ -182,7 +192,20 @@ public partial class LandInfoWindow : SLNGWindow
         _status.Text = text;
         _status.Visible = true;
         _tabContainer.Visible = false;
+        UpdateObjectsShown();
     }
+
+    private void OnTabChanged(long index) => UpdateObjectsShown();
+
+    // The Objects tab is "shown" while the tabs are on screen and it is the one picked.
+    private void UpdateObjectsShown() =>
+        _objects.SetShown(_tabContainer.Visible && _tabContainer.GetCurrentTabControl() == _objects);
+
+    /// <summary>Picks the Objects tab, as a click on its title does. Selftest only.</summary>
+    internal void SelectObjectsTab() => _tabContainer.CurrentTab = _tabs.IndexOf(_objects);
+
+    /// <summary>Picks the General tab. Selftest only.</summary>
+    internal void SelectGeneralTab() => _tabContainer.CurrentTab = _tabs.IndexOf(_general);
 
     /// <summary>The status line, or null while the tabs are showing. Selftest only.</summary>
     internal string? StatusText => _status.Visible ? _status.Text : null;
@@ -190,6 +213,8 @@ public partial class LandInfoWindow : SLNGWindow
     internal LandGeneralTab General => _general;
 
     internal LandCovenantTab Covenant => _covenant;
+
+    internal LandObjectsTab Objects => _objects;
 
     internal LandOptionsTab Options => _options;
 

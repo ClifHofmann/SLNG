@@ -78,10 +78,14 @@ internal static class ParcelInfoMapper
     /// and <paramref name="regionFlags"/> are the REGION's (the parcel message carries none of them).
     /// <paramref name="obscureMoap"/> is the parcel's "Restrict MOAP" flag, which LibreMetaverse's typed
     /// message drops (see <see cref="ParcelInfo.ObscureMoap"/>); a caller that can read it some other way
-    /// passes it, everyone else leaves it null.</summary>
+    /// passes it, everyone else leaves it null. <paramref name="selectedPrims"/> is the message's
+    /// <c>SelectedPrims</c>, which LibreMetaverse does not store in <see cref="Parcel"/> but hands to the
+    /// event separately; <paramref name="regionObjectCapacity"/> is the region's <c>SimStats</c> value, 0
+    /// when not known (both Objects tab, FEAT-LAND-03).</summary>
     internal static ParcelInfo From(
         Parcel parcel, ulong regionHandle, SimAccess access, string? productName,
-        RegionFlags regionFlags = RegionFlags.None, bool? obscureMoap = null)
+        RegionFlags regionFlags = RegionFlags.None, bool? obscureMoap = null,
+        int selectedPrims = 0, int regionObjectCapacity = 0)
     {
         bool isPublic = parcel.OwnerID == UUID.Zero; // LLParcel::isPublic, llparcel.cpp:1072
         bool forSale = (parcel.Flags & ParcelFlags.ForSale) != 0; // PF_FOR_SALE, llparcelflags.h:34
@@ -119,8 +123,30 @@ internal static class ParcelInfoMapper
                 ? null
                 : (regionFlags & RegionFlags.AllowVoice) != 0, // REGION_FLAGS_ALLOW_VOICE, llregionflags.h:87
             ObscureMoap = obscureMoap,
+
+            // Objects tab (FEAT-LAND-03)
+            Prims = PrimsFrom(parcel, selectedPrims, regionObjectCapacity),
         };
     }
+
+    /// <summary>The Objects tab's counts, field for field as <c>LLViewerParcelMgr::processParcelProperties</c>
+    /// stores them (<c>llviewerparcelmgr.cpp</c>:1731-1739, :1747). The wire's <c>TotalPrims</c> is left out:
+    /// the viewer never uses it (see <see cref="ParcelPrimCounts"/>). Negative counts, which a sim should never
+    /// send, are shown as 0 rather than as a negative number of objects.</summary>
+    internal static ParcelPrimCounts PrimsFrom(Parcel parcel, int selectedPrims, int regionObjectCapacity) => new()
+    {
+        OwnerPrims = Math.Max(0, parcel.OwnerPrims),
+        GroupPrims = Math.Max(0, parcel.GroupPrims),
+        OtherPrims = Math.Max(0, parcel.OtherPrims),
+        SelectedPrims = Math.Max(0, selectedPrims),
+        MaxPrims = Math.Max(0, parcel.MaxPrims),
+        // A bonus of 0 (an absent field decodes to 0) would zero the capacity; the viewer's own default is 1.
+        ParcelPrimBonus = parcel.ParcelPrimBonus > 0f ? parcel.ParcelPrimBonus : 1f,
+        SimWideMaxPrims = Math.Max(0, parcel.SimWideMaxPrims),
+        SimWideTotalPrims = Math.Max(0, parcel.SimWideTotalPrims),
+        AutoReturnMinutes = Math.Max(0, parcel.OtherCleanTime),
+        RegionObjectCapacity = Math.Max(0, regionObjectCapacity),
+    };
 
     /// <summary>The on/off settings of the Options and Sound tabs. One bit per control, raw: the
     /// "Group implied by Everyone" and inverted-box rules are display matters (see

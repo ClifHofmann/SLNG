@@ -29,6 +29,9 @@ public sealed partial class GridSession
 
     private readonly ParcelInfoTracker _parcelInfoTracker = new();
 
+    // Per region: the ObjectCapacity of its last SimStats (FEAT-LAND-03). Written on network threads.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, int> _regionObjectCapacity = new();
+
     // Serial of the lookup that is waiting for its answer; 0 when none is. Compare-exchanged by the
     // reply and by the timeout, so exactly one of them wins.
     private int _parcelInfoSerial;
@@ -86,12 +89,17 @@ public sealed partial class GridSession
         // The raw packet, not LibreMetaverse's ParcelDwellReply event: that event only fires while
         // Settings.Parcel.AlwaysRequestDwell is on (its default), and this must not hang on a setting.
         _client.Network.RegisterCallback(PacketType.ParcelDwellReply, OnParcelDwellPacket);
+        // The region's object capacity, a ceiling the Objects tab applies (FEAT-LAND-03). LibreMetaverse
+        // parses SimStats but keeps only the counters, not this field.
+        _client.Network.RegisterCallback(PacketType.SimStats, OnSimStatsPacket);
     }
 
     private void UnregisterParcelInfo()
     {
         _client.Parcels.ParcelProperties -= OnParcelInfoProperties;
         _client.Network.UnregisterCallback(PacketType.ParcelDwellReply, OnParcelDwellPacket);
+        _client.Network.UnregisterCallback(PacketType.SimStats, OnSimStatsPacket);
+        _regionObjectCapacity.Clear();
         _parcelInfoTracker.Reset();
         Volatile.Write(ref _parcelInfoPending, 0);
     }
@@ -118,7 +126,10 @@ public sealed partial class GridSession
                 return;
             }
 
-            var info = ParcelInfoMapper.From(e.Parcel, sim.Handle, sim.Access, sim.ProductName, sim.Flags);
+            _regionObjectCapacity.TryGetValue(sim.Handle, out int capacity);
+            var info = ParcelInfoMapper.From(
+                e.Parcel, sim.Handle, sim.Access, sim.ProductName, sim.Flags,
+                selectedPrims: e.SelectedPrims, regionObjectCapacity: capacity);
             var raised = _parcelInfoTracker.OnProperties(info, requested);
             if (raised == null) return;
 
@@ -145,6 +156,25 @@ public sealed partial class GridSession
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[ParcelInfo] a dwell reply could not be handled: {ex.Message}");
+        }
+    }
+
+    private void OnSimStatsPacket(object? sender, PacketReceivedEventArgs e)
+    {
+        try
+        {
+            if (e.Packet is not SimStatsPacket stats || e.Simulator == null) return;
+            int capacity = (int)Math.Min(stats.Region.ObjectCapacity, int.MaxValue);
+            if (capacity <= 0) return;
+
+            ulong handle = e.Simulator.Handle;
+            _regionObjectCapacity[handle] = capacity;
+            var merged = _parcelInfoTracker.OnRegionCapacity(handle, capacity);
+            if (merged != null) RaiseParcelInfoReceived(merged);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[ParcelInfo] a sim stats packet could not be handled: {ex.Message}");
         }
     }
 

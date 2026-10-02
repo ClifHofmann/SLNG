@@ -512,16 +512,19 @@ public static class SelfTest
             // 8. FEAT-LAND-02: the Options, Media and Sound tabs.
             Expect(win.TabTitles.SequenceEqual(new[]
             {
-                UI.L10n.Tr("ui.land.tab_general"), UI.L10n.Tr("ui.land.tab_covenant"), UI.L10n.Tr("ui.land.tab_options"),
-                UI.L10n.Tr("ui.land.tab_media"), UI.L10n.Tr("ui.land.tab_sound"),
-            }), "the tab order is not General, Covenant, Options, Media, Sound");
+                UI.L10n.Tr("ui.land.tab_general"), UI.L10n.Tr("ui.land.tab_covenant"), UI.L10n.Tr("ui.land.tab_objects"),
+                UI.L10n.Tr("ui.land.tab_options"), UI.L10n.Tr("ui.land.tab_media"), UI.L10n.Tr("ui.land.tab_sound"),
+            }), "the tab order is not General, Covenant, Objects, Options, Media, Sound");
             CheckLandOptionsMediaSound(win, publicLand, Expect);
 
             // 9. FEAT-LAND-05: the Covenant tab (the shared CovenantView).
             CheckLandCovenant(win, Expect);
 
+            // 10. FEAT-LAND-03: the Objects tab.
+            CheckLandObjects(win, publicLand, Expect);
+
             return problems.Count == 0
-                ? new Check(Name, true, "public / group-owned+pending / for-sale rows, traffic null vs 0, names loading then resolved, off-thread push via the inbox, write buttons disabled, SL-time claim date, Options / Media / Sound tabs, Covenant tab")
+                ? new Check(Name, true, "public / group-owned+pending / for-sale rows, traffic null vs 0, names loading then resolved, off-thread push via the inbox, write buttons disabled, SL-time claim date, Options / Media / Sound tabs, Covenant tab, Objects tab (counts, lazy one-shot request, owner table, refusal vs empty)")
                 : new Check(Name, false, string.Join("; ", problems));
         }
         catch (Exception ex)
@@ -532,6 +535,171 @@ public static class SelfTest
         {
             if (GodotObject.IsInstanceValid(win)) win.QueueFree();
         }
+    }
+
+    /// <summary>
+    /// FEAT-LAND-03: the Objects tab -- the counts (the region capacity in both of the viewer's sentences, the bonus
+    /// line only when the factor is not 1, parcel capacity with the bonus, the total as the sum of the four counts),
+    /// the owner list requested lazily and once per parcel (not on a parcel push while another tab is up, again
+    /// when the parcel changes while the tab is up, again on Refresh), an answer pushed from a network thread that
+    /// only the main-thread inbox applies, the table sorted by count as a NUMBER, a name arriving late rewriting its
+    /// cell where it stands, an answer for another parcel dropped, and the three ways the list can be empty:
+    /// "none found" for a parcel with no objects, and "not listed" / "no answer" -- shown as refusals -- for a parcel
+    /// that has objects or a sim that stayed silent. The write buttons are present, disabled and explained;
+    /// Refresh is a read and is enabled.
+    /// </summary>
+    private static void CheckLandObjects(UI.LandInfoWindow win, SLNG.Core.ParcelInfo baseParcel, Action<bool, string> expect)
+    {
+        static string T(string key) => UI.L10n.Tr(key);
+        var tab = win.Objects;
+        const ulong Region = 5150;
+
+        SLNG.Core.ParcelInfo P(int local, SLNG.Core.ParcelPrimCounts? prims = null) =>
+            baseParcel with { RegionHandle = Region, LocalId = local, Prims = prims ?? SLNG.Core.ParcelPrimCounts.None };
+        void Push(SLNG.Core.ParcelInfo p) { win.OnParcelInfoReceived(null, p); win._Process(0); }
+        SLNG.Core.ParcelObjectOwners Answer(int local, bool withheld, params SLNG.Core.ParcelObjectOwner[] owners) =>
+            new() { RegionHandle = Region, LocalId = local, Owners = owners, OwnersWithheld = withheld };
+
+        var ann = Guid.NewGuid();
+        var bob = Guid.NewGuid();
+        var crew = Guid.NewGuid();
+        var dee = Guid.NewGuid();
+        var names = new Dictionary<Guid, string> { [ann] = "Ann Alpha", [bob] = "Bob Beta", [crew] = "The Crew" };
+        tab.Initialize((id, _) => names.TryGetValue(id, out var n) ? n : null);
+
+        // 1. The counts. Total = owner + group + other + selected; capacity = allowance x bonus.
+        var counts = new SLNG.Core.ParcelPrimCounts
+        {
+            OwnerPrims = 10, GroupPrims = 20, OtherPrims = 30, SelectedPrims = 4, MaxPrims = 100, ParcelPrimBonus = 1.5f,
+            SimWideMaxPrims = 400, SimWideTotalPrims = 120, AutoReturnMinutes = 15,
+        };
+        Push(P(3, counts));
+        string N(int n) => UI.LandInfoFormat.Count(n);
+        expect(tab.RowText(UI.LandObjectsRow.RegionCapacity) == UI.L10n.TrFormat("ui.land.obj_region_available", N(120), N(400), N(280)), $"region capacity '{tab.RowText(UI.LandObjectsRow.RegionCapacity)}'");
+        expect(tab.RowText(UI.LandObjectsRow.ParcelCapacity) == N(150), $"parcel capacity '{tab.RowText(UI.LandObjectsRow.ParcelCapacity)}'");
+        expect(tab.RowText(UI.LandObjectsRow.ParcelImpact) == N(64), $"land impact '{tab.RowText(UI.LandObjectsRow.ParcelImpact)}'");
+        expect(tab.RowText(UI.LandObjectsRow.OwnedByOwner) == N(10) && tab.RowText(UI.LandObjectsRow.SetToGroup) == N(20)
+            && tab.RowText(UI.LandObjectsRow.OwnedByOthers) == N(30) && tab.RowText(UI.LandObjectsRow.Selected) == N(4), "owner / group / other / selected counts");
+        expect(tab.RowText(UI.LandObjectsRow.AutoReturn) == "15", $"auto-return '{tab.RowText(UI.LandObjectsRow.AutoReturn)}'");
+        expect(tab.BonusVisible && tab.BonusText == UI.L10n.TrFormat("ui.land.obj_bonus", "1.50"), $"bonus line '{tab.BonusText}'");
+        Push(P(3, counts with { ParcelPrimBonus = 1f, SimWideTotalPrims = 450 }));
+        expect(!tab.BonusVisible, "bonus line shown for a factor of 1");
+        expect(tab.RowText(UI.LandObjectsRow.RegionCapacity) == UI.L10n.TrFormat("ui.land.obj_region_deleted", N(450), N(400), N(50)), $"region over capacity '{tab.RowText(UI.LandObjectsRow.RegionCapacity)}'");
+        expect(tab.RowText(UI.LandObjectsRow.ParcelCapacity) == N(100), "parcel capacity without a bonus");
+
+        // 2. The write buttons: Show x3, Return x3, Return objects -- present, disabled, explained. Refresh is a read.
+        expect(tab.WriteButtons.Count == 7 && tab.WriteButtons.All(b => b.Disabled && b.TooltipText == T("ui.land.not_available_yet") && !b.Text.StartsWith('[')),
+            "the write buttons are not all present, disabled and explained");
+        expect(!tab.AutoReturnEditable, "the auto-return box is editable");
+        expect(!tab.WriteButtons.Contains(tab.RefreshButton), "Refresh is among the disabled write buttons");
+        expect(tab.RefreshButton.Disabled, "Refresh is enabled with nothing to send the request to");
+
+        // 3. Lazy, one-shot request. Nothing is asked for on a parcel push while another tab is up.
+        var sent = new List<int>();
+        tab.UseRequester(id => { sent.Add(id); return true; });
+        expect(!tab.RefreshButton.Disabled, "Refresh stays disabled although there is a session and a parcel");
+        Push(P(3, counts));
+        expect(sent.Count == 0 && tab.Body == UI.LandInfoFormat.OwnersBody.NotRequested, $"the list was asked for before the tab was shown ({sent.Count})");
+        expect(tab.NoticeText == T("ui.land.obj_not_requested"), $"not-requested notice '{tab.NoticeText}'");
+
+        win.SelectObjectsTab();
+        expect(tab.Shown && sent.SequenceEqual(new[] { 3 }), $"picking the tab sent {sent.Count} request(s): {string.Join(",", sent)}");
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.Loading && tab.NoticeText == T("ui.land.obj_searching"), "no 'searching' state after the request");
+
+        Push(P(3, counts with { SelectedPrims = 9 }));          // same parcel again (dwell, a count): no new request
+        expect(sent.Count == 1, "a parcel update for the same parcel asked again");
+        expect(tab.RowText(UI.LandObjectsRow.Selected) == N(9), "a changed count did not reach the tab");
+        Push(P(4, counts));                                      // another parcel while shown: asks for it
+        expect(sent.SequenceEqual(new[] { 3, 4 }), $"a new parcel while shown sent {string.Join(",", sent)}");
+
+        win.SelectGeneralTab();
+        expect(!tab.Shown, "the tab is still shown after another one was picked");
+        Push(P(5, counts));                                      // another parcel while hidden: nothing asked, list dropped
+        expect(sent.Count == 2 && tab.Body == UI.LandInfoFormat.OwnersBody.NotRequested, "a parcel pushed while the tab was hidden asked for the list");
+        win.SelectObjectsTab();
+        expect(sent.SequenceEqual(new[] { 3, 4, 5 }), $"showing the tab again sent {string.Join(",", sent)}");
+
+        // 4. An answer pushed from a network thread reaches the table only through the main-thread inbox.
+        // Counts as numbers (10 above 9), equal counts by name, a name still loading last among its equals.
+        var stamp = new DateTime(2024, 5, 6, 20, 8, 9, DateTimeKind.Utc);
+        var answer = Answer(5, false,
+            new SLNG.Core.ParcelObjectOwner(ann, false, 9, true),
+            new SLNG.Core.ParcelObjectOwner(bob, false, 10, true, stamp),
+            new SLNG.Core.ParcelObjectOwner(crew, true, 10, false),
+            new SLNG.Core.ParcelObjectOwner(dee, false, 10, true));
+        System.Threading.Tasks.Task.Run(() => tab.OnOwnersReceived(null, answer)).Wait();
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.Loading, "an answer pushed off-thread reached the UI before the main thread drained it");
+        tab._Process(0);
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.List && tab.TableVisible && tab.NoticeText == string.Empty, $"table not shown for an answer with owners ({tab.Body})");
+        var rows = tab.TableRows();
+        expect(rows.Select(r => r.Name).SequenceEqual(new[] { "Bob Beta", "The Crew", T("ui.land.loading"), "Ann Alpha" }), $"table order {string.Join(" | ", rows.Select(r => r.Name))}");
+        expect(rows.Select(r => r.Count).SequenceEqual(new[] { N(10), N(10), N(10), N(9) }), "counts column");
+        expect(rows[0].Type == T("ui.land.obj_type_resident") && rows[1].Type == T("ui.land.obj_type_group"), "type column: group vs resident");
+        expect(rows[0].Recent == UI.LandInfoFormat.OwnerRecentText(stamp) && rows[0].Recent != UI.LandInfoFormat.Unknown && rows[1].Recent == UI.LandInfoFormat.Unknown, "most-recent column");
+
+        // A name arriving late rewrites its own cell and moves nothing.
+        names[dee] = "Dee Delta";
+        tab.RefreshNames();
+        rows = tab.TableRows();
+        expect(rows.Select(r => r.Name).SequenceEqual(new[] { "Bob Beta", "The Crew", "Dee Delta", "Ann Alpha" }), $"late name {string.Join(" | ", rows.Select(r => r.Name))}");
+
+        // 5. An answer for another parcel is dropped; a late timeout does not blank a list.
+        tab.OnOwnersReceived(null, Answer(99, false, new SLNG.Core.ParcelObjectOwner(ann, false, 1, true)));
+        tab._Process(0);
+        expect(tab.TableRows().Count == 4, "an answer for another parcel replaced the table");
+        tab.OnOwnersFailed(null, new SLNG.Net.ParcelObjectOwnersFailure(Region, 5));
+        tab._Process(0);
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.List, "a late timeout blanked a list that had arrived");
+
+        // 6. Refresh asks again, and the table goes to "searching" until the answer.
+        tab.RefreshButton.EmitSignal(BaseButton.SignalName.Pressed);
+        expect(sent.Count == 4 && sent[3] == 5, $"Refresh sent {sent.Count} request(s)");
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.Loading && !tab.TableVisible, "the old table stayed up while the new one was loading");
+
+        // 7. No answer at all is a refusal-or-failure, not an empty parcel; a late answer still lands.
+        tab.OnOwnersFailed(null, new SLNG.Net.ParcelObjectOwnersFailure(Region, 5));
+        tab._Process(0);
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.NoAnswer && tab.NoticeText == T("ui.land.obj_no_answer"), $"no-answer state '{tab.NoticeText}'");
+        expect(tab.NoticeText != T("ui.land.obj_none_found"), "no answer reads as 'none found'");
+        tab.OnOwnersReceived(null, answer);
+        tab._Process(0);
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.List && tab.TableRows().Count == 4, "a late answer did not replace 'no answer'");
+
+        // 8. An empty answer: a parcel with no objects says "none found"; one that has objects, or the sim's nil-owner
+        // row, says the list was not given -- never "none found".
+        Push(P(5, SLNG.Core.ParcelPrimCounts.None));
+        tab.OnOwnersReceived(null, Answer(5, false));
+        tab._Process(0);
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.None && tab.NoticeText == T("ui.land.obj_none_found"), $"empty answer, empty parcel '{tab.NoticeText}'");
+        Push(P(5, counts));
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.NotListed && tab.NoticeText == T("ui.land.obj_not_listed"), $"empty answer, parcel with objects '{tab.NoticeText}'");
+        Push(P(5, SLNG.Core.ParcelPrimCounts.None));
+        tab.OnOwnersReceived(null, Answer(5, true));
+        tab._Process(0);
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.NotListed, "the sim's nil-owner row did not read as 'not listed'");
+
+        // 9. A request that cannot be sent (not connected) is not "searching" for ever.
+        tab.UseRequester(_ => false);
+        tab.Refresh();
+        expect(tab.Body == UI.LandInfoFormat.OwnersBody.NotRequested, "an unsent request left the tab on 'searching'");
+
+        // 10. The pure rules: numeric order, ties by name, and what an empty answer means.
+        static SLNG.Core.ParcelObjectOwner O(Guid id, int n) => new(id, false, n, false);
+        string? Look(Guid id, bool _) => names.TryGetValue(id, out var nm) ? nm : null;
+        var order = UI.LandInfoFormat.SortOwners(new[] { O(ann, 9), O(bob, 10), O(crew, 100) }, Look).Select(o => o.Count).ToArray();
+        expect(order.SequenceEqual(new[] { 100, 10, 9 }), $"owners sorted as text, not numbers: {string.Join(",", order)}");
+        expect(UI.LandInfoFormat.OwnersAnswer(Answer(1, false, O(ann, 1)), 0) == UI.LandInfoFormat.OwnersBody.List, "an answer with an owner is not a list");
+        expect(UI.LandInfoFormat.OwnersAnswer(Answer(1, false), 0) == UI.LandInfoFormat.OwnersBody.None, "no owners and no objects is not 'none'");
+        expect(UI.LandInfoFormat.OwnersAnswer(Answer(1, false), 1) == UI.LandInfoFormat.OwnersBody.NotListed, "no owners but objects is not 'not listed'");
+        expect(UI.LandInfoFormat.OwnersIsProblem(UI.LandInfoFormat.OwnersBody.NotListed) && UI.LandInfoFormat.OwnersIsProblem(UI.LandInfoFormat.OwnersBody.NoAnswer)
+            && !UI.LandInfoFormat.OwnersIsProblem(UI.LandInfoFormat.OwnersBody.None), "refusals are not drawn as problems");
+
+        // Nothing prints a raw key.
+        foreach (var body in Enum.GetValues<UI.LandInfoFormat.OwnersBody>())
+            expect(!UI.LandInfoFormat.OwnersNotice(body).Contains("[ui."), $"owners notice {body} shows a raw key");
+        foreach (var row in Enum.GetValues<UI.LandObjectsRow>())
+            expect(!tab.RowText(row).Contains("[ui."), $"objects row {row} shows a raw key");
+        expect(!((UI.ILandInfoTab)tab).TabTitle.StartsWith('['), "objects tab title is a raw key");
     }
 
     /// <summary>
