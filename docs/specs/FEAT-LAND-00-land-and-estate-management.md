@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-LAND-00` (umbrella for `FEAT-LAND-01` … `FEAT-LAND-10`)
 - **Track:** `net` | `ui`
-- **Status:** `⏸️ Pending`
+- **Status:** `🚧 In Progress`
 - **Owner:** unassigned
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
