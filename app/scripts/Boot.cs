@@ -408,7 +408,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.15-alpha";
+    public const string AppVersion = "v0.26.16-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -901,7 +901,7 @@ public partial class Boot : Control
         _avatarHoverSettings.Load();
         _snapshotSettings.Load();
         MediaSettings.Load();
-        ChatLogSettings.Load(); // FEAT-UI-41: reads only; the default is written at the first login, never here
+        ChatLogSettings.Load(); // FEAT-UI-41: reads only; a folder is written when the person chooses one
 
         // Apply saved language setting
         _localizationManager.CurrentLocale = _uiSettings.Language;
@@ -1588,6 +1588,8 @@ public partial class Boot : Control
         var chatLogPage = new SLNG.App.UI.ChatLogPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_chat_logs"), chatLogPage);
         chatLogPage.Initialize(
+            ChatLogAccounts,
+            () => _chatTarget != null ? SLNG.Core.ChatLogs.ChatLogAccountKey.Of(_sessionGridUri, _sessionFirstName, _sessionLastName) : null,
             () => _chatTarget,
             () => _chatTarget != null && _session?.IsConnected == true
                 ? new SLNG.App.UI.ChatLogImportContext(_chatLogger, _chatTarget.Directory, _chatTarget.Naming,
@@ -2780,6 +2782,38 @@ public partial class Boot : Control
         }
     }
 
+    /// <summary>FEAT-UI-41: the accounts the Chat logs tab can set a folder for -- the login screen's
+    /// saved profiles in the same order and with the same grid names -- plus, first, the account that is
+    /// logged in when it was never saved (a one-off login still needs a folder). Read from the profiles
+    /// as they are NOW, so a login saved a minute ago is in it.</summary>
+    private System.Collections.Generic.IReadOnlyList<SLNG.App.UI.ChatLogAccount> ChatLogAccounts()
+    {
+        var list = new System.Collections.Generic.List<SLNG.App.UI.ChatLogAccount>();
+        foreach (var profile in _loginsConfig.GetSections())
+        {
+            if (profile == "Settings" || profile == "Window") continue;
+            string first = (string)_loginsConfig.GetValue(profile, "first", "");
+            string last = (string)_loginsConfig.GetValue(profile, "last", "");
+            string grid = (string)_loginsConfig.GetValue(profile, "grid", "");
+            AddChatLogAccount(list, first, last, grid);
+        }
+
+        if (_chatTarget != null)
+        {
+            var current = new System.Collections.Generic.List<SLNG.App.UI.ChatLogAccount>();
+            AddChatLogAccount(current, _sessionFirstName, _sessionLastName, _sessionGridUri);
+            if (current.Count == 1 && !list.Exists(a => a.Key == current[0].Key)) list.Insert(0, current[0]);
+        }
+        return list;
+    }
+
+    private void AddChatLogAccount(System.Collections.Generic.List<SLNG.App.UI.ChatLogAccount> into, string first, string last, string grid)
+    {
+        string key = SLNG.Core.ChatLogs.ChatLogAccountKey.Of(grid, first, last);
+        if (into.Exists(a => a.Key == key)) return; // two spellings of one login are one account
+        into.Add(new SLNG.App.UI.ChatLogAccount(key, first, last, grid, $"{first} {last} — {GetGridDisplayName(grid)}"));
+    }
+
     /// <summary>Maps a login URI to the short grid name GridDropdown already uses for it
     /// ("Second Life", "OSGrid", ...), so the same wording shows up everywhere a grid is named.
     /// Falls back to the URI's host for anything not one of GridDropdown's known entries -- a
@@ -3601,23 +3635,23 @@ public partial class Boot : Control
         CompleteLoadingStep(0);
 
         // BUG-GRID-01 / FEAT-UI-41: chat logs belong to one account on one grid, and live where
-        // Firestorm keeps them (<base>/<first_last[.gridlabel]>/), so the logger is pointed at this
+        // Firestorm keeps them (<base>/<first_last[.gridlabel]>/) -- the base being the folder chosen for
+        // THIS account (Preferences -> Chat logs) or SLNG's default -- so the logger is pointed at this
         // account's folder and the window forgets the previous session's conversations -- which may
         // have been another account on another grid. Before the first message can arrive, hence before
-        // the login. The grid's label (the folder suffix) is known offline for the Linden grids and
-        // for anything in Firestorm's own grid list; only an unknown OpenSim grid costs one small
-        // request, with a short timeout, and never delays or fails the login for longer than that.
+        // the login. The grid's label (the folder suffix) is known offline for the Linden grids, OSGrid
+        // and a local OpenSim on port 9000; any other grid costs one small request (get_grid_info), with
+        // a short timeout, and never delays or fails the login for longer than that.
         {
             string? probedGridName = null;
             if (ChatLogPaths.NeedsProbe(_sessionGridUri))
                 probedGridName = await SLNG.Net.GridInfoProbe.TryGetGridNameAsync(_sessionGridUri, System.TimeSpan.FromSeconds(3));
 
-            ChatLogSettings.DecideIfNeeded();
             _chatTarget = ChatLogPaths.ResolveCurrent(_sessionGridUri, firstName, lastName, probedGridName);
             _chatLogger.UseDirectory(_chatTarget.Directory, _chatTarget.Naming);
             _chatWindow.ResetForNewSession();
             GD.Print($"[ChatLog] {_chatTarget.Directory} ({_chatTarget.Why}; IM files named {_chatTarget.Naming.ImStyle}" +
-                     $"{(_chatTarget.Naming.DateSuffix ? ", dated" : "")}; grid name from {(probedGridName is null ? "the Linden/Firestorm lists or the host" : "the grid")})");
+                     $"; grid name from {(probedGridName is null ? "the built-in table or the host" : "the grid")})");
         }
 
         var result = await _session.LoginAsync(creds);

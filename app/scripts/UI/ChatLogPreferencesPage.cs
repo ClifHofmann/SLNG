@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -8,23 +9,31 @@ using SLNG.Core.ChatLogs;
 namespace SLNG.App.UI;
 
 /// <summary>
-/// FEAT-UI-41: "Chat logs" tab of Preferences. Where logs are kept (Firestorm's folder, SLNG's own,
-/// or one the person chooses), how IM files are named, which folder is in use right now, and the
-/// explicit, user-triggered import of logs older SLNG builds wrote. Logs are in Firestorm's layout
-/// whatever the choice, so either viewer reads what the other wrote.
+/// FEAT-UI-41: "Chat logs" tab of Preferences. For each saved account (the login screen's list): the
+/// base folder its chat logs go into -- picked with the OS folder picker, or SLNG's default -- and the
+/// folder actually in effect, including the account sub-folder named the way Firestorm names it. Also
+/// how IM files are named, and the explicit, user-triggered import of logs older SLNG builds wrote.
+/// Point an account at the folder Firestorm uses for it and both viewers share one history; SLNG does
+/// not look at Firestorm to decide anything.
 /// </summary>
 public partial class ChatLogPreferencesPage : VBoxContainer
 {
+    private Func<IReadOnlyList<ChatLogAccount>> _accounts = () => Array.Empty<ChatLogAccount>();
     private Func<ChatLogTarget?> _activeTarget = () => null;
+    private Func<string?> _activeKey = () => null;
     private Func<ChatLogImportContext?> _importContext = () => null;
 
-    private OptionButton _location = null!;
-    private LineEdit _custom = null!;
+    private OptionButton _account = null!;
+    private Label _folder = null!;
     private Button _browse = null!;
+    private Button _useDefault = null!;
+    private Label _effective = null!;
     private OptionButton _names = null!;
-    private Label _active = null!;
     private Button _importButton = null!;
     private Label _importStatus = null!;
+
+    private List<ChatLogAccount> _rows = new();
+    private string? _selectedKey;
 
     // Handed from the worker thread to the main thread; only read after CallDeferred.
     private ChatLogImportPlan? _plan;
@@ -40,60 +49,60 @@ public partial class ChatLogPreferencesPage : VBoxContainer
 
     public override void _ExitTree()
     {
-        ChatLogSettings.Changed -= RefreshActive;
+        ChatLogSettings.Changed -= RefreshFolder;
     }
 
+    /// <param name="accounts">The saved accounts, in the order the login screen lists them.</param>
+    /// <param name="activeKey">Key of the account logged in right now, or null.</param>
     /// <param name="activeTarget">Where this session's logs go, or null before a login.</param>
     /// <param name="importContext">What the import needs, or null before a login.</param>
-    public void Initialize(Func<ChatLogTarget?> activeTarget, Func<ChatLogImportContext?> importContext)
+    public void Initialize(Func<IReadOnlyList<ChatLogAccount>> accounts, Func<string?> activeKey,
+        Func<ChatLogTarget?> activeTarget, Func<ChatLogImportContext?> importContext)
     {
+        _accounts = accounts;
+        _activeKey = activeKey;
         _activeTarget = activeTarget;
         _importContext = importContext;
 
         AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_heading")));
         AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_intro")));
 
-        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_location")));
-        _location = new OptionButton();
-        _location.AddItem(L10n.Tr("ui.preferences.chat_logs_loc_firestorm"), (int)ChatLogMode.Firestorm);
-        _location.AddItem(L10n.Tr("ui.preferences.chat_logs_loc_slng"), (int)ChatLogMode.Slng);
-        _location.AddItem(L10n.Tr("ui.preferences.chat_logs_loc_custom"), (int)ChatLogMode.Custom);
-        _location.Selected = _location.GetItemIndex((int)ChatLogSettings.EffectiveMode);
-        _location.ItemSelected += OnLocationSelected;
-        AddChild(_location);
-
-        _custom = new LineEdit
+        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_account")));
+        _account = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _account.ItemSelected += index =>
         {
-            Text = ChatLogSettings.CustomFolder,
-            PlaceholderText = L10n.Tr("ui.preferences.chat_logs_custom_placeholder"),
-            Editable = ChatLogSettings.EffectiveMode == ChatLogMode.Custom,
+            _selectedKey = (index >= 0 && index < _rows.Count) ? _rows[(int)index].Key : null;
+            RefreshFolder();
         };
-        _custom.TextSubmitted += text => ChatLogSettings.SetCustomFolder(text);
-        _custom.FocusExited += () => ChatLogSettings.SetCustomFolder(_custom.Text);
-        _custom.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        AddChild(_account);
+
+        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_folder")));
+        _folder = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        AddChild(_folder);
 
         // Firestorm has a "Choose..." button here; typing a path is not an acceptable way to pick a folder.
-        var customRow = new HBoxContainer();
-        customRow.AddThemeConstantOverride("separation", 6);
-        customRow.AddChild(_custom);
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 6);
         _browse = new Button { Text = L10n.Tr("ui.preferences.chat_logs_browse") };
         _browse.Visible = DisplayServer.HasFeature(DisplayServer.Feature.NativeDialogFile);
         _browse.Pressed += OnBrowsePressed;
-        customRow.AddChild(_browse);
-        AddChild(customRow);
+        row.AddChild(_browse);
+        _useDefault = new Button { Text = L10n.Tr("ui.preferences.chat_logs_use_default") };
+        _useDefault.Pressed += () => { if (_selectedKey != null) ChatLogSettings.ClearFolder(_selectedKey); };
+        row.AddChild(_useDefault);
+        AddChild(row);
+
+        _effective = Hint("");
+        AddChild(_effective);
+        AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_apply_hint")));
 
         AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_im_names")));
         _names = new OptionButton();
-        _names.AddItem(L10n.Tr("ui.preferences.chat_logs_im_auto"), (int)ImNamesChoice.Auto);
-        _names.AddItem(L10n.Tr("ui.preferences.chat_logs_im_legacy"), (int)ImNamesChoice.Legacy);
-        _names.AddItem(L10n.Tr("ui.preferences.chat_logs_im_account"), (int)ImNamesChoice.Account);
-        _names.Selected = _names.GetItemIndex((int)ChatLogSettings.ImNames);
-        _names.ItemSelected += index => ChatLogSettings.SetImNames((ImNamesChoice)_names.GetItemId((int)index));
+        _names.AddItem(L10n.Tr("ui.preferences.chat_logs_im_legacy"), (int)ImLogNameStyle.Legacy);
+        _names.AddItem(L10n.Tr("ui.preferences.chat_logs_im_account"), (int)ImLogNameStyle.Account);
+        _names.Selected = _names.GetItemIndex((int)ChatLogSettings.ImStyle);
+        _names.ItemSelected += index => ChatLogSettings.SetImStyle((ImLogNameStyle)_names.GetItemId((int)index));
         AddChild(_names);
-
-        _active = Hint("");
-        AddChild(_active);
-        AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_apply_hint")));
 
         AddChild(new HSeparator());
 
@@ -108,63 +117,86 @@ public partial class ChatLogPreferencesPage : VBoxContainer
         AddChild(new HSeparator());
         AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_one_viewer")));
 
-        ChatLogSettings.Changed += RefreshActive;
-        VisibilityChanged += () => { if (IsVisibleInTree()) RefreshActive(); };
-        RefreshActive();
+        ChatLogSettings.Changed += RefreshFolder;
+        VisibilityChanged += () => { if (IsVisibleInTree()) RefreshAccounts(); };
+        RefreshAccounts();
+    }
+
+    // The list is read again whenever the tab is shown: a login saved since the last time is in it.
+    private void RefreshAccounts()
+    {
+        _rows = _accounts().ToList();
+        _account.Clear();
+        foreach (var a in _rows) _account.AddItem(a.Label);
+
+        int index = _selectedKey == null ? -1 : _rows.FindIndex(a => a.Key == _selectedKey);
+        if (index < 0) index = _rows.FindIndex(a => a.Key == _activeKey());
+        if (index < 0 && _rows.Count > 0) index = 0;
+        if (index >= 0) _account.Selected = index;
+        _selectedKey = index >= 0 ? _rows[index].Key : null;
+        RefreshFolder();
+    }
+
+    private void RefreshFolder()
+    {
+        if (_folder == null) return;
+
+        var account = _rows.Find(a => a.Key == _selectedKey);
+        _browse.Disabled = _useDefault.Disabled = account == null;
+        if (account == null)
+        {
+            _folder.Text = L10n.Tr("ui.preferences.chat_logs_no_accounts");
+            _effective.Text = "";
+            return;
+        }
+
+        string? chosen = ChatLogSettings.FolderFor(account.Key);
+        string defaultBase = SLNG.Core.Services.ChatLogger.DefaultLogDirectory();
+        _useDefault.Disabled = chosen == null;
+        _folder.Text = chosen ?? L10n.TrFormat("ui.preferences.chat_logs_default_folder", defaultBase);
+
+        // The folder in effect: the active session's own when this is the logged-in account (its grid
+        // name is known), else the base plus the account folder. A grid whose name is only learned by
+        // asking it at login shows a placeholder -- opening Preferences does not contact a grid.
+        var active = _activeTarget();
+        if (active != null && account.Key == _activeKey())
+        {
+            _effective.Text = L10n.TrFormat("ui.preferences.chat_logs_in_effect", active.Directory);
+            return;
+        }
+
+        string baseDir = chosen ?? defaultBase;
+        string? label = GridLabels.BuiltInLabel(account.GridUri);
+        string folderName = label != null
+            ? FirestormLogLayout.AccountFolderName(account.FirstName, account.LastName, label)
+            : FirestormLogLayout.AccountFolderName(account.FirstName, account.LastName, null)
+              + L10n.Tr("ui.preferences.chat_logs_grid_name_placeholder");
+        _effective.Text = L10n.TrFormat("ui.preferences.chat_logs_in_effect", Path.Combine(baseDir, folderName));
     }
 
     // The OS folder picker. The chosen folder is the BASE: the account's own folder (first_last, with a
     // grid suffix off Second Life) is created inside it, exactly like Firestorm's "Logs and transcripts
-    // location". Picking one switches the location to "chosen folder" -- choosing a folder and then
-    // having it ignored would be the one wrong outcome.
+    // location" -- so choosing the folder Firestorm uses for this account makes both viewers share it.
     private void OnBrowsePressed()
     {
-        string start = _custom.Text.Length > 0 && Directory.Exists(_custom.Text)
-            ? _custom.Text
-            : SLNG.Core.Services.ChatLogger.DefaultFirestormProfileDirectory();
+        if (_selectedKey == null) return;
+        string key = _selectedKey;
+        string? chosen = ChatLogSettings.FolderFor(key);
+        string start = chosen != null && Directory.Exists(chosen) ? chosen : SLNG.Core.Services.ChatLogger.DefaultLogDirectory();
         DisplayServer.FileDialogShow(
             L10n.Tr("ui.preferences.chat_logs_browse_title"), start, "", false,
             DisplayServer.FileDialogMode.OpenDir, Array.Empty<string>(),
             Callable.From((bool ok, string[] paths, long filter) =>
             {
                 if (!ok || paths.Length == 0 || string.IsNullOrWhiteSpace(paths[0])) return;
-                _custom.Text = paths[0];
-                ChatLogSettings.SetCustomFolder(paths[0]);
-                _location.Selected = _location.GetItemIndex((int)ChatLogMode.Custom);
-                _custom.Editable = true;
-                ChatLogSettings.SetMode(ChatLogMode.Custom);
+                ChatLogSettings.SetFolder(key, paths[0]);
             }));
-    }
-
-    private void OnLocationSelected(long index)
-    {
-        var mode = (ChatLogMode)_location.GetItemId((int)index);
-        _custom.Editable = mode == ChatLogMode.Custom;
-        ChatLogSettings.SetMode(mode);
-    }
-
-    private void RefreshActive()
-    {
-        if (_active == null) return;
-
-        var target = _activeTarget();
-        if (target != null)
-        {
-            _active.Text = L10n.TrFormat("ui.preferences.chat_logs_active", target.Directory, target.Why);
-            return;
-        }
-
-        string baseFolder = ChatLogSettings.EffectiveMode switch
-        {
-            ChatLogMode.Slng => SLNG.Core.Services.ChatLogger.DefaultLogDirectory(),
-            ChatLogMode.Custom when ChatLogSettings.CustomFolder.Length > 0 => ChatLogSettings.CustomFolder,
-            _ => SLNG.Core.Services.ChatLogger.DefaultFirestormProfileDirectory(),
-        };
-        _active.Text = L10n.TrFormat("ui.preferences.chat_logs_active_none", baseFolder);
     }
 
     // ---- import ----------------------------------------------------------------------------
 
+    // The import writes into the folder of the account that is LOGGED IN: the older logs are looked
+    // up by that account and grid (the per-grid folder of v0.26.13), and the history is filed under it.
     private void OnImportPressed()
     {
         var ctx = _importContext();

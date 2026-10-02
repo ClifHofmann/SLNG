@@ -21,6 +21,12 @@ Real lines used in tests have their people and ids replaced; nothing from those 
 
 ## The rules (each verified against source and against real files)
 
+> **v0.26.16 (the maintainer's correction):** SLNG gets *compatibility* with Firestorm -- the layout, the names,
+> the line format, the encoding -- and does **not** detect, read or follow a Firestorm installation. Rules 1, 5 and 7
+> below describe what *Firestorm* does with *its* settings; SLNG no longer reads those settings (no
+> `settings_per_account.xml`, no `user_settings/settings.xml`, no `grids.*.xml`). Where a person wants both viewers
+> on one history, they pick, per saved account, the folder Firestorm uses for it.
+
 | # | Rule | Source | Real evidence |
 |---|---|---|---|
 | 1 | **Base folder**: the account's setting `InstantMessageLogPath` (per-account `settings_per_account.xml`); empty means the profile folder `%APPDATA%\Firestorm_x64`. A configured path that does not exist is ignored (FIRE-18247). | `llstartup.cpp:1601-1616` | The maintainer's Second Life account points at `C:\Users\cid80\OneDrive\Firestorm` (5332 files there, written today); the OSGrid and other accounts use the profile folder. |
@@ -42,28 +48,49 @@ Real lines used in tests have their people and ids replaced; nothing from those 
 
 ## Decisions
 
-**Folder (b).** Preferences -> **Chat logs** (new tab; the Network tab is about caches). Three choices:
-*Firestorm's folder* (rule 1, read from the other viewer's own settings, so SLNG ends up in the exact folder
-Firestorm uses for that account, incl. the maintainer's OneDrive one), *SLNG's own folder*
-(`%APPDATA%\SLNG\logs\chat`, Firestorm's layout inside), *a folder of the person's choice*. The page shows the
-folder in use for the running session, or the base folder it will use. **Default decided once, at the first login**
-(`ChatLogSettings.DecideIfNeeded`): Firestorm's profile folder if it exists, else SLNG's own. It is written down
-then, so installing Firestorm later does not make SLNG silently switch to a second history. Nothing is written on
-the boot path (`--selftest` boots against the real data): until then the default is only computed.
+**Folder (b), per saved account.** Preferences -> **Chat logs**. A dropdown lists the saved accounts exactly as the
+login screen does (`Clifton Howlett -- Second Life`, `-- OSGrid`, ...), plus first, the account logged in right now
+when it was never saved. For the selected one: the chosen **base folder** (read-only text), **Choose...** (the OS
+folder picker; there is no typing of paths) and **Use default**, and the folder **in effect** -- the base plus the
+account's own sub-folder named Firestorm's way, which is created inside it. An account with nothing chosen uses
+SLNG's own viewer-neutral folder (`%APPDATA%\SLNG\logs\chat`), in Firestorm's layout. To share a history with
+Firestorm, choose the folder Firestorm uses for that account (Firestorm's own "Logs and transcripts location"); the
+sub-folder name is the same, so the two meet in one folder. A change applies at the next login. There is no
+"Firestorm folder" mode and no first-login default: SLNG never looks at Firestorm.
 
-**IM file names (c).** A second setting: *as Firestorm is set up* (default: reads `UseLegacyIMLogNames` from
-`user_settings/settings.xml`; absent = legacy, as the source's default), *legacy* or *account*. SLNG's own folder
-without Firestorm gets legacy names, which is also what SLNG's own old files looked like.
+*Where the value lives:* `preferences.cfg`, section `chat_log_dirs`, key = `ChatLogAccountKey.Of(login URI, first,
+last)` (`<grid slug>__<account slug>`, built from the BUG-GRID-01 identities, so two spellings of one login URI are
+one account and the same name on two grids is two). Not `logins.cfg`: that file is Boot's, holds the password
+hashes, is rewritten whole in several places, and treats every section except `Settings`/`Window` as a login
+profile (a new section would appear in the login screen's list); it also only knows *saved* accounts, while a
+one-off login needs a folder too. Nothing is written on the boot path: `ChatLogSettings.Load` only reads, a value
+is written when the person chooses. Boot resolves the folder at login from that account's key, nothing else.
 
-**Grid label (a).** SLNG only knows the login URI. Order: the two Linden hosts (`Second Life`, `Second Life
-Beta`); **Firestorm's own grid lists** (`user_settings/grids.user.xml`, `grids.remote.xml`), matching the URI's
-host+port against each entry's key, `loginuri`, `gatekeeper` and `name` (so SLNG's `hg.osgrid.org` finds OSGrid
-through the gatekeeper, and `127.0.0.1:9000` finds `localhost:9000`); the grid's `get_grid_info` `<gridname>`,
-one GET with a 3 s timeout at login and only for a grid in neither list (`GridInfoProbe`); finally the host (and
-a non-default port), which is the viewer's own fallback. Checked: `hg.osgrid.org/get_grid_info` and
-`login.osgrid.org/get_grid_info` both answer `<gridname>OSGrid</gridname>`. `GridIdentity` slugs are SLNG's own and
-are **not** used for these folder names. Where the viewer would produce a folder name Windows rejects (a label
-`host:port`), `:` and the like become `_`.
+**IM file names (c).** A global choice (Firestorm's own is global too): *legacy* `First Last.txt` (the default --
+Firestorm's built-in default, and what SLNG's old files looked like) or *account* `first_last.txt`. It is a plain
+setting now; the earlier "as Firestorm is set up" option, which read Firestorm's `settings.xml`, is gone. The
+maintainer's Firestorm uses account names, so he sets this once. The date suffix (rule 7) is not written; an
+existing dated file is still *found* when reading (`FirestormLogLayout.ResolveExisting`).
+
+**Grid label (a) -- without Firestorm's files.** SLNG only knows the login URI. Order: (1) a built-in table of four
+constants: the two Linden hosts (`Second Life`, `Second Life Beta`), OSGrid (hosts `hg.osgrid.org` and
+`login.osgrid.org` -> `OSGrid`) and a local OpenSim on port 9000 (`127.0.0.1`/`localhost` -> `localhost`);
+(2) the grid's `get_grid_info` `<gridname>`, one GET with a 3 s timeout at login, only for a grid not in the table
+(`GridInfoProbe`); (3) the host (and a non-default port), the viewer's own fallback when a grid reports no name.
+`GridIdentity` slugs are SLNG's own and are **not** used for these folder names. A folder name Windows rejects
+(a label `host:port`) has `:` and the like replaced by `_`.
+
+How that compares for the maintainer's real grids: Second Life -> no suffix, same; `hg.osgrid.org` -> `.osgrid`
+(both `hg.` and `login.osgrid.org/get_grid_info` answer `OSGrid`; same as Firestorm's `clifton_howlett.osgrid`);
+Alife Virtual -> `www.alifevirtual.com:8002/get_grid_info` answers `<gridname>Alife Virtual</gridname>` (checked
+2026-10-02), so `.alife_virtual`, same as `cilian_dupont.alife_virtual`; a local grid on `127.0.0.1:9000` ->
+`.localhost`, same as `test_user.localhost` -- **but only because of the built-in `localhost` constant**: Firestorm
+gets that label from its own shipped grid list, and a local OpenSim's `get_grid_info` reports whatever its
+configuration says (default `gridname` is not `localhost`), so a local grid on another port, or one the maintainer
+renamed, can land in a different folder than Firestorm's. That is the one case where the label can differ.
+Another viewer's list of grids the maintainer added by hand is not consulted, so a grid whose `get_grid_info`
+is down at login gets the host as its label (`.<host>`), where Firestorm, having stored the label once, would
+still say its name.
 
 **Writer (c).** `ChatLogger` appends exactly Firestorm's record: stamp in Second Life time (US Pacific rule, see
 `SecondLifeTime`), minute precision, two spaces, `%3A`-encoded sender, continuation lines with a leading space,
@@ -109,17 +136,19 @@ the in-memory `conversation.log` state of whichever exits first.
 **Not mirrored from Firestorm's settings (on purpose).** `LogNearbyChat`, `KeepConversationLogTranscripts`,
 `LogTimestamp`, `LogTimestampDate`, `FSSecondsinChatTimestamps`, `Use24HourClock`: SLNG always logs (its own
 `ChatLogger.Enabled` switch, not yet in Preferences) with the default stamp, which Firestorm reads under every
-setting of those. Only what changes *where* and *under which name* a file lives is mirrored (rules 1, 5, 7).
+setting of those. Nothing of Firestorm's settings is mirrored: the choices that decide where and under which name a file lives
+(rules 1, 5) are SLNG's own settings now (the per-account folder, the IM file-name style).
 
 ## Layering
 
 - **`SLNG.Core/ChatLogs/`** (pure, tested): `FirestormLogLayout` (folder and file names), `FirestormLogFormat` +
-  `ChatLogEntry` (line format, the one parser), `SecondLifeTime`, `GridLabels`, `LlsdSettingsFile`,
-  `ChatLogLocator` (+ `ChatLogMode`, `ImNamesChoice`, `ImLogNameStyle`, `ChatLogNaming`, `ChatLogTarget`),
-  `ChatLogImporter` (+ plan types). `ChatLogger` (`Services/`) is the file IO.
+  `ChatLogEntry` (line format, the one parser), `SecondLifeTime`, `GridLabels`,
+  `ChatLogAccountKey` + `ChatLogFolderMap` (the per-account choice), `ChatLogLocator` (+ `ImLogNameStyle`,
+  `ChatLogNaming`, `ChatLogTarget`; pure, reads nothing), `ChatLogImporter` (+ plan types). `ChatLogger` (`Services/`) is the file IO.
 - **`SLNG.Net/GridInfoProbe`**: the one HTTP GET; no LibreMetaverse type.
-- **`app/`**: `ChatLogSettings` (preferences.cfg), `ChatLogPaths` (feeds the machine's folders in), `Boot`
-  (resolves at login, before the login request), `ChatLogPreferencesPage`, `ChatWindow` (preload uses `GetTail`;
+- **`app/`**: `ChatLogSettings` (preferences.cfg, per account), `ChatLogPaths` (feeds the account's choice and
+  SLNG's default in), `Boot` (resolves at login from the profile's key, before the login request; supplies the
+  saved accounts to the page), `ChatLogPreferencesPage` + `ChatLogAccount`, `ChatWindow` (preload uses `GetTail`;
   system notices have an empty sender), `GridData.LegacyChatLogDirectory` (import source only).
 - Nothing in `src/` references Godot.
 
@@ -127,15 +156,15 @@ setting of those. Only what changes *where* and *under which name* a file lives 
 
 - [x] Folder per login by Firestorm's rule, verified against `lldir.cpp` / `llstartup.cpp` / `lllogchat.cpp` /
       `fsgridhandler.cpp`, incl. the grid label for OpenSim grids (rules 2, 3; the label lookup above).
-- [x] Base folder is a setting in Preferences; default Firestorm's folder when it exists, SLNG's own otherwise;
-      decided once at the first login, never silently a second history.
+- [x] The base folder is a setting per saved account in Preferences (OS folder picker, "Use default"), default
+      SLNG's own folder; no Firestorm detection or settings are read.
 - [x] History viewer and preload read Firestorm's files and SLNG's older ones through one parser; what SLNG
       writes has Firestorm's names, line format, encoding, line ends; append only.
 - [x] Old SLNG logs found and importable on request (append + marker, idempotent), never moved or deleted.
 - [x] `conversation.log` left alone, documented, with the statement above.
 - [x] A unit test per format rule using real (anonymised) lines, a writer/reader round trip, appended bytes
       unchanged, import idempotence; selftest check `chat log paths`.
-- [x] `AppVersion` v0.26.13-alpha -> v0.26.14-alpha; manual (German) and BUG-GRID-01 spec updated.
+- [x] `AppVersion` v0.26.16-alpha; manual (German) and BUG-GRID-01 spec updated.
 - [ ] **Firestorm run against a file SLNG wrote** (open the conversation in Firestorm and check the lines and the
       times) -- needs the maintainer.
 - [ ] **In-world**: log in on Second Life and OSGrid, chat, check the files appear in the folders Firestorm uses,
@@ -143,9 +172,10 @@ setting of those. Only what changes *where* and *under which name* a file lives 
 
 ## Verified vs not
 
-Verified here: every rule above against source and real bytes; the folder resolution for the maintainer's six
-real accounts (read-only; each resolves to the folder that exists, the Second Life one to the OneDrive folder);
-reading the real files (a 24 MB IM log, a 10 MB `chat.txt`, a 1.9 MB group log), the tail in a few
+Verified here: every rule above against source and real bytes; the account-folder names for the maintainer's real
+accounts (`clifton_howlett`, `.osgrid`, `.alife_virtual`, `.localhost`, `_resident`; each equals a folder that exists on
+his disk; the base folders are now chosen, not detected -- v0.26.14 had resolved them from Firestorm's settings,
+read-only, and they matched); reading the real files (a 24 MB IM log, a 10 MB `chat.txt`, a 1.9 MB group log), the tail in a few
 milliseconds; the whole unit-test suite and `--selftest` (which also proves the boot path wrote nothing).
 
 **Not verified:** that Firestorm accepts a file SLNG appended to (nothing writes into the real folder from a test;
@@ -170,7 +200,7 @@ not seen; the History viewer's first open of a very large file is ~0.6 s on the 
 
 - `src/SLNG.Core/ChatLogs/*` (new), `src/SLNG.Core/Services/ChatLogger.cs`, `src/SLNG.Net/GridInfoProbe.cs` (new)
 - `app/scripts/ChatLogSettings.cs`, `app/scripts/ChatLogPaths.cs`, `app/scripts/UI/ChatLogPreferencesPage.cs`,
-  `app/scripts/UI/ChatLogImportContext.cs` (new); `app/scripts/Boot.cs`, `app/scripts/UI/ChatWindow.cs`,
+  `app/scripts/UI/ChatLogImportContext.cs`, `app/scripts/UI/ChatLogAccount.cs` (new); `app/scripts/Boot.cs`, `app/scripts/UI/ChatWindow.cs`,
   `app/scripts/GridData.cs`, `app/scripts/SelfTest.cs`, `app/i18n/en-US.json`, `app/i18n/de-DE.json`
 - `tests/SLNG.Core.Tests/ChatLogs/*` (new), `tests/SLNG.Core.Tests/Services/ChatLoggerTests.cs`
 - `docs/BENUTZERHANDBUCH.md`, `docs/ROADMAP.md`, `docs/specs/BUG-GRID-01-per-grid-data-separation.md`
@@ -181,5 +211,6 @@ not seen; the History viewer's first open of a very large file is ~0.6 s on the 
 - [x] Pure rules + tests (layout, format, time, grid labels, settings reader, locator, importer)
 - [x] `ChatLogger` in Firestorm's format; one parser for History and preload
 - [x] Preferences page, login wiring, import button, `--selftest` check
+- [x] v0.26.16: Firestorm detection removed; per saved account folder
 - [x] AppVersion, manual, BUG-GRID-01 spec
 - [ ] Firestorm run against SLNG's output; in-world confirmation (maintainer)

@@ -96,27 +96,13 @@ public sealed class ChatLogger
     /// <summary>%APPDATA%\SLNG\logs\chat\ on Windows, ~/.config/slng/logs/chat/ on Linux/macOS --
     /// <see cref="Environment.SpecialFolder.ApplicationData"/> already resolves to the right base
     /// on each platform (Windows roaming AppData vs. XDG ~/.config). The viewer-neutral folder
-    /// (<see cref="ChatLogMode.Slng"/>); the account folders sit directly inside it. Logs written by
+    /// -- the default base folder of an account that has none chosen; the account folders sit directly inside it. Logs written by
     /// builds before FEAT-UI-41 sit in it too, as loose files and (BUG-GRID-01) per grid.</summary>
     public static string DefaultLogDirectory()
     {
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         string appDirName = OperatingSystem.IsWindows() ? "SLNG" : "slng";
         return Path.Combine(appData, appDirName, "logs", "chat");
-    }
-
-    /// <summary>Firestorm's profile folder: <c>%APPDATA%\Firestorm_x64</c> on Windows,
-    /// <c>~/.firestorm_x64</c> on Linux, <c>~/Library/Application Support/Firestorm_x64</c> on macOS
-    /// (<c>LLDir</c> <c>getOSUserAppDir</c>). Whether it exists is the caller's question.</summary>
-    public static string DefaultFirestormProfileDirectory()
-    {
-        if (OperatingSystem.IsWindows())
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Firestorm_x64");
-
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return OperatingSystem.IsMacOS()
-            ? Path.Combine(home, "Library", "Application Support", "Firestorm_x64")
-            : Path.Combine(home, ".firestorm_x64");
     }
 
     /// <summary>The file a message of this conversation would be appended to now, or null before a

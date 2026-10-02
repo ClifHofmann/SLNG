@@ -9,69 +9,41 @@ namespace SLNG.Core.ChatLogs;
 /// <c>fsgridhandler.cpp</c> stores it (<c>GRID_LABEL_VALUE = gridname</c> from <c>get_grid_info</c>)
 /// and <c>llstartup.cpp</c> passes <c>getGridLabel()</c> to <c>setPerAccountChatLogsDir</c>.
 ///
-/// <para>SLNG knows only the login URI, so it finds the label the way the viewer found it, in order:
-/// (1) the two Linden grids by host (<c>Second Life</c>, <c>Second Life Beta</c> -- the names in
-/// Firestorm's own <c>grids.remote.xml</c>); (2) Firestorm's own grid list
-/// (<c>user_settings/grids.user.xml</c> and <c>grids.remote.xml</c>) when it has an entry whose
-/// login URI, gatekeeper or name is this host and port -- exact, offline, and what the folder was
-/// really named; (3) the grid's own <c>get_grid_info</c> answer, fetched once at login
-/// (<see cref="ParseGridInfoName"/>); (4) the host and port, which is what the viewer itself falls
-/// back to when a grid reports no name (<c>"No gridname found in grid info, setting to"</c>).
-/// Only (4) can be wrong for a grid Firestorm knows, and only when both (2) and (3) are unavailable.</para>
+/// <para>SLNG finds it WITHOUT looking at any Firestorm file, from the login URI, in this order:
+/// (1) a short built-in table of grids whose label is known -- the two Linden grids (<c>Second Life</c>,
+/// <c>Second Life Beta</c>), OSGrid (<c>OSGrid</c>) and a local OpenSim on port 9000
+/// (<c>localhost</c>, the label Firestorm's own default grid list gives it); (2) the grid's own
+/// <c>get_grid_info</c> answer, fetched once at login (<see cref="ParseGridInfoName"/>), which is how
+/// Firestorm learns the label of every other grid; (3) the host and port, the viewer's own fallback
+/// when a grid reports no name. The built-in table is not a read of Firestorm's data: it is four
+/// constants, each checked against the grid's own answer (OSGrid) or Firestorm's source (the others).</para>
 /// </summary>
 public static class GridLabels
 {
-    /// <summary>The label for a Linden grid's login URI, or null when it is not one.</summary>
-    public static string? LindenLabel(string? loginUri)
-        => GridIdentity.Slug(loginUri) switch
+    public const string OsGridLabel = "OSGrid";
+    public const string LocalhostLabel = "localhost";
+
+    /// <summary>The label for a login URI whose label is known without asking anybody, or null.</summary>
+    public static string? BuiltInLabel(string? loginUri)
+    {
+        string? linden = GridIdentity.Slug(loginUri) switch
         {
             "agni" => FirestormLogLayout.SecondLifeLabel,
             "aditi" => FirestormLogLayout.SecondLifeBetaLabel,
             _ => null,
         };
+        if (linden is not null) return linden;
 
-    /// <summary>The label from Firestorm's grid lists (LLSD XML texts, any number), or null.</summary>
-    public static string? FindInGridLists(string? loginUri, IEnumerable<string?> gridListXml)
-    {
-        string? want = HostKey(loginUri);
-        if (want is null) return null;
-
-        foreach (string? xml in gridListXml)
+        return HostKey(loginUri) switch
         {
-            if (string.IsNullOrWhiteSpace(xml)) continue;
-
-            XDocument doc;
-            try { doc = XDocument.Parse(xml); }
-            catch (System.Xml.XmlException) { continue; }
-
-            XElement? top = doc.Root?.Element("map");
-            if (top is null) continue;
-
-            foreach (XElement key in top.Elements("key"))
-            {
-                if (key.NextNode is not XElement { Name.LocalName: "map" } entry) continue;
-
-                string? label = null;
-                var hosts = new List<string?> { HostKey(key.Value) };
-                foreach (XElement k in entry.Elements("key"))
-                {
-                    if (k.NextNode is not XElement v) continue;
-                    switch (k.Value)
-                    {
-                        case "gridname": label = v.Value.Trim(); break;
-                        case "gatekeeper": hosts.Add(HostKey(v.Value)); break;
-                        case "name": hosts.Add(HostKey(v.Value)); break;
-                        case "loginuri":
-                            foreach (XElement s in v.Elements("string")) hosts.Add(HostKey(s.Value));
-                            break;
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(label) && hosts.Contains(want)) return label;
-            }
-        }
-        return null;
+            "hg.osgrid.org:80" or "login.osgrid.org:80" => OsGridLabel,
+            "localhost:9000" => LocalhostLabel,
+            _ => null,
+        };
     }
+
+    /// <summary>True for the two Linden grids (system lines are then sent by "Second Life", elsewhere by "Grid").</summary>
+    public static bool IsLindenGrid(string? loginUri) => GridIdentity.Slug(loginUri) is "agni" or "aditi";
 
     /// <summary>The <c>&lt;gridname&gt;</c> of a <c>get_grid_info</c> answer, or null.</summary>
     public static string? ParseGridInfoName(string? xml)
@@ -88,20 +60,15 @@ public static class GridLabels
         }
     }
 
-    /// <summary>True when the label cannot be had without asking the grid: it is not a Linden grid
-    /// and Firestorm's lists have no entry for it.</summary>
-    public static bool NeedsProbe(string? loginUri, IEnumerable<string?> gridListXml)
-        => LindenLabel(loginUri) is null && FindInGridLists(loginUri, gridListXml) is null;
+    /// <summary>True when the label cannot be had without asking the grid.</summary>
+    public static bool NeedsProbe(string? loginUri) => BuiltInLabel(loginUri) is null;
 
     /// <summary>The label to use, by the order in the class remarks. <paramref name="probedName"/> is
     /// the <c>gridname</c> the grid itself reported, or null if it was not asked or did not answer.</summary>
-    public static string Resolve(string? loginUri, IEnumerable<string?> gridListXml, string? probedName)
-    {
-        string? label = LindenLabel(loginUri)
-                        ?? FindInGridLists(loginUri, gridListXml)
-                        ?? (string.IsNullOrWhiteSpace(probedName) ? null : probedName.Trim());
-        return label ?? FallbackLabel(loginUri);
-    }
+    public static string Resolve(string? loginUri, string? probedName)
+        => BuiltInLabel(loginUri)
+           ?? (string.IsNullOrWhiteSpace(probedName) ? null : probedName.Trim())
+           ?? FallbackLabel(loginUri);
 
     // The viewer's last resort is the grid text it was given, lower-cased. A default port is not part
     // of what a person types, so it is left off.
@@ -116,7 +83,7 @@ public static class GridLabels
 
     /// <summary>The URL <c>get_grid_info</c> lives at for a login URI -- the login URI with
     /// <c>get_grid_info</c> appended (<c>fsgridhandler.cpp</c>), or null for a URI that is not
-    /// http(s). Never used for a Linden grid.</summary>
+    /// http(s). Never used for a grid with a built-in label.</summary>
     public static Uri? GridInfoUri(string? loginUri)
     {
         string raw = loginUri?.Trim() ?? "";
@@ -130,8 +97,7 @@ public static class GridLabels
     }
 
     /// <summary><c>host:port</c> lower-case with the scheme's default port filled in, and the
-    /// loopback spellings (<c>127.0.0.1</c>, <c>::1</c>, <c>localhost</c>) as one -- Firestorm's list
-    /// says <c>localhost:9000</c> where SLNG's login box says <c>127.0.0.1:9000</c>. Null when it is
+    /// loopback spellings (<c>127.0.0.1</c>, <c>::1</c>, <c>localhost</c>) as one. Null when it is
     /// not a host.</summary>
     internal static string? HostKey(string? text)
     {
