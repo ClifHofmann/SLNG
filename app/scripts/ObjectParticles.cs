@@ -267,6 +267,10 @@ public partial class ObjectParticles : CpuParticles3D
         // can all have changed under us.
         _syncedAgainst = new Transform3D(Basis.Identity, new Vector3(float.NaN, 0f, 0f));
         SyncToParent();
+        // Before the first engine frame, not only from _Process: the engine's own per-emitter update
+        // runs ahead of _Process in a frame, so a degenerate parent would cost one frame of warnings
+        // per emitter before _Process got to hide it.
+        SetDegenerateParentHidden();
 
         Emitting = true;
         // Restart() clears and refills the whole pool -- only ever do it on the FIRST apply, for
@@ -326,6 +330,16 @@ public partial class ObjectParticles : CpuParticles3D
         {
             return;
         }
+
+        // BUG-RENDER-40: sort-by-view-depth makes the ENGINE invert this node's global transform
+        // every frame (CPUParticles3D keeps inv_emission_transform to bring the camera direction into
+        // emitter space, then normalises it). A parent with a zero scale on any axis -- an attachment
+        // under a bone that has not been given its shape yet is the likely case -- cannot be undone by
+        // SyncToParent's counter-scale (0 x 1e4 is still 0), the inverse is NaN, and the engine prints
+        // "Vector3 cannot be normalized" once per emitter per frame with no C# frame on the stack. So
+        // an emitter whose parent chain is degenerate is hidden (which stops the engine processing
+        // it) until the chain is sane again.
+        if (SetDegenerateParentHidden()) return;
 
         // The emitter's own lifetime. The viewer kills the source once start age plus elapsed
         // time passes max age, with 0 meaning "never" (llviewerpartsource.cpp:192).
@@ -407,6 +421,48 @@ public partial class ObjectParticles : CpuParticles3D
     /// particles are simulated in. Both depend on the parent's transform, which changes without
     /// any particle data changing -- a resize or a rotation.
     /// </summary>
+    /// <summary>True while the parent's world transform is non-finite or has a (near-)zero scale on
+    /// an axis, which <see cref="SyncToParent"/> cannot compensate. Hides this node for exactly that
+    /// time and restores it afterwards -- only if THIS method hid it, so it never overrides a
+    /// visibility decision made elsewhere. Logs once per emitter.</summary>
+    private bool SetDegenerateParentHidden()
+    {
+        bool degenerate = false;
+        if (IsInsideTree() && GetParent() is Node3D parent)
+        {
+            Transform3D pt = parent.GlobalTransform;
+            Vector3 scale = pt.Basis.Scale;
+            degenerate = !pt.Origin.IsFinite() || !scale.IsFinite()
+                || Mathf.Abs(scale.X) < MinParentScale || Mathf.Abs(scale.Y) < MinParentScale
+                || Mathf.Abs(scale.Z) < MinParentScale;
+        }
+
+        if (degenerate == _hiddenForDegenerateParent) return degenerate;
+
+        _hiddenForDegenerateParent = degenerate;
+        if (degenerate)
+        {
+            _hiddenByUs = Visible;
+            Visible = false;
+            if (!_degenerateLogged)
+            {
+                _degenerateLogged = true;
+                GD.PushWarning($"[ParticlesGuard] emitter obj={EmitterEntityId:N} sits under a parent with a non-finite or zero-scale " +
+                               "world transform -- hidden until it recovers (the engine would normalise a NaN every frame)");
+            }
+        }
+        else if (_hiddenByUs)
+        {
+            Visible = true;
+            _hiddenByUs = false;
+        }
+        return degenerate;
+    }
+
+    private bool _hiddenForDegenerateParent;
+    private bool _hiddenByUs;
+    private bool _degenerateLogged;
+
     private void SyncToParent(bool force = false)
     {
         if (!IsInsideTree() || GetParent() is not Node3D parent)
@@ -431,9 +487,11 @@ public partial class ObjectParticles : CpuParticles3D
 
         // Gravity is applied in the space the particles are simulated in: world when they are
         // left behind, emitter-local when they follow the source.
-        Gravity = LocalCoords
+        Vector3 gravity = LocalCoords
             ? GlobalTransform.Basis.Orthonormalized().Inverse() * _worldAcceleration
             : _worldAcceleration;
+        // A singular or non-finite basis inverts to NaN; a NaN gravity poisons every live particle.
+        Gravity = gravity.IsFinite() ? gravity : Vector3.Zero;
     }
 
     private void EnsureResources()

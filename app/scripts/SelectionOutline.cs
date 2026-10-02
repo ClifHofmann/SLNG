@@ -171,6 +171,9 @@ public static class SelectionOutline
         meshArrays[(int)Mesh.ArrayType.Normal] = normalArray;
         meshArrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
+        // BUG-RENDER-40: a non-finite vertex in the source (or a normal sum that overflowed) is
+        // repaired and the mesh named once, instead of reaching the engine.
+        MeshArrayGuard.Sanitize(meshArrays, () => $"selection outline hull of {source.GetClass()} id={source.GetInstanceId()}");
         var hull = new ArrayMesh();
         hull.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, meshArrays);
         return hull;

@@ -2747,6 +2747,9 @@ public partial class AvatarRenderer : Node3D
             SurfaceTool? st = null;
             var runFace = default(FaceTexture);
             int runVertexBase = 0;
+            // BUG-RENDER-40: non-finite vertex values are repaired on their way into the SurfaceTool
+            // (GenerateTangents below would otherwise hand them to the engine) and named once.
+            var guard = new MeshArrayGuard.VertexGuard();
 
             void FlushRun()
             {
@@ -2785,9 +2788,9 @@ public partial class AvatarRenderer : Node3D
                     var n = sub.Normals[i];
                     var uv = sub.UVs[i];
                     
-                    st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-                    st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                    st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                    st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), i));
+                    st.SetUV(guard.Uv(new Godot.Vector2(uv.X, 1.0f - uv.Y), i));
+                    st.AddVertex(guard.Position(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y), i));
                 }
 
                 for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
@@ -2800,6 +2803,7 @@ public partial class AvatarRenderer : Node3D
                 runVertexBase += sub.Positions.Length;
             }
             FlushRun();
+            guard.Report(() => $"worn attachment entity={entityId:N} mesh={meshId:N} avatar={avatarVisual.AgentId:N}");
 
             var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
             mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
@@ -3909,6 +3913,7 @@ public partial class AvatarRenderer : Node3D
         var arrayMesh = new ArrayMesh();
         var faceList = new List<int>();
         var triList = new List<HudTriangle>();
+        var guard = new MeshArrayGuard.VertexGuard(); // BUG-RENDER-40
         foreach (var sub in meshData.Submeshes)
         {
             if (sub.Indices.Length == 0) continue;
@@ -3918,8 +3923,8 @@ public partial class AvatarRenderer : Node3D
             {
                 var p = sub.Positions[i];
                 var uv = sub.UVs[i];
-                st.SetUV(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y));
-                st.AddVertex(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y));
+                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y), i));
+                st.AddVertex(guard.Position(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y), i));
             }
 
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
@@ -3946,6 +3951,7 @@ public partial class AvatarRenderer : Node3D
             st.Commit(arrayMesh);
             faceList.Add(sub.FaceIndex);
         }
+        guard.Report(() => "HUD attachment mesh");
         faceIndices = faceList.ToArray();
         triangles = triList.ToArray();
         return arrayMesh;
@@ -4670,6 +4676,9 @@ public partial class AvatarRenderer : Node3D
         // only has to be cleared, because AddInfluence writes only the slots it fills.
         var bones = new int[4];
         var wts = new float[4];
+        // BUG-RENDER-40: positions, normals and UVs are repaired on their way into the SurfaceTool
+        // (the skinned build below ends in GenerateTangents + Commit) and the mesh is named once.
+        var guard = new MeshArrayGuard.VertexGuard();
 
         // BUG-PERF-01 step 2: the rig is one 137 ms queue item, so "which part of it" cannot be
         // read off [WorkCost] -- that reports per QUEUE ITEM. MainThreadWorkQueue.Measure exists
@@ -4766,11 +4775,11 @@ public partial class AvatarRenderer : Node3D
 
                 st.SetBones(bones);
                 st.SetWeights(wts);
-                st.SetNormal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y));
+                st.SetNormal(guard.Normal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y), totalVerts));
                 // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
                 // SL UVs are authored bottom-left origin; Godot samples top-left.
-                st.SetUV(new Godot.Vector2(uv.X, 1.0f - uv.Y));
-                st.AddVertex(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y));
+                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, 1.0f - uv.Y), totalVerts));
+                st.AddVertex(guard.Position(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y), totalVerts));
             }
 
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
@@ -4783,6 +4792,7 @@ public partial class AvatarRenderer : Node3D
             runVertexBase += sub.Positions.Length;
         }
         FlushRun();
+        guard.Report(() => $"rigged mesh mesh={meshId:N} avatar={visual.AgentId:N}{(visual.IsControlAvatar ? " (animesh control avatar)" : "")}");
 
         // Everything since the bind phase, minus what FlushRun already filed under
         // avatar.rig.tangents -- so the three labels partition the method rather than overlap.
@@ -4861,7 +4871,9 @@ public partial class AvatarRenderer : Node3D
     private static void AddInfluence(int joint, float weight, int[] slotForJoint, int jointCount,
         int[] bones, float[] wts, ref int count, ref float sum, ref int remapped)
     {
-        if (count >= 4 || weight <= 0f || jointCount <= 0) return;
+        // !IsFinite first: NaN fails `weight <= 0f` and would be accumulated into the sum and the
+        // weights handed to the SurfaceTool; +Inf would turn the renormalising divide into inf/inf.
+        if (count >= 4 || !float.IsFinite(weight) || weight <= 0f || jointCount <= 0) return;
 
         int j = joint;
         if (j < 0 || j >= jointCount)
@@ -4930,7 +4942,7 @@ public partial class AvatarRenderer : Node3D
 
         return new MeshInstance3D
         {
-            Mesh             = BuildPartMesh(part, positions, normals, slots),
+            Mesh             = BuildPartMesh(part, positions, normals, slots, visual.AgentId),
             Skin             = skin,
             MaterialOverride = placeholder
         };
@@ -4963,10 +4975,14 @@ public partial class AvatarRenderer : Node3D
     /// base vertex ids).</summary>
     private static ArrayMesh BuildPartMesh(
         AvatarBodyPartMesh part, System.Numerics.Vector3[] positions, System.Numerics.Vector3[] normals,
-        Dictionary<string, int> skinSlots)
+        Dictionary<string, int> skinSlots, Guid agentId = default)
     {
         var st = new SurfaceTool();
         st.Begin(Mesh.PrimitiveType.Triangles);
+        // BUG-RENDER-40: this runs once per body part per avatar on every shape update, straight into
+        // GenerateTangents -- a crowd re-sending appearances is the busiest producer of vertex data
+        // in the client. Non-finite values are repaired on the way in and the part is named once.
+        var guard = new MeshArrayGuard.VertexGuard();
 
         // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
         // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
@@ -5002,9 +5018,9 @@ public partial class AvatarRenderer : Node3D
             // SL is Z-up; Godot is Y-up: SL(X,Y,Z) → Godot(X,Z,−Y)
             st.SetBones(new int[] { s1, s2, 0, 0 });
             st.SetWeights(new float[] { w1, w2, 0f, 0f });
-            st.SetNormal(new Godot.Vector3(n.X, n.Z, -n.Y));
-            st.SetUV(uv);
-            st.AddVertex(new Godot.Vector3(p.X, p.Z, -p.Y));
+            st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), srcIndex));
+            st.SetUV(guard.Uv(uv, srcIndex));
+            st.AddVertex(guard.Position(new Godot.Vector3(p.X, p.Z, -p.Y), srcIndex));
             return nextIndex++;
         }
 
@@ -5083,7 +5099,9 @@ public partial class AvatarRenderer : Node3D
         }
 
         st.GenerateTangents();
-        return st.Commit();
+        var committed = st.Commit();
+        guard.Report(() => $"body part '{part.Name}' avatar={agentId:N}");
+        return committed;
     }
 
     /// <summary>Re-applies the avatar's vertex morphs to every body part and swaps in the rebuilt
@@ -5106,7 +5124,7 @@ public partial class AvatarRenderer : Node3D
             mi.Skin = skin;
 
             var (positions, normals) = AvatarMorphService.Apply(part, weights);
-            mi.Mesh = BuildPartMesh(part, positions, normals, slots);
+            mi.Mesh = BuildPartMesh(part, positions, normals, slots, visual.AgentId);
         }
     }
 
