@@ -399,7 +399,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.25.13-alpha";
+    public const string AppVersion = "v0.25.14-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1823,6 +1823,7 @@ public partial class Boot : Control
             Name = "ReflectionProbe",
             Size = new Godot.Vector3(256f, 128f, 256f),
             MaxDistance = 160f,
+            ReflectionMask = 0xFFFFFu & ~RenderConfig.WaterVisualLayer,
             UpdateMode = ReflectionProbe.UpdateModeEnum.Once,
             BoxProjection = false,
             EnableShadows = false,
@@ -2037,9 +2038,9 @@ public partial class Boot : Control
         const uint allVisualLayers = 0xFFFFF;
         if (_reflectionProbe != null)
         {
-            _reflectionProbe.ReflectionMask = want
+            _reflectionProbe.ReflectionMask = (want
                 ? allVisualLayers & ~ObjectRenderer.MirrorVisualLayer
-                : allVisualLayers;
+                : allVisualLayers) & ~RenderConfig.WaterVisualLayer;
         }
 
         // Logged on TRANSITION only -- this is the one thing about the feature that cannot be seen

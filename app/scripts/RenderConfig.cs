@@ -17,6 +17,14 @@ public static class RenderConfig
     /// </summary>
     public static float DrawDistance = 96f;
 
+    /// <summary>BUG-RENDER-43: the visual layer water planes sit on, so the follow reflection
+    /// probe can leave them out of its <c>ReflectionMask</c>. That probe is a 256 x 256 m box
+    /// around the camera; water lit by it reflects the capture inside the box and the plain sky
+    /// outside, which is a straight-edged seam that travels with the camera. Water takes its
+    /// reflection from the sky alone (water.gdshader), so it has no business being lit by a probe.
+    /// Layer 19 is <c>ObjectRenderer.MirrorVisualLayer</c>.</summary>
+    public const uint WaterVisualLayer = 1u << 18;
+
     /// <summary>
     /// FEAT-PERF-07: the real viewer's <c>RenderVolumeLODFactor</c> ("Object Detail"), the single
     /// knob its LOD arithmetic exposes. Higher keeps objects at a higher level of detail further

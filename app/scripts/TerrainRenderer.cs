@@ -391,6 +391,7 @@ public partial class TerrainRenderer : Node3D
         {
             Name = "VoidWaterPlane",
             Visible = false,
+            Layers = RenderConfig.WaterVisualLayer,
             Mesh = new PlaneMesh
             {
                 Size = new Vector2(VoidWaterSize, VoidWaterSize),
@@ -965,7 +966,8 @@ public partial class TerrainRenderer : Node3D
         {
             waterInstance = new MeshInstance3D
             {
-                Name = "WaterPlane"
+                Name = "WaterPlane",
+                Layers = RenderConfig.WaterVisualLayer,
             };
             node.Root.AddChild(waterInstance);
 
