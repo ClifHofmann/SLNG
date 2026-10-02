@@ -157,4 +157,12 @@ public sealed record ParcelInfo
     /// that block when it decodes the message and exposes no per-parcel value, so SLNG cannot read it. A UI
     /// must show the box as "unknown" (or leave it out), never as unticked.</summary>
     public bool? ObscureMoap { get; init; }
+
+    // ---- Objects tab (FEAT-LAND-03) ------------------------------------------------------------
+
+    /// <summary>The Objects tab's counts (owner / group / other / selected prims, the parcel and region
+    /// capacity, the auto-return delay); see <see cref="ParcelPrimCounts"/>. Part of this record, so a count
+    /// that changed is a changed record and is raised, not swallowed as an unchanged repeat. The list of
+    /// WHO owns the objects is not here: it is a separate request (<see cref="ParcelObjectOwners"/>).</summary>
+    public ParcelPrimCounts Prims { get; init; } = ParcelPrimCounts.None;
 }
