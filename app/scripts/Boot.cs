@@ -399,7 +399,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.1-alpha";
+    public const string AppVersion = "v0.26.2-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2424,6 +2424,9 @@ public partial class Boot : Control
         // BUG-INV-04: inventory offers, same off-thread buffering reason.
         while (_pendingInventoryOffers.TryDequeue(out var offer)) ShowInventoryOffer(offer);
 
+        // BUG-NET-27: teleport offers and requests, same reason.
+        while (_pendingTeleportOffers.TryDequeue(out var lure)) ShowTeleportOffer(lure);
+
         // FEAT-NET-01: script permission requests, same reason again.
         while (_pendingScriptPermissions.TryDequeue(out var ask)) ShowScriptPermissionRequest(ask);
 
@@ -3389,6 +3392,8 @@ public partial class Boot : Control
         _session.GroupInvitationReceived += OnGroupInvitationReceived;
         // BUG-INV-04: inventory offers. Same network-thread buffering as the invitations above.
         _session.InventoryOfferReceived += OnInventoryOfferReceived;
+        // BUG-NET-27: teleport offers and requests. Same buffering; never answered without a click.
+        _session.TeleportOfferReceived += OnTeleportOfferReceived;
         // FEAT-NET-01: llRequestPermissions. Same buffering; never answered without a click.
         _session.ScriptPermissionRequested += OnScriptPermissionRequested;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
@@ -4203,6 +4208,87 @@ public partial class Boot : Control
                     _inventoryPanel?.RefreshFolder(folder, accept ? e.ItemId : null);
             };
         }
+    }
+
+    // ---- BUG-NET-27: teleport offers and teleport requests -------------------------------------
+
+    /// <summary>Open teleport prompts, keyed by the lure id so a resent lure raises the existing
+    /// window instead of stacking a second one.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.TeleportOfferWindow> _teleportOfferWindows = new();
+
+    /// <summary>Which notification entry belongs to which still-open prompt (BUG-UI-12), keyed by
+    /// lure id like the window dictionary.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, System.Guid> _teleportOfferActionKeys = new();
+
+    /// <summary>Lures buffered off the network thread — same reason as the invitations above: a
+    /// TeleportOfferEvent is a plain record and so not Variant-safe for CallDeferred.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.TeleportOfferEvent> _pendingTeleportOffers = new();
+
+    private void OnTeleportOfferReceived(object? sender, SLNG.Core.TeleportOfferEvent e)
+    {
+        // BUG-UI-12: closing the window with the × sends nothing, so the entry is the way back to
+        // the question and carries an action until it is answered.
+        var actionKey = System.Guid.NewGuid();
+        _notificationActions[actionKey] = () => ShowTeleportOffer(e);
+        _teleportOfferActionKeys[e.LureId] = actionKey;
+
+        _notifications.Add(SLNG.Core.NotificationKind.Invitation, e.FromId,
+            SLNG.App.UI.L10n.TrFormat(e.Kind == SLNG.Core.TeleportOfferKind.Offer
+                ? "ui.notifications.teleport_offer" : "ui.notifications.teleport_request", e.FromName),
+            senderName: e.FromName, actionKey: actionKey);
+        _pendingTeleportOffers.Enqueue(e);
+    }
+
+    private void ShowTeleportOffer(SLNG.Core.TeleportOfferEvent e)
+    {
+        if (_session == null) return;
+        var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+        if (hudLayer == null) return;
+
+        if (_teleportOfferWindows.TryGetValue(e.LureId, out var existing) && IsInstanceValid(existing))
+        {
+            existing.MoveToFront();
+            return;
+        }
+
+        // _session is read when the button is pressed, not captured now: it is replaced on a
+        // re-login, and an answer sent through a dead session would go nowhere.
+        System.Func<bool> accept, decline;
+        if (e.Kind == SLNG.Core.TeleportOfferKind.Offer)
+        {
+            accept = () => _session?.AcceptTeleportOffer(e.LureId, e.Godlike) ?? false;
+            decline = () => _session?.DeclineTeleportOffer(e.FromId, e.LureId) ?? false;
+        }
+        else
+        {
+            accept = () => _session?.AnswerTeleportRequest(e.FromId, accept: true) ?? false;
+            decline = () => _session?.AnswerTeleportRequest(e.FromId, accept: false) ?? false;
+        }
+
+        var win = new SLNG.App.UI.TeleportOfferWindow();
+        hudLayer.AddChild(win);
+        win.CascadeIndex = _teleportOfferWindows.Count % 8;
+        win.Closed += () => _teleportOfferWindows.Remove(e.LureId);
+        // Only a real answer retires the action; the × leaves the question open on purpose.
+        win.Answered += positive => CompleteTeleportOfferAction(e, positive);
+        _teleportOfferWindows[e.LureId] = win;
+        win.Initialize(e, accept, decline);
+
+        GD.Print($"[TeleportOffer] {e.Kind} from {e.FromName} lure {e.LureId}{(e.Godlike ? " (godlike)" : "")}");
+    }
+
+    /// <summary>The prompt has been answered, so the entry keeps the record and loses the button
+    /// (BUG-UI-12).</summary>
+    private void CompleteTeleportOfferAction(SLNG.Core.TeleportOfferEvent e, bool positive)
+    {
+        GD.Print($"[TeleportOffer] {(positive ? "accepted" : "declined")} {e.Kind} from {e.FromName}");
+        if (!_teleportOfferActionKeys.Remove(e.LureId, out var key)) return;
+        _notificationActions.Remove(key);
+
+        string text = e.Kind == SLNG.Core.TeleportOfferKind.Offer
+            ? (positive ? "ui.notifications.teleport_offer_accepted" : "ui.notifications.teleport_offer_declined")
+            : (positive ? "ui.notifications.teleport_request_offered" : "ui.notifications.teleport_request_declined");
+        _notifications.CompleteAction(key, SLNG.App.UI.L10n.TrFormat(text, e.FromName));
     }
 
     // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------

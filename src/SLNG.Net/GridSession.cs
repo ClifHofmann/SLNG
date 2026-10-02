@@ -393,6 +393,12 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// thread — marshal before touching a scene node.</summary>
     public event EventHandler<InventoryOfferEvent>? InventoryOfferReceived;
 
+    /// <summary>BUG-NET-27: somebody offered the agent a teleport, or asked for one. Answer with
+    /// <see cref="AcceptTeleportOffer"/> / <see cref="DeclineTeleportOffer"/> (an offer) or
+    /// <see cref="AnswerTeleportRequest"/> (a request). Raised on a LibreMetaverse network thread —
+    /// marshal before touching a scene node.</summary>
+    public event EventHandler<TeleportOfferEvent>? TeleportOfferReceived;
+
     /// <summary>Avatar-profile replies (FEAT-UI-13). All fired off a LibreMetaverse network
     /// thread after <see cref="RequestAvatarProfile"/> — consumers must marshal before touching a
     /// scene node. Neutral DTOs only; no LibreMetaverse type crosses this boundary.</summary>

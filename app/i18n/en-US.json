@@ -278,6 +278,21 @@
       "join": "Join",
       "decline": "Decline"
     },
+    "teleport_offer": {
+      "title_offer": "TELEPORT OFFER",
+      "title_request": "TELEPORT REQUEST",
+      "from_offer": "{0} offers to teleport you to their location.",
+      "from_request": "{0} asks to be teleported to your location.",
+      "godlike": "Sent with administrator rights.",
+      "destination": "Destination rating: {0}",
+      "rating_general": "General",
+      "rating_moderate": "Moderate",
+      "rating_adult": "Adult",
+      "teleport": "Teleport",
+      "offer_teleport": "Offer teleport",
+      "decline": "Decline",
+      "send_failed": "Could not answer right now. Please try again in a moment."
+    },
     "groups": {
       "filter": "Filter groups...",
       "empty": "You haven't joined any groups yet.",
@@ -835,6 +850,12 @@
       "inventory_offer_declined": "{0} is offering you “{1}” — declined.",
       "group_invite": "{0} invited you to a group.",
       "inventory_offer": "{0} is offering you “{1}”.",
+      "teleport_offer": "{0} offers to teleport you to their location.",
+      "teleport_offer_accepted": "{0} offered to teleport you — accepted.",
+      "teleport_offer_declined": "{0} offered to teleport you — declined.",
+      "teleport_request": "{0} asks to be teleported to your location.",
+      "teleport_request_offered": "{0} asked to be teleported to you — offer sent.",
+      "teleport_request_declined": "{0} asked to be teleported to you — declined.",
       "script_permission": "“{0}” by {1} is asking for permissions.",
       "display_name_changed": "{0} ({1}) is now known as {2}."
     }
