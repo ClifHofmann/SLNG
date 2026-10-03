@@ -412,6 +412,7 @@
       "chat_logs_im_legacy": "First Last.txt (Firestorm's legacy names)",
       "chat_logs_im_account": "first_last.txt (account names)",
       "chat_logs_apply_hint": "A change applies at the next login.",
+      "chat_logs_relog_notice": "Log out and back in to use the new folder ({0}). Until then this login keeps writing to {1}.",
       "chat_logs_import_heading": "Older SLNG logs",
       "chat_logs_import_hint": "Logs written by earlier SLNG versions stay where they are, untouched. This copies them into the folder of the account you are logged in with, appended to the end of the matching files; doing it again adds nothing. It needs a login, because the history belongs to the logged-in account.",
       "chat_logs_import": "Import old SLNG logs...",

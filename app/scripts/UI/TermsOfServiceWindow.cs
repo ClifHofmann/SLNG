@@ -70,6 +70,7 @@ public partial class TermsOfServiceWindow : SLNGWindow
         {
             Text = L10n.Tr(critical ? "ui.tos.heading_critical" : "ui.tos.heading"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _contentVBox.AddChild(heading);

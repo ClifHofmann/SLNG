@@ -52,6 +52,7 @@ public partial class AvatarHoverWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.avatar_hover.description"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
         };
         description.AddThemeFontSizeOverride("font_size", 11);
         description.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));

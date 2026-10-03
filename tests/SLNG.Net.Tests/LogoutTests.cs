@@ -25,3 +25,24 @@ public class LogoutTests
         session.Logout(); // must not throw or block
     }
 }
+
+public class LoginFailureMessageTests
+{
+    [Fact]
+    public void The_no_response_message_carries_the_reason_and_tells_the_person_what_to_check()
+    {
+        string text = GridSession.NoLoginResponseMessage(" (The SSL connection could not be established)");
+
+        Assert.Contains("no login response (The SSL connection could not be established)", text);
+        Assert.Contains("firewall", text);
+        Assert.Contains("date and time", text);
+    }
+
+    [Fact]
+    public void Without_a_reason_the_message_still_reads_cleanly()
+    {
+        string text = GridSession.NoLoginResponseMessage("");
+
+        Assert.StartsWith("Grid returned no login response.", text);
+    }
+}

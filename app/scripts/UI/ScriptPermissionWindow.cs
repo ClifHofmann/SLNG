@@ -82,6 +82,7 @@ public partial class ScriptPermissionWindow : SLNGWindow
         {
             Text = L10n.TrFormat("ui.script_permission.from", request.ObjectName, request.ObjectOwner),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         who.AddThemeFontSizeOverride("font_size", 12);
@@ -98,6 +99,7 @@ public partial class ScriptPermissionWindow : SLNGWindow
             {
                 Text = "• " + line.Text,
                 AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
                 SizeFlagsHorizontal = SizeFlags.ExpandFill,
             };
             row.AddThemeFontSizeOverride("font_size", 12);

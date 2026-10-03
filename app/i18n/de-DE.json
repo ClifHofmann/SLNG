@@ -412,6 +412,7 @@
       "chat_logs_im_legacy": "Vorname Nachname.txt (alte Firestorm-Namen)",
       "chat_logs_im_account": "vorname_nachname.txt (Kontonamen)",
       "chat_logs_apply_hint": "Eine Änderung gilt ab der nächsten Anmeldung.",
+      "chat_logs_relog_notice": "Melde dich ab und wieder an, damit der neue Ordner gilt ({0}). Bis dahin schreibt dieses Login weiter nach {1}.",
       "chat_logs_import_heading": "Ältere SLNG-Protokolle",
       "chat_logs_import_hint": "Protokolle früherer SLNG-Versionen bleiben unverändert dort liegen, wo sie sind. Hier werden sie in den Ordner des angemeldeten Kontos übernommen und ans Ende der passenden Dateien angehängt; ein zweiter Durchlauf fügt nichts mehr hinzu. Das setzt eine Anmeldung voraus, weil der Verlauf zum angemeldeten Konto gehört.",
       "chat_logs_import": "Alte SLNG-Protokolle importieren...",
