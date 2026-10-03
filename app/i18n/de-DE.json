@@ -613,6 +613,19 @@
       "cancel": "Login abbrechen",
       "declined": "Login abgebrochen — die Bedingungen des Grids wurden nicht akzeptiert."
     },
+    "mfa": {
+      "title": "Zwei-Faktor-Code",
+      "heading": "Dieses Konto ist mit Multi-Faktor-Authentifizierung geschützt. Gib den aktuellen 6-stelligen Code aus deiner Authenticator-App ein.",
+      "code_label": "Authentifizierungscode",
+      "code_placeholder": "123456",
+      "wrong_code": "Dieser Code wurde nicht akzeptiert. Codes laufen schnell ab: warte auf den nächsten in deiner App und versuche es erneut.",
+      "remember": "Diesen Computer merken",
+      "remember_tooltip": "Speichert ein Token des Grids in deinem gespeicherten Login, damit nicht bei jedem Login nach dem Code gefragt wird. Wie lange es gültig bleibt, bestimmt das Grid.",
+      "continue": "Einloggen",
+      "cancel": "Abbrechen",
+      "declined": "Login abgebrochen — es wurde kein Authentifizierungscode eingegeben.",
+      "retry_after_terms": "Dein Code ist möglicherweise abgelaufen, während du die Mitteilung des Grids gelesen hast. Bitte gib einen neuen ein."
+    },
     "script_permission": {
       "title": "RECHTEANFRAGE",
       "from": "„{0}“ von {1} bittet um Erlaubnis.",

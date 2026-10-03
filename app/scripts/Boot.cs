@@ -33,10 +33,25 @@ public partial class Boot : Control
     /// would be an authentication attempt with someone else's credential.</summary>
     private void ForgetStoredPassword()
     {
+        // FEAT-SL-02: the remembered MFA token belongs to the same account on the same grid as the
+        // password hash, so it goes with it -- sending it under another name would be an
+        // authentication attempt with someone else's credential.
+        _storedMfaHash = "";
+        _mfaProfileKey = "";
+
         if (_storedPassHash.Length == 0) return;
         _storedPassHash = "";
         _passInput.PlaceholderText = "";
     }
+
+    /// <summary>FEAT-SL-02: the selected profile's saved <c>mfa_hash</c> ("remember this computer"), or
+    /// empty. Sent with the first attempt so the grid can skip its challenge. A SECRET like
+    /// <see cref="_storedPassHash"/>: never logged, never shown, never put in a diagnostics line.</summary>
+    private string _storedMfaHash = "";
+
+    /// <summary>The <c>logins.cfg</c> section <see cref="_storedMfaHash"/> was read from, so a hash the
+    /// grid rejects can be erased from exactly there.</summary>
+    private string _mfaProfileKey = "";
 
     private CheckBox _saveLoginCheck = null!;
     private Button _loginButton = null!;
@@ -413,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.27-alpha";
+    public const string AppVersion = "v0.26.28-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -687,6 +702,159 @@ public partial class Boot : Control
         window.Initialize(gridLoginUri, message, critical);
 
         return tcs.Task;
+    }
+
+    /// <summary>FEAT-SL-02: asks for the account's authentication code and resolves to it, or to null
+    /// when the person cancels. The loading screen comes down for the duration, like
+    /// <see cref="ShowTermsGateAsync"/> (and the reference viewer's <c>setShowProgress(false)</c>
+    /// before its MFA prompt): the login is waiting on a person, not progressing.
+    /// The code is a secret -- it passes through this method and nowhere else.</summary>
+    private System.Threading.Tasks.Task<(string Token, bool Remember)?> ShowMfaPromptAsync(
+        string? gridMessage, bool codeWasRefused, bool offerRemember, string? extraNote = null)
+    {
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<(string Token, bool Remember)?>();
+
+        GetNode<Control>("%LoadingScreenBlur").Visible = false;
+        GetNode<Control>("%LoadingScreen").Visible = false;
+        IsLoadingScreenVisible = false;
+
+        var window = new SLNG.App.UI.MfaPromptWindow();
+        _dialogLayer.AddChild(window);
+        window.Submitted += (token, remember) => tcs.TrySetResult((token, remember));
+        window.Cancelled += () => tcs.TrySetResult(null);
+        window.Initialize(gridMessage, codeWasRefused, offerRemember, extraNote);
+
+        return tcs.Task;
+    }
+
+    /// <summary>Puts the loading screen back for a login retry after a prompt took it down, with the
+    /// checklist cleared of the failure mark the refused attempt left on it -- the handshake's
+    /// stage events then walk it forward again.</summary>
+    private void RestoreLoadingScreenForRetry()
+    {
+        GetNode<Control>("%LoadingScreenBlur").Visible = true;
+        GetNode<Control>("%LoadingScreen").Visible = true;
+        IsLoadingScreenVisible = true;
+        ResetLoadingProgress();
+        CompleteLoadingStep(0);
+    }
+
+    /// <summary>The <c>logins.cfg</c> section a login is saved under.</summary>
+    private static string ProfileKey(LoginCredentials creds)
+        => $"{creds.FirstName} {creds.LastName} @ {creds.GridLoginUri}";
+
+    /// <summary>FEAT-SL-02: the grid refused the remembered MFA token, so it is dropped for good -- in
+    /// memory and in <c>logins.cfg</c>. The prompt that follows (and, if the person goes on, the new
+    /// hash a successful login brings back) replaces it.</summary>
+    private void ForgetStoredMfaHash(LoginCredentials creds)
+    {
+        _storedMfaHash = "";
+        bool changed = MfaHashStore.Apply(_loginsConfig, ProfileKey(creds), MfaHashAction.Erase, null);
+        if (_mfaProfileKey.Length > 0 && _mfaProfileKey != ProfileKey(creds))
+            changed |= MfaHashStore.Apply(_loginsConfig, _mfaProfileKey, MfaHashAction.Erase, null);
+        if (changed) _loginsConfig.Save("user://logins.cfg");
+    }
+
+    /// <summary>What a login attempt (with whatever prompts it needed) came to.</summary>
+    private sealed class LoginOutcome
+    {
+        public LoginResult Result = null!;
+        /// <summary>The credentials of the last attempt, minus any one-time code.</summary>
+        public LoginCredentials Credentials = null!;
+        /// <summary>The grid asked for an authentication code at least once.</summary>
+        public bool MfaChallenged;
+        /// <summary>The person ticked "remember this computer" on the last code they entered.</summary>
+        public bool MfaRemember;
+    }
+
+    /// <summary>Logs in and answers what the grid asks of the person before it will let them in: its
+    /// Terms of Service or critical message (FEAT-SL-01, TPV Policy §1.f) and an authentication code
+    /// (FEAT-SL-02). One loop rather than a retry per case because a grid can ask for several in turn
+    /// -- the reference viewer's <c>handleTOSResponse</c> and <c>handleMFAChallenge</c> both end in
+    /// <c>reconnect()</c> too. A wrong code simply brings the grid's challenge back, and the prompt with
+    /// it, until the person gets it right or cancels.</summary>
+    private async System.Threading.Tasks.Task<LoginOutcome> LoginWithPromptsAsync(GridSession session, LoginCredentials creds)
+    {
+        var outcome = new LoginOutcome();
+        var result = await session.LoginAsync(creds);
+
+        while (true)
+        {
+            if (result.RequiresMfaToken)
+            {
+                outcome.MfaChallenged = true;
+                bool sentToken = creds.MfaToken.Length > 0;
+                bool refused = MfaLogin.IsRejectedCode(sentToken, result.ErrorKey);
+
+                // A remembered token that the grid does not take any more: gone for good, so it is
+                // not offered again and the prompt that follows is the ordinary first one.
+                if (!sentToken && creds.MfaHash.Length > 0) ForgetStoredMfaHash(creds);
+
+                LogMessage(refused
+                    ? "[System] The authentication code was not accepted."
+                    : "[System] The grid asks for an authentication code.");
+
+                var answer = await ShowMfaPromptAsync(result.Message, refused, _saveLoginCheck.ButtonPressed);
+                if (answer is null)
+                {
+                    result = LoginResult.Fail("mfa-declined", SLNG.App.UI.L10n.Tr("ui.mfa.declined"));
+                    break;
+                }
+
+                outcome.MfaRemember = answer.Value.Remember;
+                // The hash that came with the challenge is sent back with the code, as the reference
+                // viewer does (lllogininstance.cpp:324); with none, what was sent stays.
+                creds = creds with { MfaToken = answer.Value.Token, MfaHash = result.MfaHash ?? creds.MfaHash };
+
+                RestoreLoadingScreenForRetry();
+                LogMessage($"Sending the authentication code, retrying login to {creds.GridLoginUri}...");
+                result = await session.LoginAsync(creds);
+                continue;
+            }
+
+            if (result.RequiresTermsAcceptance || result.RequiresCriticalAcknowledgement)
+            {
+                // FEAT-SL-01 / TPV Policy §1.f: the ONLY legitimate answer is the user's own -- see
+                // LoginCredentials.AgreeToTos. Both flags default to false and are set here and nowhere else.
+                bool critical = result.RequiresCriticalAcknowledgement;
+                bool accepted = await ShowTermsGateAsync(creds.GridLoginUri, result.Message ?? "", critical);
+                if (!accepted)
+                {
+                    result = LoginResult.Fail("tos-declined", SLNG.App.UI.L10n.Tr("ui.tos.declined"));
+                    break;
+                }
+
+                creds = critical ? creds with { ReadCritical = true } : creds with { AgreeToTos = true };
+
+                // The grid asked for the Terms after a code was already sent, and a code is good for one
+                // use: the one in hand is spent or stale, so ask again (the reference viewer does too,
+                // lllogininstance.cpp:488-493, "SL-18511").
+                if (creds.MfaToken.Length > 0)
+                {
+                    var again = await ShowMfaPromptAsync(null, false, _saveLoginCheck.ButtonPressed,
+                        SLNG.App.UI.L10n.Tr("ui.mfa.retry_after_terms"));
+                    if (again is null)
+                    {
+                        result = LoginResult.Fail("mfa-declined", SLNG.App.UI.L10n.Tr("ui.mfa.declined"));
+                        break;
+                    }
+                    outcome.MfaRemember = again.Value.Remember;
+                    creds = creds with { MfaToken = again.Value.Token };
+                }
+
+                RestoreLoadingScreenForRetry();
+                LogMessage($"Accepted, retrying login to {creds.GridLoginUri}...");
+                result = await session.LoginAsync(creds);
+                continue;
+            }
+
+            break;
+        }
+
+        outcome.Result = result;
+        // Single-use and finished with; the caller only needs the account and grid from here on.
+        outcome.Credentials = creds with { MfaToken = "" };
+        return outcome;
     }
 
     private void ReassertWindowTitleOnce()
@@ -3051,6 +3219,10 @@ public partial class Boot : Control
         // empty with a placeholder saying so; typing something replaces the stored credential
         // (see OnLoginPressed), leaving it alone uses it.
         _storedPassHash = (string)_loginsConfig.GetValue(profile, "pass_hash", "");
+        // FEAT-SL-02: after the field assignments above, which cleared both through
+        // ForgetStoredPassword.
+        _storedMfaHash = MfaHashStore.Read(_loginsConfig, profile);
+        _mfaProfileKey = profile;
         _passInput.Text = "";
         _passInput.PlaceholderText = _storedPassHash.Length > 0
             ? SLNG.App.UI.L10n.Tr("ui.login.password_saved")
@@ -3706,41 +3878,21 @@ public partial class Boot : Control
                      $"; grid name from {(probedGridName is null ? "the built-in table or the host" : "the grid")})");
         }
 
-        var result = await _session.LoginAsync(creds);
+        // FEAT-SL-02: a remembered MFA token for this account goes with the first attempt, so a person
+        // who ticked "remember this computer" is not asked every time. It is the only MFA thing that
+        // comes from the profile; a code is never stored.
+        creds = creds with { MfaHash = _storedMfaHash };
 
-        // FEAT-SL-01 / TPV Policy §1.f: a grid may refuse the login with reason "tos" (accept the
-        // Terms of Service first) or "critical" (read this message first). Both are answerable, and
-        // the ONLY legitimate answer is the user's own -- LibreMetaverse's LoginParams defaults
-        // agree_to_tos and read_critical to true, which would accept on their behalf, so
-        // LoginCredentials defaults both to false and they are set here and nowhere else.
-        //
-        // Loop rather than a single retry because a grid can demand both in turn: accept the ToS,
-        // and the next attempt comes back asking for the critical message. The reference viewer's
-        // handleTOSResponse -> reconnect() has the same shape.
-        while (result.RequiresTermsAcceptance || result.RequiresCriticalAcknowledgement)
-        {
-            bool critical = result.RequiresCriticalAcknowledgement;
-            bool accepted = await ShowTermsGateAsync(creds.GridLoginUri, result.Message ?? "", critical);
-            if (!accepted)
-            {
-                result = LoginResult.Fail("tos-declined", SLNG.App.UI.L10n.Tr("ui.tos.declined"));
-                break;
-            }
-
-            creds = critical ? creds with { ReadCritical = true } : creds with { AgreeToTos = true };
-
-            // Put the loading screen back for the retry -- ShowTermsGateAsync took it down.
-            GetNode<Control>("%LoadingScreenBlur").Visible = true;
-            GetNode<Control>("%LoadingScreen").Visible = true;
-            IsLoadingScreenVisible = true;
-
-            LogMessage($"Accepted, retrying login to {creds.GridLoginUri}...");
-            result = await _session.LoginAsync(creds);
-        }
+        // Answers whatever the grid asks of the person before letting them in -- Terms of Service or
+        // critical message (FEAT-SL-01, TPV Policy §1.f) and the authentication code (FEAT-SL-02) --
+        // and retries in this same session.
+        var login = await LoginWithPromptsAsync(_session, creds);
+        creds = login.Credentials;
+        var result = login.Result;
 
         if (result.Success)
         {
-            string profileName = $"{creds.FirstName} {creds.LastName} @ {creds.GridLoginUri}";
+            string profileName = ProfileKey(creds);
             if (_saveLoginCheck.ButtonPressed)
             {
                 _loginsConfig.SetValue(profileName, "grid", creds.GridLoginUri);
@@ -3767,6 +3919,26 @@ public partial class Boot : Control
                     _loginsConfig.EraseSectionKey(profileName, "pass");
                 _storedPassHash = "";
             }
+
+            // FEAT-SL-02: what to do with the grid's "remember this computer" token. Stored beside the
+            // password hash, under the same "Save Login" switch, and dropped whenever the grid
+            // refused it or the person did not ask for it to be kept -- MfaLogin.DecideStorage.
+            var mfaAction = MfaLogin.DecideStorage(
+                _saveLoginCheck.ButtonPressed, login.MfaChallenged, login.MfaRemember, result.MfaHash);
+            if (mfaAction == MfaHashAction.Store)
+            {
+                MfaHashStore.Apply(_loginsConfig, profileName, mfaAction, result.MfaHash);
+                _storedMfaHash = result.MfaHash ?? "";
+                _mfaProfileKey = profileName;
+            }
+            else if (mfaAction == MfaHashAction.Erase)
+            {
+                MfaHashStore.Apply(_loginsConfig, profileName, mfaAction, null);
+                if (_mfaProfileKey.Length > 0 && _mfaProfileKey != profileName)
+                    MfaHashStore.Apply(_loginsConfig, _mfaProfileKey, mfaAction, null);
+                _storedMfaHash = "";
+            }
+
             _loginsConfig.SetValue("Settings", "last_profile", profileName);
             _loginsConfig.Save("user://logins.cfg");
 
