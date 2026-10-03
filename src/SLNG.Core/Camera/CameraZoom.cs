@@ -51,6 +51,23 @@ public static class CameraZoom
     }
 
     /// <summary>
+    /// Re-expresses the camera's current position relative to a new pivot <paramref name="point"/>, so that
+    /// <c>target = point + X * panX + Y * panY</c> and <c>camera = target + Z * zoom</c> give back exactly
+    /// <paramref name="cameraPos"/> (the camera neither moves nor turns when the pivot changes). The basis
+    /// vectors are the camera's own right, up and back axes (unit, orthogonal). <c>zoom</c> is the camera's
+    /// depth behind the point along Z; it is clamped to at least <paramref name="minZoom"/>, and when the clamp
+    /// bites the camera is no longer reproduced exactly (the missing part is along Z, which a pan cannot carry).
+    /// </summary>
+    public static (float PanX, float PanY, float Zoom) AnchorPan(Vector3 cameraPos, Vector3 point,
+        Vector3 basisX, Vector3 basisY, Vector3 basisZ, float minZoom = MinZoom)
+    {
+        var rel = cameraPos - point;
+        float zoom = MathF.Max(Vector3.Dot(rel, basisZ), minZoom);
+        var rest = rel - basisZ * zoom;
+        return (Vector3.Dot(rest, basisX), Vector3.Dot(rest, basisY), zoom);
+    }
+
+    /// <summary>
     /// How far the camera's pan offset must move, in camera-local X (right) and Y (up) metres, so that
     /// whatever sits under the cursor stays under it while the zoom distance goes from
     /// <paramref name="oldZoom"/> to <paramref name="newZoom"/>.

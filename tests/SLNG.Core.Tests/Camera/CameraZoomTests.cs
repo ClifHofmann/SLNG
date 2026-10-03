@@ -110,4 +110,57 @@ public class CameraZoomTests
     [Fact]
     public void CursorPanShift_with_no_old_distance_is_zero()
         => Assert.Equal(Vector2.Zero, CameraZoom.CursorPanShift(1f, 1f, 60f, 0f, 2f));
+
+    private static (Vector3 X, Vector3 Y, Vector3 Z) Basis(Random rng)
+    {
+        var q = Quaternion.Normalize(new Quaternion(
+            (float)rng.NextDouble() - 0.5f, (float)rng.NextDouble() - 0.5f,
+            (float)rng.NextDouble() - 0.5f, (float)rng.NextDouble() + 0.1f));
+        return (Vector3.Transform(Vector3.UnitX, q), Vector3.Transform(Vector3.UnitY, q), Vector3.Transform(Vector3.UnitZ, q));
+    }
+
+    [Fact]
+    public void AnchorPan_reproduces_the_camera_position()
+    {
+        var rng = new Random(12345);
+        for (int i = 0; i < 50; i++)
+        {
+            var (x, y, z) = Basis(rng);
+            var point = new Vector3((float)rng.NextDouble() * 100 - 50, (float)rng.NextDouble() * 20, (float)rng.NextDouble() * 100 - 50);
+            // A camera in front of the point's plane: depth along Z between 1 and 60 m, with a sideways offset.
+            var cam = point + z * (1f + (float)rng.NextDouble() * 59f) + x * ((float)rng.NextDouble() * 10 - 5)
+                + y * ((float)rng.NextDouble() * 10 - 5);
+
+            var (panX, panY, zoom) = CameraZoom.AnchorPan(cam, point, x, y, z);
+
+            var target = point + x * panX + y * panY;
+            var rebuilt = target + z * zoom;
+            Assert.True(Vector3.Distance(cam, rebuilt) < 1e-3f, $"case {i}: {Vector3.Distance(cam, rebuilt)}");
+            Assert.True(zoom >= CameraZoom.MinZoom);
+        }
+    }
+
+    [Fact]
+    public void AnchorPan_on_the_view_axis_has_no_pan()
+    {
+        var (panX, panY, zoom) = CameraZoom.AnchorPan(new Vector3(0, 0, 5), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
+        Assert.Equal(0f, panX, 4);
+        Assert.Equal(0f, panY, 4);
+        Assert.Equal(5f, zoom, 4);
+    }
+
+    [Fact]
+    public void AnchorPan_clamps_the_zoom_and_keeps_the_sideways_offset()
+    {
+        // The camera is 0.2 m in front of the point's plane and 1 m to the right: zoom is clamped to the
+        // minimum, the sideways part survives, and the missing depth is what a pan cannot carry.
+        var (panX, panY, zoom) = CameraZoom.AnchorPan(new Vector3(1, 0, 0.2f), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
+        Assert.Equal(CameraZoom.MinZoom, zoom);
+        Assert.Equal(1f, panX, 4);
+        Assert.Equal(0f, panY, 4);
+
+        // A point behind the camera plane clamps too.
+        var behind = CameraZoom.AnchorPan(new Vector3(0, 0, -3), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, 1f);
+        Assert.Equal(1f, behind.Zoom);
+    }
 }
