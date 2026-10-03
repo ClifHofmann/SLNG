@@ -415,8 +415,15 @@ public partial class ChatWindow : SLNGWindow
             tab.Lines.Add($"[color=#777777][i]{BbEscape(line)}[/i][/color]");
     }
 
+    // The grid's own "the other person is offline" notices, word for word as the reference viewer matches
+    // them (llimprocessing.cpp:138-139). Second Life sends one into the conversation after an IM to an
+    // offline resident; when it has, our own guess below must stay quiet or the tab says it twice.
+    private const string GridNotOnlineMessage = "User not online - message will be stored and delivered later.";
+    private const string GridNotOnlineInventory = "User not online - inventory has been saved.";
+
     private void AppendMessageToTab(ChatTab tab, string sender, string message, Guid senderAgentId = default)
     {
+        if (message == GridNotOnlineMessage || message == GridNotOnlineInventory) tab.OfflineNoticeShown = true;
         var now = DateTime.Now;
         AppendLineToTab(tab, FormatChatLine(now, sender, message, senderAgentId));
         _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, sender, message, now);
@@ -442,6 +449,9 @@ public partial class ChatWindow : SLNGWindow
     /// GetFriends() (already tracked for the Friends tab) is the one thing we always know
     /// locally, so that's what this checks -- silently does nothing for a non-friend target,
     /// since their online status isn't known at all in that case.</summary>
+    /// <summary>How long to give the grid to send its own offline notice before ours is shown.</summary>
+    private const double OfflineNoticeGraceSeconds = 2.5;
+
     private void WarnIfTargetOffline(ChatTab tab, Guid targetId)
     {
         if (tab.OfflineNoticeShown) return;
@@ -785,7 +795,14 @@ public partial class ChatWindow : SLNGWindow
             // The sim doesn't echo your own outgoing IM back through InstantMessageReceived --
             // every other viewer locally echoes what it just sent, so match that here.
             AppendMessageToTab(_activeChatTab, _session?.AgentName ?? "You", text);
-            WarnIfTargetOffline(_activeChatTab, targetId);
+            // Later, not now: where the grid says it itself (Second Life does, within a moment) that
+            // notice is the real one and ours would only repeat it. Ours is the fallback for a grid
+            // that stays silent (an OpenSim without an offline-message module).
+            var warnTab = _activeChatTab;
+            GetTree().CreateTimer(OfflineNoticeGraceSeconds).Timeout += () =>
+            {
+                if (IsInstanceValid(this) && _chatTabs.Contains(warnTab)) WarnIfTargetOffline(warnTab, targetId);
+            };
         }
         else if (_activeChatTab.TargetGroupId is { } groupId)
         {
