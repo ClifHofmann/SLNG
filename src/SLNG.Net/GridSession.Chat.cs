@@ -555,6 +555,8 @@ public sealed partial class GridSession
         if (_client.Self.IsGroupMessage(e.IM))
         {
             if (string.IsNullOrEmpty(e.IM.Message)) return; // typing/keep-alive, same as local chat
+            // FEAT-UI-54: a group whose chat the user switched off is dropped before anything sees it.
+            if (TryConsumeIgnoredGroupChat(e.IM.IMSessionID.Guid)) return;
             // For group chat the session id IS the group id.
             GroupChatMessageReceived?.Invoke(this, new GroupChatMessageEvent(
                 e.IM.IMSessionID.Guid, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message));
@@ -606,9 +608,7 @@ public sealed partial class GridSession
             // Cache the name too: group chat lines and object owners resolve through the same
             // shared name cache, and a membership reply is a free source for it.
             _nameCache[g.ID.Guid] = g.Name ?? string.Empty;
-            list.Add(new GroupEntry(
-                g.ID.Guid, g.Name ?? string.Empty, g.MemberTitle ?? string.Empty,
-                g.InsigniaID.Guid, g.AcceptNotices));
+            list.Add(GroupProfileMapper.ToEntry(g));
         }
         list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
 

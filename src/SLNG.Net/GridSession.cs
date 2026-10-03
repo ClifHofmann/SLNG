@@ -755,6 +755,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.DisplayNameUpdate += OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply += OnGroupNamesReply;
         _client.Groups.CurrentGroups += OnCurrentGroups;
+        _client.Groups.GroupProfile += OnGroupProfile;
         _client.Self.GroupChatJoined += OnGroupChatJoined;
         _client.Self.AlertMessage += OnAlertMessage;
         // FEAT-ECON-01 takes the bare figure from MoneyBalance; MVP5-2 takes the transaction
@@ -885,6 +886,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Avatars.DisplayNameUpdate -= OnDisplayNameUpdate;
         _client.Groups.GroupNamesReply -= OnGroupNamesReply;
         _client.Groups.CurrentGroups -= OnCurrentGroups;
+        _client.Groups.GroupProfile -= OnGroupProfile;
         _client.Self.GroupChatJoined -= OnGroupChatJoined;
         _client.Self.AlertMessage -= OnAlertMessage;
         // The next session's regions have nothing to do with this one's (BUG-NET-20).

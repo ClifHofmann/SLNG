@@ -14,4 +14,7 @@ namespace SLNG.Core;
 /// fetched yet — the Groups panel draws an initial badge instead.</param>
 /// <param name="AcceptNotices">Whether the agent receives this group's notices. Server-side
 /// membership state, distinct from SLNG's local chat mute.</param>
-public record GroupEntry(Guid Id, string Name, string MemberTitle, Guid InsigniaId, bool AcceptNotices);
+/// <param name="ListInProfile">Whether the agent lists this group in their profile (FEAT-UI-54).
+/// Server-side too: it travels in the same <c>SetGroupAcceptNotices</c> message as
+/// <paramref name="AcceptNotices"/>.</param>
+public record GroupEntry(Guid Id, string Name, string MemberTitle, Guid InsigniaId, bool AcceptNotices, bool ListInProfile = false);

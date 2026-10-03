@@ -45,4 +45,17 @@ public class LoginFailureMessageTests
 
         Assert.StartsWith("Grid returned no login response.", text);
     }
+
+    [Theory]
+    [InlineData("Canceled", false)]
+    [InlineData("Login canceled", false)]
+    [InlineData("  canceled ", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    [InlineData("No such host is known.", true)]
+    [InlineData("The SSL connection could not be established, see inner exception.", true)]
+    public void Only_a_message_that_says_something_counts_as_the_reason(string? message, bool expected)
+    {
+        Assert.Equal(expected, GridSession.IsRealLoginFailureReason(message));
+    }
 }

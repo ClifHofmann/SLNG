@@ -176,6 +176,9 @@ public partial class ChatWindow : SLNGWindow
 
     public Action<Guid, string>? OnOpenProfileRequested;
 
+    /// <summary>FEAT-UI-54: the Groups tab's "Profile" button -- Boot owns the group info windows.</summary>
+    public Action<Guid, string>? OnOpenGroupInfoRequested;
+
     /// <summary>MVP5-2: the Friends tab's "Pay..." action, forwarded to whoever owns the pay
     /// window.</summary>
     public Action<Guid, string>? OnPayRequested;
@@ -238,11 +241,24 @@ public partial class ChatWindow : SLNGWindow
         _session = session;
         _friendsPanel.Initialize(session);
         _groupsPanel.Initialize(session);
+
+        // FEAT-UI-54: the network thread asks this for every group line, so a group whose chat is
+        // switched off is dropped before anything can show, count or log it. Primed here, on the
+        // main thread, so the first network-thread read does not open preferences.cfg.
+        GroupMuteSettings.Prime();
+        session.GroupChatIgnored = GroupMuteSettings.IsMuted;
+    }
+
+    public override void _ExitTree()
+    {
+        GroupMuteSettings.MuteChanged -= OnGroupMuteChanged;
+        base._ExitTree();
     }
 
     public override void _Ready()
     {
         base._Ready(); // SLNGWindow styling
+        GroupMuteSettings.MuteChanged += OnGroupMuteChanged;
 
         PersistId = "chat"; // FEAT-UI-11: remember position/size across sessions
 
@@ -271,6 +287,7 @@ public partial class ChatWindow : SLNGWindow
         AddOuterTab("Friends", "person", _friendsPanel);
         _groupsPanel = new GroupsPanel();
         _groupsPanel.OnOpenGroupChatRequested = OpenOrFocusGroupTab;
+        _groupsPanel.OnOpenGroupInfoRequested = (id, name) => OnOpenGroupInfoRequested?.Invoke(id, name);
         AddOuterTab("Groups", "group", _groupsPanel);
 
         AddChatTab("main", "Main", ChatLogKind.Local, closeable: false);
@@ -347,24 +364,47 @@ public partial class ChatWindow : SLNGWindow
     /// join result arrives on GroupChatJoined.</summary>
     public void OpenOrFocusGroupTab(Guid groupId, string groupName)
     {
-        var tab = GetOrCreateGroupTab(groupId, groupName, joinSession: true);
+        // Asking to open a group's chat is a clearer statement of intent than the switch, so it turns
+        // the chat back on first -- the same thing Firestorm does (llgroupactions.cpp:655-657). The
+        // switch's own handler (OnGroupMuteChanged) joins the session, so the tab must not join twice.
+        bool wasOff = GroupMuteSettings.IsMuted(groupId);
+        if (wasOff) GroupMuteSettings.SetMuted(groupId, false);
+
+        var tab = GetOrCreateGroupTab(groupId, groupName, joinSession: !wasOff);
         SelectOuterTab(_chatPageControl);
         SelectChatTab(tab);
     }
+
+    /// <summary>True when a chat tab for this group exists. For the selftest.</summary>
+    public bool HasGroupTab(Guid groupId) => _chatTabs.Exists(t => t.TargetGroupId == groupId);
 
     /// <summary>Appends an incoming group-chat line, opening the group's tab if this is the first
     /// message from it this session. Called by Boot on GridSession.GroupChatMessageReceived,
     /// marshalled to the main thread first.</summary>
     public void AppendGroupChatMessage(Guid groupId, string groupName, Guid fromAgentId, string fromAgentName, string message)
     {
-        // A muted group must not open a tab, raise an unread badge, or steal focus -- that is the
-        // whole point of the mute (M5-3 §4). An ALREADY-OPEN tab still receives, because having
-        // the conversation open in front of you is a clearer statement of intent than the mute.
-        bool tabOpen = _chatTabs.Exists(t => t.TargetGroupId == groupId);
-        if (!tabOpen && GroupMuteSettings.IsMuted(groupId)) return;
+        // A group whose chat is switched off gets nothing: no tab, no unread badge, no focus, no log
+        // line (FEAT-UI-54). The network layer already drops these before they get here
+        // (GridSession.GroupChatIgnored); this is the second line, for a line already in flight on
+        // the main-thread queue when the switch was flipped. Open tabs do not exempt it any more --
+        // turning the chat off closes the tab (OnGroupMuteChanged).
+        if (GroupMuteSettings.IsMuted(groupId)) return;
 
         var tab = GetOrCreateGroupTab(groupId, groupName, joinSession: false);
         AppendMessageToTab(tab, fromAgentName, message, fromAgentId);
+    }
+
+    /// <summary>The "Receive group chat" switch of one group changed (group info checkbox or the Groups
+    /// tab's Mute button -- one setting). Off: the group's tab goes away and its chat session is left, so
+    /// the simulator stops sending. The chat log on disk stays. On: the session is joined again.</summary>
+    private void OnGroupMuteChanged(Guid groupId, bool muted)
+    {
+        if (muted)
+        {
+            var tab = _chatTabs.Find(t => t.TargetGroupId == groupId);
+            if (tab != null) CloseChatTab(tab, leaveSession: false); // leaving is done once, below
+        }
+        _session?.SetGroupChatReceiving(groupId, receive: !muted);
     }
 
     /// <summary>Reports the outcome of a group-chat join into the group's own tab, so a failure
@@ -931,13 +971,13 @@ public partial class ChatWindow : SLNGWindow
         return tab;
     }
 
-    private void CloseChatTab(ChatTab tab)
+    private void CloseChatTab(ChatTab tab, bool leaveSession = true)
     {
         if (!tab.Closeable) return;
         // Closing a group tab leaves its chat session, so the sim stops delivering it -- the
         // viewer's own behaviour, and without it a "closed" group would keep re-opening its tab
         // on the next message.
-        if (tab.TargetGroupId is { } groupId) _session?.LeaveGroupChat(groupId);
+        if (leaveSession && tab.TargetGroupId is { } groupId) _session?.LeaveGroupChat(groupId);
 
         bool wasActive = tab == _activeChatTab;
         _chatTabs.Remove(tab);

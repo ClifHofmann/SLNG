@@ -110,6 +110,10 @@ public record InstantMessageEvent(Guid FromAgentId, string FromAgentName, string
 /// not world simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record GroupsUpdatedEvent(IReadOnlyList<GroupEntry> Groups);
 
+/// <summary>FEAT-UI-54: a group's profile arrived (the answer to <c>GridSession.RequestGroupProfile</c>).
+/// Raised on a network thread. Identity/social state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
+public record GroupProfileEvent(GroupProfileInfo Profile);
+
 /// <summary>FEAT-UI-29: the agent's active group changed -- the tag worn over the avatar, and
 /// the group the SIMULATOR evaluates group permissions against. Identity/social state, not world
 /// simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>

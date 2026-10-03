@@ -408,7 +408,12 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.25-alpha";
+    // FEAT-UI-54: one group info window per group, keyed by group id. Main-thread only, except
+    // _openGroupInfoWindows, which mirrors the count for the network-thread handlers to gate on.
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
+    private volatile int _openGroupInfoWindows;
+
+    public const string AppVersion = "v0.26.27-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1135,6 +1140,8 @@ public partial class Boot : Control
         // FEAT-UI-13: clicking a resident's name in chat, or the Friends tab's "Profile" button.
         _chatWindow.OnOpenProfileRequested = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
         _chatWindow.OnPayRequested = (agentId, name) => ShowPayAvatarWindow(agentId, name);
+        // FEAT-UI-54: the Groups tab's "Profile" button.
+        _chatWindow.OnOpenGroupInfoRequested = (groupId, name) => OpenGroupInfoWindow(hudLayer, groupId, name);
 
         // FEAT-UI-18: modal teleport loading overlay. Its own CanvasLayer (Layer 100), added to
         // Boot rather than hudLayer so it covers the HUD and every window and stays up even if
@@ -1429,6 +1436,83 @@ public partial class Boot : Control
         _userProfileWindows[agentId] = win;
         _openProfileWindows = _userProfileWindows.Count;
         win.Initialize(agentId, name, _session, _gpuCache, _assetService);
+    }
+
+    /// <summary>
+    /// FEAT-UI-54: opens (or refocuses) the group info window for one group. The profile, the
+    /// membership flags, the active group and the founder's name reach it through the handlers
+    /// below, which hop from the network thread onto <see cref="_profileUiWork"/>.
+    /// </summary>
+    private void OpenGroupInfoWindow(CanvasLayer hudLayer, System.Guid groupId, string name)
+    {
+        if (_session == null || groupId == System.Guid.Empty) return;
+
+        if (_groupInfoWindows.TryGetValue(groupId, out var existing))
+        {
+            existing.Visible = true;
+            existing.MoveToFront();
+            return;
+        }
+
+        var session = _session;
+        var win = new SLNG.App.UI.GroupInfoWindow();
+        hudLayer.AddChild(win);
+        win.CascadeIndex = _groupInfoWindows.Count % 8;
+        win.RequestProfile = () => session.RequestGroupProfile(groupId);
+        win.SetNoticeFlags = (notices, listInProfile) => session.SetGroupAcceptNotices(groupId, notices, listInProfile);
+        win.TryGetName = id => session.TryGetCachedName(id, out var n) ? n : null;
+        win.RequestName = id => session.RequestAvatarName(id);
+        win.Closed += () =>
+        {
+            if (_groupInfoWindows.Remove(groupId)) _openGroupInfoWindows = _groupInfoWindows.Count;
+        };
+        _groupInfoWindows[groupId] = win;
+        _openGroupInfoWindows = _groupInfoWindows.Count;
+
+        // What is already known goes in first; the sim's answers refine it.
+        win.Initialize(groupId, name);
+        win.ApplyMembership(System.Linq.Enumerable.FirstOrDefault(session.GetGroups(), g => g.Id == groupId));
+        win.ApplyActiveGroup(session.ActiveGroupId);
+    }
+
+    // Network thread -> main thread: the group info window's inputs. Same queue and reason as the
+    // avatar profile replies above; the gate keeps a closed window from costing a closure per event.
+    private void EnqueueGroupInfoWork(System.Guid groupId, System.Action<SLNG.App.UI.GroupInfoWindow> apply)
+    {
+        if (_openGroupInfoWindows == 0) return;
+        _profileUiWork.Enqueue(() =>
+        {
+            if (_groupInfoWindows.TryGetValue(groupId, out var win) && Godot.GodotObject.IsInstanceValid(win))
+                apply(win);
+        });
+    }
+
+    private void OnGroupProfileReceived(object? sender, SLNG.Core.GroupProfileEvent e)
+        => EnqueueGroupInfoWork(e.Profile.Id, w => w.ApplyProfile(e.Profile));
+
+    private void OnGroupsUpdatedForInfo(object? sender, SLNG.Core.GroupsUpdatedEvent e)
+    {
+        if (_openGroupInfoWindows == 0) return;
+        var groups = e.Groups;
+        _profileUiWork.Enqueue(() =>
+        {
+            foreach (var (id, win) in _groupInfoWindows)
+            {
+                if (!Godot.GodotObject.IsInstanceValid(win)) continue;
+                win.ApplyMembership(System.Linq.Enumerable.FirstOrDefault(groups, g => g.Id == id));
+            }
+        });
+    }
+
+    private void OnActiveGroupChangedForInfo(object? sender, SLNG.Core.ActiveGroupChangedEvent e)
+    {
+        if (_openGroupInfoWindows == 0) return;
+        var active = e.GroupId;
+        _profileUiWork.Enqueue(() =>
+        {
+            foreach (var win in _groupInfoWindows.Values)
+                if (Godot.GodotObject.IsInstanceValid(win)) win.ApplyActiveGroup(active);
+        });
     }
 
     /// <summary>
@@ -3331,6 +3415,11 @@ public partial class Boot : Control
         _userProfileWindows.Clear();
         _openProfileWindows = 0;
 
+        // ...and group info windows, whose request and switches were wired to that session (FEAT-UI-54).
+        foreach (var win in _groupInfoWindows.Values) win.QueueFree();
+        _groupInfoWindows.Clear();
+        _openGroupInfoWindows = 0;
+
         // ...and any pending group invitation, which is bound to the session it arrived on.
         foreach (var win in _groupInviteWindows.Values) win.QueueFree();
         _groupInviteWindows.Clear();
@@ -3426,6 +3515,10 @@ public partial class Boot : Control
         // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
         _session.GroupChatJoined += OnGroupChatJoinedResult;
+        // FEAT-UI-54: the group info window. All three fire on a network thread.
+        _session.GroupProfileReceived += OnGroupProfileReceived;
+        _session.GroupsUpdated += OnGroupsUpdatedForInfo;
+        _session.ActiveGroupChanged += OnActiveGroupChangedForInfo;
         _session.GroupInvitationReceived += OnGroupInvitationReceived;
         // BUG-INV-04: inventory offers. Same network-thread buffering as the invitations above.
         _session.InventoryOfferReceived += OnInventoryOfferReceived;
@@ -4561,6 +4654,18 @@ public partial class Boot : Control
         // resolved. Without this the entry keeps saying "Jemand hat dir L$ 2200 bezahlt" -- the
         // one thing it exists to answer.
         _notifications.ResolveSender(e.Id, SLNG.App.UI.L10n.Tr("ui.money.someone"), e.Name);
+
+        // FEAT-UI-54: the founder's name in an open group info window.
+        if (_openGroupInfoWindows != 0)
+        {
+            var infoId = e.Id;
+            var infoName = e.Name;
+            _profileUiWork.Enqueue(() =>
+            {
+                foreach (var win in _groupInfoWindows.Values)
+                    if (Godot.GodotObject.IsInstanceValid(win)) win.OnNameResolved(infoId, infoName);
+            });
+        }
 
         if (_openProfileWindows == 0) return; // network thread -- see _openProfileWindows
         var id = e.Id;
