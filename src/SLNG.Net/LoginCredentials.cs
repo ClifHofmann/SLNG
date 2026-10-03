@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace SLNG.Net;
 
 /// <summary>
@@ -54,6 +56,45 @@ public sealed record LoginCredentials
     /// <see cref="AgreeToTos"/> -- the reference viewer drives both through one dialog and one
     /// callback, keyed by which flag to set.</summary>
     public bool ReadCritical { get; init; }
+
+    /// <summary>FEAT-SL-02: the one-time code from the person's authenticator app, typed in answer to
+    /// the grid's <c>mfa_challenge</c>. Sent as <c>token</c>. Empty on every attempt that is not
+    /// answering a challenge -- the reference viewer sends <c>token: ""</c> the same way
+    /// (<c>lllogininstance.cpp:239</c>). Single-use and about 30 seconds old at best, so it is never
+    /// stored and never carried over to a later attempt. A SECRET: it must not reach a log line, a
+    /// notification or an exception message -- <see cref="PrintMembers"/> redacts it.</summary>
+    public string MfaToken { get; init; } = "";
+
+    /// <summary>FEAT-SL-02: the opaque <c>mfa_hash</c> a grid returned after an earlier answered
+    /// challenge ("remember this computer"), sent back as <c>mfa_hash</c> so the grid can skip the
+    /// challenge. Empty when there is none. Login-equivalent for the MFA step, so it is a SECRET like
+    /// <see cref="Password"/> and is redacted by <see cref="PrintMembers"/>.</summary>
+    public string MfaHash { get; init; } = "";
+
+    /// <summary>Whether this attempt carries any MFA material (a code or a remembered hash). Only
+    /// then does <see cref="GridSession.BuildLoginParams"/> switch LibreMetaverse's MFA fields on;
+    /// otherwise the request is byte-for-byte what it was before MFA existed.</summary>
+    public bool HasMfaMaterial => MfaToken.Length > 0 || MfaHash.Length > 0;
+
+    /// <summary>The compiler-generated <c>ToString()</c> of a record prints every property -- that
+    /// would write the password, the MFA code and the MFA hash into any log line or exception message
+    /// that interpolates a <see cref="LoginCredentials"/>. This prints the non-secret fields and only
+    /// says whether each secret is set.</summary>
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder.Append("FirstName = ").Append(FirstName)
+            .Append(", LastName = ").Append(LastName)
+            .Append(", GridLoginUri = ").Append(GridLoginUri)
+            .Append(", Channel = ").Append(Channel)
+            .Append(", Version = ").Append(Version)
+            .Append(", StartLocation = ").Append(StartLocation)
+            .Append(", AgreeToTos = ").Append(AgreeToTos)
+            .Append(", ReadCritical = ").Append(ReadCritical)
+            .Append(", Password = ").Append(Password.Length > 0 ? "[set]" : "[none]")
+            .Append(", MfaToken = ").Append(MfaToken.Length > 0 ? "[set]" : "[none]")
+            .Append(", MfaHash = ").Append(MfaHash.Length > 0 ? "[set]" : "[none]");
+        return true;
+    }
 
     /// <summary>Second Life main grid ("Agni") login URI.</summary>
     public const string SecondLifeLoginUri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi";

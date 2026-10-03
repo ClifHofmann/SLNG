@@ -637,6 +637,21 @@ public sealed partial class GridSession
         $"Grid returned no login response{detail}. Check your internet connection, a firewall, antivirus or VPN " +
         "that may block the login server, and the computer's date and time.";
 
+    /// <summary>The failed <see cref="LoginResult"/> for a login answer the grid sent and LibreMetaverse
+    /// then reported as "no response", or null when there is no such answer (the connection itself
+    /// failed, the answer was a redirect, or it carried neither a reason nor a message). The reason
+    /// goes through verbatim -- including <c>mfa_challenge</c> -- and so does an <c>mfa_hash</c> riding
+    /// on it.</summary>
+    internal static LoginResult? FailureFromGridAnswer(LoginResponseData? answered)
+    {
+        if (answered is null || answered.Login != LoginState.False) return null;
+        string reason = answered.Reason?.Trim() ?? "";
+        string message = answered.Message?.Trim() ?? "";
+        if (reason.Length == 0 && message.Length == 0) return null;
+        if (reason.Length == 0) reason = "unknown";
+        return LoginResult.Fail(reason, message.Length > 0 ? message : null, answered.MfaHash);
+    }
+
     /// <summary>
     /// Attempts to log in to the grid described by <paramref name="credentials"/>.
     /// Uses LibreMetaverse's async login API; failures (including unreachable grids)
@@ -691,17 +706,16 @@ public sealed partial class GridSession
         _client.Network.LoginProgress += OnLmvLoginProgress;
         try
         {
-            var login = new LoginParams(
-                _client,
-                credentials.FirstName,
-                credentials.LastName,
-                credentials.Password,
-                credentials.Channel,
-                credentials.Version,
-                credentials.GridLoginUri)
-            {
-                Start = credentials.StartLocation
-            };
+            // BuildLoginParams, not a bare `new LoginParams(...)`: LibreMetaverse's constructor defaults
+            // agree_to_tos and read_critical to TRUE (TPV Policy §1.f -- see LoginTermsGateTests), and it
+            // is also what carries the MFA code and hash (FEAT-SL-02).
+            var login = BuildLoginParams(_client, credentials);
+
+            // Cleared so that, once the call returns, whatever sits here is the grid's answer to THIS
+            // attempt and not a leftover. LibreMetaverse parses every answer into this field, failures
+            // included, and then cancels its own result -- which is why the call below returns null for a
+            // wrong password, a Terms-of-Service demand and an MFA challenge alike.
+            _client.Network.LoginResponseData = null;
 
             var response = await _client.Network
                 .LoginWithResponseAsync(login, ct)
@@ -709,6 +723,18 @@ public sealed partial class GridSession
 
             if (response is null)
             {
+                // The grid ANSWERED and said no (wrong password, "tos", "critical", "mfa_challenge", a
+                // banned account, ...): LibreMetaverse kept the parsed answer and still returned null.
+                // That is not the same as "no response", and the person must not be told it is.
+                var refusal = FailureFromGridAnswer(_client.Network.LoginResponseData);
+                if (refusal != null)
+                {
+                    // The reason key and whether a hash came along -- never the hash itself.
+                    Console.Error.WriteLine($"[Login] grid refused the login: reason='{refusal.ErrorKey}'" +
+                                            $"{(refusal.MfaHash != null ? " (mfa_hash attached)" : "")}");
+                    return refusal;
+                }
+
                 string detail = string.IsNullOrWhiteSpace(lastFailureDetail) ? "" : $" ({lastFailureDetail.Trim()})";
                 Console.Error.WriteLine($"[Login] no response from {credentials.GridLoginUri}{detail}; network login state: " +
                                         $"'{_client.Network.LoginMessage}' key='{_client.Network.LoginErrorKey}'");
@@ -753,8 +779,8 @@ public sealed partial class GridSession
             }
 
             return response.Success
-                ? LoginResult.Ok(response.AgentID.ToString(), response.SessionID.ToString(), response.Message)
-                : LoginResult.Fail(response.Reason, response.Message);
+                ? LoginResult.Ok(response.AgentID.ToString(), response.SessionID.ToString(), response.Message, response.MfaHash)
+                : LoginResult.Fail(response.Reason, response.Message, response.MfaHash);
         }
         catch (Exception ex)
         {
@@ -1063,14 +1089,26 @@ public sealed partial class GridSession
         return (dx, dy);
     }
 
+    /// <summary>The LibreMetaverse login request for <paramref name="creds"/>. The ONE place a request is
+    /// built: the two consent flags are set from what the person actually did (LibreMetaverse's defaults
+    /// are both true), and the MFA code and hash are filled in (FEAT-SL-02).
+    ///
+    /// <para>MFA: LibreMetaverse puts <c>token</c> and <c>mfa_hash</c> into the request only when
+    /// <c>LoginParams.MfaEnabled</c> is set (<c>NetworkManager.BeginLogin</c>), and its own default for
+    /// that is off. It is switched on here exactly when the attempt carries a code or a remembered
+    /// hash, so a plain login sends the request it always did. The code is normalised -- whitespace
+    /// stripped -- on the way.</para></summary>
     public static LibreMetaverse.LoginParams BuildLoginParams(LibreMetaverse.GridClient client, LoginCredentials creds)
     {
-        var login = client.Network.DefaultLoginParams(
-            creds.FirstName, creds.LastName, creds.Password, creds.Channel, creds.Version);
+        var credential = new LibreMetaverse.LoginCredential(
+            creds.FirstName, creds.LastName, creds.Password,
+            MfaLogin.NormalizeToken(creds.MfaToken), creds.MfaHash ?? "");
+        var login = new LibreMetaverse.LoginParams(client, credential, creds.Channel, creds.Version);
         login.URI = creds.GridLoginUri?.ToString() ?? "";
         login.AgreeToTos = creds.AgreeToTos;
         login.ReadCritical = creds.ReadCritical;
         login.Start = string.IsNullOrEmpty(creds.StartLocation) ? "last" : creds.StartLocation;
+        login.MfaEnabled = creds.HasMfaMaterial;
         return login;
     }
 

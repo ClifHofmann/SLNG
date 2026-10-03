@@ -29,6 +29,13 @@ Unser Login-Bildschirm nutzt das moderne "Puris Glassmorphism"-Design.
 - Der Viewer merkt sich Ihre Login-Profile und Fenstergrößen und startet bei zukünftigen Sitzungen direkt mit Ihren persönlichen Einstellungen.
 - **Jedes Grid für sich:** Das Hintergrundbild Ihres letzten Besuchs, der Objekt- und der Kartenspeicher sowie die Chat-Protokolle werden für jedes Grid (und jedes Konto) getrennt abgelegt (die Protokolle in der Ordnerstruktur von Firestorm, siehe Abschnitt 5). Ein Konto mit demselben Namen auf Second Life und auf OSGrid sieht dadurch nie die Daten des jeweils anderen Grids. Was frühere Versionen gemeinsam gespeichert haben, wird nicht mehr benutzt und nicht gelöscht: Das Hintergrundbild beginnt pro Grid neu, der Objekt-Cache füllt sich beim nächsten Besuch einer Region von selbst wieder. Für die Chat-Protokolle gilt seit Version 0.26.14 die Ordnerstruktur von Firestorm (siehe Abschnitt 5).
 
+### Anmeldung mit Zwei-Faktor-Code (MFA)
+Ist Ihr Second-Life-Konto mit Multi-Faktor-Authentifizierung geschützt, verlangt das Grid beim Login zusätzlich einen Code. Der Viewer öffnet dann ein Fenster „Zwei-Faktor-Code“.
+- Geben Sie den aktuellen 6-stelligen Code aus Ihrer Authenticator-App ein und klicken Sie auf „Einloggen“. Der Code darf mit Leerzeichen eingefügt werden („123 456“); „Einloggen“ ist erst aktiv, wenn genau sechs Ziffern dastehen.
+- Lehnt das Grid den Code ab (meist, weil er inzwischen abgelaufen ist), weist das Fenster darauf hin und fragt erneut. Warten Sie dann auf den nächsten Code Ihrer App. „Abbrechen“ führt zurück zum Login-Bildschirm; Ihre Eingaben bleiben dort stehen.
+- **Diesen Computer merken:** Das Kästchen erscheint nur, wenn „Save Login“ angehakt ist. Ist es angehakt, speichert der Viewer ein vom Grid ausgestelltes Token in Ihrem gespeicherten Login, und der Code wird bei den nächsten Logins nicht mehr abgefragt. Wie lange das Token gilt, bestimmt das Grid; wird es nicht mehr akzeptiert, fragt der Viewer wieder nach dem Code. Das Token liegt wie der Passwort-Hash in der Datei `logins.cfg` und wird nirgends angezeigt oder protokolliert; wer Zugriff auf diese Datei hat, sollte sie wie ein Passwort behandeln. Der Code selbst wird nie gespeichert.
+- Wenn Sie „Save Login“ abwählen oder Konto bzw. Grid im Login-Formular ändern, wird das gemerkte Token verworfen.
+
 ---
 
 ## 3. Benutzeroberfläche & Fensterverwaltung

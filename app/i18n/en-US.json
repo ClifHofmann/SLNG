@@ -613,6 +613,19 @@
       "cancel": "Cancel login",
       "declined": "Login cancelled — the grid's terms were not accepted."
     },
+    "mfa": {
+      "title": "Two-factor code",
+      "heading": "This account is protected with multi-factor authentication. Enter the current 6-digit code from your authenticator app.",
+      "code_label": "Authentication code",
+      "code_placeholder": "123456",
+      "wrong_code": "That code was not accepted. Codes expire quickly: wait for the next one in your app and try again.",
+      "remember": "Remember this computer",
+      "remember_tooltip": "Keeps a token from the grid in your saved login so the code is not asked every time. The grid decides how long it stays valid.",
+      "continue": "Log in",
+      "cancel": "Cancel",
+      "declined": "Login cancelled — no authentication code was entered.",
+      "retry_after_terms": "Your code may have expired while you read the grid's message. Please enter a new one."
+    },
     "script_permission": {
       "title": "PERMISSION REQUEST",
       "from": "\"{0}\", owned by {1}, is asking for permission.",

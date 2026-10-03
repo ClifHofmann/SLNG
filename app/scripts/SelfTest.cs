@@ -184,6 +184,8 @@ public static partial class SelfTest
         results.Add(CheckRegionRestartWindow(tree));
         results.Add(CheckLandInfoWindow(tree));
         results.Add(CheckTeleportOfferWindow(tree));
+        results.Add(CheckMfaPromptWindow(tree)); // FEAT-SL-02
+        results.Add(CheckMfaHashStore());
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckInventoryTrashMenus(tree));
@@ -1233,6 +1235,7 @@ public static partial class SelfTest
                 () => true, () => true)),
             W<UI.GroupInfoWindow>(w => { var gid = id(); w.Initialize(gid, "Test Explorers"); w.ApplyMembership(new GroupEntry(gid, "Test Explorers", "Officer", Guid.Empty, true, true)); w.ApplyProfile(FakeGroupProfile(gid, id())); }),
             W<UI.TermsOfServiceWindow>(w => w.Initialize("https://grid.invalid/login", "Accept the terms.", false)),
+            W<UI.MfaPromptWindow>(w => w.Initialize("Enter the code from your app.", true, true)),
             W<UI.UserProfileWindow>(w => w.Initialize(id(), "Someone", session, null, null)),
         };
         int windowCount = 0;
