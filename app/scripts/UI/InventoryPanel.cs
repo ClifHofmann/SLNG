@@ -514,6 +514,41 @@ public partial class InventoryPanel : SLNGWindow
         PopulateRoots();
         if (_tabs.CurrentTab == 2) OnTabChanged(2); // already on the tab — just refresh
         else _tabs.CurrentTab = 2;                  // fires TabChanged -> shows + refreshes
+        MakeReadyToUse();
+    }
+
+    /// <summary>The menu entry, the toolbar button and Ctrl+I (FEAT-INV-14): opening the inventory always
+    /// gives a window that is open, NOT collapsed to its title bar, in front, with the cursor in the
+    /// search box -- the first thing anyone does with it is look for something. When the window already
+    /// has the keyboard focus the same command closes it, as the reference viewer's does; when it is
+    /// open somewhere else (behind another window, minimized, a different control focused) it comes
+    /// forward instead of vanishing.</summary>
+    public void ToggleForUse()
+    {
+        if (Visible && !IsMinimized && HasKeyboardFocusInside())
+        {
+            Toggle(); // closes
+            return;
+        }
+
+        if (!Visible) Toggle(); // opens: refreshes the roots and the worn view
+        MakeReadyToUse();
+    }
+
+    /// <summary>Un-minimize, raise, keep on screen and put the cursor in the search box. The focus is
+    /// taken a frame later: a control that became visible this frame cannot grab it yet.</summary>
+    private void MakeReadyToUse()
+    {
+        Unminimize();
+        EnsureOnScreen();
+        BringToFront();
+        _searchBox.CallDeferred(Control.MethodName.GrabFocus);
+    }
+
+    private bool HasKeyboardFocusInside()
+    {
+        var owner = GetViewport()?.GuiGetFocusOwner();
+        return owner != null && (owner == this || IsAncestorOf(owner));
     }
 
     // ---- FEAT-UI-16: Worn tab -------------------------------------------------------------

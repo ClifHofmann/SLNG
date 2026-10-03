@@ -408,7 +408,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.21-alpha";
+    public const string AppVersion = "v0.26.22-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1476,7 +1476,7 @@ public partial class Boot : Control
                 () => ActivateLauncher(cameraHud, cameraHud.Toggle),
                 () => cameraHud.Visible),
             new("inventory", "Inventory", "inventory_2",
-                () => { var inv = _inventoryPanel; if (inv != null) ActivateLauncher(inv, inv.Toggle); },
+                () => _inventoryPanel?.ToggleForUse(), // FEAT-INV-14: expanded, in front, cursor in the search box
                 () => _inventoryPanel?.Visible ?? false),
             new("snapshot", "Snapshot", "add_a_photo",
                 () => ActivateLauncher(_snapshotWindow, _snapshotWindow.Toggle),

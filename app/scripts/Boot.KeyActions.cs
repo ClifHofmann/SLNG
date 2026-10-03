@@ -53,7 +53,7 @@ public partial class Boot
         // Statistics: Ctrl+Shift+1 is the statistics shortcut in SL/Firestorm.
         keys.Register(this, WindowStats, () => _statsOverlay?.Toggle());
         // Ctrl+I like the real viewers; a bare I would fire while typing in chat.
-        keys.Register(this, WindowInventory, () => _inventoryPanel?.Toggle());
+        keys.Register(this, WindowInventory, () => _inventoryPanel?.ToggleForUse());
         // Ctrl+O -- the inventory straight on the Outfits tab (FEAT-INV-04).
         keys.Register(this, WindowOutfits, () => _inventoryPanel?.OpenOnOutfits());
         keys.Register(this, WindowPreferences, TogglePreferencesWindow);
