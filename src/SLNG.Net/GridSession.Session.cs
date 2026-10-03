@@ -621,6 +621,16 @@ public sealed partial class GridSession
     /// BUG-NET-23 in the constructor. For the test that pins it.</summary>
     internal bool LibrarySendsAgentThrottle => _client.Settings.Agent.SendThrottle;
 
+    /// <summary>True for a login-failure message that says something: not empty, and not the bare
+    /// "Canceled" / "Login canceled" LibreMetaverse reports after it has cancelled its own result.</summary>
+    internal static bool IsRealLoginFailureReason(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+        string m = message.Trim();
+        return !m.Equals("Canceled", StringComparison.OrdinalIgnoreCase)
+            && !m.Equals("Login canceled", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>The line shown when the grid never answered the login request. Names what to try, because
     /// the usual causes are on the person's side of the connection, not the grid's.</summary>
     internal static string NoLoginResponseMessage(string detail) =>
@@ -658,7 +668,12 @@ public sealed partial class GridSession
 
         void OnLmvLoginProgress(object? sender, LoginProgressEventArgs e)
         {
-            if (e.Status == LoginStatus.Failed && !string.IsNullOrWhiteSpace(e.Message)) lastFailureDetail = e.Message;
+            // The FIRST failure carries the real reason ("No such host is known", "The SSL connection could
+            // not be established", ...). LibreMetaverse then cancels its own result task, which makes it
+            // report a second failure, just "Canceled", over the first -- keeping the last message is what
+            // showed "(Canceled)" and nothing else on a tester's screen (2026-10-03).
+            if (e.Status == LoginStatus.Failed && lastFailureDetail == null && IsRealLoginFailureReason(e.Message))
+                lastFailureDetail = string.IsNullOrWhiteSpace(e.FailReason) ? e.Message : $"{e.Message}; {e.FailReason}";
             var stage = e.Status switch
             {
                 LoginStatus.ConnectingToLogin => LoginStage.ConnectingToLogin,
