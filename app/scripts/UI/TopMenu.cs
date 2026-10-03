@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using SLNG.Core.Avatars;
+using SLNG.Core.Input;
 
 namespace SLNG.App.UI
 {
@@ -444,11 +445,11 @@ namespace SLNG.App.UI
             // App Menu
             var appMenu = new PopupMenu();
             appMenu.Name = L10n.Tr("ui.menu.app");
-            appMenu.AddItem(L10n.Tr("ui.menu.preferences"), 2);
+            AddHinted(appMenu, "ui.menu.preferences", 2, KeyActionIds.WindowPreferences);
             appMenu.AddItem(L10n.Tr("ui.menu.about"), 3);
             appMenu.AddSeparator();
             appMenu.AddItem(L10n.Tr("ui.menu.disconnect"), 0);
-            appMenu.AddItem(L10n.Tr("ui.menu.exit"), 1);
+            AddHinted(appMenu, "ui.menu.exit", 1, KeyActionIds.AppExit);
             appMenu.IdPressed += (id) =>
             {
                 if (id == 0) OnDisconnect?.Invoke();
@@ -462,9 +463,9 @@ namespace SLNG.App.UI
             var viewMenu = new PopupMenu();
             _viewMenu = viewMenu;
             viewMenu.Name = L10n.Tr("ui.menu.view");
-            viewMenu.AddItem(L10n.Tr("ui.menu.toggle_hud"), 0);
-            viewMenu.AddItem(L10n.Tr("ui.menu.camera_controls"), 4);
-            viewMenu.AddItem(L10n.Tr("ui.menu.performance_stats"), 5);
+            AddHinted(viewMenu, "ui.menu.toggle_hud", 0, KeyActionIds.ViewHideUi);
+            AddHinted(viewMenu, "ui.menu.camera_controls", 4, KeyActionIds.WindowCameraControls);
+            AddHinted(viewMenu, "ui.menu.performance_stats", 5, KeyActionIds.WindowStats);
             viewMenu.AddCheckItem(L10n.Tr("ui.menu.show_fps_in_top_bar"), 6);
             int fpsCheckIdx = viewMenu.GetItemIndex(6);
             if (fpsCheckIdx >= 0) viewMenu.SetItemChecked(fpsCheckIdx, _showFps);
@@ -506,8 +507,8 @@ namespace SLNG.App.UI
             worldMenu.AddItem(L10n.Tr("ui.menu.create_landmark"), 0);
             worldMenu.AddItem(L10n.Tr("ui.menu.about_land"), 6);
             worldMenu.AddItem(L10n.Tr("ui.menu.environment"), 3);
-            worldMenu.AddItem(L10n.Tr("ui.menu.world_map"), 4);
-            worldMenu.AddItem(L10n.Tr("ui.menu.minimap"), 5);
+            AddHinted(worldMenu, "ui.menu.world_map", 4, KeyActionIds.WindowWorldMap);
+            AddHinted(worldMenu, "ui.menu.minimap", 5, KeyActionIds.WindowMiniMap);
             worldMenu.IdPressed += (id) =>
             {
                 if (id == 0) OnCreateLandmark?.Invoke();
@@ -524,14 +525,14 @@ namespace SLNG.App.UI
             var avatarMenu = new PopupMenu();
             _avatarMenu = avatarMenu;
             avatarMenu.Name = L10n.Tr("ui.menu.avatar");
-            avatarMenu.AddItem(L10n.Tr("ui.menu.rebake_avatar"), 0);
-            avatarMenu.AddItem(L10n.Tr("ui.menu.hover_height"), 3);
+            AddHinted(avatarMenu, "ui.menu.rebake_avatar", 0, KeyActionIds.AvatarRebake);
+            AddHinted(avatarMenu, "ui.menu.hover_height", 3, KeyActionIds.WindowHoverHeight);
             avatarMenu.AddSeparator();
-            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.always_run"), 10);
+            AddHinted(avatarMenu, "ui.menu.always_run", 10, KeyActionIds.AvatarAlwaysRun, check: true);
             avatarMenu.AddCheckItem(L10n.Tr("ui.menu.play_typing_animation"), 12);
             avatarMenu.AddCheckItem(L10n.Tr("ui.menu.head_follows_camera"), 13);
             avatarMenu.AddSeparator();
-            avatarMenu.AddItem(L10n.Tr("ui.menu.stop_animations"), 4);
+            AddHinted(avatarMenu, "ui.menu.stop_animations", 4, KeyActionIds.AvatarStopAnimations);
             avatarMenu.AddItem(L10n.Tr("ui.menu.active_animations"), 11);
             avatarMenu.AddItem(L10n.Tr("ui.menu.reset_skeleton"), 5);
             avatarMenu.AddItem(L10n.Tr("ui.menu.resync_animations"), 6);
@@ -612,9 +613,9 @@ namespace SLNG.App.UI
             // Developer Menu
             var devMenu = new PopupMenu();
             devMenu.Name = L10n.Tr("ui.menu.developer");
-            devMenu.AddItem(L10n.Tr("ui.menu.toggle_wireframe"), 0);
+            AddHinted(devMenu, "ui.menu.toggle_wireframe", 0, KeyActionIds.DevWireframe);
             devMenu.AddItem(L10n.Tr("ui.menu.measure_render_baseline"), 1);
-            devMenu.AddItem(L10n.Tr("ui.menu.create_test_skin"), 2);
+            AddHinted(devMenu, "ui.menu.create_test_skin", 2, KeyActionIds.DevCreateTestSkin);
             devMenu.AddItem(L10n.Tr("ui.menu.bake_test_pattern"), 3);
             devMenu.AddItem(L10n.Tr("ui.menu.material_lab"), 4);
             devMenu.IdPressed += (id) =>
@@ -626,6 +627,33 @@ namespace SLNG.App.UI
                 else if (id == 4) OnOpenMaterialLab?.Invoke();
             };
             menuBar.AddChild(devMenu);
+
+            // FEAT-UI-43: menu entries show the chord the key table currently has for them, so a
+            // rebinding (or the language) never leaves a stale hint behind.
+            RefreshShortcutHints();
+            KeyBindings.Table.Changed += RefreshShortcutHints;
+        }
+
+        // A menu entry whose label gets the current chord of an action appended: "Always Run (Ctrl+R)".
+        private readonly System.Collections.Generic.List<(PopupMenu Menu, int Id, string LabelKey, string ActionId)> _hinted = new();
+
+        private void AddHinted(PopupMenu menu, string labelKey, int id, string actionId, bool check = false)
+        {
+            if (check) menu.AddCheckItem(L10n.Tr(labelKey), id);
+            else menu.AddItem(L10n.Tr(labelKey), id);
+            _hinted.Add((menu, id, labelKey, actionId));
+        }
+
+        private void RefreshShortcutHints()
+        {
+            foreach (var (menu, id, labelKey, actionId) in _hinted)
+            {
+                if (!GodotObject.IsInstanceValid(menu)) continue;
+                int index = menu.GetItemIndex(id);
+                if (index < 0) continue;
+                string? hint = KeyBindings.HintFor(actionId);
+                menu.SetItemText(index, hint == null ? L10n.Tr(labelKey) : $"{L10n.Tr(labelKey)} ({hint})");
+            }
         }
 
         public void InitializeGraphicsProfiles(GraphicsSettings settings, Action applySettings, Action? onSettingsChanged = null)
@@ -648,6 +676,7 @@ namespace SLNG.App.UI
                 _graphicsSettings.Changed -= RefreshGraphicsProfilesUI;
             }
             MediaSettings.Changed -= RefreshMediaButtons;
+            KeyBindings.Table.Changed -= RefreshShortcutHints;
             base._ExitTree();
         }
 

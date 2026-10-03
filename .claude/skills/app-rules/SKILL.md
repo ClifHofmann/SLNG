@@ -44,6 +44,23 @@ screen and in the window title.
   component; never copy a version out of a rules file.
 - **Minor-bump only at a genuinely testable milestone**, never mid-investigation.
 
+## Keyboard shortcuts go through the key table
+
+Never test `InputEventKey` / `Input.IsKeyPressed` for a shortcut in a window, controller or renderer. A shortcut is
+an **action** in `SLNG.Core.Input.KeyActions` (stable id in `KeyActionIds`, category, context, default chords checked
+against the reference viewer's `key_bindings.xml` / `menu_viewer.xml`), so the person can rebind it on
+Preferences > Keyboard (FEAT-UI-43, `docs/specs/FEAT-UI-43-keybindings.md`).
+
+- A discrete key press: `KeyDispatcher.Instance.Register(this, KeyActionIds.X, handler)`; return `false` when the
+  handler did not use the key so it is not swallowed.
+- A key that is held (walking, orbiting): `HeldKeys.IsHeld(KeyActionIds.X)` every frame - exact modifiers, no allocation.
+- Add the action's label to **both** `app/i18n/en-US.json` and `de-DE.json` (`ui.keys.action.<id with '.' -> '_'>`); the
+  selftest fails without it. Do not write a chord into a label - menus append the live one (`KeyBindings.HintFor`).
+- Mouse modifiers (Alt+LMB, the wheel) and a text field's own editing chords are not in the table.
+- If the feature you build has a Second Life shortcut, it is probably listed in `SlShortcutGaps` with your ticket id:
+  bind it as part of the feature and delete the entry (recipe in the spec). `SlShortcutGapTests` fails when the
+  ticket is ✅ Done and the chord is still a gap.
+
 ## Threading
 
 Decode on worker threads; marshal only the final GPU upload / node mutation to the main

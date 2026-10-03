@@ -96,6 +96,110 @@ Rechtsklick auf ein gespeichertes Outfit im Reiter *Outfits*:
   - **Fokus-Höhe:** Die Höhe der Kamera relativ zum Avatar.
   - **Geschwindigkeit:** Passen Sie die Dreh- und Zoom-Geschwindigkeit der Kamera ("Orbit", "Pan") individuell an (10% - 300%).
 
+### Tastenkürzel
+Die Tastenkürzel entsprechen, soweit der Puris Viewer die jeweilige Funktion hat, denen des Second-Life-Viewers (Quelle: `key_bindings.xml` und `menu_viewer.xml` des Linden-Viewers). **Alle** Kürzel lassen sich unter `Preferences` -> `Tastatur` ändern: Klicken Sie auf eine Tastenkombination und drücken Sie die neuen Tasten (`Esc` bricht ab). Mit `+` fügen Sie einer Aktion eine weitere Kombination hinzu, mit `×` entfernen Sie eine, der Pfeil stellt die Standardbelegung wieder her, und `Alle zurücksetzen` (zweimal klicken) stellt alles wieder her. Ist eine Kombination schon vergeben, nennt Ihnen der Viewer die andere Aktion und fragt, ob sie `Ersetzen` oder `Abbrechen` möchten. Gespeichert werden nur Ihre Abweichungen vom Standard. Die Menüs zeigen immer die aktuell gültige Kombination.
+
+**Beim Tippen in einem Textfeld (z. B. der Chatzeile)** gehören Buchstaben, Pfeiltasten, `Strg+C`, `Strg+V`, `Strg+X`, `Strg+A` und `Strg+Z` dem Textfeld. Bewegung, Kamera, Fliegen und das Kopieren im Inventar sind dann gesperrt. Menü-Kürzel wie `Strg+I` oder die F-Tasten funktionieren auch dann.
+
+**Bewegung** (nur, wenn kein Textfeld und kein Fensterelement den Fokus hat; `Umschalt` gehalten lässt den Avatar rennen)
+
+| Aktion | Standard |
+|---|---|
+| Vorwärts / rückwärts gehen | `W` / `S` oder `↑` / `↓` |
+| Nach links / rechts drehen | `A` / `D` oder `←` / `→` |
+| Springen / aufwärts fliegen | `E` oder `Bild auf` |
+| Ducken / abwärts fliegen | `C`, `Q` oder `Bild ab` |
+| Fliegen / landen | `F` oder `Pos1` |
+| Immer rennen | `Strg+R` |
+| Chatzeile aktivieren (Chatten) | `Eingabe` |
+
+**Kamera**
+
+| Aktion | Standard |
+|---|---|
+| Um den Fokus kreisen (links / rechts) | `Alt+A` / `Alt+D` oder `Alt+←` / `Alt+→` |
+| Kamera heran- / wegfahren | `Alt+W` / `Alt+S` oder `Alt+↑` / `Alt+↓` |
+| Nach oben kreisen | `Alt+E`, `Alt+Bild auf`, `Strg+Alt+W` oder `Strg+Alt+↑` |
+| Nach unten kreisen | `Alt+C`, `Alt+Bild ab`, `Strg+Alt+S` oder `Strg+Alt+↓` |
+| Kamera schwenken (links / rechts / oben / unten) | `Strg+Alt+Umschalt` + `A` / `D` / `W` / `S` oder Pfeiltaste |
+| Abstand verkleinern / vergrößern | `=` oder `Num +` / `-` oder `Num -` |
+| Kameraansicht zurücksetzen | `Esc` |
+| Sichtfeld: heranzoomen / herauszoomen / Standard | `Strg+0` / `Strg+8` / `Strg+9` |
+
+**Fenster** (funktionieren überall, auch beim Tippen)
+
+| Aktion | Standard |
+|---|---|
+| Inventar | `Strg+I` |
+| Outfits (aktuell getragen) | `Strg+O` |
+| Kommunikationsfenster | `Strg+T` |
+| Chat in der Nähe | `Strg+H` |
+| Freunde / Gruppen | `Strg+Umschalt+F` / `Strg+Umschalt+G` |
+| Weltkarte / Minikarte | `Strg+M` / `Strg+Umschalt+M` |
+| Schnappschuss | `Strg+Umschalt+S` |
+| Kamerasteuerung | `Strg+K` |
+| Benachrichtigungen | `Alt+Umschalt+N` |
+| Schwebehöhe | `Strg+Alt+H` |
+| Einstellungen (Preferences) | `Strg+P` |
+| Leistungsanzeige | `Strg+Umschalt+1` |
+| Fenster schließen / alle Fenster schließen | `Strg+W` / `Strg+Umschalt+W` |
+
+**Avatar und Ansicht**
+
+| Aktion | Standard |
+|---|---|
+| Animationen stoppen | `Alt+Umschalt+A` |
+| Hinsetzen / aufstehen | `Alt+Umschalt+S` |
+| Avatar neu backen | `Strg+Alt+R` |
+| Alle Bedienelemente ausblenden (und wieder einblenden) | `Strg+Umschalt+U` |
+| Viewer beenden | `Strg+Q` |
+| Ausschneiden / Kopieren / Einfügen (Inventar, mit der Maus über dem Inventar) | `Strg+X` / `Strg+C` / `Strg+V` |
+
+**Entwickler** (kaum für den Alltag gedacht): `F3` / `F4` Sichtweite um 16 m verringern / erhöhen, `F5` Sonnenrichtung anzeigen, `F6` Objekte in der Nähe protokollieren, `F7` Avatar-Schatten, `F8` T-Pose, `F9` N·L-Schattierung, `Strg+Umschalt+R` Drahtmodell, `Strg+Alt+T` Testhaut erzeugen. Hinweis: `Strg+Alt+T` hat im Second-Life-Viewer eine andere Bedeutung („Transparentes hervorheben“), die der Puris Viewer nicht kennt.
+
+#### Noch nicht verfügbare Tastenkürzel
+
+Diese Second-Life-Kürzel bleiben bewusst ohne Wirkung, solange der Puris Viewer die Funktion nicht (oder noch nicht als Befehl) hat. Sie sind vorgemerkt: Sobald die Funktion gebaut wird, bekommt sie ihr Kürzel. Die Liste mit den zugehörigen Aufgaben steht in `docs/specs/FEAT-UI-43-keybindings.md`. Kürzel, die Sie selbst belegen möchten, stellen Sie unter `Preferences` -> `Tastatur` ein, sobald es die Aktion gibt.
+
+| Kürzel | Second-Life-Funktion | Grund |
+|---|---|---|
+| `Umschalt+A` / `Umschalt+D`, `Umschalt+←` / `Umschalt+→` | Seitwärts gehen (Slide) | Der Avatar kann bisher nur geradeaus gehen und sich drehen, nicht seitwärts. `Umschalt` lässt ihn rennen. |
+| `Leertaste` | Bewegung anhalten | Es gibt noch kein automatisches Gehen, das sich anhalten ließe. |
+| `M` | Ego-Ansicht (Mouselook) | Es gibt noch keine Kamera aus Sicht des Avatars. |
+| `Alt+Umschalt+F` | Joystick-Flugkamera | Joystick und Gamepad werden noch nicht unterstützt. |
+| `Strg+\` | Letzten Sprecher ansehen | Der Viewer merkt sich noch nicht, wer zuletzt gesprochen hat. |
+| `Umschalt+Eingabe` / `Strg+Eingabe` | Flüstern / Schreien | Die Chatzeile kann nur normal sprechen. |
+| `Strg+↑` / `Strg+↓` | Frühere Eingaben der Chatzeile abrufen | Die Chatzeile merkt sich keine Eingaben. |
+| `Strg+Umschalt+I` | Zweites Inventarfenster | Es gibt nur ein Inventarfenster. |
+| `Strg+G` | Gesten | Ein Gesten-Fenster gibt es noch nicht. |
+| `Strg+F` | Suche | Eine Suche im Viewer gibt es noch nicht. |
+| `Strg+Umschalt+A` | Leute in der Nähe | Die Liste ist Teil der Minikarte; öffnen Sie sie mit `Strg+Umschalt+M`. Ein eigenes Kürzel ist noch nicht eingerichtet. |
+| `Strg+Umschalt+H` | Nach Hause teleportieren | Das Teleportieren nach Hause gibt es nur im Neustart-Fenster, noch nicht als eigenen Befehl. |
+| `Strg+Alt+Umschalt+R` | Oberflächengröße zurücksetzen | Die Größe stellen Sie in den Einstellungen ein; einen Befehl zum Zurücksetzen gibt es noch nicht. |
+| `Strg+Alt+Q` | Entwickler-Menü ein- und ausblenden | Das Entwickler-Menü ist immer sichtbar; Debug-Konsolen gibt es nicht. |
+| `Strg+Umschalt+2` | Szenenlade-Statistik | Dieses Fenster gibt es noch nicht. |
+| `` Strg+` `` (Gravis-Taste) | Schnappschuss direkt auf die Festplatte | Das Schnappschuss-Fenster speichert nur in einen festen Ordner. |
+| `Strg+L` / `Strg+Umschalt+L` | Verlinken / Verlinkung lösen | Das geht schon, aber nur über die Knöpfe im Bearbeiten-Fenster; ein Tastenkürzel ist noch nicht eingerichtet. |
+| `Strg+B` | Bauen | Das Bearbeiten-Fenster öffnet sich über das Kontextmenü eines Objekts; einen Baumodus gibt es nicht. |
+| `Strg+1` bis `Strg+4` | Werkzeuge Fokus, Verschieben, Bearbeiten, Erstellen | Es gibt keine Baumodus-Werkzeuge zum Umschalten. |
+| `Strg+5` | Land-Werkzeug | Land lässt sich noch nicht bearbeiten. |
+| `Strg+.` / `Strg+,` | Nächsten / vorherigen Teil oder Fläche wählen | Teile lassen sich noch nicht mit der Tastatur durchschalten. |
+| `H` / `Umschalt+H` | Auf Auswahl fokussieren / zoomen | Diesen Befehl gibt es noch nicht. |
+| `G`, `Umschalt+X`, `Umschalt+G`, `Strg+Umschalt+B` | Raster: Einrasten, XY einrasten, Auswahl als Raster, Raster-Optionen | Das Raster stellen Sie im Bearbeiten-Fenster ein; Befehle dafür gibt es noch nicht. |
+| `Strg+Z` / `Strg+Y` | Rückgängig / Wiederholen (Objekte) | Für Objekte gibt es kein Rückgängig. In Textfeldern gehören diese Tasten weiter dem Textfeld. |
+| `Strg+D` | Duplizieren | Diesen Befehl gibt es noch nicht. |
+| `Strg+E` | Auswahl aufheben | Die Auswahl heben Sie durch einen Klick ins Leere auf; ein Befehl dafür fehlt. |
+| `Strg+A` | Alles auswählen (Objekte) | Diesen Befehl gibt es noch nicht. In Textfeldern gehört die Taste dem Textfeld. |
+| `Entf` | Auswahl löschen | Löschen aus dem Kontextmenü ist noch nicht umgesetzt. |
+| `Alt+Umschalt+R` | Ausgewählte Anhänge ablegen | Ablegen geht über das Avatar-Menü, das Inventar und das Rechtsklick-Menü, aber nicht für eine Auswahl. |
+| `Strg+U` / `Strg+Alt+U` | Bild / Modell hochladen | Hochladen gibt es noch nicht. |
+| `Strg+Umschalt+O` / `Y` / `N` / `Z` / `X` | Sonnenstand: Sonnenaufgang, Mittag, Sonnenuntergang, Mitternacht, Einstellung der Region | Die Tageszeit stellen Sie im Umgebungsfenster ein; Ein-Tasten-Befehle dafür gibt es noch nicht. |
+| `Strg+Alt+Umschalt+N` / `P` | Beacons / Parzellengrenzen anzeigen | Beide Anzeigen gibt es noch nicht. |
+| `Strg+Alt+Umschalt+M` | Ton stummschalten | Der Viewer spielt noch keinen Ton ab. |
+| `Strg+Alt+Umschalt+=`, `Strg+Alt+Umschalt+1` bis `\`, `Strg+Alt+F1` bis `F9` | Partikel ausblenden; Darstellungsarten und -funktionen einzeln ausschalten | Diese Schalter gibt es noch nicht. |
+
+Das Admin-Menü des Second-Life-Viewers (nur für Linden Lab) gibt es im Puris Viewer nie. `Strg+Alt+T` hat im Second-Life-Viewer die Bedeutung „Transparentes hervorheben“; im Puris Viewer erzeugt es die Testhaut (siehe oben, Entwickler).
+
 ---
 
 ## 5. Kommunikation (Chat, Gruppen, Freunde)

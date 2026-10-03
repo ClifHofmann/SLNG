@@ -5330,19 +5330,21 @@ public partial class AvatarRenderer : Node3D
     private readonly Dictionary<MeshInstance3D, Material?> _ndotlOriginalMaterials = new();
     private bool _tposeActive = false;
 
+    /// <summary>FEAT-UI-43: the dev-tool keys are actions in the key table (default F7 / F8 / F9); this
+    /// registers their handlers with the dispatcher. Done on entering the tree rather than in a _Ready, which
+    /// this class does not have, and after Boot has created the dispatcher.</summary>
+    public override void _EnterTree()
+    {
+        base._EnterTree();
+        var keys = KeyDispatcher.Instance;
+        if (keys == null) return;
+        keys.Register(this, SLNG.Core.Input.KeyActionIds.DevAvatarShadows, ToggleAvatarShadowCasting);
+        keys.Register(this, SLNG.Core.Input.KeyActionIds.DevTPose, ToggleTPose);
+        keys.Register(this, SLNG.Core.Input.KeyActionIds.DevNdotL, ToggleNdotLDebugMaterial);
+    }
+
     public override void _Input(InputEvent @event)
     {
-        if (@event is InputEventKey keyEvt && keyEvt.Pressed && !keyEvt.Echo)
-        {
-            if (keyEvt.Keycode == Key.F9)
-                ToggleNdotLDebugMaterial();
-            else if (keyEvt.Keycode == Key.F7)
-                ToggleAvatarShadowCasting();
-            else if (keyEvt.Keycode == Key.F8)
-                ToggleTPose();
-            return;
-        }
-
         // Plain left-click (not Alt+LMB, which AvatarController reserves for camera orbit):
         // touch whatever HUD prim is under the cursor, if any. This uses _Input (fires for every
         // event regardless of GUI consumption), so it had NO guard against clicking a window that

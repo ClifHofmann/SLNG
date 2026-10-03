@@ -26,7 +26,7 @@ namespace SLNG.App;
 /// shader *text* and catches a global uniform missing from project.godot, this one loads the
 /// resources through the engine.
 /// </summary>
-public static class SelfTest
+public static partial class SelfTest
 {
     private const string Flag = "--selftest";
 
@@ -189,6 +189,7 @@ public static class SelfTest
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
         results.Add(CheckChatLogPaths());
+        results.AddRange(CheckKeyBindings(tree)); // FEAT-UI-43
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 

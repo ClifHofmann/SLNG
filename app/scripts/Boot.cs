@@ -408,7 +408,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.20-alpha";
+    public const string AppVersion = "v0.26.22-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -488,6 +488,10 @@ public partial class Boot : Control
 
         _localizationManager = LoadLocalizationManager();
         SLNG.App.UI.L10n.Initialize(_localizationManager);
+
+        // FEAT-UI-43: the key table and its dispatcher, before the renderers and controllers that register
+        // handlers in their own _Ready. Load() only reads preferences.cfg.
+        SetupKeyBindings();
 
         // Once, before any UI exists: the one tooltip look for the whole app (a dark box, readable
         // over any world). Goes on the engine's default theme, which is why it lives here and not
@@ -1472,7 +1476,7 @@ public partial class Boot : Control
                 () => ActivateLauncher(cameraHud, cameraHud.Toggle),
                 () => cameraHud.Visible),
             new("inventory", "Inventory", "inventory_2",
-                () => { var inv = _inventoryPanel; if (inv != null) ActivateLauncher(inv, inv.Toggle); },
+                () => _inventoryPanel?.ToggleForUse(), // FEAT-INV-14: expanded, in front, cursor in the search box
                 () => _inventoryPanel?.Visible ?? false),
             new("snapshot", "Snapshot", "add_a_photo",
                 () => ActivateLauncher(_snapshotWindow, _snapshotWindow.Toggle),
@@ -1518,6 +1522,11 @@ public partial class Boot : Control
         var cameraPage = new SLNG.App.UI.CameraPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_camera"), cameraPage);
         cameraPage.Initialize(_cameraSettings);
+
+        // FEAT-UI-43: every key shortcut in one place, rebindable. Changes are saved when made (never at boot).
+        var keyboardPage = new SLNG.App.UI.KeyboardPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_keyboard"), keyboardPage);
+        keyboardPage.Initialize(KeyBindings.Table, KeyBindings.Save, _keyDispatcher);
 
         // FEAT-ANIM-03: the seat-pose-over-AO switch. Applied to the renderer here and on every
         // change, so the page never has to know the renderer exists.
@@ -2984,77 +2993,11 @@ public partial class Boot : Control
         _loginsConfig.Save("user://logins.cfg");
     }
 
-    public override void _Input(InputEvent @event)
-    {
-        if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
-        {
-            // No F2 post-FX toggle. It claimed in its own comment that the shortcut and the
-            // Graphics tab's checkboxes "can never end up disagreeing", and that was only true
-            // while the tab was closed: it wrote GraphicsSettings and called
-            // ApplyGraphicsSettings(), but never Refresh(), so an open Design page kept showing
-            // the old ticks. Removed rather than wired to Refresh() -- SSAO/SSIL/Glow already
-            // have a discoverable home in Preferences > Design, and one way to set a flag cannot
-            // desynchronise from itself. The F-keys that remain (F3/F4 draw distance, F5 sun
-            // gizmo, F6 nearby objects) are diagnostics with no UI counterpart to disagree with.
-            if (keyEvent.Keycode == Key.F3)
-            {
-                // Through GraphicsSettings rather than writing RenderConfig directly: the Graphics
-                // tab's slider reads from it, and a key that wrote RenderConfig directly would
-                // leave the slider showing a stale number and overwrite the change on the next
-                // apply.
-                _graphicsSettings.SetDrawDistance(Mathf.Max(32f, _graphicsSettings.DrawDistance - 16f));
-                ApplyGraphicsSettings();
-                LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
-            }
-            else if (keyEvent.Keycode == Key.F4)
-            {
-                _graphicsSettings.SetDrawDistance(Mathf.Min(512f, _graphicsSettings.DrawDistance + 16f));
-                ApplyGraphicsSettings();
-                LogMessage($"Draw distance: {RenderConfig.DrawDistance:0} m");
-            }
-            else if (keyEvent.Keycode == Key.F5)
-            {
-                ToggleSunGizmo();
-            }
-            else if (keyEvent.Keycode == Key.F6)
-            {
-                // "What is around me, and is it being drawn?" -- the one question the click
-                // diagnostics cannot answer, because clicking needs the object to be rendered and
-                // the objects worth asking about are the ones that are NOT. An object missing from
-                // the render and missing from the log is indistinguishable from an object the sim
-                // never sent, and those need completely different fixes.
-                _objectRenderer?.LogNearbyObjects(32f);
-            }
-            else if (keyEvent.Keycode == Key.Key1 && keyEvent.CtrlPressed && keyEvent.ShiftPressed)
-            {
-                // Ctrl+Shift+1 is the statistics shortcut in SL/Firestorm, so muscle memory carries
-                // over. F-keys are already taken here by post-FX and the draw-distance nudges.
-                _statsOverlay?.Toggle();
-            }
-            else if (keyEvent.Keycode == Key.I && keyEvent.CtrlPressed)
-            {
-                // Ctrl+I like the real viewers — plain I would fire while typing in chat.
-                _inventoryPanel?.Toggle();
-            }
-            else if (keyEvent.Keycode == Key.O && keyEvent.CtrlPressed)
-            {
-                // Ctrl+O — open the inventory straight on the Outfits tab (FEAT-INV-04).
-                _inventoryPanel?.OpenOnOutfits();
-            }
-            else if (keyEvent.Keycode == Key.R && keyEvent.CtrlPressed && keyEvent.AltPressed)
-            {
-                // Ctrl+Alt+R — rebake the avatar, the same shortcut the real viewer uses
-                // (FEAT-AVATAR-01). Also in the World menu.
-                RebakeAvatar();
-            }
-            else if (keyEvent.Keycode == Key.T && keyEvent.CtrlPressed && keyEvent.AltPressed)
-            {
-                // Ctrl+Alt+T — put a known-answer test skin in the inventory (FEAT-AVATAR-01).
-                // Creates items and uploads assets, so it stays a deliberate keystroke.
-                CreateTestSkin();
-            }
-        }
-    }
+    // FEAT-UI-43: no _Input here any more. Every key that used to be checked in this method (F3-F6,
+    // Ctrl+I, Ctrl+O, Ctrl+Shift+1, Ctrl+Alt+R, Ctrl+Alt+T) is an action in SLNG.Core.Input.KeyActions whose
+    // handler is registered in SetupKeyBindings (Boot.KeyActions.cs); the KeyDispatcher decides when a chord fires.
+    // (The F2 post-FX toggle was removed earlier: a checkbox and a shortcut that both set the same flag cannot
+    // be kept in agreement while the checkbox is on a page that was built once.)
 
     /// <summary>Rasterizes the login screen's circular progress ring and the "Save Login"
     /// checkbox's checked/unchecked glyphs from the same Material Symbols icon font already used
