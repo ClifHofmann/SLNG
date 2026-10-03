@@ -17,8 +17,9 @@ namespace SLNG.App.UI;
 /// for when there is), the group name, and the agent's own title in that group as a muted
 /// secondary line.
 ///
-/// "Group Chat" and "Mute chat" are functional. Leave/Profile need net-layer work that does not
-/// exist yet (GroupManager leave + a group profile window), so they stay disabled with a
+/// "Group Chat", "Mute chat" and "Profile" are functional (FEAT-UI-54: Profile opens the group info
+/// window, whose "Receive group chat" checkbox is the same setting as Mute). Leave still needs
+/// net-layer work that does not exist yet (FEAT-UI-38), so it stays a placeholder with a
 /// "(not implemented)" tooltip rather than being silently omitted — same convention as
 /// FriendsPanel's placeholders.
 /// </summary>
@@ -42,6 +43,12 @@ public partial class GroupsPanel : Control
     /// <summary>Wired by ChatWindow to its group-chat tab opener — fired by the "Group Chat"
     /// action button and by double-clicking a group row.</summary>
     public Action<Guid, string>? OnOpenGroupChatRequested;
+
+    /// <summary>FEAT-UI-54: wired by ChatWindow (-> Boot) -- fired by the "Profile" button, which opens
+    /// the selected group's info window.</summary>
+    public Action<Guid, string>? OnOpenGroupInfoRequested;
+
+    private Button _profileButton = null!;
 
     public override void _Ready()
     {
@@ -312,7 +319,17 @@ public partial class GroupsPanel : Control
         };
         panel.AddChild(_muteButton);
 
-        panel.AddChild(BuildPlaceholderButton(L10n.Tr("ui.groups.action_profile")));
+        // FEAT-UI-54: the group info window -- profile, My settings, and the Receive group chat
+        // checkbox that is the same setting as the Mute button above.
+        _profileButton = BuildActionButton(L10n.Tr("ui.groups.action_profile"));
+        _profileButton.TooltipText = L10n.Tr("ui.groups.action_profile_tooltip");
+        _profileButton.Pressed += () =>
+        {
+            if (_selectedGroupId != Guid.Empty)
+                OnOpenGroupInfoRequested?.Invoke(_selectedGroupId, _selectedGroupName);
+        };
+        panel.AddChild(_profileButton);
+
         panel.AddChild(BuildPlaceholderButton(L10n.Tr("ui.groups.action_leave"), warn: true));
 
         panel.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill }); // pushes the count down
@@ -325,11 +342,26 @@ public partial class GroupsPanel : Control
         return panel;
     }
 
+    // ---- selftest seams (FEAT-UI-54): the panel is built without a login, so the rows cannot be
+    // clicked; these stand in for selecting a group and pressing its buttons.
+    internal void SelectForSelfTest(Guid groupId, string name)
+    {
+        _selectedGroupId = groupId;
+        _selectedGroupName = name;
+        UpdateMuteButton();
+    }
+
+    internal string MuteButtonText => _muteButton.Text;
+    internal bool ProfileButtonEnabled => !_profileButton.Disabled;
+    internal void PressMuteForSelfTest() => _muteButton.EmitSignal(BaseButton.SignalName.Pressed);
+    internal void PressProfileForSelfTest() => _profileButton.EmitSignal(BaseButton.SignalName.Pressed);
+
     private void UpdateMuteButton()
     {
         if (_muteButton == null) return;
         bool muted = _selectedGroupId != Guid.Empty && GroupMuteSettings.IsMuted(_selectedGroupId);
         _muteButton.Text = muted ? L10n.Tr("ui.groups.action_unmute") : L10n.Tr("ui.groups.action_mute");
+        if (_profileButton != null) _profileButton.Disabled = _selectedGroupId == Guid.Empty;
         UpdateActivateButton();
     }
 

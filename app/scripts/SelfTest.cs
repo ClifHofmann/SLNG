@@ -185,6 +185,7 @@ public static partial class SelfTest
         results.Add(CheckLandInfoWindow(tree));
         results.Add(CheckTeleportOfferWindow(tree));
         results.Add(CheckFriendshipOfferWindow(tree));
+        results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -1230,6 +1231,7 @@ public static partial class SelfTest
             W<UI.TeleportOfferWindow>(w => w.Initialize(
                 new TeleportOfferEvent(TeleportOfferKind.Offer, id(), id(), "Someone", "Come over", false, MaturityLevel.Moderate),
                 () => true, () => true)),
+            W<UI.GroupInfoWindow>(w => { var gid = id(); w.Initialize(gid, "Test Explorers"); w.ApplyMembership(new GroupEntry(gid, "Test Explorers", "Officer", Guid.Empty, true, true)); w.ApplyProfile(FakeGroupProfile(gid, id())); }),
             W<UI.TermsOfServiceWindow>(w => w.Initialize("https://grid.invalid/login", "Accept the terms.", false)),
             W<UI.UserProfileWindow>(w => w.Initialize(id(), "Someone", session, null, null)),
         };
