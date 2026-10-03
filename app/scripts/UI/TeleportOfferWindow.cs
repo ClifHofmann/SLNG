@@ -76,6 +76,7 @@ public partial class TeleportOfferWindow : SLNGWindow
         {
             Text = L10n.TrFormat(isOffer ? "ui.teleport_offer.from_offer" : "ui.teleport_offer.from_request", e.FromName),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         from.AddThemeFontSizeOverride("font_size", 12);
@@ -95,6 +96,7 @@ public partial class TeleportOfferWindow : SLNGWindow
             {
                 Text = e.Message,
                 AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
                 SizeFlagsHorizontal = SizeFlags.ExpandFill,
             };
             message.AddThemeFontSizeOverride("font_size", 12);
@@ -140,6 +142,7 @@ public partial class TeleportOfferWindow : SLNGWindow
         {
             Visible = false,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _status.AddThemeFontSizeOverride("font_size", 11);

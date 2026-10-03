@@ -133,6 +133,7 @@ public partial class WorldMapWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             Text = L10n.Tr("ui.worldmap.hint"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
         };
         _infoLabel.AddThemeFontSizeOverride("font_size", 12);
         bottomRow.AddChild(_infoLabel);

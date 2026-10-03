@@ -77,6 +77,7 @@ public partial class RegionRestartWindow : SLNGWindow
         _headline = new Label
         {
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             HorizontalAlignment = HorizontalAlignment.Center,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
@@ -97,6 +98,7 @@ public partial class RegionRestartWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.region_restart.warning"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             HorizontalAlignment = HorizontalAlignment.Center,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
@@ -143,6 +145,7 @@ public partial class RegionRestartWindow : SLNGWindow
         _status = new Label
         {
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             HorizontalAlignment = HorizontalAlignment.Center,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             Visible = false,

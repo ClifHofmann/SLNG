@@ -70,6 +70,7 @@ public partial class BuyObjectWindow : SLNGWindow
         {
             Text = _objectName,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         name.AddThemeFontSizeOverride("font_size", 14);
@@ -87,6 +88,7 @@ public partial class BuyObjectWindow : SLNGWindow
                 _ => "ui.buy.what_unknown",
             }),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         what.AddThemeFontSizeOverride("font_size", 11);
@@ -117,6 +119,7 @@ public partial class BuyObjectWindow : SLNGWindow
             {
                 Text = L10n.TrFormat("ui.buy.insufficient", $"{price - session.Balance:N0}"),
                 AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
                 SizeFlagsHorizontal = SizeFlags.ExpandFill,
             };
             short_.AddThemeFontSizeOverride("font_size", 11);

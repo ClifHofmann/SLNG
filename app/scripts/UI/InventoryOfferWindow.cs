@@ -69,6 +69,7 @@ public partial class InventoryOfferWindow : SLNGWindow
                 e.FromTask ? "ui.inventory_offer.from_object" : "ui.inventory_offer.from_agent",
                 e.FromName),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         from.AddThemeFontSizeOverride("font_size", 11);
@@ -81,6 +82,7 @@ public partial class InventoryOfferWindow : SLNGWindow
         {
             Text = $"{InventoryIcons.ForAssetType(e.AssetType)}  {e.ItemName}",
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         item.AddThemeFontSizeOverride("font_size", 13);

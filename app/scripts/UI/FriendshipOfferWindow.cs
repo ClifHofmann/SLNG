@@ -70,6 +70,7 @@ public partial class FriendshipOfferWindow : SLNGWindow
         {
             Text = L10n.TrFormat("ui.friendship_offer.from", e.FromName),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         from.AddThemeFontSizeOverride("font_size", 12);
@@ -89,6 +90,7 @@ public partial class FriendshipOfferWindow : SLNGWindow
             {
                 Text = e.Message,
                 AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
                 SizeFlagsHorizontal = SizeFlags.ExpandFill,
             };
             message.AddThemeFontSizeOverride("font_size", 12);
@@ -102,6 +104,7 @@ public partial class FriendshipOfferWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.friendship_offer.default_rights"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         rights.AddThemeFontSizeOverride("font_size", 11);
@@ -125,6 +128,7 @@ public partial class FriendshipOfferWindow : SLNGWindow
         {
             Visible = false,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // a width floor: without it the wrapped height is measured at ~0 px and the window grows to hundreds of px
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _status.AddThemeFontSizeOverride("font_size", 11);

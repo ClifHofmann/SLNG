@@ -35,6 +35,7 @@ public partial class MaterialLabWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.material_lab.intro"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
         };
         intro.AddThemeFontSizeOverride("font_size", 11);
         intro.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
@@ -78,6 +79,7 @@ public partial class MaterialLabWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.material_lab.legacy_specular_hint"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
         };
         hint.AddThemeFontSizeOverride("font_size", 11);
         hint.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
@@ -102,6 +104,7 @@ public partial class MaterialLabWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.material_lab.viewer_spec_hint"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
         };
         viewerHint.AddThemeFontSizeOverride("font_size", 11);
         viewerHint.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));

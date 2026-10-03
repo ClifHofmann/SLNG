@@ -28,6 +28,9 @@ namespace SLNG.App;
 /// </summary>
 public static partial class SelfTest
 {
+    /// <summary>The most height any window may ask for at its default width; see the insets check.</summary>
+    private const float MaxSaneWindowMinHeight = 900f;
+
     private const string Flag = "--selftest";
 
     /// <summary>True when the client was started with <c>--selftest</c>. Mirrors
@@ -1268,6 +1271,12 @@ public static partial class SelfTest
                     }
                 }
                 Walk(win.ContentContainer);
+                // An autowrap Label with no width floor is measured at ~0 px and makes its window hundreds of
+                // pixels too tall on first show (reported 2026-10-03: the hover height window). No window
+                // legitimately needs this much height at its default width.
+                float needsHeight = win.GetCombinedMinimumSize().Y;
+                if (needsHeight > MaxSaneWindowMinHeight)
+                    failures.Add($"{win.GetType().Name} needs {needsHeight:0} px of height (an autowrap label without a width floor?)");
                 float h = win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH, v = UI.SLNGWindow.DefaultContentMarginV; // radar: map is full-bleed
                 if (new[] { h, h, v, v }.Zip(got).Any(p => Math.Abs(p.First - p.Second) > 2))
                     failures.Add($"{win.GetType().Name} @{uiScale:0.##} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");

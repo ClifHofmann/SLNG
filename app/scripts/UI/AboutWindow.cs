@@ -74,6 +74,7 @@ public partial class AboutWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.about.blurb"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _contentVBox.AddChild(blurb);
@@ -84,6 +85,7 @@ public partial class AboutWindow : SLNGWindow
         {
             Text = L10n.Tr("ui.about.disclaimer"),
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0), // width floor: see AvatarHoverWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         disclaimer.AddThemeFontSizeOverride("font_size", 11);
@@ -98,7 +100,7 @@ public partial class AboutWindow : SLNGWindow
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(0, 120),
+            CustomMinimumSize = new Vector2(240, 120), // x: width floor, see AvatarHoverWindow
             Text = BuildRuntimeDetails(),
         };
         _contentVBox.AddChild(details);
