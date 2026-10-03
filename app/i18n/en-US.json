@@ -1030,7 +1030,7 @@
       "replace": "Replace",
       "cancel": "Cancel",
       "note_typing": "Saved. While typing in a text field this combination belongs to the field and will not trigger the action.",
-      "unavailable_note": "Some Second Life shortcuts (Mouselook, whisper and shout, build tool modes, linking, …) are not listed because SLNG has no such feature yet. They stay unassigned.",
+      "unavailable_note": "Second Life shortcuts for features SLNG does not have yet (Mouselook, whisper and shout, build tool modes, …) are not listed here and stay unassigned until the feature exists. The list is in the manual, section \"Tastenkürzel\", under \"Noch nicht verfügbare Tastenkürzel\".",
       "mod": {
         "ctrl": "Ctrl",
         "alt": "Alt",

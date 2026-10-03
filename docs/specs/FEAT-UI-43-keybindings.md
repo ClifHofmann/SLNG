@@ -32,9 +32,13 @@ only the differences from the defaults.
    `Enter` may start chatting in the world and send inside the chat bar. The classification is the rule
    `AvatarController`'s movement gate already used (`BlocksMovement`), now shared (`KeyDispatcher.Classify`).
 4. **Exact modifiers.** A chord matches only with exactly its modifiers: `W` walks, `Alt+W` moves the camera in,
-   `Ctrl+W` is a shortcut. The one exception is `KeyAction.IgnoreExtraShift`, set on the six avatar movement
-   actions, because Shift is SLNG's run modifier (Shift+W is still forward). It also widens the conflict rule:
-   binding `Shift+A` to something else conflicts with `move.turn_left`.
+   `Ctrl+W` is a shortcut. Why: the reference viewer reuses one letter for several things purely by modifier
+   (`key_bindings.xml`: A turns, Alt+A orbits, Ctrl+Alt+Shift+A pans), and menu shortcuts like Ctrl+W / Ctrl+Q need
+   the movement keys to stand aside. The old code did this with hand-written flags (`altCamera`, "C but not with
+   Ctrl"); with exact matching no flag is needed and a rebinding cannot reintroduce the clash. The one exception is
+   `KeyAction.IgnoreExtraShift`, set on the six avatar movement actions, because Shift is SLNG's run modifier
+   (Shift+W is still forward). It also widens the conflict rule: binding `Shift+A` to something else conflicts with
+   `move.turn_left`. The camera actions are exact (Alt+Shift+W does not zoom).
 5. **Two phases, picked by context.** A `World`-only action runs from `_UnhandledInput` (only if no control
    consumed the key - exactly where `AvatarController` handled Home/Esc/Ctrl+R), everything else from `_Input`
    (before the GUI - where `Boot._Input` ran). Handlers return `bool`: true consumes the key, false lets it
@@ -61,9 +65,13 @@ only the differences from the defaults.
    AltGr+Q); a Ctrl+Alt+letter chord is deliberately NOT treated as owned, which keeps Ctrl+Alt+R/T working
    while typing at the price that rebinding an `Always` action to such a chord fires it while typing that
    character.
-9. **Esc is not capturable** in the rebind dialog (it cancels), and a bare modifier is ignored until a real key
-   follows. Esc stays reachable through "reset". Mac Cmd / the Windows key (Meta) is out of scope: a key event
-   with Meta held never matches. Mouse bindings (Alt+LMB orbit, the wheel) are not in the table.
+9. **Esc cannot be bound in the Keyboard page.** While the page listens for a new chord, Esc means "cancel" -
+   there is no other way out of the listening state that cannot itself be a chord, and the viewer's own rebind dialog
+   (`llsetkeybinddialog.cpp`) makes the same choice. Consequence: if Esc is ever removed from `camera.reset`, only
+   "reset" brings it back (Esc is the default of exactly that action). A bare modifier is ignored until a real key
+   follows; a key outside `KeyNames` (CapsLock, media keys) is refused with a message. Mac Cmd / the Windows key (Meta)
+   is out of scope: a key event with Meta held never matches. Mouse bindings (Alt+LMB orbit, the wheel) are not in
+   the table.
 10. **Menu hints are live.** `TopMenu` appends the current chord to the entries that have an action
     (`Always Run (Ctrl+R)`); the hard-coded hints were removed from the language files. The Keyboard page, the
     menus and the manual cannot disagree because there is one table.
@@ -149,58 +157,105 @@ them exists in both locales.
 - `dev.create_test_skin`: `Ctrl+Alt+T`. **Collides with SL:** the viewer binds that chord to "Highlight
   Transparent", which SLNG does not have. Kept so the developer tool does not move; rebind either way.
 
-## Second Life shortcuts SLNG leaves unbound (no feature - never faked)
+## Second Life shortcuts SLNG has not bound yet (never faked) - and the ticket that must bind each
 
-Not in the catalog, so not rebindable and not shown as actions. Every chord below was checked to be a real
-binding in the vendored viewer (a test does it when `scratch/slviewer` is present). Developer/Admin menu entries
-(`Ctrl+Alt+Q` Develop menu, the `Ctrl+Alt+Shift+...` rendering-type toggles, `Ctrl+Alt+F1-F9` rendering
-features, the consoles, the Linden-only admin chords) are not listed one by one: SLNG has neither menu.
+Not in the catalog, so not rebindable and not shown as actions. They are **not forgotten**: every entry of
+`SlShortcutGaps` (`src/SLNG.Core/Input/SlShortcutGaps.cs`) carries the ROADMAP ticket that, when built, must bind it,
+and the ROADMAP row of that ticket says so too ("binds ... FEAT-UI-43 gap list"). `SlShortcutGapTests` fails when
+a gap's ticket is missing from `docs/ROADMAP.md`, when its row is already ✅ Done (the message is
+`FEAT-X is done: bind <chord> and remove it from SlShortcutGaps`), when a chord is both a gap and a catalog default,
+and when a gap ticket's row does not mention the gap list. Every chord was also checked to be a real binding in the
+vendored viewer (a test does it when `scratch/slviewer` is present).
 
-| SL chord | SL command | Why SLNG leaves it unbound |
-|---|---|---|
-| `Shift+A` | Slide left (third person) | SLNG has no strafing: A/D turn the avatar and no sideways movement is sent. |
-| `Shift+D` | Slide right (third person) | Same. |
-| `Shift+Left` | Slide left (third person) | Same. |
-| `Shift+Right` | Slide right (third person) | Same. |
-| `Space` | Stop moving | No such command. |
-| `M` | Mouselook | SLNG has no first-person / mouselook camera yet. |
-| `Alt+Shift+F` | Joystick flycam | No joystick or flycam support. |
-| `Ctrl+\` | Look at last chatter | SLNG does not track who spoke last. |
-| `Shift+Enter` | Whisper (chat bar) | The chat bar has only say; no whisper or shout. |
-| `Ctrl+Enter` | Shout (chat bar) | Same. |
-| `Ctrl+Up` | Recall previous chat input | The chat bar keeps no input history. |
-| `Ctrl+Down` | Recall next chat input | Same. |
-| `Ctrl+Shift+I` | New inventory window | One inventory window only. |
-| `Ctrl+G` | Gestures | No gestures window. |
-| `Ctrl+F` | Search | No in-viewer search. |
-| `Ctrl+Shift+A` | Nearby people | The nearby list is part of the mini-map window; Ctrl+Shift+M opens it. |
-| `Ctrl+Shift+H` | Teleport home | SLNG can teleport home (the region-restart window offers it) but has no Teleport Home command to bind. |
-| `Ctrl+B` | Build | The edit window opens from an object's context menu, not as a tool mode. |
-| `Ctrl+1` | Focus tool | No build tool modes (Ctrl+1 .. Ctrl+5). |
-| `Ctrl+L` | Link | Linking is not available. |
-| `Ctrl+Shift+L` | Unlink | Linking is not available. |
-| `Ctrl+Z` | Undo (objects) | No object undo; Ctrl+Z inside a text field is the field's own. |
-| `Ctrl+Y` | Redo (objects) | Same. |
-| `Ctrl+D` | Duplicate | Not available as a shortcut. |
-| `Ctrl+E` | Deselect | Not available as a shortcut. |
-| `Ctrl+A` | Select all | No object select-all; inside a text field it is the field's own. |
-| `Delete` | Delete selection | Not available as a shortcut. |
-| `Ctrl+.` | Select next part or face | No part-by-part selection. |
-| `Ctrl+,` | Select previous part or face | No part-by-part selection. |
-| `H` | Focus on selection | Not available. |
-| `G` | Snap to grid | Grid snapping is set in the edit window. |
-| `Ctrl+U` | Upload image | No upload dialog. |
-| `Ctrl+Shift+Y` | Sun: midday | Time of day is set in the Environment window. |
-| `Ctrl+Shift+N` | Sun: sunset | Same. |
-| `Ctrl+Shift+O` | Sun: sunrise | Same. |
-| `Ctrl+Shift+Z` | Sun: midnight | Same. |
-| `Ctrl+Alt+Shift+N` | Show beacons | No beacons. |
-| `Ctrl+Alt+Shift+P` | Show property lines | No property-line overlay. |
-| `Ctrl+Alt+Shift+M` | Mute / unmute sound | SLNG plays no sound. |
-| `Ctrl+Shift+2` | Scene load statistics | No such window. |
-| `Ctrl+`` | Snapshot to disk | Use the Snapshot window (Ctrl+Shift+S). |
-| `Alt+Shift+R` | Remove selected attachments | Detach is in the Avatar menu and the inventory. |
-| `Ctrl+Alt+Q` | Develop menu | SLNG has no Develop/Admin menu; its developer tools are the F-keys and the Developer menu. |
+Left out on purpose: the Linden-only Admin menu (never to be built), and `Ctrl+Alt+T`, which the viewer binds to
+"Highlight Transparent" but which SLNG's developer tool owns (see "SLNG extras").
+
+| Chord | SL action | Why missing | Ticket that binds it |
+|---|---|---|---|
+| `Shift+A` | Slide left (third person) | SLNG has no strafing: A/D turn the avatar and no sideways movement is sent. Today Shift+A still turns (Shift is the run modifier), so the movement actions' IgnoreExtraShift must go when this is built. | FEAT-AVATAR-04 |
+| `Shift+D` | Slide right (third person) | Same. | FEAT-AVATAR-04 |
+| `Shift+Left` | Slide left (third person) | Same. | FEAT-AVATAR-04 |
+| `Shift+Right` | Slide right (third person) | Same. | FEAT-AVATAR-04 |
+| `Space` | Stop moving | There is no auto-walk to stop. | FEAT-AVATAR-04 |
+| `M` | Mouselook | SLNG has no first-person / mouselook camera yet. | FEAT-RENDER-23 |
+| `Alt+Shift+F` | Joystick flycam | No joystick or flycam support (and, since FEAT-UI-43, a gamepad no longer walks the avatar). | FEAT-UI-50 |
+| `Ctrl+\` | Look at last chatter | SLNG does not track who spoke last. | FEAT-UI-46 |
+| `Shift+Enter` | Whisper (chat bar) | The chat bar has only say; no whisper or shout. | FEAT-UI-45 |
+| `Ctrl+Enter` | Shout (chat bar) | Same. | FEAT-UI-45 |
+| `Ctrl+Up` | Recall previous chat input | The chat bar keeps no input history. | FEAT-UI-45 |
+| `Ctrl+Down` | Recall next chat input | Same. | FEAT-UI-45 |
+| `Ctrl+Shift+I` | New inventory window | One inventory window only. | FEAT-UI-47 |
+| `Ctrl+G` | Gestures | No gestures window. | FEAT-UI-48 |
+| `Ctrl+F` | Search | No in-viewer search. | FEAT-UI-49 |
+| `Ctrl+Shift+A` | Nearby people | The nearby list is part of the mini-map window (the radar); Ctrl+Shift+M opens it. A second chord for the same window is not wired yet. | FEAT-UI-44 |
+| `Ctrl+Shift+H` | Teleport home | SLNG can teleport home (the region-restart window offers it) but has no Teleport Home command to bind. | FEAT-UI-44 |
+| `Ctrl+Alt+Shift+R` | Set UI size to default | The UI scale exists (Preferences > Display) but has no reset command. | FEAT-UI-44 |
+| `Ctrl+Alt+Q` | Develop menu | SLNG's Developer menu is always visible; the viewer hides its Develop menu behind this chord. Its debug consoles (Ctrl+Shift+3 / 4 / 5) are not built either. | FEAT-UI-53 |
+| `Ctrl+Shift+2` | Scene load statistics | No such window. | FEAT-PERF-10 |
+| `` Ctrl+` `` | Snapshot to disk | The Snapshot window saves one fixed PNG path; a one-key save needs the destination options. | FEAT-UI-17 |
+| `Ctrl+L` | Link | Linking exists, as a button in the Edit window (FEAT-UI-05), but has no shortcut yet. | FEAT-UI-44 |
+| `Ctrl+Shift+L` | Unlink | Same. | FEAT-UI-44 |
+| `Ctrl+B` | Build | The Edit window opens from an object's context menu; there is no build mode to toggle. | FEAT-UI-51 |
+| `Ctrl+1` | Focus tool | No build tool modes (Focus, Move, Edit, Create on Ctrl+1 .. Ctrl+4). | FEAT-UI-51 |
+| `Ctrl+5` | Land tool | No land editing yet. | MVP4-2 |
+| `Ctrl+.` | Select next part or face | No part-by-part selection by key. | FEAT-UI-51 |
+| `Ctrl+,` | Select previous part or face | Same. | FEAT-UI-51 |
+| `H` | Focus on selection | No focus-on-selection command. | FEAT-UI-51 |
+| `Shift+H` | Zoom to selection | Same. | FEAT-UI-51 |
+| `G` | Snap to grid | Grid snapping is set in the edit window, with no toggle command. | FEAT-UI-51 |
+| `Shift+X` | Snap object XY to grid | Same. | FEAT-UI-51 |
+| `Shift+G` | Use selection for grid | Same. | FEAT-UI-51 |
+| `Ctrl+Shift+B` | Grid options | Same. | FEAT-UI-51 |
+| `Ctrl+Z` | Undo (objects) | No object undo; Ctrl+Z inside a text field is the field's own. | FEAT-UI-52 |
+| `Ctrl+Y` | Redo (objects) | Same. | FEAT-UI-52 |
+| `Ctrl+D` | Duplicate | No duplicate command. | FEAT-UI-52 |
+| `Ctrl+E` | Deselect | Deselecting is a click on empty ground; there is no command to bind. | FEAT-UI-52 |
+| `Ctrl+A` | Select all | No object select-all; inside a text field it is the field's own. | FEAT-UI-52 |
+| `Delete` | Delete selection | The context menu's Delete is a stub; nothing to bind. | FEAT-UI-52 |
+| `Alt+Shift+R` | Remove selected attachments | Detach is in the Avatar menu, the inventory and the right-click menu; none works on a selection. | FEAT-UI-52 |
+| `Ctrl+U` | Upload image | No upload dialog. | MVP6-5 |
+| `Ctrl+Alt+U` | Upload model | No upload dialog. | MVP6-5 |
+| `Ctrl+Shift+Y` | Sun: midday | Time of day is set in the Environment window; no one-key presets. | FEAT-ENV-04 |
+| `Ctrl+Shift+N` | Sun: sunset | Same. | FEAT-ENV-04 |
+| `Ctrl+Shift+O` | Sun: sunrise | Same. | FEAT-ENV-04 |
+| `Ctrl+Shift+Z` | Sun: midnight | Same. | FEAT-ENV-04 |
+| `Ctrl+Shift+X` | Use the shared (region) environment | The Environment window has a 'use region setting' button but no command to bind. | FEAT-ENV-04 |
+| `Ctrl+Alt+Shift+N` | Show beacons | No beacons. | FEAT-RENDER-24 |
+| `Ctrl+Alt+Shift+P` | Show property lines | No property-line overlay. | FEAT-RENDER-24 |
+| `Ctrl+Alt+Shift+M` | Mute / unmute sound | SLNG plays no sound; the top-bar speaker button is a placeholder. | FEAT-AUDIO-01 |
+| `Ctrl+Alt+Shift+=` | Hide particles | No master switch for particles. | FEAT-RENDER-25 |
+| `Ctrl+Alt+Shift+1` | Rendering-type toggles (Simple, Alpha, Tree, Avatars ... Ctrl+Alt+Shift+1 to \) | No per-type render switches. | FEAT-RENDER-25 |
+| `Ctrl+Alt+F1` | Rendering-feature toggles (UI, Selected, Highlighted ... Ctrl+Alt+F1 to F9) | No per-feature render switches. | FEAT-RENDER-25 |
+
+## How to add a shortcut when you build a feature
+
+If the feature has a Second Life shortcut (look it up in the table above first - it may already be listed), bind it
+as part of the feature, not later:
+
+1. **Id.** Add a constant to `KeyActionIds` (`category.name`, lower case, never renamed afterwards - it is saved in
+   people's `preferences.cfg`).
+2. **Catalog entry.** Add a `new(...)` line to `KeyActions.Build()`: category, context (`Always` for menu-style
+   chords, `NotInTextField` for editing, `World` for keys that need the world focused, `ChatInput` for the chat bar's
+   own), kind (`press`, or `held` for a polled key), the default chord(s) and, for a Second Life default, its
+   `SlRef` (`menu:<item name>` from `menu_viewer.xml` / `menu_edit.xml`, or `key:<mode>:<command>` from
+   `key_bindings.xml`). `KeyBindingTable.Validate` (a test) rejects a duplicate id or a duplicate chord in
+   overlapping contexts.
+3. **Behaviour.** A press: `KeyDispatcher.Instance.Register(owner, KeyActionIds.X, handler)` (Boot's handlers are in
+   `app/scripts/Boot.KeyActions.cs`; return `false` when the key was not used so it is not swallowed). A held key:
+   `HeldKeys.IsHeld(KeyActionIds.X)` in the controller's per-frame code, behind the `hasUiFocus` gate.
+4. **Labels.** `ui.keys.action.<id with '.' replaced by '_'>` in **both** `app/i18n/en-US.json` and `de-DE.json`
+   (the selftest fails without them). Never write a chord into a label: menus append the live one
+   (`KeyBindings.HintFor`).
+5. **Close the gap.** Delete the feature's entries from `SlShortcutGaps`. (If you skipped step 2, the gap-list test
+   fails as soon as the ticket is ✅ Done.)
+6. **Manual.** Add the chord to the German manual's section "Tastenkürzel" (`docs/BENUTZERHANDBUCH.md`) and remove
+   it from "Noch nicht verfügbare Tastenkürzel" there.
+7. **Check.** `dotnet test` (catalog soundness, viewer parity, gap list), `dotnet build app/SLNG.App.csproj`, and the
+   selftest (`godot --headless --path app -- --selftest`, then `git checkout app/project.godot`).
+
+If a chord is claimed by an existing movement action (the six avatar movement actions ignore an extra Shift, so
+`Shift+A` is "turn left while running"), `KeyBindingTable.Conflicts` says so; resolve it deliberately - that is the
+case for the slide keys of FEAT-AVATAR-04.
 
 ## Wiki versus source (source wins)
 
@@ -300,5 +355,7 @@ looks right in the Preferences window at 100 % / 200 %.
 - [x] Keyboard page, persistence, live menu hints
 - [x] Shortcuts for existing windows and commands (Phase 2, where the wiring was one call)
 - [ ] In-world confirmation (maintainer): the list under "Behaviour changes", plus each new window shortcut
-- [ ] Later: Shift+A/D slide, mouselook, look at last chatter, chat-bar whisper/shout/history, object undo/duplicate/
-      deselect, gestures, search, teleport home, build tool modes - each needs its feature first
+- [x] Every unbound Second Life shortcut linked to the ticket that must bind it (`SlShortcutGaps.Feature`, ROADMAP rows,
+      `SlShortcutGapTests`); 17 new tickets FEAT-UI-44 .. FEAT-UI-53, FEAT-AVATAR-04, FEAT-RENDER-23 .. 25, FEAT-ENV-04,
+      FEAT-AUDIO-01, FEAT-PERF-10, and a sentence on FEAT-UI-17, MVP4-2 and MVP6-5
+- [ ] Later: those tickets (the list above is the work list)

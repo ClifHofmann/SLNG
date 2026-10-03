@@ -1030,7 +1030,7 @@
       "replace": "Ersetzen",
       "cancel": "Abbrechen",
       "note_typing": "Gespeichert. Beim Tippen in einem Textfeld gehört diese Kombination dem Feld und löst die Aktion nicht aus.",
-      "unavailable_note": "Einige Second-Life-Kürzel (Ego-Ansicht, Flüstern und Schreien, Bauwerkzeug-Modi, Verlinken, …) fehlen hier, weil SLNG diese Funktion noch nicht hat. Sie bleiben unbelegt.",
+      "unavailable_note": "Second-Life-Kürzel für Funktionen, die SLNG noch nicht hat (Ego-Ansicht, Flüstern und Schreien, Bauwerkzeug-Modi, …), fehlen hier und bleiben unbelegt, bis es die Funktion gibt. Die Liste steht im Handbuch im Abschnitt „Tastenkürzel“ unter „Noch nicht verfügbare Tastenkürzel“.",
       "mod": {
         "ctrl": "Strg",
         "alt": "Alt",

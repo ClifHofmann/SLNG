@@ -123,6 +123,10 @@ change is committed on its own branch with a Conventional-Commit message.
 
 Mechanical checklist: `.claude/skills/slng-verify/SKILL.md` (`/slng-verify`).
 
+A feature or fix that has a Second Life keyboard shortcut also binds it through the key table and deletes its
+entry from `SlShortcutGaps` (recipe: `docs/specs/FEAT-UI-43-keybindings.md`); a test fails once the ticket
+named in the gap list is ✅ Done and the chord is still a gap.
+
 ## Parallel-agent rules (short form — full version in docs/AI_WORKFLOW.md)
 
 - Each work item runs on its **own branch in the single checkout at `E:/Git/SLNG`**.

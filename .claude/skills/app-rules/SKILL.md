@@ -57,6 +57,9 @@ Preferences > Keyboard (FEAT-UI-43, `docs/specs/FEAT-UI-43-keybindings.md`).
 - Add the action's label to **both** `app/i18n/en-US.json` and `de-DE.json` (`ui.keys.action.<id with '.' -> '_'>`); the
   selftest fails without it. Do not write a chord into a label - menus append the live one (`KeyBindings.HintFor`).
 - Mouse modifiers (Alt+LMB, the wheel) and a text field's own editing chords are not in the table.
+- If the feature you build has a Second Life shortcut, it is probably listed in `SlShortcutGaps` with your ticket id:
+  bind it as part of the feature and delete the entry (recipe in the spec). `SlShortcutGapTests` fails when the
+  ticket is ✅ Done and the chord is still a gap.
 
 ## Threading
 

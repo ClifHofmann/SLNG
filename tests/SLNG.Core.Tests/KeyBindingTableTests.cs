@@ -271,17 +271,4 @@ public class KeyBindingTableTests
         foreach (var held in KeyActions.All.Where(a => a.Kind == KeyActionKind.Held))
             Assert.True((held.Context & KeyContext.World) != 0, held.Id);
     }
-
-    [Fact]
-    public void The_listed_SL_gaps_parse_and_are_not_also_bound_by_default_to_the_same_meaning()
-    {
-        foreach (var gap in SlShortcutGaps.All)
-            Assert.True(KeyChord.TryParse(gap.Chord, out _), gap.Chord);
-
-        // A gap's chord is free for SLNG's own use, but a gap must never be an action in the catalog:
-        // that would be the faked binding this list exists to prevent.
-        var names = new HashSet<string>(KeyActions.All.Select(a => a.SlRef ?? ""));
-        foreach (var gap in SlShortcutGaps.All)
-            Assert.DoesNotContain("menu:" + gap.SlName, names);
-    }
 }
