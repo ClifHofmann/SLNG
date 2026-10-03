@@ -736,14 +736,51 @@ public sealed partial class GridSession
         }
     }
 
-    /// <summary>Logs out if connected. Safe to call when already disconnected.</summary>
+    /// <summary>Logs out if connected. Safe to call when already disconnected. BLOCKS the calling
+    /// thread until the grid acknowledges or LibreMetaverse's logout timeout passes, and the library's
+    /// shutdown then runs handlers that may need the main thread -- so the app must not call this from
+    /// the main thread; it calls <see cref="LogoutAsync"/> first. Skipped once a logout was abandoned.</summary>
     public void Logout()
     {
         _isTyping = false;
+        if (Volatile.Read(ref _logoutAbandoned) != 0) return;
         if (_client.Network.Connected)
         {
             _client.Network.Logout();
         }
+    }
+
+    private int _logoutAbandoned;
+
+    /// <summary>Logs out on a worker thread and waits for it for at most <paramref name="timeout"/>.
+    /// Returns true when the logout finished (or there was nothing to log out of). The blocking
+    /// <see cref="Logout"/> used to run on the main thread inside <c>Dispose</c>; if anything in
+    /// LibreMetaverse's shutdown then waited on the main thread the client hung for good after the
+    /// caches were saved (reported 2026-10-03: "log out hangs"). Off the main thread such a wait can
+    /// only cost <paramref name="timeout"/>, after which the logout is abandoned -- the grid times the
+    /// agent out by itself -- and <see cref="Dispose"/> will not start another one.</summary>
+    public async Task<bool> LogoutAsync(TimeSpan timeout)
+    {
+        _isTyping = false;
+        if (!_client.Network.Connected) return true;
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var logout = Task.Run(() =>
+        {
+            try { _client.Network.Logout(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[Logout] the network logout failed: {ex.Message}"); }
+        });
+
+        if (await Task.WhenAny(logout, Task.Delay(timeout)).ConfigureAwait(false) == logout)
+        {
+            Console.Error.WriteLine($"[Logout] network logout finished in {started.ElapsedMilliseconds} ms");
+            return true;
+        }
+
+        Volatile.Write(ref _logoutAbandoned, 1);
+        Console.Error.WriteLine(
+            $"[Logout] the network logout did not finish within {timeout.TotalSeconds:0} s -- continuing without it");
+        return false;
     }
 
     /// <summary>Teleports to the agent's home location. The wire message is the landmark

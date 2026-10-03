@@ -408,7 +408,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.UserProfileWindow> _userProfileWindows = new();
     private volatile int _openProfileWindows;
 
-    public const string AppVersion = "v0.26.18-alpha";
+    public const string AppVersion = "v0.26.19-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -5027,6 +5027,12 @@ public partial class Boot : Control
             // Wait a few frames so the user actually sees the UI update before the app freezes
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+
+            // The grid is told on a worker thread: the library's logout blocks until the grid answers
+            // and then tears the simulators down, and a main thread stuck inside it hung the client
+            // for good after the caches were saved. The label above stays up for at most this long.
+            GD.Print("[Logout] telling the grid");
+            await _session.LogoutAsync(System.TimeSpan.FromSeconds(8));
         }
 
         if (quitProcess)
