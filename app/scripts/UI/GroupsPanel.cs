@@ -230,6 +230,8 @@ public partial class GroupsPanel : Control
             textCol.AddChild(title);
         }
 
+        inner.AddChild(BuildSettingToggles(group));
+
         var style = new StyleBoxFlat
         {
             BgColor = group.Id == _selectedGroupId ? new Color(0.3f, 0.6f, 0.9f, 0.25f) : new Color(0, 0, 0, 0),
@@ -245,6 +247,72 @@ public partial class GroupsPanel : Control
         row.AddThemeStyleboxOverride("panel", style);
 
         return row;
+    }
+
+    /// <summary>The three per-group switches as small toggles at the end of the row, so the state is
+    /// visible at a glance and can be changed without opening the group info: group chat (local, the
+    /// same <see cref="GroupMuteSettings"/> store as the Mute button), group notices and list in
+    /// profile (server-side, one <c>SetGroupAcceptNotices</c> message carrying both).</summary>
+    private Control BuildSettingToggles(GroupEntry group)
+    {
+        var box = new HBoxContainer { SizeFlagsVertical = SizeFlags.ShrinkCenter };
+        box.AddThemeConstantOverride("separation", 2);
+
+        var groupId = group.Id;
+        bool chatOn = GroupMuteSettings.ReceivesChat(groupId);
+
+        box.AddChild(BuildToggle("💬", chatOn,
+            L10n.Tr(chatOn ? "ui.groups.toggle_chat_on" : "ui.groups.toggle_chat_off"),
+            on => GroupMuteSettings.SetMuted(groupId, !on)));
+
+        box.AddChild(BuildToggle("📢", group.AcceptNotices,
+            L10n.Tr(group.AcceptNotices ? "ui.groups.toggle_notices_on" : "ui.groups.toggle_notices_off"),
+            on => SendNoticeFlags(groupId, on, group.ListInProfile)));
+
+        box.AddChild(BuildToggle("👤", group.ListInProfile,
+            L10n.Tr(group.ListInProfile ? "ui.groups.toggle_profile_on" : "ui.groups.toggle_profile_off"),
+            on => SendNoticeFlags(groupId, group.AcceptNotices, on)));
+
+        return box;
+    }
+
+    private void SendNoticeFlags(Guid groupId, bool notices, bool listInProfile)
+    {
+        // On success the session raises GroupsUpdated, which rebuilds the row; on failure nothing was
+        // sent, so rebuild here to put the toggle back to the state that is actually true.
+        if (_session?.SetGroupAcceptNotices(groupId, notices, listInProfile) != true)
+            CallDeferred(nameof(Refresh));
+    }
+
+    private static Button BuildToggle(string glyph, bool on, string tooltip, Action<bool> onToggled)
+    {
+        var btn = new Button
+        {
+            Text = glyph,
+            ToggleMode = true,
+            ButtonPressed = on,
+            TooltipText = tooltip,
+            FocusMode = FocusModeEnum.None,
+            CustomMinimumSize = new Vector2(26, 22),
+        };
+        btn.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
+        // Off reads as struck out: dim glyph on a bare background; on is a tinted pill.
+        var off = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.04f) };
+        var onStyle = new StyleBoxFlat { BgColor = new Color(0.3f, 0.6f, 0.9f, 0.35f) };
+        foreach (var s in new[] { off, onStyle })
+        {
+            s.CornerRadiusTopLeft = s.CornerRadiusTopRight = s.CornerRadiusBottomLeft = s.CornerRadiusBottomRight = 4;
+        }
+        btn.AddThemeStyleboxOverride("normal", off);
+        btn.AddThemeStyleboxOverride("hover", off);
+        btn.AddThemeStyleboxOverride("pressed", onStyle);
+        btn.AddThemeStyleboxOverride("hover_pressed", onStyle);
+        btn.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f, 0.6f));
+        btn.AddThemeColorOverride("font_hover_color", new Color(0.7f, 0.7f, 0.7f, 0.8f));
+        btn.AddThemeColorOverride("font_pressed_color", new Color(1, 1, 1, 1));
+        btn.AddThemeColorOverride("font_hover_pressed_color", new Color(1, 1, 1, 1));
+        btn.Toggled += (pressed) => onToggled(pressed);
+        return btn;
     }
 
     /// <summary>Spec §4: a 24px badge with the group's first initial, standing in for the
