@@ -317,3 +317,43 @@ a later change to 0.22 m (the comment at `AvatarRenderer.cs:405-406` says "so ob
 - The Firestorm lines are from `master` of 2026-10-03; the compared function bodies match the LL clone, but a Firestorm release may differ.
 - The Linden clone is shallow (HEAD `4ef9f8f14b`); a viewer release may differ. No history was consulted.
 - Whether the sim relays a Focus look-at back to its owner's client, and how OpenSim treats the effect (not checked).
+
+---
+
+## Implemented in FEAT-UI-55 (v0.26.29-alpha)
+
+Maintainer decisions: keep zoom-to-cursor on the wheel (and it must land under the cursor on an avatar too); an
+Alt+Click on a person focuses the SURFACE point under the cursor, not the body axis; the "focus lands behind a
+person" miss is fixed.
+
+Done:
+- **Pure helpers** in `src/SLNG.Core/Camera/` with tests in `tests/SLNG.Core.Tests/Camera/`: `CameraZoom`
+  (`WheelStep` = x 2^(notches/4), `EaseToward` 0.07 s half-life and frame-rate independent, `CursorPanShift`, `MinZoom` 0.5 /
+  `MaxZoom` 200) and `RayCapsule.Intersect`.
+- **Wheel** (`AvatarController.WheelZoom`, `ApplyWheelZoom`; zoom recommendations 1 + 2 + 4): with no focus point a notch moves
+  a target distance (notches compound on the target) that `_zoom` eases toward each frame, and each frame's change shifts
+  `_panOffset` toward the LIVE cursor (the last notch's position while the cursor is hidden for an Alt drag), so the point under
+  the cursor stays under it, on an avatar included. With a focus point or a glide to one it is a pure dolly with the same
+  multiplicative step, applied at once. `ZoomBy` is now only the immediate additive zoom of the Alt+drag. Every direct `_zoom`
+  write (dolly keys, transitions, presets, reset, the rear-distance slider, `ZoomCamera`) clears the pending target.
+  All clamps now use `CameraZoom.MinZoom/MaxZoom`: `ZoomCamera` no longer caps at 50 m.
+- **Avatar pick** (focus recommendations 1, 2 and 4): `AvatarRenderer.TryPickAvatar` tests the ray against capsules between
+  SL joint pairs read from the live `Skeleton3D` (torso, neck, arms, hands, legs, feet, plus a head sphere), falling back to one
+  0.30 m capsule on the physics body. The Alt+Click physics ray no longer includes the Avatars layer; the avatar hit beats a
+  phantom hit regardless of order and a solid or terrain hit unless it is more than 0.1 m behind it, and the focus point is the
+  surface point (`RefineFocusHit`'s axis snap is gone). The follow still rides on the avatar's `AvatarPhysics` body.
+  Selftest check "avatar pick (skeleton capsules)".
+
+Decisions made while building: the head sphere is lifted 0.10 m along the neck-to-head direction (not world up) so a tilted
+or lying avatar keeps it on the head; a ray that starts inside a capsule reports where it leaves; when the physics hit is a
+phantom prim a second ray over solids and terrain only decides how far back an avatar may still win, so a bush in front of a
+person never hides them but a wall in front of one still does; avatars with no skeleton fall back to the 0.30 m capsule too, so
+they stay pickable.
+
+Left:
+- Alpha-aware foliage in the focus pick: FEAT-UI-56.
+- Not done from the lists above: focus-type minimum distances (0.02 m object, 0.15 m land), FOV zoom, Alt-drag as 1 % per pixel,
+  pad zoom per frame (`CameraHUD` `ZoomStep`), key zoom proportional to distance, glide 0.4 s, terrain focus +0.1 m,
+  camera collision and ground clamp, look-at, unified pickers, attachment-within-0.1 m preference.
+- The hover cursor, depth of field and selection still use the old 0.22 m capsule on `PhysicsLayers.Avatars`.
+- Feel and the pick on a posed avatar in a running session were not verified by eye; only the headless selftest and unit tests.

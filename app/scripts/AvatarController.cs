@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Godot;
 using SLNG.Core.Avatars;
+using SLNG.Core.Camera;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
 using SLNG.Core.Input;
@@ -88,6 +89,7 @@ public partial class AvatarController : Camera3D
         _cameraSettings = settings;
         Fov = settings.Fov;
         _zoom = settings.RearDistance;
+        _wheelZoomTarget = null;
         _lastAppliedRearDistance = settings.RearDistance;
     }
 
@@ -151,8 +153,9 @@ public partial class AvatarController : Camera3D
     public void ZoomCamera(float delta)
     {
         _transitioning = false;
+        _wheelZoomTarget = null; // a direct zoom (keys, pad) must not be fought by a pending wheel ease
         _zoom += delta;
-        _zoom = Mathf.Clamp(_zoom, 0.5f, 50.0f);
+        _zoom = Mathf.Clamp(_zoom, CameraZoom.MinZoom, CameraZoom.MaxZoom);
     }
 
     // FEAT-ANIM-07: Sustained hold mode & position/rotation lock for PoseStand
@@ -198,30 +201,66 @@ public partial class AvatarController : Camera3D
     {
         _transitioning = false;
         float oldZoom = _zoom;
-        _zoom = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 200.0f);
+        _zoom = Mathf.Clamp(_zoom + zoomDelta, CameraZoom.MinZoom, CameraZoom.MaxZoom);
         if (Mathf.IsEqualApprox(_zoom, oldZoom)) return;
+        ShiftPanTowardCursor(mousePos, oldZoom, _zoom);
+    }
 
+    /// <summary>Moves <see cref="_panOffset"/> so what is under <paramref name="mousePos"/> stays under it while
+    /// the zoom distance goes from <paramref name="oldZoom"/> to <paramref name="newZoom"/>. The maths lives in
+    /// <see cref="CameraZoom.CursorPanShift"/> (tested); this only reads the viewport. The shifts of consecutive
+    /// steps add up to the shift of the whole zoom.</summary>
+    private void ShiftPanTowardCursor(Vector2 mousePos, float oldZoom, float newZoom)
+    {
         var vpSize = GetViewport().GetVisibleRect().Size;
         if (vpSize.X <= 0 || vpSize.Y <= 0) return;
 
         // Cursor offset from screen centre, normalized to [-1, 1] per axis. Screen Y grows down;
         // flip it so a cursor ABOVE centre maps to a positive camera-local Up offset.
-        var ndc = new Vector2(
-            (mousePos.X / vpSize.X) * 2f - 1f,
-            -((mousePos.Y / vpSize.Y) * 2f - 1f));
+        float ndcX = (mousePos.X / vpSize.X) * 2f - 1f;
+        float ndcY = -((mousePos.Y / vpSize.Y) * 2f - 1f);
 
-        // World-space half-extent of the view frustum at the pivot's depth (oldZoom back from the
-        // avatar). Fov is vertical (Camera3D's default KeepHeight aspect mode).
-        float halfHeight = oldZoom * Mathf.Tan(Mathf.DegToRad(Fov) / 2f);
-        float halfWidth = halfHeight * (vpSize.X / vpSize.Y);
+        // Fov is vertical (Camera3D's default KeepHeight aspect mode).
+        var shift = CameraZoom.CursorPanShift(ndcX, ndcY, Fov, oldZoom, newZoom, vpSize.X / vpSize.Y);
+        _panOffset.X += shift.X;
+        _panOffset.Y += shift.Y;
+    }
 
-        // The point under the cursor, in the pivot plane, as a camera-local X/Y offset — the same
-        // units _panOffset already uses (Transform.Basis.X/.Y are unit vectors).
-        var cursorOffset = new Vector2(ndc.X * halfWidth, ndc.Y * halfHeight);
+    // FEAT-UI-55: with no focus point the wheel does not set the distance, it sets a target the distance
+    // eases toward (ApplyWheelZoom, once a frame), as the reference viewer does. Null while nothing is
+    // pending. Everything else that writes _zoom directly clears it so the two never fight.
+    private float? _wheelZoomTarget;
+    // Where the cursor was at the last wheel notch: used for the zoom-to-cursor shift only while the live
+    // cursor is not usable (hidden or captured during an Alt drag, or outside the viewport).
+    private Vector2 _wheelZoomCursor;
 
-        float ratio = _zoom / oldZoom;
-        _panOffset.X += cursorOffset.X * (1f - ratio);
-        _panOffset.Y += cursorOffset.Y * (1f - ratio);
+    /// <summary>FEAT-UI-55: one frame of the eased wheel zoom. Moves <see cref="_zoom"/> toward the pending target
+    /// (frame-rate independent, 0.07 s half-life) and, for exactly that frame's change, shifts the pan so the
+    /// point under the cursor stays under it -- tracking the LIVE cursor, so moving the mouse during the ease
+    /// lands the zoom where the cursor is now, including on an avatar. Called before the camera position is
+    /// computed.</summary>
+    private void ApplyWheelZoom(double delta)
+    {
+        if (_wheelZoomTarget is not { } target) return;
+        if (_transitioning)
+        {
+            _wheelZoomTarget = null; // a glide owns the distance
+            return;
+        }
+
+        float oldZoom = _zoom;
+        _zoom = CameraZoom.EaseToward(oldZoom, target, (float)delta);
+        if (_zoom == target) _wheelZoomTarget = null;
+        if (_zoom == oldZoom) return;
+
+        var vp = GetViewport();
+        var cursor = _wheelZoomCursor;
+        if (Input.MouseMode == Input.MouseModeEnum.Visible)
+        {
+            var live = vp.GetMousePosition();
+            if (vp.GetVisibleRect().HasPoint(live)) cursor = _wheelZoomCursor = live;
+        }
+        ShiftPanTowardCursor(cursor, oldZoom, _zoom);
     }
 
     /// <summary>Single entry point for every wheel/drag zoom. Picks the right strategy for the
@@ -246,8 +285,11 @@ public partial class AvatarController : Camera3D
     /// HUD is the thing being edited.</summary>
     public System.Func<int, bool>? WheelOverride;
 
+    /// <summary>Immediate, additive zoom by <paramref name="zoomDelta"/> metres. Kept for the Alt+drag zoom, where
+    /// the delta is already a per-frame mouse movement; the wheel goes through <see cref="WheelZoom"/>.</summary>
     private void ZoomBy(float zoomDelta, Vector2 mousePos)
     {
+        _wheelZoomTarget = null;
         bool glidingToFocus = _transitioning && !_transitionEndIsAvatarFollow;
         if (!_orbitTarget.HasValue && !glidingToFocus)
         {
@@ -255,7 +297,7 @@ public partial class AvatarController : Camera3D
             return;
         }
 
-        float clamped = Mathf.Clamp(_zoom + zoomDelta, 0.5f, 200f);
+        float clamped = Mathf.Clamp(_zoom + zoomDelta, CameraZoom.MinZoom, CameraZoom.MaxZoom);
         float applied = clamped - _zoom;
         _zoom = clamped;
 
@@ -265,9 +307,32 @@ public partial class AvatarController : Camera3D
             // still eases toward the focus point, it just ends at the new distance. Leaving
             // _transitioning alone (unlike ZoomTowardCursor) is the whole point -- the pivot must
             // still arrive at the clicked object.
-            _transitionStartZoom = Mathf.Clamp(_transitionStartZoom + applied, 0.5f, 200f);
-            _transitionEndZoom = Mathf.Clamp(_transitionEndZoom + applied, 0.5f, 200f);
+            _transitionStartZoom = Mathf.Clamp(_transitionStartZoom + applied, CameraZoom.MinZoom, CameraZoom.MaxZoom);
+            _transitionEndZoom = Mathf.Clamp(_transitionEndZoom + applied, CameraZoom.MinZoom, CameraZoom.MaxZoom);
         }
+    }
+
+    /// <summary>FEAT-UI-55: the wheel. <paramref name="notches"/> is negative to zoom in, positive to zoom out; one
+    /// notch scales the distance by 2^(1/4), as in the reference viewer.
+    /// <list type="bullet">
+    /// <item>No focus point: the notch moves a TARGET distance (successive notches compound on the target, not
+    /// on the half-eased distance) that <see cref="ApplyWheelZoom"/> eases toward, zooming toward the cursor.</item>
+    /// <item>A focus point or a glide toward one: the camera is aimed at a known 3D point, so it is a pure dolly
+    /// (the same multiplicative step, applied at once through <see cref="ZoomBy"/>'s focus branch).</item>
+    /// </list></summary>
+    private void WheelZoom(int notches, Vector2 mousePos)
+    {
+        bool glidingToFocus = _transitioning && !_transitionEndIsAvatarFollow;
+        if (_orbitTarget.HasValue || glidingToFocus)
+        {
+            _wheelZoomTarget = null;
+            ZoomBy(CameraZoom.WheelStep(_zoom, notches) - _zoom, mousePos);
+            return;
+        }
+
+        _transitioning = false; // manual input wins over an in-progress pan
+        _wheelZoomTarget = CameraZoom.WheelStep(_wheelZoomTarget ?? _zoom, notches);
+        _wheelZoomCursor = mousePos;
     }
 
     /// <summary>Smoothly pans/zooms back to directly behind the avatar (Escape) -- exactly
@@ -320,9 +385,9 @@ public partial class AvatarController : Camera3D
     /// <summary>FEAT-UI-40: what an Alt+Click should leave the focus riding on: the body the ray hit, so
     /// an avatar or an object that moves takes the camera with it. Terrain never moves, so it is left as a
     /// fixed spot.</summary>
-    private static FocusFollow? FollowForHit(Godot.Collections.Dictionary hit, Vector3 focusPoint)
+    private static FocusFollow? FollowForBody(CollisionObject3D? body, Vector3 focusPoint)
     {
-        if (hit["collider"].AsGodotObject() is not CollisionObject3D body) return null;
+        if (body == null) return null;
         if ((body.CollisionLayer & PhysicsLayers.Terrain) != 0) return null;
         return FocusFollow.OfBody(body, focusPoint);
     }
@@ -409,38 +474,73 @@ public partial class AvatarController : Camera3D
             world.Query<AvatarComponent>().FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.AgentId == agentId);
     }
 
-    /// <summary>BUG-UI-09: turns a raw raycast hit into the point the user actually meant.
+    // FEAT-UI-55: how far behind a solid/terrain hit an avatar may still win the pick. The avatar is tested
+    // against its skeleton (AvatarRenderer.TryPickAvatar), not by physics, so a person standing against a wall
+    // or on the ground is not lost to it by a few centimetres of disagreement between the two.
+    private const float AvatarPickSlack = 0.1f;
+    private const float FocusRayLength = 1000f;
+
+    /// <summary>
+    /// Alt+Click: aims the camera at what is under <paramref name="screenPos"/> and makes the focus ride on it.
     ///
-    /// An avatar's physics proxy is a capsule of radius 0.45 m (<c>AvatarRenderer</c>), so a ray
-    /// aimed at someone's chest stops on the front of that cylinder — up to half a metre in FRONT
-    /// of the body, which is what "I clicked the avatar and the focus point landed 50 cm ahead of
-    /// her" is. Nothing is wrong with the hit; it is simply the surface of a proxy that is much
-    /// fatter than the person inside it. So for an avatar hit we do not use the surface point at
-    /// all: we take the point on the ray closest to the capsule's vertical AXIS, which lands on the
-    /// body's centre line no matter which side it was clicked from, and is stable as the camera
-    /// orbits (the surface point slides around the capsule, the axis does not).
-    ///
-    /// Everything else keeps its hit verbatim — prim colliders follow the visible geometry, so
-    /// their surface point IS what was clicked.</summary>
-    private static Vector3 RefineFocusHit(Godot.Collections.Dictionary hit, Vector3 rayOrigin, Vector3 rayDir)
+    /// <para>Objects and terrain come from a physics ray over <c>Objects | Phantom | Terrain</c> (BUG-UI-09: phantom is
+    /// in the mask because most SL foliage is phantom and the click means "what am I pointing at"). People do NOT
+    /// come from physics: <see cref="AvatarRenderer.TryPickAvatar"/> tests the skeleton, which is body-shaped
+    /// instead of one thin capsule, and the focus point is the SURFACE point it returns (what the viewer does),
+    /// not the body axis. An avatar hit beats a phantom hit whatever the order (foliage must not shield a person;
+    /// alpha-aware foliage picking is FEAT-UI-56) and beats a solid or terrain hit unless that is more than
+    /// <see cref="AvatarPickSlack"/> nearer.</para>
+    /// </summary>
+    private void FocusAtCursor(Vector2 screenPos)
     {
-        var point = hit["position"].AsVector3();
-        if (hit["collider"].AsGodotObject() is not CollisionObject3D body) return point;
-        if ((body.CollisionLayer & PhysicsLayers.Avatars) == 0) return point;
+        var spaceState = GetWorld3D().DirectSpaceState;
+        var rayOrigin = ProjectRayOrigin(screenPos);
+        var rayDir = ProjectRayNormal(screenPos);
+        var rayEnd = rayOrigin + rayDir * FocusRayLength;
 
-        // Closest approach between the ray and the capsule's vertical axis, solved in the
-        // horizontal plane (the axis is vertical, so Y drops out of the distance entirely).
-        var axis = body.GlobalPosition;
-        var d = new Vector2(rayDir.X, rayDir.Z);
-        float dd = d.LengthSquared();
-        if (dd < 0.000001f) return point; // looking straight down the axis -- nothing to refine
+        // Terrain has its own layer (PhysicsLayers.Terrain) so CursorManager's hover ray can skip it; this
+        // one still needs it, so it is listed explicitly.
+        var query = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
+        query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Phantom | PhysicsLayers.Terrain;
+        var result = spaceState.IntersectRay(query);
 
-        var toAxis = new Vector2(axis.X - rayOrigin.X, axis.Z - rayOrigin.Z);
-        float t = toAxis.Dot(d) / dd;
-        if (t <= 0f) return point; // the avatar is behind the camera; keep the hit we have
+        // How far the nearest thing an avatar must not be behind is. A phantom hit does not count: look
+        // for the nearest solid or terrain instead, so a bush in front of a person never hides them, but a
+        // wall in front of one still does.
+        float avatarMax = FocusRayLength;
+        if (result.Count > 0)
+        {
+            var collider = result["collider"].AsGodotObject() as CollisionObject3D;
+            if (collider != null && (collider.CollisionLayer & PhysicsLayers.Phantom) != 0
+                && (collider.CollisionLayer & (PhysicsLayers.Objects | PhysicsLayers.Terrain)) == 0)
+            {
+                var solid = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
+                solid.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Terrain;
+                var solidResult = spaceState.IntersectRay(solid);
+                if (solidResult.Count > 0)
+                    avatarMax = rayOrigin.DistanceTo(solidResult["position"].AsVector3()) + AvatarPickSlack;
+            }
+            else
+            {
+                avatarMax = rayOrigin.DistanceTo(result["position"].AsVector3()) + AvatarPickSlack;
+            }
+        }
 
-        var refined = rayOrigin + rayDir * t;
-        return refined.IsFinite() ? refined : point;
+        if (_avatarRenderer != null
+            && _avatarRenderer.TryPickAvatar(rayOrigin, rayDir, avatarMax, out var avatarBody, out var avatarPoint, out _))
+        {
+            FocusOn(avatarPoint);
+            // FEAT-UI-40: the focus rides on the person, offset from their origin by where on them it landed.
+            _focusFollow = FollowForBody(avatarBody, avatarPoint);
+            return;
+        }
+
+        if (result.Count > 0)
+        {
+            var hit = result["position"].AsVector3();
+            FocusOn(hit);
+            _focusFollow = FollowForBody(result["collider"].AsGodotObject() as CollisionObject3D, hit);
+        }
     }
 
     private void FocusOn(Vector3 target)
@@ -457,7 +557,7 @@ public partial class AvatarController : Camera3D
     /// third-person camera math orbits this point instead of the local avatar.</summary>
     private void AimOrbitAt(Vector3 target, Vector3 fromPos, float zoom)
     {
-        zoom = Mathf.Clamp(zoom, 0.5f, 200.0f);
+        zoom = Mathf.Clamp(zoom, CameraZoom.MinZoom, CameraZoom.MaxZoom);
 
         if (fromPos.DistanceSquaredTo(target) <= 0.0001f)
         {
@@ -492,6 +592,7 @@ public partial class AvatarController : Camera3D
         // the current effective orbit centre regardless of whether _orbitTarget was set at all,
         // so a transition starting from "orbiting the local avatar" (_orbitTarget null) still has
         // a real point in space to pan FROM.
+        _wheelZoomTarget = null; // the glide owns the distance now
         _transitionStartTarget = Position - Transform.Basis.Z * _zoom;
         _transitionStartYaw = _yaw + _orbitYaw;
         _transitionStartPitch = _pitch + _orbitPitch;
@@ -538,6 +639,7 @@ public partial class AvatarController : Camera3D
         _orbitTarget = _transitionStartTarget.Lerp(endTarget, eased);
         float yaw = Mathf.Lerp(_transitionStartYaw, _transitionEndYaw, eased);
         float pitch = Mathf.Lerp(_transitionStartPitch, _transitionEndPitch, eased);
+        _wheelZoomTarget = null;
         _zoom = Mathf.Lerp(_transitionStartZoom, _transitionEndZoom, eased);
         _orbitYaw = yaw - _yaw;
         _orbitPitch = pitch - _pitch;
@@ -810,11 +912,11 @@ public partial class AvatarController : Camera3D
             // the hook means it took the wheel.
             if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelUp)
             {
-                if (WheelOverride?.Invoke(1) != true) ZoomBy(-0.5f, mouseBtn.Position);
+                if (WheelOverride?.Invoke(1) != true) WheelZoom(-1, mouseBtn.Position);
             }
             else if (!hasUiFocus && mouseBtn.ButtonIndex == MouseButton.WheelDown)
             {
-                if (WheelOverride?.Invoke(-1) != true) ZoomBy(0.5f, mouseBtn.Position);
+                if (WheelOverride?.Invoke(-1) != true) WheelZoom(1, mouseBtn.Position);
             }
         }
 
@@ -871,6 +973,7 @@ public partial class AvatarController : Camera3D
         if (_cameraSettings != null && !Mathf.IsEqualApprox(_cameraSettings.RearDistance, _lastAppliedRearDistance))
         {
             _zoom = _cameraSettings.RearDistance;
+            _wheelZoomTarget = null;
             _lastAppliedRearDistance = _cameraSettings.RearDistance;
         }
 
@@ -921,30 +1024,7 @@ public partial class AvatarController : Camera3D
             // delta -- live-tested as a sudden jump to max zoom-out with no clear trigger.
             _orbitLastMousePos = _altZoomAnchorPos;
 
-            var spaceState = GetWorld3D().DirectSpaceState;
-            var rayOrigin = ProjectRayOrigin(_altZoomAnchorPos);
-            var rayDir = ProjectRayNormal(_altZoomAnchorPos);
-            var rayEnd = rayOrigin + rayDir * 1000f;
-            var query = PhysicsRayQueryParameters3D.Create(rayOrigin, rayEnd);
-            // Terrain moved to its own layer (PhysicsLayers.Terrain) so CursorManager's
-            // hover raycast could stop paying its console-warning cost on unstreamed
-            // patches; this orbit-target raycast still needs terrain, so it's listed
-            // explicitly alongside objects and avatars rather than relying on a shared bit.
-            //
-            // BUG-UI-09: Phantom is in the mask too. This ray answers "what is the user pointing
-            // at", not "what can be walked into", and most SL foliage is phantom -- leaving the
-            // bit out meant a click into a bush passed straight through it and focused the ground
-            // behind, which is exactly what the user reported.
-            query.CollisionMask = PhysicsLayers.Objects | PhysicsLayers.Phantom
-                                | PhysicsLayers.Terrain | PhysicsLayers.Avatars;
-            var result = spaceState.IntersectRay(query);
-            if (result.Count > 0)
-            {
-                var hit = RefineFocusHit(result, rayOrigin, rayDir);
-                FocusOn(hit);
-                // FEAT-UI-40: the focus rides on what was clicked, so it goes where that goes.
-                _focusFollow = FollowForHit(result, hit);
-            }
+            FocusAtCursor(_altZoomAnchorPos);
         }
         else if (!wantOrbit && _altOrbitActive)
         {
@@ -1408,14 +1488,18 @@ public partial class AvatarController : Camera3D
                 if (!hasUiFocus && HeldKeys.IsHeld(KeyActionIds.CameraDollyIn))
                 {
                     _transitioning = false;
-                    _zoom = Mathf.Max(0.5f, _zoom - 15.0f * (float)delta);
+                    _wheelZoomTarget = null;
+                    _zoom = Mathf.Max(CameraZoom.MinZoom, _zoom - 15.0f * (float)delta);
                 }
                 if (!hasUiFocus && HeldKeys.IsHeld(KeyActionIds.CameraDollyOut))
                 {
                     _transitioning = false;
-                    _zoom = Mathf.Min(200.0f, _zoom + 15.0f * (float)delta);
+                    _wheelZoomTarget = null;
+                    _zoom = Mathf.Min(CameraZoom.MaxZoom, _zoom + 15.0f * (float)delta);
                 }
 
+                // FEAT-UI-55: ease the wheel zoom, after the keys (which cancel it) and before the camera math.
+                ApplyWheelZoom(delta);
                 FollowFocusSubject();
                 UpdateTransition(delta);
 
