@@ -28,6 +28,7 @@ public partial class ChatLogPreferencesPage : VBoxContainer
     private Button _browse = null!;
     private Button _useDefault = null!;
     private Label _effective = null!;
+    private Label _relogNotice = null!;
     private OptionButton _names = null!;
     private Button _importButton = null!;
     private Label _importStatus = null!;
@@ -94,6 +95,13 @@ public partial class ChatLogPreferencesPage : VBoxContainer
 
         _effective = Hint("");
         AddChild(_effective);
+        // Shown only while the logged-in account's folder differs from the one this login is writing to:
+        // a change takes effect at the next login, and a person who changed it and kept chatting wondered
+        // why nothing arrived in the new folder (reported 2026-10-03).
+        _relogNotice = Hint("");
+        _relogNotice.AddThemeColorOverride("font_color", new Color(0.95f, 0.72f, 0.3f));
+        _relogNotice.Visible = false;
+        AddChild(_relogNotice);
         AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_apply_hint")));
 
         AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_im_names")));
@@ -152,6 +160,7 @@ public partial class ChatLogPreferencesPage : VBoxContainer
 
         string? chosen = ChatLogSettings.FolderFor(account.Key);
         string defaultBase = SLNG.Core.Services.ChatLogger.DefaultLogDirectory();
+        UpdateRelogNotice(account, chosen ?? defaultBase);
         _useDefault.Disabled = chosen == null;
         _folder.Text = chosen ?? L10n.TrFormat("ui.preferences.chat_logs_default_folder", defaultBase);
 
@@ -172,6 +181,27 @@ public partial class ChatLogPreferencesPage : VBoxContainer
             : FirestormLogLayout.AccountFolderName(account.FirstName, account.LastName, null)
               + L10n.Tr("ui.preferences.chat_logs_grid_name_placeholder");
         _effective.Text = L10n.TrFormat("ui.preferences.chat_logs_in_effect", Path.Combine(baseDir, folderName));
+    }
+
+    /// <summary>Warns when the account that is logged in now has a folder set that this login is not using
+    /// yet. The running session keeps writing where it started; the new folder applies from the next login.</summary>
+    private void UpdateRelogNotice(ChatLogAccount account, string newBase)
+    {
+        var running = _activeTarget();
+        bool isRunningAccount = running != null && account.Key == _activeKey();
+        if (!isRunningAccount)
+        {
+            _relogNotice.Visible = false;
+            return;
+        }
+
+        string accountFolder = Path.GetFileName(running!.Directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        string wanted = Path.GetFullPath(Path.Combine(newBase, accountFolder));
+        string current = Path.GetFullPath(running.Directory);
+        bool differs = !string.Equals(wanted.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+
+        _relogNotice.Visible = differs;
+        if (differs) _relogNotice.Text = L10n.TrFormat("ui.preferences.chat_logs_relog_notice", wanted, current);
     }
 
     // The OS folder picker. The chosen folder is the BASE: the account's own folder (first_last, with a
