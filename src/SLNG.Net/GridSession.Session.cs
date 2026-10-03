@@ -621,6 +621,12 @@ public sealed partial class GridSession
     /// BUG-NET-23 in the constructor. For the test that pins it.</summary>
     internal bool LibrarySendsAgentThrottle => _client.Settings.Agent.SendThrottle;
 
+    /// <summary>The line shown when the grid never answered the login request. Names what to try, because
+    /// the usual causes are on the person's side of the connection, not the grid's.</summary>
+    internal static string NoLoginResponseMessage(string detail) =>
+        $"Grid returned no login response{detail}. Check your internet connection, a firewall, antivirus or VPN " +
+        "that may block the login server, and the computer's date and time.";
+
     /// <summary>
     /// Attempts to log in to the grid described by <paramref name="credentials"/>.
     /// Uses LibreMetaverse's async login API; failures (including unreachable grids)
@@ -644,8 +650,15 @@ public sealed partial class GridSession
         // Redirecting, ConnectingToSim, Success/Failed) out through the neutral LoginProgress event
         // -- real server-driven progress, not a simulated/time-based fake (see FEAT-UI-08). Fires on
         // whatever thread LibreMetaverse raises it on; subscribed for the duration of this one call.
+        // The last reason LibreMetaverse gave for a failed handshake (a TLS or DNS error, a timeout, a
+        // cancel). It returns a null response for every one of those and keeps the reason only here, so
+        // without it the person sees "no login response" and nobody can tell a blocked network from a
+        // dead grid (reported 2026-10-03: a friend could not log in to Second Life).
+        string? lastFailureDetail = null;
+
         void OnLmvLoginProgress(object? sender, LoginProgressEventArgs e)
         {
+            if (e.Status == LoginStatus.Failed && !string.IsNullOrWhiteSpace(e.Message)) lastFailureDetail = e.Message;
             var stage = e.Status switch
             {
                 LoginStatus.ConnectingToLogin => LoginStage.ConnectingToLogin,
@@ -681,7 +694,10 @@ public sealed partial class GridSession
 
             if (response is null)
             {
-                return LoginResult.Fail("no-response", "Grid returned no login response.");
+                string detail = string.IsNullOrWhiteSpace(lastFailureDetail) ? "" : $" ({lastFailureDetail.Trim()})";
+                Console.Error.WriteLine($"[Login] no response from {credentials.GridLoginUri}{detail}; network login state: " +
+                                        $"'{_client.Network.LoginMessage}' key='{_client.Network.LoginErrorKey}'");
+                return LoginResult.Fail("no-response", NoLoginResponseMessage(detail));
             }
 
             if (response.Success)
