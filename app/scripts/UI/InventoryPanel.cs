@@ -103,6 +103,7 @@ public partial class InventoryPanel : SLNGWindow
         base._Ready(); // Setup SLNGWindow styling
 
         PersistId = "inventory"; // FEAT-UI-11: remember position/size across sessions
+        RegisterEditKeys(); // FEAT-UI-43: Cut / Copy / Paste go through the key dispatcher
 
         Title = "INVENTORY";
         Visible = false;
@@ -1844,56 +1845,60 @@ public partial class InventoryPanel : SLNGWindow
         }
     }
 
-    /// <summary>Ctrl+X / Ctrl+C / Ctrl+V over the inventory panel.</summary>
+    /// <summary>Registers Cut / Copy / Paste with the key dispatcher (FEAT-UI-43; default Ctrl+X / Ctrl+C /
+    /// Ctrl+V, "edit.cut" / "edit.copy" / "edit.paste").</summary>
+    private void RegisterEditKeys()
+    {
+        var keys = KeyDispatcher.Instance;
+        if (keys == null) return;
+        keys.Register(this, SLNG.Core.Input.KeyActionIds.EditCut, () => OnEditKey(SLNG.Core.InventoryClipboardMode.Cut));
+        keys.Register(this, SLNG.Core.Input.KeyActionIds.EditCopy, () => OnEditKey(SLNG.Core.InventoryClipboardMode.Copy));
+        keys.Register(this, SLNG.Core.Input.KeyActionIds.EditPaste, () => OnEditKey(null));
+    }
+
+    /// <summary>Cut / copy (<paramref name="mode"/>) or paste (null) over the inventory panel.</summary>
     /// <remarks>
-    /// Handled in <c>_Input</c> rather than through focus, because this tree deliberately takes no
+    /// Run by the key dispatcher rather than through focus, because this tree deliberately takes no
     /// keyboard focus (a focused Tree eats the movement keys). The guard is the cursor: the panel
     /// only claims these keys while the pointer is over it, so Ctrl+C anywhere else — the chat, a
-    /// search field, the world — still means what it always meant.
+    /// search field, the world — still means what it always meant. It returns false in every other
+    /// case, so the dispatcher does not swallow the key.
     ///
     /// <para>And a text field always wins. Somebody typing into a LineEdit is copying TEXT, and a
-    /// panel that grabbed Ctrl+C from under them would break the more ordinary of the two
-    /// meanings.</para>
-    ///
-    /// <para>BUG-UI-17: <c>base._Input</c> first. That is where <see cref="SLNGWindow"/> raises a
-    /// clicked window above the others; without it the inventory stayed behind whatever overlapped
-    /// it, however often it was clicked.</para>
+    /// panel that grabbed Ctrl+C from under them would break the more ordinary of the two meanings:
+    /// the edit actions are <see cref="SLNG.Core.Input.KeyContext.NotInTextField"/>, so the dispatcher
+    /// never even calls this while a text field has focus.</para>
     /// </remarks>
-    public override void _Input(InputEvent @event)
+    private bool OnEditKey(SLNG.Core.InventoryClipboardMode? mode)
     {
-        base._Input(@event);
-        if (!Visible || _session == null) return;
-        if (@event is not InputEventKey { Pressed: true, CtrlPressed: true, Echo: false } key) return;
-        if (key.Keycode is not (Key.C or Key.X or Key.V)) return;
+        if (!Visible || _session == null) return false;
 
         var viewport = GetViewport();
-        if (viewport == null) return;
-        if (viewport.GuiGetFocusOwner() is LineEdit or TextEdit) return;
+        if (viewport == null) return false;
 
         var hovered = viewport.GuiGetHoveredControl();
-        if (hovered == null || (hovered != this && !IsAncestorOf(hovered))) return;
+        if (hovered == null || (hovered != this && !IsAncestorOf(hovered))) return false;
 
         var row = _tree.GetSelected();
-        if (row == null) return;
+        if (row == null) return false;
 
         var meta = row.GetMetadata(0).AsString();
         bool isFolder = !meta.Contains(',');
         var idStr = isFolder ? meta : meta.Split(',')[0];
-        if (!Guid.TryParse(idStr, out var rowId)) return;
+        if (!Guid.TryParse(idStr, out var rowId)) return false;
 
         string rowName = InventoryName(rowId);
 
-        switch (key.Keycode)
+        if (mode is { } takeMode)
         {
-            case Key.X: ClipboardTake(rowId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Cut); break;
-            case Key.C: ClipboardTake(rowId, isFolder, rowName, SLNG.Core.InventoryClipboardMode.Copy); break;
-            case Key.V:
-                var target = isFolder ? rowId : ParentFolderOf(rowId, false);
-                if (target != Guid.Empty) ClipboardPasteInto(target);
-                break;
+            ClipboardTake(rowId, isFolder, rowName, takeMode);
         }
-
-        viewport.SetInputAsHandled();
+        else
+        {
+            var target = isFolder ? rowId : ParentFolderOf(rowId, false);
+            if (target != Guid.Empty) ClipboardPasteInto(target);
+        }
+        return true;
     }
 
     // ---- FEAT-INV-08: cut / copy / paste -----------------------------------------------------

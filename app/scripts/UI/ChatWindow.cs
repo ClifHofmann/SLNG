@@ -634,6 +634,8 @@ public partial class ChatWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _inputEdit.AddThemeFontSizeOverride("font_size", BodyFontSize);
+        // FEAT-UI-43: the key dispatcher tells the chat bar from other text fields (Enter sends here).
+        _inputEdit.AddToGroup(SLNG.App.KeyDispatcher.ChatInputGroup);
         _inputEdit.TextChanged += OnInputTextChanged;
         _inputEdit.FocusExited += () => StopTyping();
         _inputEdit.TextSubmitted += (_) => OnSendPressed();
@@ -1122,6 +1124,32 @@ public partial class ChatWindow : SLNGWindow
             tab.Page.Visible = selected;
             ApplyOuterTabStyle(tab, selected);
         }
+    }
+
+    /// <summary>FEAT-UI-43: which of the window's three pages the keyboard shortcuts address. The
+    /// window is one frame with an outer tab strip, so "Nearby Chat", "Friends" and "Groups" are
+    /// pages of it, not windows of their own.</summary>
+    public enum Page { Chat, Friends, Groups }
+
+    private Control PageControl(Page page)
+    {
+        if (page == Page.Friends) return _friendsPanel;
+        if (page == Page.Groups) return _groupsPanel;
+        return _chatPageControl;
+    }
+
+    /// <summary>True while the window is open (not merely minimized) on <paramref name="page"/>.</summary>
+    public bool IsShowing(Page page) => Visible && !IsMinimized && PageControl(page).Visible;
+
+    /// <summary>Selects a page. The caller makes the window itself visible (the launcher does, so a
+    /// minimized or hidden window takes the usual path).</summary>
+    public void ShowPage(Page page) => SelectOuterTab(PageControl(page));
+
+    /// <summary>Puts the cursor in the chat bar on the Chat page - the "start typing" shortcut.</summary>
+    public void FocusChatInput()
+    {
+        SelectOuterTab(_chatPageControl);
+        _inputEdit.GrabFocus();
     }
 
     private static Control BuildPlaceholderPage(string headline, string subtext)

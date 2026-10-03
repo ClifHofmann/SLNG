@@ -215,10 +215,7 @@ public partial class SLNGWindow : MarginContainer
         _closeButton.AddThemeFontSizeOverride("font_size", 12);
         _closeButton.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
         _closeButton.AddThemeColorOverride("font_hover_color", new Color(1f, 0.4f, 0.4f));
-        _closeButton.Pressed += () => {
-            if (OnCloseRequested != null) OnCloseRequested.Invoke();
-            else Visible = false;
-        };
+        _closeButton.Pressed += CloseFromTitleBar;
         headerHBox.AddChild(_closeButton);
 
         // Content
@@ -388,6 +385,15 @@ public partial class SLNGWindow : MarginContainer
         {
             RestoreFromMinimized();
         }
+    }
+
+    /// <summary>What the title bar's close button does: the window's own close handler if it has one,
+    /// else hide. Public so the Close Window shortcut (FEAT-UI-43) closes a window exactly as the
+    /// button does.</summary>
+    public void CloseFromTitleBar()
+    {
+        if (OnCloseRequested != null) OnCloseRequested.Invoke();
+        else Visible = false;
     }
 
     /// <summary>Expand the frame back to its pre-minimize size. Public so a launcher (the bottom
