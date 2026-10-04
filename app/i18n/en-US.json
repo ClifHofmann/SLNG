@@ -860,6 +860,7 @@
       "to_login": "Back to login",
       "stay": "Stay here",
       "event_queue": "Region “{0}” has stopped answering. Nothing will arrive from it again until you log in afresh, so the session has been ended.",
+      "capabilities": "Region “{0}” did not answer its capability request, so inventory, textures and events would not work. The session has been ended — please log in again.",
       "sim_shutdown": "The simulator shut down — a region restart does that. The session has been ended.",
       "timeout": "The connection to the grid timed out. The session has been ended.",
       "server": "The grid ended the session."

@@ -593,6 +593,10 @@ public enum SessionEndReason
     /// <summary>The main region's event queue died, so nothing will improve until a relog
     /// (BUG-NET-20).</summary>
     EventQueueDead,
+
+    /// <summary>The current region never answered its seed capability request, so it has no
+    /// HTTP capabilities at all (BUG-NET-31).</summary>
+    CapabilitiesUnavailable,
 }
 
 /// <summary>The session is over and the client must go back to the login screen. BUG-NET-22.</summary>

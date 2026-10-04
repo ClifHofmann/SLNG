@@ -860,6 +860,7 @@
       "to_login": "Zur Anmeldung",
       "stay": "Hier bleiben",
       "event_queue": "Die Region „{0}“ antwortet nicht mehr. Von dort kommt bis zu einer neuen Anmeldung nichts mehr an, deshalb wurde die Sitzung beendet.",
+      "capabilities": "Die Region „{0}“ hat die Fähigkeiten-Anfrage nicht beantwortet, deshalb würden Inventar, Texturen und Ereignisse nicht funktionieren. Die Sitzung wurde beendet — bitte melde dich neu an.",
       "sim_shutdown": "Der Simulator wurde heruntergefahren — ein Regions-Neustart macht das. Die Sitzung wurde beendet.",
       "timeout": "Die Verbindung zum Grid ist abgelaufen. Die Sitzung wurde beendet.",
       "server": "Das Grid hat die Sitzung beendet."
