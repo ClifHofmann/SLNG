@@ -14,10 +14,13 @@ namespace SLNG.Core.ChatLogs;
 public sealed record ChatLogEntry(string Timestamp, DateTime? Time, string From, string Text)
 {
     /// <summary>One display line: <c>[stamp] Name: text</c>, leaving out whichever part the log
-    /// did not have. A multi-line message keeps its line breaks.</summary>
+    /// did not have; an emote (<c>/me waves</c>) becomes <c>[stamp] Name waves</c>. A multi-line message
+    /// keeps its line breaks.</summary>
     public string Display()
     {
         string stamp = Timestamp.Length > 0 ? "[" + Timestamp + "] " : "";
+        // An emote reads "Name waves", the way the live view shows it, not the raw "Name: /me waves".
+        if (From.Length > 0 && ChatEmote.IsEmote(Text)) return $"{stamp}{From}{ChatEmote.Body(Text)}";
         return From.Length > 0 ? $"{stamp}{From}: {Text}" : stamp + Text;
     }
 }

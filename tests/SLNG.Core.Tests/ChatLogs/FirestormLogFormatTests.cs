@@ -203,4 +203,11 @@ public sealed class FirestormLogFormatTests
         Assert.Equal("A: hi", new ChatLogEntry("", null, "A", "hi").Display());
         Assert.Equal("hi", new ChatLogEntry("", null, "", "hi").Display());
     }
+
+    [Theory]
+    [InlineData("/me schickt dir mal nen kuss", "[2026/10/03 23:47] Clifton Howlett schickt dir mal nen kuss")]
+    [InlineData("/me's hat", "[2026/10/03 23:47] Clifton Howlett's hat")]
+    [InlineData("/men in black", "[2026/10/03 23:47] Clifton Howlett: /men in black")]
+    public void An_emote_reads_as_the_live_view_shows_it(string text, string expected)
+        => Assert.Equal(expected, new ChatLogEntry("2026/10/03 23:47", null, "Clifton Howlett", text).Display());
 }

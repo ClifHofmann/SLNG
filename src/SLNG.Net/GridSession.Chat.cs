@@ -415,6 +415,28 @@ public sealed partial class GridSession
         return name.Length > 0;
     }
 
+    /// <summary>True when <paramref name="sessionId"/> is a group we belong to. Before the membership list has
+    /// arrived nothing can be ruled out, so every session counts as a group then -- the behaviour from before
+    /// this check existed, and the safer mistake (a group line in an odd tab beats a lost group line).</summary>
+    private bool IsKnownGroupSession(Guid sessionId)
+    {
+        var snapshot = _groups;
+        return snapshot == null || snapshot.Any(g => g.Id == sessionId);
+    }
+
+    /// <summary>A group's name: from the membership list first (it already carries it, and is there before
+    /// any name reply), then the shared name cache. False, with the id's text, when neither knows it yet.</summary>
+    public bool TryGetGroupName(Guid groupId, out string name)
+    {
+        var member = _groups?.FirstOrDefault(g => g.Id == groupId);
+        if (member != null && !string.IsNullOrWhiteSpace(member.Name))
+        {
+            name = member.Name;
+            return true;
+        }
+        return TryGetCachedName(groupId, out name);
+    }
+
     public void RequestAvatarName(Guid agentId)
     {
         if (agentId == Guid.Empty || _nameCache.ContainsKey(agentId) || !_client.Network.Connected) return;
@@ -563,9 +585,20 @@ public sealed partial class GridSession
         // dropped group chat, twice over. LibreMetaverse's own AgentManager.IsGroupMessage is the
         // authoritative test (GroupIM || the session is a known group chat session), so use it
         // rather than re-deriving the rule here.
-        if (_client.Self.IsGroupMessage(e.IM))
+        // ...but IsGroupMessage is true for ANY session message, and a session is not always a group: a
+        // resident can IM from an ad-hoc conference session (IM_SESSION_SEND with a session id that is no
+        // group of ours). Treating that as group chat opened a tab named after the session's UUID, and a
+        // reply into it was answered with "You are the only participant in this IM session". Only a session
+        // that is one of our groups is group chat; the rest falls through to be shown as the speaker's IM.
+        if (_client.Self.IsGroupMessage(e.IM) && (e.IM.GroupIM || IsKnownGroupSession(e.IM.IMSessionID.Guid)))
         {
             if (string.IsNullOrEmpty(e.IM.Message)) return; // typing/keep-alive, same as local chat
+            // The typing indicator is its own dialog (41/42) but carries the TEXT "typing", so it must be
+            // told apart by the dialog -- the empty-message test above never caught it.
+            if (e.IM.Dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping) return;
+            // The simulator echoes our own line back to the group session. The window already showed it when
+            // it was sent (and logged it), so the echo would be a second copy of every line we write.
+            if (e.IM.FromAgentID == _client.Self.AgentID) return;
             // FEAT-UI-54: a group whose chat the user switched off is dropped before anything sees it.
             if (TryConsumeIgnoredGroupChat(e.IM.IMSessionID.Guid)) return;
             // For group chat the session id IS the group id.
@@ -574,7 +607,16 @@ public sealed partial class GridSession
             return;
         }
 
-        if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
+        // A conference line is shown as an IM from the speaker (there is no conference UI yet); a typing
+        // indicator, an empty line or our own echo is not a message.
+        if (e.IM.Dialog == InstantMessageDialog.SessionSend)
+        {
+            if (string.IsNullOrEmpty(e.IM.Message) || e.IM.FromAgentID == _client.Self.AgentID) return;
+        }
+        else if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent)
+        {
+            return;
+        }
 
         InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
             e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, e.IM.IMSessionID.Guid));

@@ -257,9 +257,14 @@ public partial class ChatWindow : SLNGWindow
     /// local agent's own chat lines apart by name (see FormatChatLine).</summary>
     public void BindSession(GridSession session)
     {
-        if (_session != null) _session.DisplayNameResolved -= OnDisplayNameResolved;
+        if (_session != null)
+        {
+            _session.DisplayNameResolved -= OnDisplayNameResolved;
+            _session.NameResolved -= OnDisplayNameResolved;
+        }
         _session = session;
         _session.DisplayNameResolved += OnDisplayNameResolved;
+        _session.NameResolved += OnDisplayNameResolved; // a tab opened before its name was known
         if (Guid.TryParse(session.AgentId, out var ownId)) session.RequestDisplayName(ownId); // own lines show it too
         _friendsPanel.Initialize(session);
         _groupsPanel.Initialize(session);
@@ -273,7 +278,11 @@ public partial class ChatWindow : SLNGWindow
 
     public override void _ExitTree()
     {
-        if (_session != null) _session.DisplayNameResolved -= OnDisplayNameResolved;
+        if (_session != null)
+        {
+            _session.DisplayNameResolved -= OnDisplayNameResolved;
+            _session.NameResolved -= OnDisplayNameResolved;
+        }
         GroupMuteSettings.MuteChanged -= OnGroupMuteChanged;
         base._ExitTree();
     }
@@ -460,8 +469,12 @@ public partial class ChatWindow : SLNGWindow
         // speaker, not the group, so groupName can be empty when a tab is opened by a message.
         string display = groupName;
         if (string.IsNullOrWhiteSpace(display) && _session != null)
-            _session.TryGetCachedName(groupId, out display);
-        if (string.IsNullOrWhiteSpace(display)) display = groupId.ToString();
+            _session.TryGetGroupName(groupId, out display); // the membership list first, then the name cache
+        if (string.IsNullOrWhiteSpace(display))
+        {
+            display = groupId.ToString();
+            _session?.RequestGroupName(groupId); // the tab is re-titled when the answer arrives (RefreshNames)
+        }
 
         var tab = AddChatTab(groupId.ToString(), display, ChatLogKind.Group, closeable: true);
         tab.TargetGroupId = groupId;
@@ -579,6 +592,21 @@ public partial class ChatWindow : SLNGWindow
 
         foreach (var tab in _chatTabs)
         {
+            // A tab opened before its name was known is titled with the raw id; now that the name may have
+            // arrived, name the conversation properly (this also fixes where its log goes from now on).
+            if (tab.Closeable && tab.DisplayName == tab.Id && _session != null)
+            {
+                string? resolved = null;
+                if (tab.TargetGroupId is { } gid && _session.TryGetGroupName(gid, out var groupName)) resolved = groupName;
+                else if (tab.TargetAgentId is { } aid && _session.TryGetCachedName(aid, out var agentName)) resolved = agentName;
+                if (!string.IsNullOrWhiteSpace(resolved))
+                {
+                    tab.LogName = resolved;
+                    tab.DisplayName = resolved;
+                    tab.Label.Text = resolved;
+                }
+            }
+
             if (tab.TargetAgentId is not { } id) continue;
             string shown = NameDisplay.For(_session, id, tab.LogName);
             if (shown == tab.DisplayName) continue;
@@ -664,9 +692,7 @@ public partial class ChatWindow : SLNGWindow
         return $"{stamp} {name}: {BbEscape(message)}";
     }
 
-    private static bool IsEmote(string message) =>
-        message.StartsWith("/me ", StringComparison.Ordinal) ||
-        message.StartsWith("/me'", StringComparison.Ordinal);
+    private static bool IsEmote(string message) => ChatEmote.IsEmote(message);
 
     /// <summary>Neutralises BBCode in text that came from the network or from a translation.
     /// Internal because the notification window renders the same kind of text through the same
