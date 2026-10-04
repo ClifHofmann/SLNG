@@ -183,6 +183,13 @@ public sealed partial class GridSession
 
     private static readonly System.Threading.SemaphoreSlim _textureFetchSemaphore = new System.Threading.SemaphoreSlim(8, 8);
 
+    /// <summary>The animation lane of the <c>ViewerAsset</c> fetches. Animations used to share
+    /// <see cref="_textureFetchSemaphore"/> with every texture, so on a busy sim a pose waited behind hundreds of
+    /// queued textures -- and the 20 s timeout ran WHILE it waited, so it could give up before it had even been
+    /// asked for. An animation is a few kilobytes and is what takes an avatar out of the T-pose, so it gets slots
+    /// of its own (BUG-AVATAR-09).</summary>
+    private static readonly System.Threading.SemaphoreSlim _animationFetchSemaphore = new System.Threading.SemaphoreSlim(6, 6);
+
     /// <summary>
     /// Fetches the raw bytes of a texture asset (JPEG2000) from the simulator. Returns null
     /// if the fetch times out or fails.
@@ -634,7 +641,7 @@ public sealed partial class GridSession
         ulong region = CurrentRegionHandle;
         if (_assetRefusals.IsRefused(region, animId)) return null;
 
-        var viaHttp = await FetchAssetViaViewerAssetAsync(animId, "animatn").ConfigureAwait(false);
+        var viaHttp = await FetchAssetViaViewerAssetAsync(animId, "animatn", _animationFetchSemaphore).ConfigureAwait(false);
         if (viaHttp.Bytes is { Length: > 0 }) return viaHttp.Bytes;
 
         if (viaHttp.Status is { } status && AssetRefusals.IsRefusal(status))
@@ -657,7 +664,8 @@ public sealed partial class GridSession
     /// <summary>One asset over the <c>ViewerAsset</c> capability -- never throws. The bytes when it was
     /// served; otherwise null, with the HTTP status when there was an answer (null when there was none:
     /// no capability yet, a timeout, a dropped connection). The caller has the UDP path to fall back on.</summary>
-    private async Task<(byte[]? Bytes, HttpStatusCode? Status)> FetchAssetViaViewerAssetAsync(Guid assetId, string typeName)
+    private async Task<(byte[]? Bytes, HttpStatusCode? Status)> FetchAssetViaViewerAssetAsync(
+        Guid assetId, string typeName, System.Threading.SemaphoreSlim gate)
     {
         var cap = _client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
         if (cap is null) return (null, null);
@@ -665,17 +673,18 @@ public sealed partial class GridSession
         try
         {
             var url = new Uri($"{cap.ToString().TrimEnd('/')}/?{typeName}_id={assetId}");
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            await _textureFetchSemaphore.WaitAsync(timeout.Token).ConfigureAwait(false);
+            // The 20 s is for the transfer, not for waiting for a slot: the clock starts once one is held.
+            await gate.WaitAsync().ConfigureAwait(false);
             try
             {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 using var response = await _textureHttpClient.GetAsync(url, timeout.Token).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode) return (null, response.StatusCode);
                 return (await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false), response.StatusCode);
             }
             finally
             {
-                _textureFetchSemaphore.Release();
+                gate.Release();
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or UriFormatException)

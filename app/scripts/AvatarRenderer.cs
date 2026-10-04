@@ -5752,7 +5752,7 @@ void fragment() {
 
     /// <summary>Animation ids already reported as unavailable, so a set the simulator keeps
     /// re-sending is reported once rather than every time.</summary>
-    private readonly HashSet<Guid> _animationsReportedUnavailable = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _animationsReportedUnavailable = new();
 
     /// <summary>The joints that make an animation a <i>body</i> pose rather than a hand pose or a
     /// facial expression. Pelvis, spine and legs: the chain a sit or a stand actually moves, and
@@ -5826,6 +5826,9 @@ void fragment() {
     /// produced a T-posed avatar.</summary>
     private const int MinBodyJointsForPose = 6;
 
+    /// <summary>An animation set that took at least this long to arrive is logged (see LoadAndStartAnimationsAsync).</summary>
+    private const double SlowAnimationSetSeconds = 2.0;
+
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _animationIsBodyPose = new();
 
     private bool IsBodyPoseAnimation(Guid animId)
@@ -5833,7 +5836,7 @@ void fragment() {
 
     private void WarnAnimationUnavailable(Guid animId, string why)
     {
-        if (!_animationsReportedUnavailable.Add(animId)) return;
+        if (!_animationsReportedUnavailable.TryAdd(animId, 0)) return;
         GD.PrintErr($"[AnimPlayer] animation {animId} will not play -- {why}");
     }
 
@@ -5843,12 +5846,25 @@ void fragment() {
 
         // Logger.Debug($"[AvatarRenderer] Loading {animIds.Count} animation(s): {string.Join(", ", animIds)}");
 
+        // All of the set is asked for at once: one after the other, the wait added up (an avatar with six
+        // animations paid six round trips, and a slow or refused one held back every pose behind it). The
+        // result keeps the set's order, which is what the blender sees. BUG-AVATAR-09.
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var results = await System.Threading.Tasks.Task.WhenAll(animIds.Select(LoadOneAsync)).ConfigureAwait(false);
         var loaded = new List<(Guid id, AnimationData data)>();
-        foreach (var animId in animIds)
+        foreach (var r in results)
+            if (r is { } item) loaded.Add(item);
+
+        // A set that took long is evidence for "the poses arrive late" (as against "they never arrive", which is
+        // WarnAnimationUnavailable's line): without this the two looked the same in the log, namely like nothing.
+        if (stopwatch.Elapsed.TotalSeconds >= SlowAnimationSetSeconds)
+            GD.Print($"[AnimPlayer] {loaded.Count}/{animIds.Count} animation(s) took {stopwatch.Elapsed.TotalSeconds:0.0} s to arrive");
+
+        async System.Threading.Tasks.Task<(Guid id, AnimationData data)?> LoadOneAsync(Guid animId)
         {
             try
             {
-                var data = await _assetService.GetAnimationAsync(animId);
+                var data = await _assetService.GetAnimationAsync(animId).ConfigureAwait(false);
                 var effectiveAnimId = animId;
                 if (data == null && SelfLocomotion.IsSexSpecific(animId))
                 {
@@ -5864,9 +5880,10 @@ void fragment() {
                         }
                     }
                 }
+                (Guid id, AnimationData data)? result = null;
                 if (data != null)
                 {
-                    loaded.Add((effectiveAnimId, data));
+                    result = (effectiveAnimId, data);
 
                     // Classify it once, from what it actually keys. The seat rule reads this to
                     // tell a body POSE from a hand pose or a deformer (FEAT-ANIM-03).
@@ -5913,12 +5930,14 @@ void fragment() {
                     // per id so a set that keeps being re-sent cannot flood.
                     WarnAnimationUnavailable(animId, "asset did not resolve");
                 }
+                return result;
             }
             catch (Exception ex)
             {
                 // Was an empty catch. Swallowing the reason for an animation that does not play is
                 // the same hole as above, one layer down.
                 WarnAnimationUnavailable(animId, $"{ex.GetType().Name}: {ex.Message}");
+                return null;
             }
         }
 
