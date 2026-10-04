@@ -49,6 +49,10 @@ public partial class MinimapOverlay : SLNGWindow
     /// at one second.</summary>
     private const float TableRefreshSeconds = 0.5f;
 
+    /// <summary>How often the open radar is rebuilt and redrawn, per second.</summary>
+    private const double RadarUpdateHz = 30.0;
+    private double _radarAccumSeconds;
+
     /// <summary>While the window is not showing, who is nearby is still noted this often.</summary>
     private const float HiddenTrackSeconds = 1f;
 
@@ -533,6 +537,15 @@ public partial class MinimapOverlay : SLNGWindow
             return;
         }
 
+        // The map is brought up to date at most RadarUpdateHz times a second, not on every frame of a game that may be
+        // running at 60 or 144: dots, tiles and objects are rebuilt and the canvas redrawn only then (the canvas keeps
+        // what it drew in between). A radar needs no more, and its cost is paid per update -- halving the updates
+        // halves it, whatever part of it turns out to be the expensive one.
+        _radarAccumSeconds += delta;
+        if (_radarAccumSeconds < 1.0 / RadarUpdateHz) return;
+        double frameDelta = _radarAccumSeconds;
+        _radarAccumSeconds = 0;
+
         var pending = System.Threading.Interlocked.Exchange(ref _pendingNearby, null);
         if (pending != null) _lastNearby = pending;
 
@@ -594,11 +607,11 @@ public partial class MinimapOverlay : SLNGWindow
         // eases back (AutoCenter) or stays until "Re-center map". The offset is added HERE, to the
         // focus the canvas is given, so drawing, picking and teleporting all see the panned view.
         if (_pan != System.Numerics.Vector2.Zero && !_canvas.IsPanning && _view.AutoCenter)
-            _pan = RadarPan.EaseToZero(_pan, (float)delta);
+            _pan = RadarPan.EaseToZero(_pan, (float)frameDelta);
         if (center is { } focus) center = focus + new System.Numerics.Vector3(_pan, 0f);
 
         // A refresh is due on the timer, or sooner when a name or a profile has just arrived.
-        _tableTimer -= (float)delta;
+        _tableTimer -= (float)frameDelta;
         if (System.Threading.Interlocked.Exchange(ref _dataChanged, 0) != 0) _tableTimer = 0f;
         if (_tableTimer <= 0f)
         {
@@ -609,7 +622,7 @@ public partial class MinimapOverlay : SLNGWindow
         // sidecar): the roster, the table, the tiles and dots, the object scan, the canvas hand-over and its draw.
         using (MainThreadPhase.Enter("radar.tiles")) BuildTiles(regionHandle, center);
         using (MainThreadPhase.Enter("radar.dots")) BuildDots();
-        using (MainThreadPhase.Enter("radar.objects")) BuildObjects(regionHandle, (float)delta);
+        using (MainThreadPhase.Enter("radar.objects")) BuildObjects(regionHandle, (float)frameDelta);
         using (MainThreadPhase.Enter("radar.update"))
             _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _dots, _selectedAgentId, _tiles, _objects);
     }
