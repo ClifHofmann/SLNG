@@ -391,6 +391,7 @@ public partial class MinimapOverlay : SLNGWindow
         DetachSession();
 
         _world = world;
+        _avatarsScanned = false; // another world: look again at once
         _session = session;
         _tileTextures = tileTextures;
         // A new session can mean a different grid/region entirely -- a carried-over focus lock
@@ -717,7 +718,7 @@ public partial class MinimapOverlay : SLNGWindow
         }
 
         Guid ownAgentId = Guid.Empty;
-        foreach (var entity in _world!.Query<AvatarComponent>())
+        foreach (var entity in AvatarEntities())
         {
             if (entity.RegionHandle != regionHandle) continue;
             var avatar = entity.GetComponent<AvatarComponent>();
@@ -738,6 +739,29 @@ public partial class MinimapOverlay : SLNGWindow
 
         foreach (var entry in _byAgent.Values)
             _roster.Add(entry.Name.Length == 0 ? entry with { Name = ResolveName(entry.AgentId) } : entry);
+    }
+
+    // The avatars of the world, found by a linear scan over EVERY entity (World.Query), which on a built-up region
+    // is tens of thousands of dictionary probes plus an iterator allocation -- World's own documentation names it
+    // the largest main-thread cost in the client when it is done per frame, and BuildRoster used to do exactly
+    // that every frame the radar was open. So the list is kept and looked for again twice a second; positions are
+    // read from the (live) entities each frame, so only an avatar's arrival or departure waits for the next scan.
+    private readonly List<Entity> _avatarEntities = new();
+    private bool _avatarsScanned;
+    private long _avatarScanAtMsec;
+    private const long AvatarScanIntervalMsec = 500;
+
+    private IReadOnlyList<Entity> AvatarEntities()
+    {
+        long now = Environment.TickCount64;
+        if (!_avatarsScanned || now - _avatarScanAtMsec >= AvatarScanIntervalMsec)
+        {
+            _avatarsScanned = true;
+            _avatarScanAtMsec = now;
+            _avatarEntities.Clear();
+            _avatarEntities.AddRange(_world!.Query<AvatarComponent>());
+        }
+        return _avatarEntities;
     }
 
     private static string AvatarDisplayName(AvatarComponent avatar)
