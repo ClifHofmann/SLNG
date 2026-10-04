@@ -306,6 +306,15 @@
       "decline": "Ablehnen",
       "send_failed": "Die Antwort konnte gerade nicht gesendet werden. Bitte versuche es gleich noch einmal."
     },
+    "friendship_request": {
+      "title": "FREUNDSCHAFT ANBIETEN",
+      "heading": "Freundschaft anbieten an {0}",
+      "message": "Deine Nachricht an die Person:",
+      "default_message": "Möchtest du mit mir befreundet sein?",
+      "send": "Anfrage senden",
+      "cancel": "Abbrechen",
+      "send_failed": "Die Anfrage konnte nicht gesendet werden (nicht verbunden?). Dein Text bleibt erhalten."
+    },
     "recent": {
       "tab": "Verlauf",
       "hint": "Deine letzten Gespräche. Klick öffnet sie wieder.",

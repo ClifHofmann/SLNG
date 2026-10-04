@@ -81,11 +81,13 @@ public sealed partial class GridSession
         });
     }
 
-    /// <summary>Sends a friendship offer to another avatar.</summary>
-    public void OfferFriendship(Guid agentId)
+    /// <summary>Sends a friendship offer to another avatar, with the text the sender wrote: the recipient
+    /// sees it in their offer prompt. Returns false when nothing was sent.</summary>
+    public bool OfferFriendship(Guid agentId, string message = "")
     {
-        if (agentId == Guid.Empty || !_client.Network.Connected) return;
-        _client.Friends.OfferFriendship(new UUID(agentId));
+        if (agentId == Guid.Empty || !_client.Network.Connected) return false;
+        _client.Friends.OfferFriendship(new UUID(agentId), message ?? string.Empty);
+        return true;
     }
 
     /// <summary>Offers the target avatar a teleport to our current location (a "lure").</summary>

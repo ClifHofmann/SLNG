@@ -306,6 +306,15 @@
       "decline": "Decline",
       "send_failed": "Could not answer right now. Please try again in a moment."
     },
+    "friendship_request": {
+      "title": "OFFER FRIENDSHIP",
+      "heading": "Offer friendship to {0}",
+      "message": "Your message to them:",
+      "default_message": "Would you be my friend?",
+      "send": "Send offer",
+      "cancel": "Cancel",
+      "send_failed": "The offer could not be sent (not connected?). Your text is kept."
+    },
     "recent": {
       "tab": "Recent",
       "hint": "Your last conversations. Click one to reopen it.",

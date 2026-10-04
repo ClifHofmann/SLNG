@@ -788,9 +788,28 @@ public partial class UserProfileWindow : SLNGWindow
             PromptRemoveFriend();
             return;
         }
-        _session?.OfferFriendship(_agentId);
-        if (_addFriendBtn != null) _addFriendBtn.Disabled = true;
-        _statusLabel.Text = Tr("status_friend_sent");
+        PromptFriendshipOffer();
+    }
+
+    // The person writes the offer's text themselves, as in the reference viewer; nothing is sent until they
+    // press Send. The window goes on the HUD layer, like every other prompt, not under this one.
+    private void PromptFriendshipOffer()
+    {
+        if (_session == null) return;
+        var session = _session;
+        var win = new FriendshipRequestWindow();
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                   ?? (Node?)GetParent() ?? this;
+        host.AddChild(win);
+        string name = string.IsNullOrWhiteSpace(_agentName) ? _agentId.ToString() : _agentName;
+        var agentId = _agentId;
+        win.Initialize(name, text => session.OfferFriendship(agentId, text));
+        win.Sent += () =>
+        {
+            if (!IsInstanceValid(this)) return;
+            if (_addFriendBtn != null) _addFriendBtn.Disabled = true;
+            _statusLabel.Text = Tr("status_friend_sent");
+        };
     }
 
     // Ending a friendship is mirrored on the other side, so it asks first. The window goes on the
