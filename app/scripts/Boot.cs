@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.55-alpha";
+    public const string AppVersion = "v0.26.56-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2687,11 +2687,11 @@ public partial class Boot : Control
 
     public override void _Process(double delta)
     {
-        _engineWarningTap?.Flush(delta);
+        using (MainThreadPhase.Enter("warning-tap")) _engineWarningTap?.Flush(delta);
 
         // FEAT-PERF-04: per-frame VRAM back-pressure (raise/lower the LOD bias, shrink resident
         // textures) so the texture-memory budget actually binds on a dense region.
-        _gpuCache?.Tick();
+        using (MainThreadPhase.Enter("gpucache")) _gpuCache?.Tick();
 
         // FEAT-RENDER-20: cheap every frame (an early-out plus a distance check) -- the probe
         // itself only actually moves/re-bakes on its own measured cadence, see the method.
@@ -2756,21 +2756,24 @@ public partial class Boot : Control
             ? System.DateTimeOffset.FromUnixTimeSeconds((long)(_session.SimUnixTime / 1000000UL))
             : System.DateTimeOffset.UtcNow;
 
-        var sunDir = GetSunDirection();
-        _environmentDriver.Update(
-            _worldEnvironment, _sun, _terrainRenderer?.WaterMaterial,
-            sunDir, simTime, _assetService, _gpuCache,
-            // Asset fetches abandon immediately while the session is down (AssetService checks
-            // IsConnected before every attempt) and the failure is then cached for 45s, so the
-            // driver must not even try before this is true -- see FetchTextureOnce.
-            assetsReady: _session?.IsConnected == true);
+        using (MainThreadPhase.Enter("environment"))
+        {
+            var sunDir = GetSunDirection();
+            _environmentDriver.Update(
+                _worldEnvironment, _sun, _terrainRenderer?.WaterMaterial,
+                sunDir, simTime, _assetService, _gpuCache,
+                // Asset fetches abandon immediately while the session is down (AssetService checks
+                // IsConnected before every attempt) and the failure is then cached for 45s, so the
+                // driver must not even try before this is true -- see FetchTextureOnce.
+                assetsReady: _session?.IsConnected == true);
 
-        // FEAT-ENV-01 Phase D. Reads the SAME SunDirection EnvironmentDriver just aimed the
-        // light with, so the sky dome/fog and the actual lit scene never disagree about which way
-        // is day.
-        // CalculatedLightDirection, not CalculatedSunDirection: after sunset the scene is lit by
-        // the moon, and aiming this at the sun sent the light up through the ground.
-        UpdateSunFromRegion(_environmentDriver.CalculatedLightDirection);
+            // FEAT-ENV-01 Phase D. Reads the SAME SunDirection EnvironmentDriver just aimed the
+            // light with, so the sky dome/fog and the actual lit scene never disagree about which way
+            // is day.
+            // CalculatedLightDirection, not CalculatedSunDirection: after sunset the scene is lit by
+            // the moon, and aiming this at the sun sent the light up through the ground.
+            UpdateSunFromRegion(_environmentDriver.CalculatedLightDirection);
+        }
 
         // TEMPORARY diagnostic (2026-07-23, OSGrid movement-judder live-test round): delta is
         // Godot's own measured wall-clock time since the last _Process call -- a large value here
@@ -2836,7 +2839,7 @@ public partial class Boot : Control
         if (_hudAccum >= 0.2)
         {
             _hudAccum = 0;
-            UpdateHud();
+            using (MainThreadPhase.Enter("boot-hud")) UpdateHud();
         }
 
         // Snapshot which launcher windows are open, a couple of times a second, so a close via a
@@ -2848,7 +2851,7 @@ public partial class Boot : Control
             if (_windowPersistAccum >= 0.5)
             {
                 _windowPersistAccum = 0.0;
-                PersistOpenWindows();
+                using (MainThreadPhase.Enter("window-persist")) PersistOpenWindows();
             }
         }
     }

@@ -27,6 +27,7 @@ public sealed partial class CameraFocusOverlay : Control
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("ui.focus"); // BUG-PERF-05
         if (!_settings.ShowFocusMarker)
         {
             QueueRedraw();

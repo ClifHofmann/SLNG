@@ -78,6 +78,7 @@ public partial class DepthOfFieldController : Node
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("dof"); // BUG-PERF-05
         if (_camera == null || _settings == null) return;
 
         if (!_settings.Enabled)

@@ -18,7 +18,8 @@ namespace SLNG.App.UI;
 /// A mean FPS is nearly useless for stutter: a run that drops one 100 ms frame every second still
 /// reads ~55 FPS. So the headline pairs the smoothed FPS with the 1% low, and the rows below split
 /// the frame cost into the places it can come from:
-///   - process/physics ms   -> main-thread C# work (asset upload, scene mutation, world drain)
+///   - scripts / render / rest ms -> where the main thread's frame goes: every _Process callback,
+///                             Godot's render submission, and the remainder (BUG-PERF-05)
 ///   - queue depth          -> main-thread work that is backlogged rather than lost
 ///   - draw calls / tris    -> GPU-side batching problems
 ///   - render cpu / gpu ms  -> Godot's own render cost per viewport (BUG-PERF-05), the part of the
@@ -186,6 +187,7 @@ public partial class StatsOverlay : PanelContainer
         // BUG-PERF-05: the main view's render cost. The HUD viewport and the planar mirror register
         // themselves where they are created.
         RenderTimes.Track("main", GetViewport());
+        ProcessBracket.Install(this);
     }
 
     public override void _ExitTree()
@@ -220,6 +222,7 @@ public partial class StatsOverlay : PanelContainer
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("ui.stats"); // BUG-PERF-05
         // Sampling and logging run whether or not the panel is shown. Tying them to visibility was a
         // mistake: hiding a readout should stop it taking up screen space, not stop it recording --
         // and the sessions worth diagnosing are exactly the ones where nobody thought to open it
@@ -293,6 +296,7 @@ public partial class StatsOverlay : PanelContainer
             $"meanMs={_lastMean:F1} medMs={_lastMedian:F1} p99Ms={_lastP99:F1} " +
             $"worstMs={_worstSinceLog:F0} hitches={_hitchesSinceLog} ({hitchesPerSec:F1}/s) " +
             $"processMs={_lastProcessMs:F1} physicsMs={_lastPhysicsMs:F1} " +
+            $"scriptsMs={ProcessBracket.ScriptsMs:F1} restMs={RestMs():F1} " +
             $"renderCpuMs={RenderTimes.CpuMs:F1} renderGpuMs={RenderTimes.GpuMs:F1} setupMs={RenderTimes.SetupCpuMs:F1} " +
             $"views={RenderTimes.Describe(compact: true)} draws={_lastDrawCalls:F0} tris={_lastPrimitives / 1000.0:F0}k " +
             $"vramMB={_lastVideoMb:F0} csMB={_lastManagedMb:F0} gc0ps={_gc0Rate:F0} gc1ps={_gc1Rate:F0} " +
@@ -378,23 +382,30 @@ public partial class StatsOverlay : PanelContainer
         SetValue("Spike", $"worst {worst:F0} ms   ·   {hitchesPerSec:F1} hitches/s",
                  hitchesPerSec >= 1.0 ? Warn : hitchesPerSec > 0 ? Caution : Good);
 
+        // Kept for the log line's continuity only. Godot's TIME_PROCESS is NOT our scripts: it is the
+        // whole process step INCLUDING rendering, and a recent worst case rather than an average
+        // (BUG-PERF-05: 39.8 ms against a 20.2 ms mean frame). The CPU row uses ProcessBracket.
         double processMs = Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0;
         double physicsMs = Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
-        // Main-thread C# eating most of the frame is the signature of decode/upload work that escaped
-        // a worker thread -- the one thing AGENTS.md says must never happen.
         _lastProcessMs = processMs;
         _lastPhysicsMs = physicsMs;
-        SetValue("CPU", $"process {processMs:F1} ms   ·   physics {physicsMs:F1} ms",
-                 processMs > median * 0.6 ? Warn : Good);
+
+        // BUG-PERF-05: the main thread's frame in three parts that add up to it. Scripts eating most
+        // of it is the signature of work that escaped a worker thread or a per-frame walk over the
+        // world; render is draw submission (draw-call count); rest is Godot's own work outside both.
+        ProcessBracket.Settle();
+        RenderTimes.Settle();
+        double scriptsMs = ProcessBracket.ScriptsMs;
+        SetValue("CPU", $"scripts {scriptsMs:F1}   ·   render {RenderTimes.CpuMs + RenderTimes.SetupCpuMs:F1}   ·   rest {RestMs():F1} ms",
+                 scriptsMs > ProcessBracket.FrameMs * 0.4 ? Warn : Good);
 
         // BUG-PERF-05: what Godot itself spends on rendering, which the two numbers above never
         // included. Read against the frame: a GPU figure near the frame time means the card is the
         // limit; process + physics + setup + render cpu near it means the CPU is; both well short of
         // it means the time goes somewhere neither covers (reflection-probe faces are rendered
         // outside any viewport, and a CPU waiting on the GPU shows in no CPU counter).
-        RenderTimes.Settle();
         SetValue("Render", $"cpu {RenderTimes.CpuMs:F1}   ·   gpu {RenderTimes.GpuMs:F1}   ·   setup {RenderTimes.SetupCpuMs:F1} ms",
-                 ColorForMs(Math.Max(RenderTimes.GpuMs, processMs + physicsMs + RenderTimes.SetupCpuMs + RenderTimes.CpuMs)));
+                 ColorForMs(Math.Max(RenderTimes.GpuMs, scriptsMs + RenderTimes.SetupCpuMs + RenderTimes.CpuMs)));
         SetValue("Views", RenderTimes.Describe(compact: false) + "   (cpu/gpu ms)", Neutral);
 
         // Backlog in the budgeted main-thread queue. A peak that spikes and drains back to 0 is the
@@ -437,6 +448,12 @@ public partial class StatsOverlay : PanelContainer
 
         if (Visible) _graph.Update(_ordered, n, median);
     }
+
+    /// <summary>Main-thread time per frame that is neither a _Process callback nor render
+    /// submission: deferred calls, CanvasItem redraws, transform notifications, input, physics, and
+    /// any wait on the GPU.</summary>
+    private static double RestMs() =>
+        Math.Max(0, ProcessBracket.FrameMs - ProcessBracket.ScriptsMs - RenderTimes.CpuMs - RenderTimes.SetupCpuMs);
 
     private static Color ColorForMs(double ms) => ms <= GoodMs * 1.1 ? Good : ms <= BadMs ? Caution : Warn;
 

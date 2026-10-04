@@ -361,6 +361,7 @@ public partial class ChatWindow : SLNGWindow
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("ui.chat"); // BUG-PERF-05
         ExpirePeerTyping();
 
         // Detect the user scrolling away from (or back to) the bottom of the live log so we can

@@ -629,12 +629,15 @@ public partial class ObjectRenderer : Node3D
         // Ahead of the cull sweep: that sweep returns early whenever the agent position is not
         // known yet or its per-frame budget rounds to zero, and an animated texture must keep
         // running through both.
-        TickTextureAnimations();
-        TickSelectionOutlines();
+        using (MainThreadPhase.Enter("obj-ticks"))
+        {
+            TickTextureAnimations();
+            TickSelectionOutlines();
 
-        TickAlphaSortCensus();
-        TickAlphaSortHysteresis();
-        TickTraceObject(delta);
+            TickAlphaSortCensus();
+            TickAlphaSortHysteresis();
+            TickTraceObject(delta);
+        }
 
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
         _agentPos = agentPos;

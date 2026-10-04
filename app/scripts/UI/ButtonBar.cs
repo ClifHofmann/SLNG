@@ -250,6 +250,7 @@ public partial class ButtonBar : Control
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("ui.buttonbar"); // BUG-PERF-05
         // Safety net: if a button-up GuiInput was somehow missed (e.g. focus moved to another
         // window mid-drag), avoid leaving the bar permanently stuck thinking it is still dragging.
         if (_draggingButton != null && !Input.IsMouseButtonPressed(MouseButton.Left))

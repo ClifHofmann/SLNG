@@ -322,6 +322,7 @@ public partial class CameraHUD : SLNGWindow
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("ui.camera-hud"); // BUG-PERF-05
         if (_cameraController == null)
         {
             _cameraController = GetTree().Root.FindChild("AvatarController", true, false) as AvatarController;

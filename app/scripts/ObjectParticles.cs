@@ -326,6 +326,7 @@ public partial class ObjectParticles : CpuParticles3D
 
     public override void _Process(double delta)
     {
+        using var _phase = MainThreadPhase.Enter("particles"); // BUG-PERF-05
         if (_data is null || _data.IsInert)
         {
             return;
