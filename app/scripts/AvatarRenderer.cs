@@ -3759,6 +3759,8 @@ public partial class AvatarRenderer : Node3D
         // Viewport.FindWorld3D(), never the World3D property.
         _hudViewport = new SubViewport { Name = "SlHudViewport", TransparentBg = true, OwnWorld3D = true };
         container.AddChild(_hudViewport);
+        // BUG-PERF-05: a window-sized 3D pass of its own every frame once a HUD is worn.
+        RenderTimes.Track("hud", _hudViewport);
         // Window resize changes the aspect ratio, which moves every horizontal anchor.
         _hudViewport.SizeChanged += () =>
         {

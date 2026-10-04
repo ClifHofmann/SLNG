@@ -21,6 +21,8 @@ namespace SLNG.App.UI;
 ///   - process/physics ms   -> main-thread C# work (asset upload, scene mutation, world drain)
 ///   - queue depth          -> main-thread work that is backlogged rather than lost
 ///   - draw calls / tris    -> GPU-side batching problems
+///   - render cpu / gpu ms  -> Godot's own render cost per viewport (BUG-PERF-05), the part of the
+///                             frame none of the rows above could see
 ///   - GC collections/s     -> managed allocation churn, the classic Godot-C# hitch source
 /// The frame-time graph underneath exists because the shape of the stutter (periodic spikes vs. a
 /// sustained plateau) narrows the cause faster than any single scalar can.
@@ -68,7 +70,7 @@ public partial class StatsOverlay : PanelContainer
     private static readonly Color Neutral = new(0.92f, 0.94f, 0.96f);
 
     private static readonly string[] RowKeys =
-        { "FPS", "Frame", "Spike", "CPU", "Queue", "Draw", "VRAM", "Memory", "GC", "Nodes", "VSync" };
+        { "FPS", "Frame", "Spike", "CPU", "Render", "Views", "Queue", "Draw", "VRAM", "Memory", "GC", "Nodes", "VSync" };
 
     // Ring buffer: _frameHead is where the NEXT sample goes, so once it has wrapped the oldest sample
     // also lives at _frameHead. Ordering matters for the graph, not just the statistics.
@@ -109,7 +111,7 @@ public partial class StatsOverlay : PanelContainer
     /// be a worse bug than the one being fixed.</para>
     /// </remarks>
     internal static double? CurrentFps { get; private set; }
-    private double _lastProcessMs, _lastDrawCalls, _lastPrimitives, _lastVideoMb, _lastManagedMb, _lastNodes;
+    private double _lastProcessMs, _lastPhysicsMs, _lastDrawCalls, _lastPrimitives, _lastVideoMb, _lastManagedMb, _lastNodes;
     private int _lastQueueDepth, _lastQueuePeak;
 
     // GC counters are cumulative since process start, so a rate needs deltas over a known interval
@@ -180,6 +182,10 @@ public partial class StatsOverlay : PanelContainer
         _gc0 = GC.CollectionCount(0);
         _gc1 = GC.CollectionCount(1);
         _gc2 = GC.CollectionCount(2);
+
+        // BUG-PERF-05: the main view's render cost. The HUD viewport and the planar mirror register
+        // themselves where they are created.
+        RenderTimes.Track("main", GetViewport());
     }
 
     public override void _ExitTree()
@@ -220,6 +226,7 @@ public partial class StatsOverlay : PanelContainer
         // first. Only the label and graph updates below are skipped while hidden.
         _frameMs[_frameHead] = delta * 1000.0;
         _frameHead = (_frameHead + 1) % HistoryFrames;
+        RenderTimes.Sample();
         if (_frameCount < HistoryFrames) _frameCount++;
 
         _gcAccum += delta;
@@ -285,7 +292,9 @@ public partial class StatsOverlay : PanelContainer
             $"[Perf] fps={_lastFps:F0} low1%={_lastLowFps:F0} " +
             $"meanMs={_lastMean:F1} medMs={_lastMedian:F1} p99Ms={_lastP99:F1} " +
             $"worstMs={_worstSinceLog:F0} hitches={_hitchesSinceLog} ({hitchesPerSec:F1}/s) " +
-            $"processMs={_lastProcessMs:F1} draws={_lastDrawCalls:F0} tris={_lastPrimitives / 1000.0:F0}k " +
+            $"processMs={_lastProcessMs:F1} physicsMs={_lastPhysicsMs:F1} " +
+            $"renderCpuMs={RenderTimes.CpuMs:F1} renderGpuMs={RenderTimes.GpuMs:F1} setupMs={RenderTimes.SetupCpuMs:F1} " +
+            $"views={RenderTimes.Describe(compact: true)} draws={_lastDrawCalls:F0} tris={_lastPrimitives / 1000.0:F0}k " +
             $"vramMB={_lastVideoMb:F0} csMB={_lastManagedMb:F0} gc0ps={_gc0Rate:F0} gc1ps={_gc1Rate:F0} " +
             $"queue={_lastQueueDepth} queuePeak={_lastQueuePeak} " +
             $"nodes={_lastNodes:F0} vsync={DisplayServer.WindowGetVsyncMode()}");
@@ -374,8 +383,19 @@ public partial class StatsOverlay : PanelContainer
         // Main-thread C# eating most of the frame is the signature of decode/upload work that escaped
         // a worker thread -- the one thing AGENTS.md says must never happen.
         _lastProcessMs = processMs;
+        _lastPhysicsMs = physicsMs;
         SetValue("CPU", $"process {processMs:F1} ms   ·   physics {physicsMs:F1} ms",
                  processMs > median * 0.6 ? Warn : Good);
+
+        // BUG-PERF-05: what Godot itself spends on rendering, which the two numbers above never
+        // included. Read against the frame: a GPU figure near the frame time means the card is the
+        // limit; process + physics + setup + render cpu near it means the CPU is; both well short of
+        // it means the time goes somewhere neither covers (reflection-probe faces are rendered
+        // outside any viewport, and a CPU waiting on the GPU shows in no CPU counter).
+        RenderTimes.Settle();
+        SetValue("Render", $"cpu {RenderTimes.CpuMs:F1}   ·   gpu {RenderTimes.GpuMs:F1}   ·   setup {RenderTimes.SetupCpuMs:F1} ms",
+                 ColorForMs(Math.Max(RenderTimes.GpuMs, processMs + physicsMs + RenderTimes.SetupCpuMs + RenderTimes.CpuMs)));
+        SetValue("Views", RenderTimes.Describe(compact: false) + "   (cpu/gpu ms)", Neutral);
 
         // Backlog in the budgeted main-thread queue. A peak that spikes and drains back to 0 is the
         // budget working as intended. A depth that never returns to 0 means the total cost of the

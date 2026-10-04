@@ -83,6 +83,8 @@ public partial class MirrorReflection : Node
             Size = new Vector2I(2, 2),
         };
         AddChild(_viewport);
+        // BUG-PERF-05: the whole scene a second time while a mirror is in view.
+        RenderTimes.Track("mirror", _viewport);
 
         _camera = new Camera3D
         {
