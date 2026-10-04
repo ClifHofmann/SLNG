@@ -164,6 +164,7 @@ public static partial class SelfTest
         results.AddRange(CheckLocales());
         results.Add(CheckAvatarSkeleton());
         results.Add(CheckControlAvatar(tree));
+        results.Add(CheckAvatarPick(tree));
         results.Add(CheckAnimeshHandOver(tree));
         results.Add(CheckControlAvatarAnimation(tree));
         results.Add(CheckAnimeshAnimation(tree));
@@ -1521,6 +1522,28 @@ public static partial class SelfTest
         catch (Exception ex)
         {
             return new Check("avatar skeleton", false, ex.Message);
+        }
+    }
+
+    /// <summary>FEAT-UI-55: the skeleton-based avatar pick (<see cref="AvatarRenderer.TryPickAvatar"/>) against the real
+    /// skeleton in a known pose.</summary>
+    private static Check CheckAvatarPick(SceneTree tree)
+    {
+        const string Name = "avatar pick (skeleton capsules)";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestPickAvatar();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
         }
     }
 

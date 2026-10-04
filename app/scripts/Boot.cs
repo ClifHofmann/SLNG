@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.29-alpha";
+    public const string AppVersion = "v0.26.32-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -5107,6 +5107,8 @@ public partial class Boot : Control
         {
             SLNG.Core.SessionEndReason.EventQueueDead =>
                 SLNG.App.UI.L10n.TrFormat("ui.session_ended.event_queue", detail),
+            SLNG.Core.SessionEndReason.CapabilitiesUnavailable =>
+                SLNG.App.UI.L10n.TrFormat("ui.session_ended.capabilities", detail),
             SLNG.Core.SessionEndReason.SimShutdown =>
                 SLNG.App.UI.L10n.Tr("ui.session_ended.sim_shutdown"),
             SLNG.Core.SessionEndReason.NetworkTimeout =>

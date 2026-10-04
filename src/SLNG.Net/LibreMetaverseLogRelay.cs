@@ -70,8 +70,11 @@ internal sealed class LibreMetaverseLogRelay : ILoggerProvider
 
             bool write;
             // A filter that throws must not cost the line, let alone take down the network thread
-            // it was called on.
+            // it was called on. One exception is the filter's way of speaking: SeedRequestAbortedException
+            // is thrown ON PURPOSE to unwind a retry loop inside LibreMetaverse (BUG-NET-31), and it must
+            // get through to the library's caller, so it is the one thing not swallowed here.
             try { write = _shouldWrite(logLevel, message); }
+            catch (SeedRequestAbortedException) { throw; }
             catch { write = true; }
             if (!write) return;
 

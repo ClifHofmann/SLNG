@@ -297,6 +297,12 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     private bool FilterLibreMetaverseLog(Microsoft.Extensions.Logging.LogLevel level, string message)
     {
+        // BUG-NET-31: LibreMetaverse's seed-capability retry calls itself without delay or limit and
+        // overflows the stack. Its warning comes before the retry, so throwing here ends the loop.
+        // Needs the Warning level to reach this filter; see GridSession.SeedCapability.cs.
+        if (SeedCapabilityGuard.IsRetryLine(message))
+            AbortLibreMetaverseSeedRetry();
+
         if (!SLNG.Core.EventQueueHealth.TryReadEventQueueFailure(message, out var simulatorText))
             return true;
 
@@ -601,6 +607,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         }
 
         _client = new GridClient();
+        StartSeedCapabilityGuard();
 
         // LibreMetaverse keeps its own on-disk asset cache (the wearable / animation / gesture /
         // sound assets it downloads for the bake pipeline). Its directory defaults to
@@ -870,6 +877,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
 
     public void Dispose()
     {
+        StopSeedCapabilityGuard();
         _parcelEnvironmentPollCts.Cancel();
         _parcelEnvironmentPollCts.Dispose();
         try { _wearableRebakeCts?.Cancel(); _wearableRebakeCts?.Dispose(); } catch { }
