@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using SLNG.Core.ChatLogs;
 using SLNG.Core.Services;
 using SLNG.Net;
 
@@ -53,6 +54,15 @@ public partial class ChatWindow : SLNGWindow
     private Font _iconFont = null!;
     private FriendsPanel _friendsPanel = null!;
     private GroupsPanel _groupsPanel = null!;
+    private RecentPanel _recentPanel = null!;
+    // FEAT-UI-15: the Recent tab's data. One list per chat-log folder (= per account and grid), kept in
+    // user:// rather than in the log folder, which is shared with Firestorm.
+    private readonly RecentConversationList _recent = new();
+    private string? _recentPath;
+
+    /// <summary>False keeps the Recent list in memory only. <c>--selftest</c> runs against the developer's
+    /// real <c>user://</c>, so a check that feeds a ChatWindow messages switches this off.</summary>
+    internal static bool PersistRecent { get; set; } = true;
     private Timer? _typingDebounceTimer;
 
     private sealed class ChatTab
@@ -186,6 +196,7 @@ public partial class ChatWindow : SLNGWindow
     public void Initialize(ChatLogger logger)
     {
         _logger = logger;
+        AttachRecentList();
 
         // "Main" was already created in _Ready(), before _logger existed -- preload its recent
         // history now that logging is available, same as every IM tab does at creation time.
@@ -206,6 +217,7 @@ public partial class ChatWindow : SLNGWindow
     /// through the new one.</summary>
     public void ResetForNewSession()
     {
+        AttachRecentList(); // the logger now points at the new account's folder
         var main = _chatTabs.Find(t => t.Id == "main");
         if (main == null) return;
 
@@ -289,6 +301,12 @@ public partial class ChatWindow : SLNGWindow
         _groupsPanel.OnOpenGroupChatRequested = OpenOrFocusGroupTab;
         _groupsPanel.OnOpenGroupInfoRequested = (id, name) => OnOpenGroupInfoRequested?.Invoke(id, name);
         AddOuterTab("Groups", "group", _groupsPanel);
+        _recentPanel = new RecentPanel();
+        _recentPanel.OnOpenRequested = OpenRecentConversation;
+        _recentPanel.OnHistoryRequested = OpenHistoryFor;
+        _recentPanel.OnRemoveRequested = (kind, id) => { if (_recent.Remove(kind, id)) SaveAndRefreshRecent(); };
+        _recentPanel.OnClearRequested = () => { _recent.Clear(); SaveAndRefreshRecent(); };
+        AddOuterTab(L10n.Tr("ui.recent.tab"), "history", _recentPanel);
 
         AddChatTab("main", "Main", ChatLogKind.Local, closeable: false);
         SelectChatTab(_chatTabs[0]);
@@ -467,7 +485,67 @@ public partial class ChatWindow : SLNGWindow
         var now = DateTime.Now;
         AppendLineToTab(tab, FormatChatLine(now, sender, message, senderAgentId));
         _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, sender, message, now);
+        TrackRecent(tab, now);
     }
+
+    // ---- FEAT-UI-15: Recent conversations --------------------------------------------------------
+
+    /// <summary>Points the Recent list at the file for the logger's current folder and loads it. Called
+    /// at login (the folder changes with the account); with no folder yet the list is simply empty.</summary>
+    private void AttachRecentList()
+    {
+        _recentPath = PersistRecent ? RecentFilePath(_logger.RootDirectory) : null;
+        _recent.Load(_recentPath);
+        RefreshRecentPanel();
+    }
+
+    private static string? RecentFilePath(string? logDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(logDirectory)) return null;
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(logDirectory));
+        return System.IO.Path.Combine(ProjectSettings.GlobalizePath("user://"), "recent_conversations",
+            Convert.ToHexString(hash, 0, 8) + ".json");
+    }
+
+    private void TrackRecent(ChatTab tab, DateTime nowLocal)
+    {
+        Guid? id = tab.TargetAgentId ?? tab.TargetGroupId;
+        if (id == null) return; // nearby chat
+
+        // Saved only when the order or a name changed -- not for every line of a running chat.
+        if (_recent.Touch(tab.LogKind, id.Value, tab.DisplayName, nowLocal.ToUniversalTime()))
+            SaveAndRefreshRecent();
+        else if (_recentPanel.IsVisibleInTree())
+            RefreshRecentPanel();
+    }
+
+    private void SaveAndRefreshRecent()
+    {
+        _recent.Save(_recentPath);
+        RefreshRecentPanel();
+    }
+
+    private void RefreshRecentPanel()
+    {
+        if (_recentPanel != null && _logger != null) _recentPanel.SetItems(_recent.Items, _logger);
+    }
+
+    private void OpenRecentConversation(ChatLogKind kind, Guid id, string name)
+    {
+        if (kind == ChatLogKind.Group) OpenOrFocusGroupTab(id, name);
+        else OpenOrFocusImTab(id, name);
+    }
+
+    private void OpenHistoryFor(ChatLogKind kind, string name)
+    {
+        var win = new ChatHistoryWindow();
+        GetParent().AddChild(win);
+        win.Open(_logger, kind, name, name);
+    }
+
+    /// <summary>Selftest: the Recent list as the window holds it.</summary>
+    internal IReadOnlyList<RecentConversation> RecentForSelfTest => _recent.Items;
+    internal RecentPanel RecentPanelForSelfTest => _recentPanel;
 
     /// <summary>FEAT-UI-13: a resident's name in the log is a [url=avatar:&lt;guid&gt;] link;
     /// clicking it opens their profile.</summary>
@@ -1164,6 +1242,7 @@ public partial class ChatWindow : SLNGWindow
             tab.Page.Visible = selected;
             ApplyOuterTabStyle(tab, selected);
         }
+        if (selectedPage == _recentPanel) RefreshRecentPanel(); // previews are read when the page is shown
     }
 
     /// <summary>FEAT-UI-43: which of the window's three pages the keyboard shortcuts address. The

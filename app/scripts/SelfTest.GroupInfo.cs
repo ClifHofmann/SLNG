@@ -32,6 +32,7 @@ public static partial class SelfTest
         var founderId = Guid.NewGuid();
         bool restorePersist = UI.GroupMuteSettings.Persist;
         UI.GroupMuteSettings.Persist = false;
+        UI.ChatWindow.PersistRecent = false; // FEAT-UI-15: same reason -- the chat below would write user://
         var created = new List<Node>();
         var problems = new List<string>();
         void Expect(string what, bool ok) { if (!ok) problems.Add(what); }
@@ -193,6 +194,7 @@ public static partial class SelfTest
         {
             UI.GroupMuteSettings.SetMuted(groupId, false);
             UI.GroupMuteSettings.Persist = restorePersist;
+            UI.ChatWindow.PersistRecent = true;
             foreach (var n in created)
                 if (GodotObject.IsInstanceValid(n)) n.QueueFree();
         }

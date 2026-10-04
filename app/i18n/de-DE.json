@@ -306,6 +306,19 @@
       "decline": "Ablehnen",
       "send_failed": "Die Antwort konnte gerade nicht gesendet werden. Bitte versuche es gleich noch einmal."
     },
+    "recent": {
+      "tab": "Verlauf",
+      "hint": "Deine letzten Gespräche. Klick öffnet sie wieder.",
+      "empty": "Noch keine Gespräche. Instant Messages und Gruppenchats, die du sendest oder erhältst, erscheinen hier, damit du sie später wieder öffnen kannst.",
+      "clear": "Leeren",
+      "clear_tooltip": "Alle Gespräche aus dieser Liste entfernen. Die Chat-Protokolle auf der Festplatte bleiben.",
+      "kind_im": "Instant Message",
+      "kind_group": "Gruppenchat",
+      "open_tooltip": "Dieses Gespräch öffnen",
+      "history_tooltip": "Den ganzen Verlauf zeigen",
+      "remove_tooltip": "Aus der Liste entfernen (das Chat-Protokoll bleibt)",
+      "yesterday": "Gestern"
+    },
     "groups": {
       "filter": "Gruppen filtern...",
       "empty": "Du bist noch in keiner Gruppe.",

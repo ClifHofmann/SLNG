@@ -306,6 +306,19 @@
       "decline": "Decline",
       "send_failed": "Could not answer right now. Please try again in a moment."
     },
+    "recent": {
+      "tab": "Recent",
+      "hint": "Your last conversations. Click one to reopen it.",
+      "empty": "No conversations yet. Instant messages and group chats you send or receive appear here, so you can come back to them later.",
+      "clear": "Clear",
+      "clear_tooltip": "Remove all conversations from this list. The chat logs on disk stay.",
+      "kind_im": "Instant message",
+      "kind_group": "Group chat",
+      "open_tooltip": "Open this conversation",
+      "history_tooltip": "Show the full history",
+      "remove_tooltip": "Remove from this list (the chat log stays)",
+      "yesterday": "Yesterday"
+    },
     "groups": {
       "filter": "Filter groups...",
       "empty": "You haven't joined any groups yet.",
