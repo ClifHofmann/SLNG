@@ -793,6 +793,7 @@
       "someone": "Someone"
     },
     "chat": {
+      "peer_typing": "{0} is typing…",
       "friend_online": "{0} is online.",
       "friend_offline": "{0} is offline.",
       "resize_list_tip": "Drag to resize the name list",

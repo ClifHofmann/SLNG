@@ -651,6 +651,20 @@ public sealed partial class GridSession
             return;
         }
 
+        // "Somebody is typing": its own dialog (41/42) with the text "typing". Only the 1:1 kind is passed on --
+        // a typing indicator inside a conference would otherwise open a 1:1 conversation with the typist.
+        if (e.IM.Dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping)
+        {
+            Guid typist = e.IM.FromAgentID.Guid;
+            Guid self = _client.Self.AgentID.Guid;
+            if (typist != Guid.Empty && typist != self && SessionIds.IsPeerToPeer(e.IM.IMSessionID.Guid, self, typist))
+            {
+                InstantMessageTyping?.Invoke(this, new InstantMessageTypingEvent(
+                    typist, e.IM.FromAgentName ?? string.Empty, e.IM.Dialog == InstantMessageDialog.StartTyping));
+            }
+            return;
+        }
+
         // An ad-hoc conference: several people, no group. Its own session, answered in the same session.
         if (e.IM.Dialog == InstantMessageDialog.SessionSend)
         {

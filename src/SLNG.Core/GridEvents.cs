@@ -137,6 +137,11 @@ public record GroupChatMessageEvent(Guid GroupId, Guid FromAgentId, string FromA
 /// fetch). Never raised for an avatar with no picture.</summary>
 public record ProfileImageEvent(Guid AgentId, Guid ImageId);
 
+/// <summary>Somebody started or stopped typing to us in a 1:1 instant message (<c>IM_TYPING_START</c> /
+/// <c>IM_TYPING_STOP</c>). Carries no text; the reference viewer shows it as an indicator in the conversation and
+/// opens the conversation on the first one.</summary>
+public record InstantMessageTypingEvent(Guid FromAgentId, string FromAgentName, bool Typing);
+
 /// <summary>One message in an ad-hoc conference session (several people, no group): an instant message of
 /// dialog <c>SessionSend</c> whose session id is none of the agent's groups. Replies go back into the same
 /// session (<c>GridSession.SendConferenceMessage</c>).</summary>

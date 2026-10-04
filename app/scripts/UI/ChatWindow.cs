@@ -83,6 +83,10 @@ public partial class ChatWindow : SLNGWindow
         public Label? PresenceDot;
         public HBoxContainer Row = null!;
         public bool? Online;
+        // The other side is typing to us (IM tabs): until when (Time.GetTicksMsec; a stop that never arrives must
+        // not leave the indicator on for ever), and the mark in the row.
+        public ulong PeerTypingUntilMsec;
+        public Label? TypingMark;
         public PanelContainer RowPanel = null!;
         public Label UnreadLabel = null!;
         public ChatLogKind LogKind;
@@ -272,6 +276,7 @@ public partial class ChatWindow : SLNGWindow
             _session.NameResolved -= OnDisplayNameResolved;
             _session.GroupsUpdated -= OnGroupsUpdatedForNames;
             _session.FriendStatusChanged -= OnFriendStatusChanged;
+            _session.InstantMessageTyping -= OnPeerTypingEvent;
         }
         _session = session;
         BindIcons(session);
@@ -279,6 +284,7 @@ public partial class ChatWindow : SLNGWindow
         _session.NameResolved += OnDisplayNameResolved; // a tab opened before its name was known
         _session.GroupsUpdated += OnGroupsUpdatedForNames; // ...or before the membership list, which carries group names, arrived
         _session.FriendStatusChanged += OnFriendStatusChanged;
+        _session.InstantMessageTyping += OnPeerTypingEvent;
         if (Guid.TryParse(session.AgentId, out var ownId)) session.RequestDisplayName(ownId); // own lines show it too
         _friendsPanel.Initialize(session);
         _groupsPanel.Initialize(session);
@@ -299,6 +305,7 @@ public partial class ChatWindow : SLNGWindow
             _session.NameResolved -= OnDisplayNameResolved;
             _session.GroupsUpdated -= OnGroupsUpdatedForNames;
             _session.FriendStatusChanged -= OnFriendStatusChanged;
+            _session.InstantMessageTyping -= OnPeerTypingEvent;
         }
         GroupMuteSettings.MuteChanged -= OnGroupMuteChanged;
         base._ExitTree();
@@ -353,6 +360,8 @@ public partial class ChatWindow : SLNGWindow
 
     public override void _Process(double delta)
     {
+        ExpirePeerTyping();
+
         // Detect the user scrolling away from (or back to) the bottom of the live log so we can
         // pause auto-follow while they're reading history, per the M5-3 UX decision -- there's no
         // scroll signal that only fires on user-driven movement, so this polls once a frame like
@@ -387,6 +396,7 @@ public partial class ChatWindow : SLNGWindow
     public void AppendIncomingInstantMessage(Guid fromAgentId, string fromAgentName, string message)
     {
         var tab = GetOrCreateImTab(fromAgentId, fromAgentName);
+        SetPeerTyping(tab, false); // a message is the end of typing, whether or not the stop arrived
         AppendMessageToTab(tab, fromAgentName, message, fromAgentId);
     }
 
@@ -999,6 +1009,12 @@ public partial class ChatWindow : SLNGWindow
         };
         rightVBox.AddChild(_jumpToLatestButton);
 
+        // "Name is typing…" -- the other side's typing indicator, between the log and the input.
+        _peerTypingLabel = new Label { Visible = false, ClipText = true };
+        _peerTypingLabel.AddThemeFontSizeOverride("font_size", MetaFontSize);
+        _peerTypingLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
+        rightVBox.AddChild(_peerTypingLabel);
+
         var inputRow = new HBoxContainer();
         inputRow.AddThemeConstantOverride("separation", 4);
         rightVBox.AddChild(inputRow);
@@ -1302,6 +1318,93 @@ public partial class ChatWindow : SLNGWindow
         _conversationList.MoveChild(dragged.RowPanel, rowIndex);
     }
 
+    // ---- the other side is typing ----------------------------------------------------------------------
+
+    private Label _peerTypingLabel = null!;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<InstantMessageTypingEvent> _peerTypingQueue = new();
+    private int _peerTypingDrainQueued;
+
+    /// <summary>How long a "typing" is believed without a refresh or a stop (the viewer re-sends while typing;
+    /// a lost stop must not leave the indicator on).</summary>
+    private const ulong PeerTypingTimeoutMsec = 10_000;
+
+    /// <summary>A typing start/stop arrived (network thread): queued, applied on the main thread.</summary>
+    private void OnPeerTypingEvent(object? sender, InstantMessageTypingEvent e)
+    {
+        _peerTypingQueue.Enqueue(e);
+        if (System.Threading.Interlocked.Exchange(ref _peerTypingDrainQueued, 1) == 0)
+            CallDeferred(nameof(DrainPeerTyping));
+    }
+
+    private void DrainPeerTyping()
+    {
+        System.Threading.Volatile.Write(ref _peerTypingDrainQueued, 0);
+        while (_peerTypingQueue.TryDequeue(out var e))
+        {
+            if (e.Typing)
+            {
+                // As the reference viewer does: the conversation opens the moment somebody starts typing, before
+                // anything has been sent. It does not take focus or raise the unread badge.
+                string name = e.FromAgentName;
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    // The indicator may not carry a name; the cache may know it, else the tab is titled with the id
+                    // and RefreshNames names it when the answer to this request arrives.
+                    if (_session == null || !_session.TryGetCachedName(e.FromAgentId, out name!))
+                    {
+                        name = e.FromAgentId.ToString();
+                        _session?.RequestAvatarName(e.FromAgentId);
+                    }
+                }
+                var tab = GetOrCreateImTab(e.FromAgentId, name);
+                SetPeerTyping(tab, true);
+            }
+            else
+            {
+                var tab = _chatTabs.Find(t => t.TargetAgentId == e.FromAgentId);
+                if (tab != null) SetPeerTyping(tab, false);
+            }
+        }
+    }
+
+    private void SetPeerTyping(ChatTab tab, bool typing)
+    {
+        bool was = tab.PeerTypingUntilMsec != 0;
+        tab.PeerTypingUntilMsec = typing ? Time.GetTicksMsec() + PeerTypingTimeoutMsec : 0;
+        if (was == typing) { if (typing) UpdatePeerTypingLabel(); return; } // a refresh only moves the deadline
+
+        // The mark in the row: a small "…" after the name, which also shows for a conversation that is not on screen.
+        if (typing && tab.TypingMark == null)
+        {
+            tab.TypingMark = new Label { Text = "…", TooltipText = L10n.TrFormat("ui.chat.peer_typing", tab.DisplayName) };
+            tab.TypingMark.AddThemeFontSizeOverride("font_size", MetaFontSize);
+            tab.TypingMark.AddThemeColorOverride("font_color", new Color(0.45f, 0.72f, 0.95f));
+            tab.Row.AddChild(tab.TypingMark);
+            tab.Row.MoveChild(tab.TypingMark, tab.Label.GetIndex() + 1);
+        }
+        if (tab.TypingMark != null) tab.TypingMark.Visible = typing;
+        UpdatePeerTypingLabel();
+    }
+
+    /// <summary>"Name is typing…" under the log of the conversation on screen.</summary>
+    private void UpdatePeerTypingLabel()
+    {
+        if (_peerTypingLabel == null) return;
+        var tab = _activeChatTab;
+        bool show = tab != null && tab.PeerTypingUntilMsec != 0;
+        _peerTypingLabel.Visible = show;
+        if (show) _peerTypingLabel.Text = L10n.TrFormat("ui.chat.peer_typing", tab!.DisplayName);
+    }
+
+    private void ExpirePeerTyping()
+    {
+        ulong now = Time.GetTicksMsec();
+        foreach (var tab in _chatTabs)
+        {
+            if (tab.PeerTypingUntilMsec != 0 && now >= tab.PeerTypingUntilMsec) SetPeerTyping(tab, false);
+        }
+    }
+
     private static Label MakePresenceDot(bool online)
     {
         var dot = new Label { Text = "●", VerticalAlignment = VerticalAlignment.Center };
@@ -1511,6 +1614,7 @@ public partial class ChatWindow : SLNGWindow
         tab.FollowingBottom = true;
         ScrollLogToBottom();
         ShowJumpToLatest(false);
+        UpdatePeerTypingLabel();
     }
 
     private void AppendLineToTab(ChatTab tab, string bbcodeLine, bool countUnread = true)
