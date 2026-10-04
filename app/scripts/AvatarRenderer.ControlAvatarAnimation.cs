@@ -564,7 +564,7 @@ public partial class AvatarRenderer
             Set((idA, 1), (idE, 1));
             Expect(player.GetAnimationTime(idA) != null && player.GetAnimationTime(idE) == null,
                 "an animation that will not load must not stop the others");
-            Expect(_animationsReportedUnavailable.Contains(idE), "an animation that will not load must be reported");
+            Expect(_animationsReportedUnavailable.ContainsKey(idE), "an animation that will not load must be reported");
 
             // A re-rig (a LOD swap) replaces the meshes and keeps the skeleton: nothing restarts.
             Frame(0.3f);
