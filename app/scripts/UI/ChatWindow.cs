@@ -265,11 +265,13 @@ public partial class ChatWindow : SLNGWindow
         {
             _session.DisplayNameResolved -= OnDisplayNameResolved;
             _session.NameResolved -= OnDisplayNameResolved;
+            _session.GroupsUpdated -= OnGroupsUpdatedForNames;
         }
         _session = session;
         BindIcons(session);
         _session.DisplayNameResolved += OnDisplayNameResolved;
         _session.NameResolved += OnDisplayNameResolved; // a tab opened before its name was known
+        _session.GroupsUpdated += OnGroupsUpdatedForNames; // ...or before the membership list, which carries group names, arrived
         if (Guid.TryParse(session.AgentId, out var ownId)) session.RequestDisplayName(ownId); // own lines show it too
         _friendsPanel.Initialize(session);
         _groupsPanel.Initialize(session);
@@ -288,6 +290,7 @@ public partial class ChatWindow : SLNGWindow
         {
             _session.DisplayNameResolved -= OnDisplayNameResolved;
             _session.NameResolved -= OnDisplayNameResolved;
+            _session.GroupsUpdated -= OnGroupsUpdatedForNames;
         }
         GroupMuteSettings.MuteChanged -= OnGroupMuteChanged;
         base._ExitTree();
@@ -519,8 +522,12 @@ public partial class ChatWindow : SLNGWindow
         // Fall back to the shared name cache, then the raw id: an incoming message names the
         // speaker, not the group, so groupName can be empty when a tab is opened by a message.
         string display = groupName;
+        if (display == groupId.ToString()) display = ""; // the id's text is what "unknown" looks like, not a name
         if (string.IsNullOrWhiteSpace(display) && _session != null)
-            _session.TryGetGroupName(groupId, out display); // the membership list first, then the name cache
+        {
+            // The membership list first, then the name cache. A miss answers the id's text, which is not a name.
+            display = _session.TryGetGroupName(groupId, out var known) ? known : "";
+        }
         if (string.IsNullOrWhiteSpace(display))
         {
             display = groupId.ToString();
@@ -629,7 +636,12 @@ public partial class ChatWindow : SLNGWindow
 
     /// <summary>Fires on a network thread for every Display Name the grid answers -- usually many in a
     /// burst. One deferred refresh per burst, not one per name.</summary>
-    private void OnDisplayNameResolved(object? sender, NameResolvedEvent e)
+    private void OnDisplayNameResolved(object? sender, NameResolvedEvent e) => QueueNamesRefresh();
+
+    /// <summary>The membership list arrived or changed (network thread): group names come with it.</summary>
+    private void OnGroupsUpdatedForNames(object? sender, GroupsUpdatedEvent e) => QueueNamesRefresh();
+
+    private void QueueNamesRefresh()
     {
         if (System.Threading.Interlocked.Exchange(ref _namesRefreshQueued, 1) == 0)
             CallDeferred(nameof(RefreshNames));

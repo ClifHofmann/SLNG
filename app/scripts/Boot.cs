@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.43-alpha";
+    public const string AppVersion = "v0.26.44-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4163,8 +4163,10 @@ public partial class Boot : Control
         // LibreMetaverse network thread. Guids travel as strings (not Variant-safe). The group
         // NAME is resolved here rather than in ChatWindow because the shared name cache lives on
         // GridSession; an incoming group message names only the speaker.
+        // TryGetGroupName answers the id's TEXT when it does not know the name; that is not a name, and handed on
+        // as one it made the tab "a937ce20-..." and kept ChatWindow from ever asking for the real one.
         string groupName = "";
-        _session?.TryGetGroupName(e.GroupId, out groupName);
+        if (_session == null || !_session.TryGetGroupName(e.GroupId, out groupName)) groupName = "";
         CallDeferred(nameof(AppendGroupChatMessage), e.GroupId.ToString(), groupName ?? "",
             e.FromAgentId.ToString(), e.FromAgentName, e.Message);
     }
