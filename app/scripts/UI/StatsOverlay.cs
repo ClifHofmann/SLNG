@@ -299,7 +299,8 @@ public partial class StatsOverlay : PanelContainer
             $"otherMs={FrameTimeline.OtherMs:F1} preFlushMs={FrameTimeline.PreFlushMs:F1} " +
             $"scriptsMs={FrameTimeline.ScriptsMs:F1} postFlushMs={FrameTimeline.PostFlushMs:F1} drawMs={FrameTimeline.DrawMs:F1} " +
             $"renderCpuMs={RenderTimes.CpuMs:F1} renderGpuMs={RenderTimes.GpuMs:F1} setupMs={RenderTimes.SetupCpuMs:F1} " +
-            $"views={RenderTimes.Describe(compact: true)} draws={_lastDrawCalls:F0} tris={_lastPrimitives / 1000.0:F0}k " +
+            $"views={RenderTimes.Describe(compact: true)} draws={_lastDrawCalls:F0} drawsScene={RenderTimes.MainVisibleDraws} drawsShadow={RenderTimes.MainShadowDraws} " +
+            $"drawsCanvas={RenderTimes.MainCanvasDraws} tris={_lastPrimitives / 1000.0:F0}k " +
             $"vramMB={_lastVideoMb:F0} csMB={_lastManagedMb:F0} gc0ps={_gc0Rate:F0} gc1ps={_gc1Rate:F0} " +
             $"queue={_lastQueueDepth} queuePeak={_lastQueuePeak} " +
             $"nodes={_lastNodes:F0} vsync={DisplayServer.WindowGetVsyncMode()}");
@@ -423,7 +424,8 @@ public partial class StatsOverlay : PanelContainer
         double primitives = Performance.GetMonitor(Performance.Monitor.RenderTotalPrimitivesInFrame);
         double objects = Performance.GetMonitor(Performance.Monitor.RenderTotalObjectsInFrame);
         _lastDrawCalls = drawCalls; _lastPrimitives = primitives;
-        SetValue("Draw", $"{drawCalls:F0} calls   ·   {primitives / 1_000_000.0:F2}M tris   ·   {objects:F0} obj",
+        SetValue("Draw", $"{drawCalls:F0} calls (scene {RenderTimes.MainVisibleDraws} · shadow {RenderTimes.MainShadowDraws})   ·   " +
+                         $"{primitives / 1_000_000.0:F2}M tris   ·   {objects:F0} obj",
                  drawCalls > 5000 ? Warn : drawCalls > 2500 ? Caution : Good);
 
         double videoMb = Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0);

@@ -50,6 +50,15 @@ public static class RenderTimes
 
     public static double GpuMs { get; private set; }
 
+    /// <summary>BUG-PERF-05 round four: the main view's draw calls split by pass, as of the last
+    /// window's end. Round three put ~13 ms of a 20 ms frame into draw submission on the CPU
+    /// (viewport render plus the ~4.6 ms of the draw that no viewport measures), so the next
+    /// question is which pass the ~11k draws belong to: the scene (depth prepass and colour pass
+    /// both count here) or the shadow cascades -- the two have different levers.</summary>
+    public static int MainVisibleDraws { get; private set; }
+    public static int MainShadowDraws { get; private set; }
+    public static int MainCanvasDraws { get; private set; }
+
     /// <summary>Starts measuring <paramref name="viewport"/> under <paramref name="name"/>. A second
     /// call with the same name replaces the viewport, so a recreated HUD viewport is not counted
     /// twice.</summary>
@@ -100,6 +109,14 @@ public static class RenderTimes
         CpuMs = cpu;
         GpuMs = gpu;
         SetupCpuMs = _setupSum / _frames;
+        foreach (var e in _entries)
+        {
+            if (e.Name != "main" || e.Viewport == null || !GodotObject.IsInstanceValid(e.Viewport)) continue;
+            var rid = e.Viewport.GetViewportRid();
+            MainVisibleDraws = DrawCalls(rid, RenderingServer.ViewportRenderInfoType.Visible);
+            MainShadowDraws = DrawCalls(rid, RenderingServer.ViewportRenderInfoType.Shadow);
+            MainCanvasDraws = DrawCalls(rid, RenderingServer.ViewportRenderInfoType.Canvas);
+        }
         _setupSum = 0;
         _frames = 0;
     }
@@ -122,6 +139,9 @@ public static class RenderTimes
         }
         return sb.Length > 0 ? sb.ToString() : "-";
     }
+
+    private static int DrawCalls(Rid viewport, RenderingServer.ViewportRenderInfoType pass) =>
+        RenderingServer.ViewportGetRenderInfo(viewport, pass, RenderingServer.ViewportRenderInfo.DrawCallsInFrame);
 
     private static bool IsRendering(Viewport? viewport)
     {
