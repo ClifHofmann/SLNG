@@ -50,6 +50,7 @@ public partial class ChatWindow : SLNGWindow
     private VBoxContainer _conversationList = null!;
     private RichTextLabel _logView = null!;
     private Button _jumpToLatestButton = null!;
+    private double _lastLogPage;
     private LineEdit _inputEdit = null!;
     private Button _sendButton = null!;
     private Font _iconFont = null!;
@@ -371,6 +372,17 @@ public partial class ChatWindow : SLNGWindow
         if (_activeChatTab == null) return;
         var vscroll = _logView.GetVScrollBar();
         if (vscroll == null || vscroll.MaxValue <= vscroll.Page) return;
+
+        // The log's visible height changes by itself (the "is typing" line appearing under it, a window resize).
+        // That moves the bottom away from the scroll position without the user scrolling, so it must not end
+        // auto-follow: keep following by scrolling down again.
+        bool pageChanged = Math.Abs(vscroll.Page - _lastLogPage) > 0.5;
+        _lastLogPage = vscroll.Page;
+        if (pageChanged && _activeChatTab.FollowingBottom)
+        {
+            ScrollLogToBottom();
+            return;
+        }
 
         bool atBottom = vscroll.Value >= vscroll.MaxValue - vscroll.Page - 2.0;
         if (atBottom && !_activeChatTab.FollowingBottom)
