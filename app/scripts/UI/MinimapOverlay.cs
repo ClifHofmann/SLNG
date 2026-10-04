@@ -753,7 +753,7 @@ public partial class MinimapOverlay : SLNGWindow
 
     private IReadOnlyList<Entity> AvatarEntities()
     {
-        long now = Environment.TickCount64;
+        long now = System.Environment.TickCount64;
         if (!_avatarsScanned || now - _avatarScanAtMsec >= AvatarScanIntervalMsec)
         {
             _avatarsScanned = true;
