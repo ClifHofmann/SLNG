@@ -312,6 +312,11 @@ internal sealed partial class RadarCanvas : Control
 
     public override void _Draw()
     {
+        using (MainThreadPhase.Enter("radar.draw")) DrawRadar();
+    }
+
+    private void DrawRadar()
+    {
         var size = Size;
         DrawRect(new Rect2(Vector2.Zero, size), new Color(0.02f, 0.05f, 0.03f, 0.9f));
         DrawRect(new Rect2(Vector2.Zero, size), new Color(0.3f, 0.9f, 0.5f, 0.4f), false, 1.5f);
@@ -407,7 +412,10 @@ internal sealed partial class RadarCanvas : Control
         DrawRect(new Rect2(NorthUp(0, _regionHeight), new Vector2(_regionWidth, _regionHeight) * scale),
             new Color(0.3f, 0.9f, 0.5f, 0.25f), false, 1f);
 
-        if (View.ShowObjects) DrawObjects(northUp, centre, scale);
+        if (View.ShowObjects)
+        {
+            using (MainThreadPhase.Enter("radar.draw.objects")) DrawObjects(northUp, centre, scale);
+        }
 
         DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
     }
@@ -441,7 +449,9 @@ internal sealed partial class RadarCanvas : Control
                 var rect = new Rect2(topLeft, new Vector2(obj.Radius * 2f, obj.Radius * 2f) * pixelsPerMetre);
 
                 DrawRect(rect, colour with { A = (obj.IsYours ? YourObjectFillAlpha : OtherObjectFillAlpha) * phantom });
-                DrawRect(rect, colour with { A = ObjectOutlineAlpha * phantom }, false, 1f);
+                // The outline only for your own prims: it is a second draw call per prim, every frame, and the
+                // neighbours' squares are told apart well enough by their fill.
+                if (obj.IsYours) DrawRect(rect, colour with { A = ObjectOutlineAlpha * phantom }, false, 1f);
             }
         }
     }

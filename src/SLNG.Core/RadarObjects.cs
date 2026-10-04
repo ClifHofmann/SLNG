@@ -42,6 +42,11 @@ public static class RadarObjects
     /// <summary>How opaque a phantom prim is drawn, 0..1 (the viewer's <c>FSNetMapPhantomOpacity</c> of 90).</summary>
     public const float PhantomOpacity = 0.9f;
 
+    /// <summary>The most prims the map draws. Every prim is two draw calls from managed code on every frame the
+    /// radar is open, so on a region of mesh scenery an unbounded layer costs milliseconds per frame -- the larger
+    /// ones are what shape the map anyway. See <see cref="LimitForDrawing"/>.</summary>
+    public const int MaxDrawnObjects = 600;
+
     /// <summary>The map's object layer is looked at again no more often than this.</summary>
     public const double MinScanSeconds = 0.5;
 
@@ -99,6 +104,28 @@ public static class RadarObjects
     /// height. With no known height there is nothing to measure against, so nothing is left out.</summary>
     public static bool InVerticalRange(float objectZ, float? viewerZ)
         => viewerZ is not { } z || MathF.Abs(objectZ - z) <= MaxVerticalDistanceMetres;
+
+    /// <summary>Cuts <paramref name="objects"/> down to at most <paramref name="max"/> entries, in place: the prims
+    /// you own first (they are what you look for, however small), then the biggest of the rest. Anything under the
+    /// limit is left exactly as it is.</summary>
+    public static void LimitForDrawing(List<RadarObject> objects, int max = MaxDrawnObjects)
+    {
+        if (objects.Count <= max) return;
+
+        var yours = new List<RadarObject>();
+        var others = new List<RadarObject>();
+        foreach (var o in objects) (o.IsYours ? yours : others).Add(o);
+
+        yours.Sort((a, b) => b.Radius.CompareTo(a.Radius));
+        others.Sort((a, b) => b.Radius.CompareTo(a.Radius));
+
+        int keepYours = Math.Min(yours.Count, max);
+        int keepOthers = Math.Max(0, max - keepYours);
+
+        objects.Clear();
+        for (int i = 0; i < keepOthers && i < others.Count; i++) objects.Add(others[i]);
+        for (int i = 0; i < keepYours; i++) objects.Add(yours[i]);
+    }
 
     /// <summary>How long to wait before the next scan, given how long the last one took: the minimum
     /// while scans are cheap, longer while they are not, never beyond the maximum.</summary>

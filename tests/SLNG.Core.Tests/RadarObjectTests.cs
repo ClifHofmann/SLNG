@@ -372,4 +372,42 @@ public class RadarObjectTests
     {
         Assert.True(new RadarViewSettings().ShowObjects);
     }
+
+    private static RadarObject Obj(float radius, bool yours = false) => new(Vector2.Zero, radius, yours, false, false);
+
+    [Fact]
+    public void A_layer_within_the_limit_is_left_alone()
+    {
+        var list = new List<RadarObject> { Obj(3), Obj(1), Obj(2, yours: true) };
+        var before = list.ToArray();
+        RadarObjects.LimitForDrawing(list, max: 3);
+        Assert.Equal(before, list);
+    }
+
+    [Fact]
+    public void Over_the_limit_the_prims_you_own_stay_and_the_biggest_others_fill_the_rest()
+    {
+        var list = new List<RadarObject>();
+        for (int i = 1; i <= 100; i++) list.Add(Obj(i));            // 1..100 m others
+        list.Add(Obj(0.1f, yours: true));                           // a tiny prim of yours
+        RadarObjects.LimitForDrawing(list, max: 10);
+
+        Assert.Equal(10, list.Count);
+        Assert.Contains(list, o => o.IsYours);                       // kept although tiny
+        var others = list.FindAll(o => !o.IsYours);
+        Assert.Equal(9, others.Count);
+        Assert.All(others, o => Assert.True(o.Radius >= 92f));       // the 9 biggest: 100..92
+    }
+
+    [Fact]
+    public void More_of_your_own_than_the_limit_keeps_the_biggest_of_them()
+    {
+        var list = new List<RadarObject>();
+        for (int i = 1; i <= 20; i++) list.Add(Obj(i, yours: true));
+        list.Add(Obj(50));
+        RadarObjects.LimitForDrawing(list, max: 5);
+
+        Assert.Equal(5, list.Count);
+        Assert.All(list, o => Assert.True(o.IsYours && o.Radius >= 16f));
+    }
 }

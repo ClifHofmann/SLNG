@@ -563,7 +563,9 @@ public partial class MinimapOverlay : SLNGWindow
             height = terrain.Height;
         }
 
+        var phase = MainThreadPhase.Enter("radar.roster");
         BuildRoster(regionHandle, out var ownPos, out var heading);
+        phase.Dispose();
         _ownPosition = ownPos;
         if (ownPos is { } own) _ownZ = own.Z;
 
@@ -598,12 +600,18 @@ public partial class MinimapOverlay : SLNGWindow
         // A refresh is due on the timer, or sooner when a name or a profile has just arrived.
         _tableTimer -= (float)delta;
         if (System.Threading.Interlocked.Exchange(ref _dataChanged, 0) != 0) _tableTimer = 0f;
-        if (_tableTimer <= 0f) RefreshTable();
+        if (_tableTimer <= 0f)
+        {
+            using (MainThreadPhase.Enter("radar.table")) RefreshTable();
+        }
 
-        BuildTiles(regionHandle, center);
-        BuildDots();
-        BuildObjects(regionHandle, (float)delta);
-        _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _dots, _selectedAgentId, _tiles, _objects);
+        // Named so that a [PhaseCost] line says where an open radar spends the frame (radar.* in godot.log's perf
+        // sidecar): the roster, the table, the tiles and dots, the object scan, the canvas hand-over and its draw.
+        using (MainThreadPhase.Enter("radar.tiles")) BuildTiles(regionHandle, center);
+        using (MainThreadPhase.Enter("radar.dots")) BuildDots();
+        using (MainThreadPhase.Enter("radar.objects")) BuildObjects(regionHandle, (float)delta);
+        using (MainThreadPhase.Enter("radar.update"))
+            _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _dots, _selectedAgentId, _tiles, _objects);
     }
 
     /// <summary>The object layer: what <see cref="RadarObjects.Collect"/> says belongs on the map, looked at
@@ -633,6 +641,7 @@ public partial class MinimapOverlay : SLNGWindow
 
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         RadarObjects.Collect(_world, regionHandle, _ownZ, _view.ObjectMinSizeMetres, _objects);
+        RadarObjects.LimitForDrawing(_objects); // a bounded number of draw calls per frame, whatever the region holds
         double seconds = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalSeconds;
         _objectTimer = (float)RadarObjects.NextScanDelaySeconds(seconds);
     }
@@ -764,6 +773,9 @@ public partial class MinimapOverlay : SLNGWindow
         return _avatarEntities;
     }
 
+    private readonly Dictionary<Guid, long> _nameAskedAtMsec = new();
+    private const long NameRequestIntervalMsec = 5000;
+
     private static string AvatarDisplayName(AvatarComponent avatar)
     {
         // "Oz", not "Oz Resident": the default last name is left off, as in the reference viewers.
@@ -779,7 +791,15 @@ public partial class MinimapOverlay : SLNGWindow
         if (_session == null) return agentId.ToString();
         if (_session.TryGetCachedName(agentId, out var name) && !string.IsNullOrWhiteSpace(name))
             return AvatarNames.WithoutDefaultLastName(name);
-        _session.RequestAvatarName(agentId);
+
+        // Asked for at most every few seconds per avatar: the roster is rebuilt every frame, and a name that does
+        // not come (or not at once) would otherwise be a request packet per frame per avatar.
+        long now = System.Environment.TickCount64;
+        if (!_nameAskedAtMsec.TryGetValue(agentId, out long askedAt) || now - askedAt >= NameRequestIntervalMsec)
+        {
+            _nameAskedAtMsec[agentId] = now;
+            _session.RequestAvatarName(agentId);
+        }
         return agentId.ToString();
     }
 
