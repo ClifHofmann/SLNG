@@ -29,6 +29,9 @@ public partial class RecentPanel : Control
     /// <summary>Wired by ChatWindow: the name to show for a row (the Display Name when there is one).
     /// The entry's own name stays the legacy name the log file is keyed by.</summary>
     public Func<RecentConversation, string>? ShownName;
+    /// <summary>Wired by ChatWindow: the avatar's profile picture for an IM row, or null while it has none (the
+    /// row then shows the plain kind glyph).</summary>
+    public Func<RecentConversation, Texture2D?>? IconFor;
     /// <summary>Wired by ChatWindow: reopen one conversation.</summary>
     public Action<ChatLogKind, Guid, string>? OnOpenRequested;
     /// <summary>Wired by ChatWindow: show a conversation's full on-disk history.</summary>
@@ -143,14 +146,30 @@ public partial class RecentPanel : Control
         inner.AddThemeConstantOverride("separation", 6);
         row.AddChild(inner);
 
-        var kindLabel = new Label
+        var picture = IconFor?.Invoke(item);
+        if (picture != null)
         {
-            Text = item.Kind == ChatLogKind.Group ? "👥" : "💬",
-            TooltipText = L10n.Tr(item.Kind == ChatLogKind.Group ? "ui.recent.kind_group" : "ui.recent.kind_im"),
-            SizeFlagsVertical = SizeFlags.ShrinkCenter,
-        };
-        kindLabel.AddThemeFontSizeOverride("font_size", ChatWindow.BodyFontSize);
-        inner.AddChild(kindLabel);
+            inner.AddChild(new TextureRect
+            {
+                Texture = picture,
+                CustomMinimumSize = new Vector2(AvatarIcons.IconSize, AvatarIcons.IconSize),
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+                SizeFlagsVertical = SizeFlags.ShrinkCenter,
+                TooltipText = L10n.Tr("ui.recent.kind_im"),
+            });
+        }
+        else
+        {
+            var kindLabel = new Label
+            {
+                Text = item.Kind == ChatLogKind.Group ? "👥" : "💬",
+                TooltipText = L10n.Tr(item.Kind == ChatLogKind.Group ? "ui.recent.kind_group" : "ui.recent.kind_im"),
+                SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            };
+            kindLabel.AddThemeFontSizeOverride("font_size", ChatWindow.BodyFontSize);
+            inner.AddChild(kindLabel);
+        }
 
         var textCol = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         textCol.AddThemeConstantOverride("separation", 0);

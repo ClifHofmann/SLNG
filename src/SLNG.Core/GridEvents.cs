@@ -133,6 +133,10 @@ public record ActiveGroupChangedEvent(Guid GroupId, string GroupName, string Tit
 /// <param name="FromAgentId">Speaker's agent id; <see cref="Guid.Empty"/> for a system line.</param>
 public record GroupChatMessageEvent(Guid GroupId, Guid FromAgentId, string FromAgentName, string Message);
 
+/// <summary>An avatar's profile picture id became known (<c>GridSession.RequestProfileImage</c>, or any profile
+/// fetch). Never raised for an avatar with no picture.</summary>
+public record ProfileImageEvent(Guid AgentId, Guid ImageId);
+
 /// <summary>One message in an ad-hoc conference session (several people, no group): an instant message of
 /// dialog <c>SessionSend</c> whose session id is none of the agent's groups. Replies go back into the same
 /// session (<c>GridSession.SendConferenceMessage</c>).</summary>

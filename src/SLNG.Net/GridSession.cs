@@ -391,6 +391,9 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// <inheritdoc cref="GroupsUpdated"/>
     public event EventHandler<ConferenceChatMessageEvent>? ConferenceChatMessageReceived;
 
+    /// <summary>An avatar's profile picture id arrived. Raised on a network thread; see <see cref="RequestProfileImage"/>.</summary>
+    public event EventHandler<ProfileImageEvent>? ProfileImageKnown;
+
     /// <inheritdoc cref="GroupsUpdated"/>
     public event EventHandler<GroupChatJoinedEvent>? GroupChatJoined;
 

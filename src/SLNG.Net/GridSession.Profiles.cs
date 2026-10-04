@@ -36,6 +36,33 @@ public sealed partial class GridSession
         _client.Avatars.RequestAvatarClassified(id);
     }
 
+    // ---- profile pictures for lists (the mini avatar icon before a name) ----------------------------
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Guid> _profileImages = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTime> _profileImageAsked = new();
+    private static readonly TimeSpan ProfileImageResendAfter = TimeSpan.FromSeconds(60);
+
+    /// <summary>The profile picture id of an avatar whose profile has arrived. <paramref name="imageId"/> is
+    /// <see cref="Guid.Empty"/> for an avatar that has no picture; false while nothing is known yet. Reads the
+    /// cache only.</summary>
+    public bool TryGetProfileImageId(Guid agentId, out Guid imageId) => _profileImages.TryGetValue(agentId, out imageId);
+
+    /// <summary>Asks for one avatar's profile picture id -- the single <c>AvatarPropertiesRequest</c>, not the
+    /// full profile fetch of <see cref="RequestAvatarProfile"/> (no picks, no classifieds). The answer fills
+    /// <see cref="TryGetProfileImageId"/> and raises <see cref="ProfileImageKnown"/>. A no-op when the id is
+    /// already known or was asked for in the last minute, so a list can call it for every row on every
+    /// refresh.</summary>
+    public void RequestProfileImage(Guid agentId)
+    {
+        if (agentId == Guid.Empty || !_client.Network.Connected) return;
+        if (_profileImages.ContainsKey(agentId)) return;
+
+        var now = DateTime.UtcNow;
+        if (_profileImageAsked.TryGetValue(agentId, out var asked) && now - asked < ProfileImageResendAfter) return;
+        _profileImageAsked[agentId] = now;
+        _client.Avatars.RequestAvatarProperties(new UUID(agentId));
+    }
+
     /// <summary>Requests the full detail of one Pick (image, description, location). Result on
     /// <see cref="AvatarPickDetailReceived"/>.</summary>
     public void RequestAvatarPickInfo(Guid agentId, Guid pickId)
@@ -151,6 +178,13 @@ public sealed partial class GridSession
     private void OnAvatarPropertiesReply(object? sender, AvatarPropertiesReplyEventArgs e)
     {
         var p = e.Properties;
+
+        // Remembered for every reply, whoever asked (the profile window or a list's icon).
+        Guid profileImage = p.ProfileImage.Guid;
+        _profileImages[e.AvatarID.Guid] = profileImage;
+        if (profileImage != Guid.Empty)
+            ProfileImageKnown?.Invoke(this, new ProfileImageEvent(e.AvatarID.Guid, profileImage));
+
         AvatarPropertiesReceived?.Invoke(this, new AvatarPropertiesEvent(new AvatarProfileProperties(
             e.AvatarID.Guid,
             p.AboutText ?? string.Empty,

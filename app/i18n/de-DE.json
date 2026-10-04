@@ -793,6 +793,7 @@
       "someone": "Jemand"
     },
     "chat": {
+      "resize_list_tip": "Ziehen, um die Namensliste breiter oder schmaler zu machen",
       "conference": "Konferenz",
       "contacts": "KONTAKTE"
     },

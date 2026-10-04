@@ -76,6 +76,8 @@ public partial class ChatWindow : SLNGWindow
         // the legacy name, never a Display Name (those change, and would fork the history).
         public string LogName = "";
         public Button Label = null!;
+        // The mini profile picture before the name (IM tabs only); null for Main, groups, conferences.
+        public TextureRect? IconRect;
         public PanelContainer RowPanel = null!;
         public Label UnreadLabel = null!;
         public ChatLogKind LogKind;
@@ -265,6 +267,7 @@ public partial class ChatWindow : SLNGWindow
             _session.NameResolved -= OnDisplayNameResolved;
         }
         _session = session;
+        BindIcons(session);
         _session.DisplayNameResolved += OnDisplayNameResolved;
         _session.NameResolved += OnDisplayNameResolved; // a tab opened before its name was known
         if (Guid.TryParse(session.AgentId, out var ownId)) session.RequestDisplayName(ownId); // own lines show it too
@@ -280,6 +283,7 @@ public partial class ChatWindow : SLNGWindow
 
     public override void _ExitTree()
     {
+        _icons?.Dispose();
         if (_session != null)
         {
             _session.DisplayNameResolved -= OnDisplayNameResolved;
@@ -324,6 +328,7 @@ public partial class ChatWindow : SLNGWindow
         _groupsPanel.OnOpenGroupInfoRequested = (id, name) => OnOpenGroupInfoRequested?.Invoke(id, name);
         AddOuterTab("Groups", "group", _groupsPanel);
         _recentPanel = new RecentPanel();
+        _recentPanel.IconFor = item => item.Kind == ChatLogKind.Im ? _icons?.Get(item.Id) : null;
         _recentPanel.ShownName = item => item.Kind == ChatLogKind.Im ? NameDisplay.For(_session, item.Id, item.Name) : item.Name;
         _recentPanel.OnOpenRequested = OpenRecentConversation;
         _recentPanel.OnHistoryRequested = OpenHistoryFor;
@@ -394,9 +399,11 @@ public partial class ChatWindow : SLNGWindow
         // The conversation is named after the legacy name (its log file, its History, its Recent entry);
         // only the row shows the Display Name. A caller may hand over either, so normalise.
         string legacyName = NameDisplay.LegacyFor(_session, agentId, displayName);
-        var tab = AddChatTab(agentId.ToString(), NameDisplay.For(_session, agentId, legacyName), ChatLogKind.Im, closeable: true, isOnline);
+        var tab = AddChatTab(agentId.ToString(), NameDisplay.For(_session, agentId, legacyName), ChatLogKind.Im, closeable: true, isOnline,
+            iconAgentId: agentId);
         tab.LogName = legacyName;
         tab.TargetAgentId = agentId;
+        RefreshIcons();
         PreloadRecentHistory(tab);
         return tab;
     }
@@ -661,6 +668,52 @@ public partial class ChatWindow : SLNGWindow
         if (_recentPanel.IsVisibleInTree()) RefreshRecentPanel();
     }
 
+    // ---- mini profile pictures -----------------------------------------------------------------------
+
+    /// <summary>Wired by Boot: where the picture textures come from (the GPU cache and the asset service,
+    /// which only exist once the world is set up). Null or a null cache means no pictures.</summary>
+    public Func<(GpuCache? Gpu, SLNG.Assets.AssetService? Assets)>? IconSources;
+
+    private AvatarIcons? _icons;
+    private int _iconsRefreshQueued;
+
+    private void BindIcons(GridSession session)
+    {
+        _icons?.Dispose();
+        _icons = null;
+
+        var sources = IconSources?.Invoke();
+        var gpu = sources?.Gpu;
+        var assets = sources?.Assets;
+        if (gpu == null) return;
+
+        // Fires from any thread (network, asset worker): one deferred refresh per burst.
+        _icons = new AvatarIcons(gpu, assets, _ =>
+        {
+            if (System.Threading.Interlocked.Exchange(ref _iconsRefreshQueued, 1) == 0)
+                CallDeferred(nameof(RefreshIcons));
+        });
+        _icons.Bind(session);
+        RefreshIcons();
+    }
+
+    /// <summary>Puts the pictures that have arrived on the IM rows and into the Recent list. Main thread.</summary>
+    private void RefreshIcons()
+    {
+        System.Threading.Volatile.Write(ref _iconsRefreshQueued, 0);
+        if (_icons == null) return;
+
+        _icons.Drain();
+        foreach (var tab in _chatTabs)
+        {
+            if (tab.IconRect == null || tab.TargetAgentId is not { } id) continue;
+            var tex = _icons.Get(id);
+            if (tex != null && tab.IconRect.Texture != tex) tab.IconRect.Texture = tex;
+        }
+
+        if (_recentPanel != null && _recentPanel.IsVisibleInTree()) RefreshRecentPanel();
+    }
+
     /// <summary>Selftest: the Recent list as the window holds it.</summary>
     internal IReadOnlyList<RecentConversation> RecentForSelfTest => _recent.Items;
     internal RecentPanel RecentPanelForSelfTest => _recentPanel;
@@ -745,12 +798,74 @@ public partial class ChatWindow : SLNGWindow
 
     // ---- Chat page: vertical conversation list (left) + message log/input (right) ----------
 
+    // ---- resizable name list ---------------------------------------------------------------------
+
+    private const float MinListWidth = 100f;
+    private const float MaxListWidth = 420f;
+    private const float MinConversationWidth = 240f;
+    private const string ListWidthSection = "chat_window";
+    private const string ListWidthKey = "list_width";
+
+    private PanelContainer _listPanel = null!;
+    private float _listWidth = 120f;
+
+    /// <summary>The name list's width, from preferences.cfg (its own section, like the other per-feature
+    /// settings), or the old fixed 120 px.</summary>
+    private static float LoadListWidth()
+    {
+        var cfg = new ConfigFile();
+        if (cfg.Load("user://preferences.cfg") != Error.Ok) return 120f;
+        return Mathf.Clamp((float)cfg.GetValue(ListWidthSection, ListWidthKey, 120.0), MinListWidth, MaxListWidth);
+    }
+
+    private void SetListWidth(float width)
+    {
+        // The conversation keeps a usable width however far the handle is dragged.
+        float max = Mathf.Max(MinListWidth, Mathf.Min(MaxListWidth, Size.X - MinConversationWidth));
+        _listWidth = Mathf.Clamp(width, MinListWidth, max);
+        _listPanel.CustomMinimumSize = new Vector2(_listWidth, 0);
+    }
+
+    private void SaveListWidth()
+    {
+        var cfg = new ConfigFile();
+        cfg.Load("user://preferences.cfg"); // keep the sections other features own
+        cfg.SetValue(ListWidthSection, ListWidthKey, _listWidth);
+        cfg.Save("user://preferences.cfg");
+    }
+
+    /// <summary>The strip between the name list and the conversation. Dragging it resizes the list; the
+    /// width is taken from the mouse position, not from accumulated motion, so it cannot drift.</summary>
+    private partial class ListResizeHandle : Control
+    {
+        public Action<float>? Dragged;
+        public Action? Released;
+        private bool _dragging;
+
+        public override void _GuiInput(InputEvent @event)
+        {
+            if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left } button)
+            {
+                _dragging = button.Pressed;
+                if (!button.Pressed) Released?.Invoke();
+                AcceptEvent();
+            }
+            else if (@event is InputEventMouseMotion && _dragging)
+            {
+                Dragged?.Invoke(GetGlobalMousePosition().X);
+                AcceptEvent();
+            }
+        }
+    }
+
     private Control BuildChatPage()
     {
         var hbox = new HBoxContainer();
         hbox.AddThemeConstantOverride("separation", 0);
 
-        var listPanel = new PanelContainer { CustomMinimumSize = new Vector2(120, 0) };
+        _listWidth = LoadListWidth();
+        var listPanel = new PanelContainer { CustomMinimumSize = new Vector2(_listWidth, 0) };
+        _listPanel = listPanel;
         var listStyle = new StyleBoxFlat
         {
             BgColor = new Color(1, 1, 1, 0.03f),
@@ -763,6 +878,17 @@ public partial class ChatWindow : SLNGWindow
         };
         listPanel.AddThemeStyleboxOverride("panel", listStyle);
         hbox.AddChild(listPanel);
+
+        // A drag handle between the name list and the conversation: long names do not fit the default width.
+        var handle = new ListResizeHandle
+        {
+            CustomMinimumSize = new Vector2(8, 0),
+            MouseDefaultCursorShape = CursorShape.Hsize,
+            TooltipText = L10n.Tr("ui.chat.resize_list_tip"),
+        };
+        handle.Dragged = mouseX => SetListWidth(mouseX - _listPanel.GlobalPosition.X);
+        handle.Released = SaveListWidth;
+        hbox.AddChild(handle);
 
         var listVBox = new VBoxContainer();
         listVBox.AddThemeConstantOverride("separation", 4);
@@ -798,7 +924,7 @@ public partial class ChatWindow : SLNGWindow
         };
         // Left is the gap to the contact list and top the gap under the tab strip; right and
         // bottom are the window frame, whose inset comes from SLNGWindow.
-        rightMargin.AddThemeConstantOverride("margin_left", 10);
+        rightMargin.AddThemeConstantOverride("margin_left", 2);
         rightMargin.AddThemeConstantOverride("margin_top", 6);
         hbox.AddChild(rightMargin);
 
@@ -1106,7 +1232,8 @@ public partial class ChatWindow : SLNGWindow
     /// <param name="isOnline">Presence dot next to the name -- green/grey like FriendsPanel's,
     /// omitted entirely when null (e.g. "Main" isn't a person, so it gets no dot). IM rows pass
     /// a value once Phase 1c wires them up to a friend/contact's live status.</param>
-    private ChatTab AddChatTab(string id, string displayName, ChatLogKind kind, bool closeable, bool? isOnline = null)
+    private ChatTab AddChatTab(string id, string displayName, ChatLogKind kind, bool closeable, bool? isOnline = null,
+        Guid? iconAgentId = null)
     {
         var row = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _conversationList.AddChild(row);
@@ -1122,6 +1249,22 @@ public partial class ChatWindow : SLNGWindow
             dot.AddThemeColorOverride("font_color",
                 isOnline.Value ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f));
             inner.AddChild(dot);
+        }
+
+        // The avatar's profile picture, as Firestorm's conversation list shows. The space is reserved at once
+        // so the row does not jump when the picture arrives.
+        TextureRect? iconRect = null;
+        if (iconAgentId.HasValue)
+        {
+            iconRect = new TextureRect
+            {
+                CustomMinimumSize = new Vector2(AvatarIcons.IconSize, AvatarIcons.IconSize),
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+                SizeFlagsVertical = SizeFlags.ShrinkCenter,
+                MouseFilter = MouseFilterEnum.Ignore,
+            };
+            inner.AddChild(iconRect);
         }
 
         var label = new Button
@@ -1150,6 +1293,7 @@ public partial class ChatWindow : SLNGWindow
             DisplayName = displayName,
             LogName = displayName,
             Label = label,
+            IconRect = iconRect,
             RowPanel = row,
             UnreadLabel = unreadLabel,
             LogKind = kind,
