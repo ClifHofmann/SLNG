@@ -793,6 +793,8 @@
       "someone": "Someone"
     },
     "chat": {
+      "friend_online": "{0} is online.",
+      "friend_offline": "{0} is offline.",
       "resize_list_tip": "Drag to resize the name list",
       "conference": "Conference",
       "contacts": "CONTACTS"

@@ -78,6 +78,11 @@ public partial class ChatWindow : SLNGWindow
         public Button Label = null!;
         // The mini profile picture before the name (IM tabs only); null for Main, groups, conferences.
         public TextureRect? IconRect;
+        // The row's green/grey presence dot (friends only), the row it sits in, and the state it shows. A dot is
+        // created the first time a friend's status is heard, so a tab opened before they were a friend gets one.
+        public Label? PresenceDot;
+        public HBoxContainer Row = null!;
+        public bool? Online;
         public PanelContainer RowPanel = null!;
         public Label UnreadLabel = null!;
         public ChatLogKind LogKind;
@@ -266,12 +271,14 @@ public partial class ChatWindow : SLNGWindow
             _session.DisplayNameResolved -= OnDisplayNameResolved;
             _session.NameResolved -= OnDisplayNameResolved;
             _session.GroupsUpdated -= OnGroupsUpdatedForNames;
+            _session.FriendStatusChanged -= OnFriendStatusChanged;
         }
         _session = session;
         BindIcons(session);
         _session.DisplayNameResolved += OnDisplayNameResolved;
         _session.NameResolved += OnDisplayNameResolved; // a tab opened before its name was known
         _session.GroupsUpdated += OnGroupsUpdatedForNames; // ...or before the membership list, which carries group names, arrived
+        _session.FriendStatusChanged += OnFriendStatusChanged;
         if (Guid.TryParse(session.AgentId, out var ownId)) session.RequestDisplayName(ownId); // own lines show it too
         _friendsPanel.Initialize(session);
         _groupsPanel.Initialize(session);
@@ -291,6 +298,7 @@ public partial class ChatWindow : SLNGWindow
             _session.DisplayNameResolved -= OnDisplayNameResolved;
             _session.NameResolved -= OnDisplayNameResolved;
             _session.GroupsUpdated -= OnGroupsUpdatedForNames;
+            _session.FriendStatusChanged -= OnFriendStatusChanged;
         }
         GroupMuteSettings.MuteChanged -= OnGroupMuteChanged;
         base._ExitTree();
@@ -1294,6 +1302,70 @@ public partial class ChatWindow : SLNGWindow
         _conversationList.MoveChild(dragged.RowPanel, rowIndex);
     }
 
+    private static Label MakePresenceDot(bool online)
+    {
+        var dot = new Label { Text = "●", VerticalAlignment = VerticalAlignment.Center };
+        dot.AddThemeFontSizeOverride("font_size", 8);
+        SetPresenceDotColor(dot, online);
+        return dot;
+    }
+
+    private static void SetPresenceDotColor(Label dot, bool online)
+        => dot.AddThemeColorOverride("font_color", online ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f));
+
+    // ---- friends coming and going ---------------------------------------------------------------------
+
+    private readonly System.Collections.Concurrent.ConcurrentQueue<FriendStatusEvent> _friendStatusQueue = new();
+    private int _friendStatusDrainQueued;
+
+    /// <summary>A friend logged in or out (network thread): queued, applied on the main thread.</summary>
+    private void OnFriendStatusChanged(object? sender, FriendStatusEvent e)
+    {
+        _friendStatusQueue.Enqueue(e);
+        if (System.Threading.Interlocked.Exchange(ref _friendStatusDrainQueued, 1) == 0)
+            CallDeferred(nameof(DrainFriendStatus));
+    }
+
+    private void DrainFriendStatus()
+    {
+        System.Threading.Volatile.Write(ref _friendStatusDrainQueued, 0);
+        while (_friendStatusQueue.TryDequeue(out var e))
+        {
+            foreach (var tab in _chatTabs)
+            {
+                if (tab.TargetAgentId == e.FriendId) ApplyPresence(tab, e.IsOnline);
+            }
+        }
+    }
+
+    /// <summary>Updates an IM row's dot and, like the reference viewer, says so in the conversation: "Name is
+    /// offline." / "Name is online." (<c>FriendOfflineNotification</c> / <c>FriendOnlineNotification</c> in its
+    /// strings.xml). Only a real change counts -- the library also reports an offline friend going offline. The
+    /// line is not a message: it does not raise the unread badge and is not written to the log.</summary>
+    private void ApplyPresence(ChatTab tab, bool online)
+    {
+        if (tab.Online == online) return;
+        tab.Online = online;
+
+        if (tab.PresenceDot == null)
+        {
+            tab.PresenceDot = MakePresenceDot(online);
+            tab.Row.AddChild(tab.PresenceDot);
+            tab.Row.MoveChild(tab.PresenceDot, 0);
+        }
+        else
+        {
+            SetPresenceDotColor(tab.PresenceDot, online);
+        }
+
+        // Back online: the "is offline, they will see this later" notice may be shown again next time.
+        if (online) tab.OfflineNoticeShown = false;
+
+        string text = L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", tab.DisplayName);
+        AppendLineToTab(tab, $"[color=#888888][lb]{DateTime.Now:HH:mm}][/color] [color=#888888][i]{BbEscape(text)}[/i][/color]",
+            countUnread: false);
+    }
+
     private ChatTab AddChatTab(string id, string displayName, ChatLogKind kind, bool closeable, bool? isOnline = null,
         Guid? iconAgentId = null)
     {
@@ -1304,13 +1376,11 @@ public partial class ChatWindow : SLNGWindow
         inner.AddThemeConstantOverride("separation", 4);
         row.AddChild(inner);
 
+        Label? presenceDot = null;
         if (isOnline.HasValue)
         {
-            var dot = new Label { Text = "●", VerticalAlignment = VerticalAlignment.Center };
-            dot.AddThemeFontSizeOverride("font_size", 8);
-            dot.AddThemeColorOverride("font_color",
-                isOnline.Value ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f));
-            inner.AddChild(dot);
+            presenceDot = MakePresenceDot(isOnline.Value);
+            inner.AddChild(presenceDot);
         }
 
         // The avatar's profile picture, as Firestorm's conversation list shows. The space is reserved at once
@@ -1357,6 +1427,9 @@ public partial class ChatWindow : SLNGWindow
             LogName = displayName,
             Label = label,
             IconRect = iconRect,
+            PresenceDot = presenceDot,
+            Row = inner,
+            Online = isOnline,
             RowPanel = row,
             UnreadLabel = unreadLabel,
             LogKind = kind,
@@ -1440,7 +1513,7 @@ public partial class ChatWindow : SLNGWindow
         ShowJumpToLatest(false);
     }
 
-    private void AppendLineToTab(ChatTab tab, string bbcodeLine)
+    private void AppendLineToTab(ChatTab tab, string bbcodeLine, bool countUnread = true)
     {
         bool overflowed = tab.Lines.Count >= MaxLogLines;
         tab.Lines.Add(bbcodeLine);
@@ -1448,8 +1521,11 @@ public partial class ChatWindow : SLNGWindow
 
         if (tab != _activeChatTab)
         {
-            tab.UnreadCount++;
-            UpdateUnreadBadge(tab);
+            if (countUnread)
+            {
+                tab.UnreadCount++;
+                UpdateUnreadBadge(tab);
+            }
             return;
         }
 
