@@ -631,12 +631,12 @@ public partial class ObjectRenderer : Node3D
         // running through both.
         using (MainThreadPhase.Enter("obj-ticks"))
         {
-            TickTextureAnimations();
-            TickSelectionOutlines();
+            using (MainThreadPhase.Enter("obj-ticks.texanim")) TickTextureAnimations();
+            using (MainThreadPhase.Enter("obj-ticks.selection")) TickSelectionOutlines();
 
-            TickAlphaSortCensus();
-            TickAlphaSortHysteresis();
-            TickTraceObject(delta);
+            using (MainThreadPhase.Enter("obj-ticks.alpha-census")) TickAlphaSortCensus();
+            using (MainThreadPhase.Enter("obj-ticks.alpha-hyst")) TickAlphaSortHysteresis();
+            using (MainThreadPhase.Enter("obj-ticks.trace")) TickTraceObject(delta);
         }
 
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;

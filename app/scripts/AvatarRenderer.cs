@@ -5634,11 +5634,61 @@ void fragment() {
 
     private double _cullAccum = 0;
 
+    /// <summary>BUG-PERF-05: how often <see cref="ReportAvatarCost"/> writes its line.</summary>
+    private const double AvatarCostIntervalSeconds = 5.0;
+    private double _avatarCostAccum;
+
+    /// <summary>
+    /// BUG-PERF-05: one <c>[AvatarCost]</c> line every few seconds with what the engine has to keep
+    /// posed every frame: avatars, how many are shown and animating, and their skinned meshes with
+    /// the total number of skin binds. Every rigged attachment carries its own <see cref="Skin"/>,
+    /// and Godot's deferred skeleton update writes one bone transform per bind per skin to the
+    /// RenderingServer for every skeleton whose pose changed -- work that appears in the frame's
+    /// flush, not in any of our phases. Walks the skeletons' children through interop, hence the
+    /// interval.
+    /// </summary>
+    private void ReportAvatarCost(double delta)
+    {
+        _avatarCostAccum += delta;
+        if (_avatarCostAccum < AvatarCostIntervalSeconds) return;
+        _avatarCostAccum = 0;
+
+        int avatars = 0, shown = 0, animating = 0, skinned = 0, binds = 0, shownBinds = 0;
+        foreach (var visual in _visuals.Values)
+        {
+            if (visual.Skeleton == null || !IsInstanceValid(visual.Skeleton)) continue;
+            avatars++;
+            bool isShown = visual.Root.Visible;
+            if (isShown) shown++;
+            if (isShown && visual.AnimPlayer.IsPlaying) animating++;
+            foreach (var node in visual.Skeleton.GetChildren())
+            {
+                CountSkin(node as MeshInstance3D, isShown, ref skinned, ref binds, ref shownBinds);
+                foreach (var grandchild in node.GetChildren())
+                    CountSkin(grandchild as MeshInstance3D, isShown, ref skinned, ref binds, ref shownBinds);
+            }
+        }
+
+        SLNG.App.UI.StatsOverlay.EmitPerfLine(
+            $"[AvatarCost] avatars={avatars} shown={shown} animating={animating} skinnedMeshes={skinned} " +
+            $"skinBinds={binds} shownSkinBinds={shownBinds} controlAvatars={_controlAvatars.Count}");
+
+        static void CountSkin(MeshInstance3D? mi, bool isShown, ref int skinned, ref int binds, ref int shownBinds)
+        {
+            if (mi?.Skin == null) return;
+            int n = mi.Skin.GetBindCount();
+            skinned++;
+            binds += n;
+            if (isShown) shownBinds += n;
+        }
+    }
+
     public override void _Process(double delta)
     {
         using var _phase = MainThreadPhase.Enter("avatar-render");
 
         float dt = (float)delta;
+        ReportAvatarCost(delta);
 
         // FEAT-ANIMESH-01: animated-mesh skeletons follow their root prim, and (FEAT-ANIMESH-02)
         // play what its scripts started. Not part of the _visuals loop below -- a control avatar is
