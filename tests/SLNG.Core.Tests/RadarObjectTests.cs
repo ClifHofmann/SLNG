@@ -410,4 +410,91 @@ public class RadarObjectTests
         Assert.Equal(5, list.Count);
         Assert.All(list, o => Assert.True(o.IsYours && o.Radius >= 16f));
     }
+
+    // ---- the object layer as one picture ---------------------------------------------------------------
+
+    private static readonly RadarObjectPalette Palette = new(
+        new Vector3(0.24f, 0.24f, 0.24f), new Vector3(0.125f, 0.125f, 0.125f),
+        new Vector3(0f, 1f, 1f), new Vector3(0f, 0.78f, 0.78f), 0.35f, 0.6f, 0.85f);
+
+    private static byte AlphaAt(byte[] rgba, float eastMetres, float northMetres)
+    {
+        int col = (int)MathF.Floor(eastMetres - RadarObjectRaster.OriginX);
+        int row = (int)MathF.Floor(RadarObjectRaster.OriginY + RadarObjectRaster.SizeMetres - northMetres);
+        return rgba[(row * RadarObjectRaster.SizeMetres + col) * 4 + 3];
+    }
+
+    [Fact]
+    public void A_prim_is_painted_where_it_stands_and_nowhere_else()
+    {
+        var rgba = new byte[RadarObjectRaster.BufferLength];
+        RadarObjectRaster.Render(new[] { new RadarObject(new Vector2(100.5f, 50.5f), 4f, false, false, false) }, rgba, Palette, 0.9f);
+
+        Assert.InRange(AlphaAt(rgba, 100.5f, 50.5f), 85, 93);   // 0.35 of 255, about 89
+        Assert.Equal(0, AlphaAt(rgba, 110f, 50.5f));             // east of it
+        Assert.Equal(0, AlphaAt(rgba, 100.5f, 60f));             // north of it
+    }
+
+    [Fact]
+    public void North_is_up_the_picture_as_it_is_on_a_map_tile()
+    {
+        var rgba = new byte[RadarObjectRaster.BufferLength];
+        RadarObjectRaster.Render(new[]
+        {
+            new RadarObject(new Vector2(20.5f, 200.5f), 2f, false, false, false),   // far north
+            new RadarObject(new Vector2(20.5f, 10.5f), 2f, false, false, false),    // near the south edge of the region
+        }, rgba, Palette, 0.9f);
+
+        int NorthRow(float north) => (int)MathF.Floor(RadarObjectRaster.OriginY + RadarObjectRaster.SizeMetres - north);
+        Assert.True(NorthRow(200.5f) < NorthRow(10.5f));
+        Assert.True(AlphaAt(rgba, 20.5f, 200.5f) > 0 && AlphaAt(rgba, 20.5f, 10.5f) > 0);
+    }
+
+    [Fact]
+    public void Yours_is_denser_than_the_others_and_is_drawn_over_them()
+    {
+        var rgba = new byte[RadarObjectRaster.BufferLength];
+        RadarObjectRaster.Render(new[]
+        {
+            new RadarObject(new Vector2(60.5f, 60.5f), 6f, true, false, false),    // yours first in the list ...
+            new RadarObject(new Vector2(60.5f, 60.5f), 6f, false, false, false),   // ... but the others are painted first
+        }, rgba, Palette, 0.9f);
+
+        int i = ((int)MathF.Floor(RadarObjectRaster.OriginY + RadarObjectRaster.SizeMetres - 60.5f) * RadarObjectRaster.SizeMetres
+                 + (int)MathF.Floor(60.5f - RadarObjectRaster.OriginX)) * 4;
+        Assert.True(rgba[i + 3] > 153);                 // 0.6 over 0.35: denser than either alone
+        Assert.True(rgba[i + 1] > rgba[i]);             // the cyan of yours dominates the grey beneath (G above R)
+    }
+
+    [Fact]
+    public void A_phantom_prim_is_a_little_more_transparent()
+    {
+        var solid = new byte[RadarObjectRaster.BufferLength];
+        var phantom = new byte[RadarObjectRaster.BufferLength];
+        RadarObjectRaster.Render(new[] { new RadarObject(new Vector2(0.5f, 0.5f), 3f, false, false, false) }, solid, Palette, 0.5f);
+        RadarObjectRaster.Render(new[] { new RadarObject(new Vector2(0.5f, 0.5f), 3f, false, false, true) }, phantom, Palette, 0.5f);
+
+        Assert.True(AlphaAt(phantom, 0.5f, 0.5f) < AlphaAt(solid, 0.5f, 0.5f));
+    }
+
+    [Fact]
+    public void A_prim_outside_the_layer_or_straddling_its_edge_is_handled()
+    {
+        var rgba = new byte[RadarObjectRaster.BufferLength];
+        var far = new RadarObject(new Vector2(5000f, 5000f), 10f, true, false, false);
+        var edge = new RadarObject(new Vector2(RadarObjectRaster.OriginX, RadarObjectRaster.OriginY), 8f, true, false, false);
+        RadarObjectRaster.Render(new[] { far, edge }, rgba, Palette, 0.9f);
+
+        Assert.True(AlphaAt(rgba, RadarObjectRaster.OriginX + 2f, RadarObjectRaster.OriginY + 2f) > 0);   // the part that is inside
+        Assert.Equal(0, rgba[3]);                                                                          // top-left corner, nothing there
+    }
+
+    [Fact]
+    public void Rendering_again_starts_from_a_clean_layer()
+    {
+        var rgba = new byte[RadarObjectRaster.BufferLength];
+        RadarObjectRaster.Render(new[] { new RadarObject(new Vector2(30.5f, 30.5f), 3f, false, false, false) }, rgba, Palette, 0.9f);
+        RadarObjectRaster.Render(Array.Empty<RadarObject>(), rgba, Palette, 0.9f);
+        Assert.All(rgba, b => Assert.Equal(0, b));
+    }
 }

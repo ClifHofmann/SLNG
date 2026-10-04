@@ -105,6 +105,7 @@ internal sealed partial class RadarCanvas : Control
     private readonly List<Dot> _dots = new();
     private readonly List<Tile> _tiles = new();
     private readonly List<RadarObject> _objects = new();
+    private int _objectsVersion = -1;
     private Guid? _selectedAgentId;
     private bool _hasData;
 
@@ -123,7 +124,7 @@ internal sealed partial class RadarCanvas : Control
 
     public void Update(int regionWidth, int regionHeight, System.Numerics.Vector3? center,
         System.Numerics.Vector3? ownPos, float heading, float visibleRangeMeters,
-        List<Dot> dots, Guid? selectedAgentId, List<Tile> tiles, List<RadarObject> objects)
+        List<Dot> dots, Guid? selectedAgentId, List<Tile> tiles, List<RadarObject> objects, int objectsVersion)
     {
         _regionWidth = Math.Max(1, regionWidth);
         _regionHeight = Math.Max(1, regionHeight);
@@ -136,8 +137,14 @@ internal sealed partial class RadarCanvas : Control
         _selectedAgentId = selectedAgentId;
         _tiles.Clear();
         _tiles.AddRange(tiles);
-        _objects.Clear();
-        _objects.AddRange(objects);
+        // The objects change when the layer is scanned again, not per frame: copied and painted only then.
+        if (objectsVersion != _objectsVersion)
+        {
+            _objectsVersion = objectsVersion;
+            _objects.Clear();
+            _objects.AddRange(objects);
+            if (View.ShowObjects) RebuildObjectLayer();
+        }
         _hasData = true;
 
         // A release outside the window or a lost focus can swallow the button-up: do not stay panning.
@@ -420,39 +427,53 @@ internal sealed partial class RadarCanvas : Control
         DrawSetTransform(Vector2.Zero, 0f, Vector2.One);
     }
 
-    /// <summary>The prims as filled squares, on the same turned transform as the tiles, so they stay on
-    /// the ground they stand on whichever way the map is turned. Other people's first and yours over
-    /// them, so one of your small prims is never hidden under a neighbour's wall. Anything that cannot
-    /// reach the canvas is skipped before it costs a draw call.</summary>
+    /// <summary>The prims, as ONE picture drawn like a region's map tile (turned and scaled with the map, so
+    /// they stay on the ground they stand on). The squares themselves are painted into a pixel buffer by
+    /// <see cref="RadarObjectRaster"/> when the layer changes -- every half second at the soonest -- instead of two
+    /// draw calls per prim on every redraw, which measured at 52 ms per second of wall clock for 600 prims.</summary>
     private void DrawObjects(RadarProjection northUp, Vector2 centre, float pixelsPerMetre)
     {
-        if (_objects.Count == 0 || _center is not { } focus) return;
-        float reach = RadarProjection.ViewReachMetres(new System.Numerics.Vector2(Size.X, Size.Y), _visibleRangeMeters);
+        if (_objects.Count == 0 || _objectLayer == null) return;
 
-        for (int pass = 0; pass < 2; pass++)
+        // Same placement as a tile: the layer's north-west corner, then its size in pixels.
+        var corner = northUp.ToCanvas(new System.Numerics.Vector2(
+            RadarObjectRaster.OriginX, RadarObjectRaster.OriginY + RadarObjectRaster.SizeMetres));
+        var topLeft = new Vector2(corner.X, corner.Y) - centre;
+        DrawTextureRect(_objectLayer,
+            new Rect2(topLeft, new Vector2(RadarObjectRaster.SizeMetres, RadarObjectRaster.SizeMetres) * pixelsPerMetre),
+            false);
+    }
+
+    // ---- the object layer's picture --------------------------------------------------------------------
+
+    private static readonly RadarObjectPalette ObjectPalette = new(
+        new System.Numerics.Vector3(OtherObjectColour.R, OtherObjectColour.G, OtherObjectColour.B),
+        new System.Numerics.Vector3(OtherObjectBelowWaterColour.R, OtherObjectBelowWaterColour.G, OtherObjectBelowWaterColour.B),
+        new System.Numerics.Vector3(YourObjectColour.R, YourObjectColour.G, YourObjectColour.B),
+        new System.Numerics.Vector3(YourObjectBelowWaterColour.R, YourObjectBelowWaterColour.G, YourObjectBelowWaterColour.B),
+        OtherObjectFillAlpha, YourObjectFillAlpha, ObjectOutlineAlpha);
+
+    private byte[]? _objectPixels;
+    private Image? _objectImage;
+    private ImageTexture? _objectLayer;
+
+    /// <summary>Paints the current objects into the layer's texture. Called when the list changed, not per frame.</summary>
+    private void RebuildObjectLayer()
+    {
+        _objectPixels ??= new byte[RadarObjectRaster.BufferLength];
+        RadarObjectRaster.Render(_objects, _objectPixels, ObjectPalette, RadarObjects.PhantomOpacity);
+
+        if (_objectImage == null || _objectLayer == null)
         {
-            bool yoursPass = pass == 1;
-            foreach (var obj in _objects)
-            {
-                if (obj.IsYours != yoursPass) continue;
-                if (MathF.Abs(obj.Position.X - focus.X) > reach + obj.Radius
-                    || MathF.Abs(obj.Position.Y - focus.Y) > reach + obj.Radius) continue;
-
-                var colour = obj.IsYours
-                    ? (obj.BelowWater ? YourObjectBelowWaterColour : YourObjectColour)
-                    : (obj.BelowWater ? OtherObjectBelowWaterColour : OtherObjectColour);
-                float phantom = obj.Phantom ? RadarObjects.PhantomOpacity : 1f;
-
-                // Axis-aligned in the region, so the turn of the whole transform is all it takes.
-                var corner = northUp.ToCanvas(new System.Numerics.Vector2(obj.Position.X - obj.Radius, obj.Position.Y + obj.Radius));
-                var topLeft = new Vector2(corner.X, corner.Y) - centre;
-                var rect = new Rect2(topLeft, new Vector2(obj.Radius * 2f, obj.Radius * 2f) * pixelsPerMetre);
-
-                DrawRect(rect, colour with { A = (obj.IsYours ? YourObjectFillAlpha : OtherObjectFillAlpha) * phantom });
-                // The outline only for your own prims: it is a second draw call per prim, every frame, and the
-                // neighbours' squares are told apart well enough by their fill.
-                if (obj.IsYours) DrawRect(rect, colour with { A = ObjectOutlineAlpha * phantom }, false, 1f);
-            }
+            _objectImage = Image.CreateFromData(RadarObjectRaster.SizeMetres, RadarObjectRaster.SizeMetres,
+                false, Image.Format.Rgba8, _objectPixels);
+            _objectLayer = ImageTexture.CreateFromImage(_objectImage);
+        }
+        else
+        {
+            _objectImage.SetData(RadarObjectRaster.SizeMetres, RadarObjectRaster.SizeMetres,
+                false, Image.Format.Rgba8, _objectPixels);
+            _objectLayer.Update(_objectImage);
         }
     }
 

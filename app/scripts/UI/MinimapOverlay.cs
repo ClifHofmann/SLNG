@@ -52,6 +52,7 @@ public partial class MinimapOverlay : SLNGWindow
     /// <summary>How often the open radar is rebuilt and redrawn, per second.</summary>
     private const double RadarUpdateHz = 30.0;
     private double _radarAccumSeconds;
+    private int _objectsVersion; // bumped whenever _objects changes, so the canvas repaints the layer's picture
 
     /// <summary>While the window is not showing, who is nearby is still noted this often.</summary>
     private const float HiddenTrackSeconds = 1f;
@@ -624,7 +625,7 @@ public partial class MinimapOverlay : SLNGWindow
         using (MainThreadPhase.Enter("radar.dots")) BuildDots();
         using (MainThreadPhase.Enter("radar.objects")) BuildObjects(regionHandle, (float)frameDelta);
         using (MainThreadPhase.Enter("radar.update"))
-            _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _dots, _selectedAgentId, _tiles, _objects);
+            _canvas.Update(width, height, center, ownPos, heading, _visibleRangeMeters, _dots, _selectedAgentId, _tiles, _objects, _objectsVersion);
     }
 
     /// <summary>The object layer: what <see cref="RadarObjects.Collect"/> says belongs on the map, looked at
@@ -635,7 +636,7 @@ public partial class MinimapOverlay : SLNGWindow
     {
         if (!_view.ShowObjects || _world == null)
         {
-            if (_objects.Count > 0) _objects.Clear();
+            if (_objects.Count > 0) { _objects.Clear(); _objectsVersion++; }
             _objectTimer = 0f; // switching it on again shows it at once
             return;
         }
@@ -645,6 +646,7 @@ public partial class MinimapOverlay : SLNGWindow
         if (_objectsRegion != regionHandle)
         {
             _objects.Clear();
+            _objectsVersion++;
             _objectsRegion = regionHandle;
             _objectTimer = 0f;
         }
@@ -654,7 +656,8 @@ public partial class MinimapOverlay : SLNGWindow
 
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         RadarObjects.Collect(_world, regionHandle, _ownZ, _view.ObjectMinSizeMetres, _objects);
-        RadarObjects.LimitForDrawing(_objects); // a bounded number of draw calls per frame, whatever the region holds
+        RadarObjects.LimitForDrawing(_objects); // a bounded cost for the layer's picture, whatever the region holds
+        _objectsVersion++; // the canvas paints its picture again
         double seconds = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalSeconds;
         _objectTimer = (float)RadarObjects.NextScanDelaySeconds(seconds);
     }
