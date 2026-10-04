@@ -337,6 +337,7 @@ public partial class ChatWindow : SLNGWindow
         AddOuterTab("Chat", "forum", _chatPageControl);
         _friendsPanel = new FriendsPanel();
         _friendsPanel.OnOpenImRequested = OpenOrFocusImTab;
+        _friendsPanel.IconFor = id => _icons?.Get(id);
         _friendsPanel.OnOpenProfileRequested = (id, name) => OnOpenProfileRequested?.Invoke(id, name);
         _friendsPanel.OnPayRequested = (id, name) => OnPayRequested?.Invoke(id, name);
         _friendsPanel.OnOfferTeleportRequested = (id, _) => _session?.OfferTeleport(id);
@@ -742,6 +743,7 @@ public partial class ChatWindow : SLNGWindow
         }
 
         if (_recentPanel != null && _recentPanel.IsVisibleInTree()) RefreshRecentPanel();
+        if (_friendsPanel != null && _friendsPanel.IsVisibleInTree()) _friendsPanel.RefreshIcons();
     }
 
     /// <summary>Selftest: the Recent list as the window holds it.</summary>
@@ -1766,6 +1768,7 @@ public partial class ChatWindow : SLNGWindow
             ApplyOuterTabStyle(tab, selected);
         }
         if (selectedPage == _recentPanel) RefreshRecentPanel(); // previews are read when the page is shown
+        if (selectedPage == _friendsPanel) _friendsPanel.RefreshIcons(); // pictures that arrived while it was hidden
     }
 
     /// <summary>FEAT-UI-43: which of the window's three pages the keyboard shortcuts address. The

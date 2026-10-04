@@ -33,6 +33,13 @@ public partial class FriendsPanel : Control
     /// action button and by double-clicking a friend row.</summary>
     public Action<Guid, string>? OnOpenImRequested;
 
+    /// <summary>Wired by ChatWindow: the friend's profile picture, or null while it has none. The row shows the
+    /// generic person symbol until then, as the reference viewer's avatar icon does.</summary>
+    public Func<Guid, Texture2D?>? IconFor;
+
+    /// <summary>Redraws the rows, e.g. because a profile picture arrived.</summary>
+    internal void RefreshIcons() => Refresh();
+
     /// <summary>FEAT-UI-13: wired (through ChatWindow) to Boot's profile-window opener -- fired by
     /// the "Profile" action button.</summary>
     public Action<Guid, string>? OnOpenProfileRequested;
@@ -207,6 +214,16 @@ public partial class FriendsPanel : Control
         dot.AddThemeColorOverride("font_color",
             friend.IsOnline ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f));
         inner.AddChild(dot);
+
+        inner.AddChild(new TextureRect
+        {
+            Texture = IconFor?.Invoke(friend.Id) ?? AvatarIcons.Placeholder,
+            CustomMinimumSize = new Vector2(AvatarIcons.IconSize, AvatarIcons.IconSize),
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            MouseFilter = MouseFilterEnum.Ignore,
+        });
 
         var nameBtn = new Button
         {
