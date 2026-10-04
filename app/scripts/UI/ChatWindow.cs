@@ -89,6 +89,8 @@ public partial class ChatWindow : SLNGWindow
         // Set for GROUP tabs only -- routes through GridSession.SendGroupMessage instead. A tab
         // has at most one of TargetAgentId / TargetGroupId; "Main" has neither.
         public Guid? TargetGroupId;
+        // Set for CONFERENCE tabs only (several people, no group): the session lines go to and come from.
+        public Guid? TargetConferenceId;
         // Shown once per tab per session -- see WarnIfTargetOffline.
         public bool OfflineNoticeShown;
     }
@@ -424,6 +426,48 @@ public partial class ChatWindow : SLNGWindow
     /// <summary>Appends an incoming group-chat line, opening the group's tab if this is the first
     /// message from it this session. Called by Boot on GridSession.GroupChatMessageReceived,
     /// marshalled to the main thread first.</summary>
+    /// <summary>Wired by Boot to the "Show conference chats as IMs" preference.</summary>
+    public Func<bool>? ConferenceAsIm;
+
+    /// <summary>A line of an ad-hoc conference (several people, no group). By default the conference is one
+    /// conversation of its own, in which everyone's lines appear. With <see cref="ConferenceAsIm"/> on, each
+    /// speaker's lines go to a plain IM conversation with them instead -- the way Firestorm lists them among
+    /// the IMs -- and what has no speaker to attach to (the grid's own lines, our own echo) is not shown.
+    /// Called by Boot on GridSession.ConferenceChatMessageReceived, marshalled to the main thread first.</summary>
+    public void AppendConferenceMessage(Guid sessionId, string sessionName, Guid fromAgentId, string fromAgentName, string message)
+    {
+        if (ConferenceAsIm?.Invoke() == true)
+        {
+            bool own = Guid.TryParse(_session?.AgentId, out var ownId) && fromAgentId == ownId;
+            if (fromAgentId == Guid.Empty || own) return;
+
+            var imTab = GetOrCreateImTab(fromAgentId, fromAgentName);
+            AppendMessageToTab(imTab, fromAgentName, message, fromAgentId);
+            return;
+        }
+
+        var tab = GetOrCreateConferenceTab(sessionId, sessionName, fromAgentId == Guid.Empty ? "" : fromAgentName);
+        AppendMessageToTab(tab, fromAgentName, message, fromAgentId);
+    }
+
+    private ChatTab GetOrCreateConferenceTab(Guid sessionId, string sessionName, string firstSpeaker)
+    {
+        var existing = _chatTabs.Find(t => t.Id == sessionId.ToString());
+        if (existing != null) return existing;
+
+        // The grid's own name for the session when it gave one; else "Conference: <whoever spoke first>".
+        string title = !string.IsNullOrWhiteSpace(sessionName)
+            ? sessionName
+            : string.IsNullOrWhiteSpace(firstSpeaker)
+                ? L10n.Tr("ui.chat.conference")
+                : $"{L10n.Tr("ui.chat.conference")}: {firstSpeaker}";
+
+        var tab = AddChatTab(sessionId.ToString(), title, ChatLogKind.Im, closeable: true);
+        tab.TargetConferenceId = sessionId;
+        PreloadRecentHistory(tab);
+        return tab;
+    }
+
     public void AppendGroupChatMessage(Guid groupId, string groupName, Guid fromAgentId, string fromAgentName, string message)
     {
         // A group whose chat is switched off gets nothing: no tab, no unread badge, no focus, no log
@@ -1001,6 +1045,12 @@ public partial class ChatWindow : SLNGWindow
             {
                 if (IsInstanceValid(this) && _chatTabs.Contains(warnTab)) WarnIfTargetOffline(warnTab, targetId);
             };
+        }
+        else if (_activeChatTab.TargetConferenceId is { } conferenceId)
+        {
+            // Like group chat, the line comes back through the session and is shown then (the viewer echoes
+            // locally only for a 1:1 IM), so nothing is appended here.
+            _session?.SendConferenceMessage(conferenceId, text);
         }
         else if (_activeChatTab.TargetGroupId is { } groupId)
         {

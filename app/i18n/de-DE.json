@@ -496,6 +496,8 @@
       "show_group_titles": "Gruppentitel zeigen",
       "show_group_titles_tip": "Zeigt den Titel der aktiven Gruppe über dem Namen. Nur lokal — es verhindert nicht, dass andere deinen sehen, denn der Simulator sendet ihn an sie.",
       "show_display_names": "Anzeigenamen verwenden",
+      "conference_as_im": "Konferenz-Chats als IMs zeigen",
+      "conference_as_im_tip": "Ein Chat mit mehreren Personen (keine Gruppe) bekommt normalerweise eine eigene Unterhaltung, in der die Zeilen aller erscheinen und deine Antwort an alle geht. An: Die Zeilen jeder sprechenden Person erscheinen stattdessen in einer normalen IM-Unterhaltung mit ihr, und deine Antwort geht nur an diese Person. Zeilen vom Grid selbst und deine eigenen Zeilen in der Konferenz werden dann nicht gezeigt.",
       "show_display_names_tip": "Aus zeigt überall den Benutzernamen. Die Klammerzeile darunter entfällt dann, weil es nichts mehr zu unterscheiden gibt.",
       "show_legacy_names": "Benutzernamen unter dem Anzeigenamen zeigen",
       "show_legacy_names_tip": "Zeigt den unveränderlichen Kontonamen in Klammern unter dem Anzeigenamen. Avatare ohne Anzeigenamen bleiben unverändert.",
@@ -781,6 +783,7 @@
       "someone": "Jemand"
     },
     "chat": {
+      "conference": "Konferenz",
       "contacts": "KONTAKTE"
     },
     "common": {

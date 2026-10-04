@@ -54,6 +54,11 @@ public sealed class UiSettings
     /// disambiguate.</summary>
     public bool ShowDisplayNames { get; private set; } = true;
 
+    /// <summary>Conference chats (several people, no group) as plain IM conversations with whoever is
+    /// speaking, the way Firestorm lists them among the IMs. Default off: a conference gets its own
+    /// conversation, in which everyone's lines appear and which a reply goes back into.</summary>
+    public bool ConferenceChatsAsIm { get; private set; }
+
     /// <summary>FEAT-UI-30: hide the local agent's group title from EVERYONE. Unlike the three
     /// toggles above this is NOT a display setting -- it rides the AgentUpdate packet as
     /// AU_FLAGS_HIDETITLE and the simulator stops broadcasting the title, so other people's
@@ -88,6 +93,7 @@ public sealed class UiSettings
             ShowGroupTitles = (bool)cfg.GetValue(Section, "show_group_titles", true);
             ShowDisplayNames = (bool)cfg.GetValue(Section, "show_display_names", true);
             HideOwnGroupTitle = (bool)cfg.GetValue(Section, "hide_own_group_title", false);
+            ConferenceChatsAsIm = (bool)cfg.GetValue(Section, "conference_chats_as_im", false);
             BuildGridSpacing = Mathf.Clamp((float)cfg.GetValue(Section, "build_grid_spacing", 1.0), 0.01f, 64f);
             BuildRotationSnapDegrees = Mathf.Clamp((float)cfg.GetValue(Section, "build_rotation_snap_degrees", 15.0), 0.1f, 90f);
         }
@@ -167,6 +173,16 @@ public sealed class UiSettings
         cfg.Save(ConfigPath);
 
         NameTagOptionsChanged?.Invoke();
+    }
+
+    public void SetConferenceChatsAsIm(bool asIm)
+    {
+        ConferenceChatsAsIm = asIm;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "conference_chats_as_im", ConferenceChatsAsIm);
+        cfg.Save(ConfigPath);
     }
 
     /// <summary>FEAT-UI-04.</summary>

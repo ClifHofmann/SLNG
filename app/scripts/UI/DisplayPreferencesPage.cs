@@ -93,6 +93,17 @@ public partial class DisplayPreferencesPage : VBoxContainer
         legacyCheck.Toggled += on => _settings.SetShowLegacyNames(on);
         AddChild(legacyCheck);
 
+        // Not a display setting, but the page has no chat section and this is where the name options are.
+        var conferenceCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.conference_as_im"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            ButtonPressed = _settings.ConferenceChatsAsIm,
+            TooltipText = L10n.Tr("ui.preferences.conference_as_im_tip"),
+        };
+        conferenceCheck.Toggled += on => _settings.SetConferenceChatsAsIm(on);
+        AddChild(conferenceCheck);
+
         
         // FEAT-UI-04: the build grid's granularity, the way a paint program exposes its grid.
         // The listed steps are the ones SL builders actually use; finer than 1 cm is below what

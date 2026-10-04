@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.35-alpha";
+    public const string AppVersion = "v0.26.36-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1302,6 +1302,7 @@ public partial class Boot : Control
 
         _chatLogger = new SLNG.Core.Services.ChatLogger();
         _chatWindow = new SLNG.App.UI.ChatWindow { Name = "ChatWindow" };
+        _chatWindow.ConferenceAsIm = () => _uiSettings.ConferenceChatsAsIm;
         hudLayer.AddChild(_chatWindow);
         _chatWindow.Initialize(_chatLogger);
         // Captures _session by reference (not by value at wiring time) so this keeps working
@@ -3688,6 +3689,7 @@ public partial class Boot : Control
         _session.InstantMessageReceived += OnInstantMessageReceived;
         // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
+        _session.ConferenceChatMessageReceived += OnConferenceChatMessageReceived;
         _session.GroupChatJoined += OnGroupChatJoinedResult;
         // FEAT-UI-54: the group info window. All three fire on a network thread.
         _session.GroupProfileReceived += OnGroupProfileReceived;
@@ -4170,6 +4172,21 @@ public partial class Boot : Control
     {
         _chatWindow.AppendGroupChatMessage(
             System.Guid.Parse(groupId), groupName,
+            System.Guid.TryParse(fromAgentId, out var from) ? from : System.Guid.Empty,
+            fromAgentName, message);
+    }
+
+    private void OnConferenceChatMessageReceived(object? sender, SLNG.Core.ConferenceChatMessageEvent e)
+    {
+        // Network thread, like the other chat handlers: Guids travel as strings.
+        CallDeferred(nameof(AppendConferenceChatMessage), e.SessionId.ToString(), e.SessionName ?? "",
+            e.FromAgentId.ToString(), e.FromAgentName ?? "", e.Message);
+    }
+
+    private void AppendConferenceChatMessage(string sessionId, string sessionName, string fromAgentId, string fromAgentName, string message)
+    {
+        _chatWindow.AppendConferenceMessage(
+            System.Guid.Parse(sessionId), sessionName,
             System.Guid.TryParse(fromAgentId, out var from) ? from : System.Guid.Empty,
             fromAgentName, message);
     }

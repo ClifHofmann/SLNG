@@ -415,6 +415,46 @@ public sealed partial class GridSession
         return name.Length > 0;
     }
 
+    private readonly SessionLineGate _sessionLineGate = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Guid> _conferencePeers = new();
+
+    private bool IsDuplicateSessionLine(InstantMessage im)
+    {
+        lock (_sessionLineGate)
+            return _sessionLineGate.IsDuplicate(im.IMSessionID.Guid, im.FromAgentID.Guid, im.Message ?? "", DateTime.UtcNow.Ticks);
+    }
+
+    /// <summary>The session name a message carries in its binary bucket (a UTF-8 string, NUL-terminated), or
+    /// empty when there is none or it is not text.</summary>
+    internal static string DecodeSessionName(byte[]? bucket)
+    {
+        if (bucket == null || bucket.Length == 0 || bucket.Length > 256) return string.Empty;
+        string text = System.Text.Encoding.UTF8.GetString(bucket).TrimEnd('\0').Trim();
+        return text.Any(char.IsControl) ? string.Empty : text;
+    }
+
+    /// <summary>Sends a line into an ad-hoc conference session: <c>SessionSend</c> with the session id, addressed
+    /// to the session's other participant as the viewer does (<c>LLIMModel::sendMessage</c>,
+    /// llimview.cpp:2200-2225). The line comes back through the session like any other and is shown then.
+    /// Returns false when nothing was sent.</summary>
+    public bool SendConferenceMessage(Guid sessionId, string message)
+    {
+        if (sessionId == Guid.Empty || string.IsNullOrEmpty(message) || !_client.Network.Connected) return false;
+
+        Guid to = _conferencePeers.TryGetValue(sessionId, out var peer) ? peer : sessionId;
+        _client.Self.InstantMessage(
+            _client.Self.Name,
+            new UUID(to),
+            message,
+            new UUID(sessionId),
+            InstantMessageDialog.SessionSend,
+            InstantMessageOnline.Online,
+            _client.Self.SimPosition,
+            UUID.Zero,
+            Array.Empty<byte>());
+        return true;
+    }
+
     /// <summary>True when <paramref name="sessionId"/> is a group we belong to. Before the membership list has
     /// arrived nothing can be ruled out, so every session counts as a group then -- the behaviour from before
     /// this check existed, and the safer mistake (a group line in an odd tab beats a lost group line).</summary>
@@ -596,9 +636,9 @@ public sealed partial class GridSession
             // The typing indicator is its own dialog (41/42) but carries the TEXT "typing", so it must be
             // told apart by the dialog -- the empty-message test above never caught it.
             if (e.IM.Dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping) return;
-            // The simulator echoes our own line back to the group session. The window already showed it when
-            // it was sent (and logged it), so the echo would be a second copy of every line we write.
-            if (e.IM.FromAgentID == _client.Self.AgentID) return;
+            // Our own line comes back through the session and is the ONLY copy: unlike a 1:1 IM the viewer does
+            // not echo a session line locally (llimview.cpp, LLIMModel::sendMessage echoes only IM_NOTHING_SPECIAL).
+            if (IsDuplicateSessionLine(e.IM)) return;
             // FEAT-UI-54: a group whose chat the user switched off is dropped before anything sees it.
             if (TryConsumeIgnoredGroupChat(e.IM.IMSessionID.Guid)) return;
             // For group chat the session id IS the group id.
@@ -607,16 +647,23 @@ public sealed partial class GridSession
             return;
         }
 
-        // A conference line is shown as an IM from the speaker (there is no conference UI yet); a typing
-        // indicator, an empty line or our own echo is not a message.
+        // An ad-hoc conference: several people, no group. Its own session, answered in the same session.
         if (e.IM.Dialog == InstantMessageDialog.SessionSend)
         {
-            if (string.IsNullOrEmpty(e.IM.Message) || e.IM.FromAgentID == _client.Self.AgentID) return;
-        }
-        else if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent)
-        {
+            if (string.IsNullOrEmpty(e.IM.Message) || IsDuplicateSessionLine(e.IM)) return;
+
+            Guid sessionId = e.IM.IMSessionID.Guid;
+            Guid from = e.IM.FromAgentID.Guid;
+            // Who to address replies to: the viewer sends a session line to the session's "other participant",
+            // which for an invited session is whoever invited us (llimview.cpp addMessage -> target_id).
+            if (from != Guid.Empty && from != _client.Self.AgentID.Guid) _conferencePeers.TryAdd(sessionId, from);
+
+            ConferenceChatMessageReceived?.Invoke(this, new ConferenceChatMessageEvent(
+                sessionId, DecodeSessionName(e.IM.BinaryBucket), from, e.IM.FromAgentName, e.IM.Message));
             return;
         }
+
+        if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
 
         InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
             e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, e.IM.IMSessionID.Guid));

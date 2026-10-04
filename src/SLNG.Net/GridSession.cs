@@ -389,6 +389,9 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     public event EventHandler<GroupChatMessageEvent>? GroupChatMessageReceived;
 
     /// <inheritdoc cref="GroupsUpdated"/>
+    public event EventHandler<ConferenceChatMessageEvent>? ConferenceChatMessageReceived;
+
+    /// <inheritdoc cref="GroupsUpdated"/>
     public event EventHandler<GroupChatJoinedEvent>? GroupChatJoined;
 
     /// <inheritdoc cref="GroupsUpdated"/>

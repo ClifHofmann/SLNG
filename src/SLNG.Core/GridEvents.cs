@@ -133,6 +133,14 @@ public record ActiveGroupChangedEvent(Guid GroupId, string GroupName, string Tit
 /// <param name="FromAgentId">Speaker's agent id; <see cref="Guid.Empty"/> for a system line.</param>
 public record GroupChatMessageEvent(Guid GroupId, Guid FromAgentId, string FromAgentName, string Message);
 
+/// <summary>One message in an ad-hoc conference session (several people, no group): an instant message of
+/// dialog <c>SessionSend</c> whose session id is none of the agent's groups. Replies go back into the same
+/// session (<c>GridSession.SendConferenceMessage</c>).</summary>
+/// <param name="SessionId">The conference's session id.</param>
+/// <param name="SessionName">The name the grid gave the session (the binary bucket of the message), or empty.</param>
+/// <param name="FromAgentId">Speaker's agent id; <see cref="Guid.Empty"/> for a system line.</param>
+public record ConferenceChatMessageEvent(Guid SessionId, string SessionName, Guid FromAgentId, string FromAgentName, string Message);
+
 /// <summary>Result of joining a group's chat session. A join must succeed before
 /// <c>GridSession.SendGroupMessage</c> can deliver anything to that group.</summary>
 public record GroupChatJoinedEvent(Guid GroupId, string SessionName, bool Success);
