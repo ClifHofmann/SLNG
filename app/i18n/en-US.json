@@ -309,6 +309,7 @@
     "friendship_request": {
       "title": "OFFER FRIENDSHIP",
       "heading": "Offer friendship to {0}",
+      "explain": "Friends can give permissions to track each other on the map and receive online status updates.",
       "message": "Your message to them:",
       "default_message": "Would you be my friend?",
       "send": "Send offer",

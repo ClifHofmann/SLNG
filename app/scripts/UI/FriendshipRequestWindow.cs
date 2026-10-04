@@ -66,6 +66,18 @@ public partial class FriendshipRequestWindow : SLNGWindow
         heading.AddThemeFontSizeOverride("font_size", 12);
         _vbox.AddChild(heading);
 
+        // The viewer's own explanation of what a friendship gives (notifications.xml, AddFriendWithMessage).
+        var explain = new Label
+        {
+            Text = L10n.Tr("ui.friendship_request.explain"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(220, 0),
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+        };
+        explain.AddThemeFontSizeOverride("font_size", 11);
+        explain.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
+        _vbox.AddChild(explain);
+
         var caption = new Label { Text = L10n.Tr("ui.friendship_request.message") };
         caption.AddThemeFontSizeOverride("font_size", 11);
         caption.AddThemeColorOverride("font_color", UiTheme.SecondaryText);

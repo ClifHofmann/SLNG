@@ -309,6 +309,7 @@
     "friendship_request": {
       "title": "FREUNDSCHAFT ANBIETEN",
       "heading": "Freundschaft anbieten an {0}",
+      "explain": "Freunde können einander erlauben, sich auf der Karte zu orten und den Online-Status zu sehen.",
       "message": "Deine Nachricht an die Person:",
       "default_message": "Möchtest du mit mir befreundet sein?",
       "send": "Anfrage senden",
