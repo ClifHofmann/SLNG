@@ -616,7 +616,11 @@ public sealed partial class GridSession
 
     // BUG-ASSET-02: what the region's ViewerAsset capability has refused to give us, for a while. A busy
     // region has many avatars playing the same animation, and each one asked again.
-    private readonly AssetRefusals _assetRefusals = new();
+    // The first "no" is believed for a few seconds only, then for twice as long each time it is repeated, up to ten
+    // minutes: a pose that was switched to a moment ago may be refused for a moment, and must not be refused for ten
+    // minutes because of it (the other avatar's new pose then never shows). A crowd asking within those seconds is
+    // still held back, which is what the memory is for.
+    private readonly AssetRefusals _assetRefusals = new(firstLifetime: TimeSpan.FromSeconds(5));
 
     /// <summary>
     /// Fetches the raw bytes of an animation asset: over the region's <c>ViewerAsset</c> capability
@@ -648,7 +652,7 @@ public sealed partial class GridSession
         {
             if (_assetRefusals.Remember(region, animId))
                 Console.Error.WriteLine($"[AnimFetch] {animId}: the region refused it (HTTP {(int)status}); " +
-                                        $"not asked again for {_assetRefusals.Lifetime.TotalMinutes:0} minutes");
+                                        $"asked again after {_assetRefusals.FirstLifetime.TotalSeconds:0} s, then with growing pauses up to {_assetRefusals.Lifetime.TotalMinutes:0} minutes");
             return null;
         }
 

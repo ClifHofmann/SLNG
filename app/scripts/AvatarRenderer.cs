@@ -43,6 +43,11 @@ public partial class AvatarRenderer : Node3D
         public Dictionary<int, Guid> LoadedTextures { get; } = new();
         public AvatarAnimationPlayer AnimPlayer { get; } = new();
         public List<Guid>? LoadedAnimationIds { get; set; }
+        // Which animation request is the latest for this avatar. A request that finishes after a newer one was
+        // started must not apply its (older) set over it. Main thread only.
+        public int AnimationSerial { get; set; }
+        // Set by a retry of a set that did not fully arrive; the next request for the set carries it on.
+        public int PendingAnimationRetry { get; set; }
         public byte[]? LastAppliedVisualParams { get; set; }
         // Joint-position overrides harvested from worn rigged meshes (viewer:
         // LLVOAvatar::addAttachmentOverridesForObject). Keyed by bone name; value is the
@@ -1591,7 +1596,10 @@ public partial class AvatarRenderer : Node3D
         }
 
         visual.LoadedAnimationIds = new List<Guid>(desired);
-        _ = LoadAndStartAnimationsAsync(visual, desired);
+        int serial = ++visual.AnimationSerial;
+        int attempt = visual.PendingAnimationRetry;
+        visual.PendingAnimationRetry = 0;
+        _ = LoadAndStartAnimationsAsync(visual, desired, serial, attempt);
     }
 
     /// <summary>FEAT-ANIM-01: the self avatar's locomotion animation as decided from local input
@@ -5826,6 +5834,23 @@ void fragment() {
     /// produced a T-posed avatar.</summary>
     private const int MinBodyJointsForPose = 6;
 
+    /// <summary>Pauses before each retry of an animation set that did not fully arrive, in seconds. Four tries, then
+    /// the set is left as it is until it changes.</summary>
+    private static readonly double[] AnimationRetryDelaysSeconds = { 6, 12, 25, 50 };
+
+    private void ScheduleAnimationRetry(AvatarVisual visual, int serial, int nextAttempt, double delaySeconds)
+    {
+        var timer = GetTree()?.CreateTimer(delaySeconds);
+        if (timer == null) return;
+        timer.Timeout += () =>
+        {
+            // Only if nothing newer has taken over since, and the avatar is still there.
+            if (visual.Root == null || !IsInstanceValid(visual.Root) || serial != visual.AnimationSerial) return;
+            visual.PendingAnimationRetry = nextAttempt;
+            visual.LoadedAnimationIds = null; // the next update sees "changed" and asks for the set again
+        };
+    }
+
     /// <summary>An animation set that took at least this long to arrive is logged (see LoadAndStartAnimationsAsync).</summary>
     private const double SlowAnimationSetSeconds = 2.0;
 
@@ -5840,7 +5865,7 @@ void fragment() {
         GD.PrintErr($"[AnimPlayer] animation {animId} will not play -- {why}");
     }
 
-    private async System.Threading.Tasks.Task LoadAndStartAnimationsAsync(AvatarVisual visual, List<Guid> animIds)
+    private async System.Threading.Tasks.Task LoadAndStartAnimationsAsync(AvatarVisual visual, List<Guid> animIds, int serial, int attempt)
     {
         if (_assetService == null) return;
 
@@ -5946,7 +5971,20 @@ void fragment() {
         // Apply on main thread via CallDeferred
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => {
             if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
+
+            // A newer request was started while this one was fetching (the pose was switched again, the
+            // sim sent a new set): its answer is the one to apply, and this older one finishing LAST must
+            // not undo it. Fetch times differ per animation, so "last to finish" is not "last asked".
+            if (serial != visual.AnimationSerial) return;
+
             visual.AnimPlayer.SetActiveAnimations(loaded);
+
+            // Part of the set did not arrive. That can be timing -- a pose switched to a moment ago may be
+            // refused for a moment -- and nothing else would ask again: the set is unchanged, so the change
+            // detection stays quiet. Ask again after a growing pause, a few times (the pauses outlast the
+            // asset service's own short memory of a refusal).
+            if (loaded.Count < animIds.Count && attempt < AnimationRetryDelaysSeconds.Length)
+                ScheduleAnimationRetry(visual, serial, attempt + 1, AnimationRetryDelaysSeconds[attempt]);
         }, label: "avatar.animations");
     }
 

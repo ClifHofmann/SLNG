@@ -129,4 +129,56 @@ public class AssetRefusalsTests
         Assert.Equal(TimeSpan.FromMinutes(10), AssetRefusals.DefaultLifetime);
         Assert.Equal(AssetRefusals.DefaultLifetime, new AssetRefusals().Lifetime);
     }
+
+    // A refusal can be about timing: a pose switched to a moment ago is refused to other viewers for a moment.
+    // The first "no" is therefore short, and it grows only if the grid keeps saying no.
+    [Fact]
+    public void Each_new_refusal_is_believed_twice_as_long_up_to_the_longest()
+    {
+        var clock = new Clock();
+        var refusals = new AssetRefusals(TimeSpan.FromMinutes(10), clock.Read, firstLifetime: TimeSpan.FromSeconds(5));
+
+        refusals.Remember(Region, Anim);                       // strike 1: 5 s
+        clock.Now += TimeSpan.FromSeconds(4);
+        Assert.True(refusals.IsRefused(Region, Anim));
+        clock.Now += TimeSpan.FromSeconds(2);
+        Assert.False(refusals.IsRefused(Region, Anim));        // asked again after 5 s
+
+        refusals.Remember(Region, Anim);                       // strike 2: 10 s
+        clock.Now += TimeSpan.FromSeconds(9);
+        Assert.True(refusals.IsRefused(Region, Anim));
+        clock.Now += TimeSpan.FromSeconds(2);
+        Assert.False(refusals.IsRefused(Region, Anim));
+
+        for (int i = 0; i < 20; i++)                           // strikes keep coming: never past the longest
+        {
+            refusals.Remember(Region, Anim);
+            clock.Now += TimeSpan.FromMinutes(10) + TimeSpan.FromSeconds(1);
+            Assert.False(refusals.IsRefused(Region, Anim));
+        }
+    }
+
+    [Fact]
+    public void The_crowd_behind_one_refusal_does_not_make_it_longer()
+    {
+        var clock = new Clock();
+        var refusals = new AssetRefusals(TimeSpan.FromMinutes(10), clock.Read, firstLifetime: TimeSpan.FromSeconds(5));
+
+        for (int i = 0; i < 124; i++) refusals.Remember(Region, Anim);   // one burst, one strike
+
+        clock.Now += TimeSpan.FromSeconds(6);
+        Assert.False(refusals.IsRefused(Region, Anim));
+        refusals.Remember(Region, Anim);
+        clock.Now += TimeSpan.FromSeconds(9);
+        Assert.True(refusals.IsRefused(Region, Anim));                    // strike 2 is 10 s, not 20 or 40
+        clock.Now += TimeSpan.FromSeconds(2);
+        Assert.False(refusals.IsRefused(Region, Anim));
+    }
+
+    [Fact]
+    public void Without_a_first_lifetime_the_memory_is_flat()
+    {
+        var refusals = new AssetRefusals();
+        Assert.Equal(refusals.Lifetime, refusals.FirstLifetime);
+    }
 }
