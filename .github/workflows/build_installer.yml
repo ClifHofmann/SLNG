@@ -93,10 +93,30 @@ jobs:
       # with "/" to trigger the conversion.
       run: MSYS_NO_PATHCONV=1 "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DMyAppVersion=${{ github.ref_name }}" installer/PurisViewer.iss
 
+    - name: Release notes
+      id: notes
+      if: startsWith(github.ref, 'refs/tags/')
+      # The release title and text travel with the tag: docs/releases/<tag>.md, first line
+      # "# <title>", the rest the body. Until now they were written onto the release by hand
+      # after the run; a session that can push a tag but cannot edit a release (no gh CLI) had no
+      # way to ship them. Without a file the release keeps the tag as its name and an empty body,
+      # exactly as before.
+      run: |
+        f="docs/releases/${GITHUB_REF_NAME}.md"
+        if [ -f "$f" ]; then
+          echo "name=$(head -n 1 "$f" | sed 's/^# *//')" >> "$GITHUB_OUTPUT"
+          tail -n +2 "$f" | sed '1{/^$/d}' > release-notes.md
+        else
+          echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          : > release-notes.md
+        fi
+
     - name: Upload Release
       uses: softprops/action-gh-release@v3
       if: startsWith(github.ref, 'refs/tags/')
       with:
+        name: ${{ steps.notes.outputs.name }}
+        body_path: release-notes.md
         files: Output/PurisViewer_Setup_*.exe
         # Every -alpha tag is a pre-release, so GitHub stops calling the newest one "Latest"
         # and the download page does not offer an alpha to someone looking for a stable build.
