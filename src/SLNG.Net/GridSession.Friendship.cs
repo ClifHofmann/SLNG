@@ -137,6 +137,37 @@ public sealed partial class GridSession
     private bool FriendshipCapabilityAvailable(string capability) =>
         _client.Network.CurrentSim?.Caps?.CapabilityURI(capability) != null;
 
+    /// <summary>How long after forming a friendship the online status is asked for a second time. The first
+    /// request can reach the grid before it has recorded the friendship, in which case nothing comes back and
+    /// the new friend would stay "offline" until the next time they log in or out.</summary>
+    private static readonly TimeSpan FriendOnlineRecheckDelay = TimeSpan.FromSeconds(3);
+
+    /// <summary>Asks the grid whether a NEW friend is online -- the generic message
+    /// <c>requestonlinenotification</c>, which the reference viewer sends when a friendship is formed
+    /// (llimprocessing.cpp:2385, <c>IM_FRIENDSHIP_ACCEPTED</c>). The answer is an <c>OnlineNotification</c>,
+    /// which LibreMetaverse turns into <c>FriendOnline</c> (and so <see cref="FriendStatusChanged"/>). Sent
+    /// twice, see <see cref="FriendOnlineRecheckDelay"/>; both are harmless if the friend is offline.</summary>
+    internal void RequestFriendOnlineStatus(Guid friendId)
+    {
+        if (friendId == Guid.Empty || !_client.Network.Connected) return;
+
+        var id = new UUID(friendId);
+        try
+        {
+            _client.Friends.RequestOnlineNotification(id);
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(FriendOnlineRecheckDelay).ConfigureAwait(false);
+                if (_client.Network.Connected && _client.Friends.FriendList.ContainsKey(id))
+                    _client.Friends.RequestOnlineNotification(id);
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Friends] online status request for {friendId} failed: {ex.Message}");
+        }
+    }
+
     /// <summary>Accepts a friendship offer. Returns whether the answer was sent (or, for the
     /// capability route, started) — false when not connected, for an empty sender, or when there is
     /// neither a capability nor a transaction id to answer with.</summary>
@@ -153,6 +184,7 @@ public sealed partial class GridSession
             case FriendshipReplyRoute.Udp:
                 _client.Friends.AcceptFriendship(new UUID(offer.FromId), new UUID(offer.SessionId));
                 FriendListChanged?.Invoke(this, EventArgs.Empty);
+                RequestFriendOnlineStatus(offer.FromId); // LibreMetaverse adds the friend as "offline" and asks nothing
                 return true;
             case FriendshipReplyRoute.Capability:
                 _ = AcceptFriendshipViaCapabilityAsync(offer.FromId);
@@ -169,7 +201,10 @@ public sealed partial class GridSession
             await _client.Friends.AcceptFriendshipViaCapAsync(new UUID(fromId)).ConfigureAwait(false);
             // LibreMetaverse logs a refusal and returns; the friend list is the only witness.
             if (_client.Friends.FriendList.ContainsKey(new UUID(fromId)))
+            {
                 FriendListChanged?.Invoke(this, EventArgs.Empty);
+                RequestFriendOnlineStatus(fromId);
+            }
             else
                 Console.Error.WriteLine($"[Friends] The grid did not confirm the friendship with {fromId} (AcceptFriendship capability).");
         }

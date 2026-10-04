@@ -613,7 +613,11 @@ public sealed partial class GridSession
 
         if (TryDecodeFriendshipAnswer(e.IM.Dialog, e.IM.FromAgentID.Guid, e.IM.FromAgentName) is { } answer)
         {
-            if (answer.Accepted) FriendListChanged?.Invoke(this, EventArgs.Empty);
+            if (answer.Accepted)
+            {
+                FriendListChanged?.Invoke(this, EventArgs.Empty);
+                RequestFriendOnlineStatus(answer.FromId); // LibreMetaverse asks once, possibly too early
+            }
             FriendshipAnswered?.Invoke(this, answer);
             return;
         }

@@ -1232,6 +1232,56 @@ public partial class ChatWindow : SLNGWindow
     /// <param name="isOnline">Presence dot next to the name -- green/grey like FriendsPanel's,
     /// omitted entirely when null (e.g. "Main" isn't a person, so it gets no dot). IM rows pass
     /// a value once Phase 1c wires them up to a friend/contact's live status.</param>
+    // ---- manual sorting of the conversation list -----------------------------------------------------
+
+    private const string ConversationDragPrefix = "slng-conversation:";
+
+    /// <summary>The conversation's name button, which is also what you grab to drag it. The delegates are set by
+    /// <see cref="AddChatTab"/>; <c>DragData</c> null means this row cannot be dragged ("Main").</summary>
+    private partial class ConversationButton : Button
+    {
+        public string? DragData;
+        public Func<string, bool>? CanDrop;
+        public Action<string>? Dropped;
+
+        public override Variant _GetDragData(Vector2 atPosition)
+        {
+            if (DragData == null) return default;
+
+            var preview = new Label { Text = Text };
+            preview.AddThemeColorOverride("font_color", new Color(1, 1, 1, 0.9f));
+            SetDragPreview(preview);
+            return DragData;
+        }
+
+        public override bool _CanDropData(Vector2 atPosition, Variant data)
+            => data.VariantType == Variant.Type.String && CanDrop?.Invoke(data.AsString()) == true;
+
+        public override void _DropData(Vector2 atPosition, Variant data)
+        {
+            if (data.VariantType == Variant.Type.String) Dropped?.Invoke(data.AsString());
+        }
+    }
+
+    /// <summary>Moves a conversation to where another one is. The list keeps that order for the rest of the
+    /// session (the open conversations are not restored at the next login, so there is nothing to save).
+    /// "Main" always stays on top: a drop onto it puts the conversation right below it.</summary>
+    private void MoveConversation(string draggedId, string targetId)
+    {
+        var dragged = _chatTabs.Find(t => t.Id == draggedId);
+        var target = _chatTabs.Find(t => t.Id == targetId);
+        if (dragged == null || target == null || dragged == target || !dragged.Closeable) return;
+
+        // The dragged conversation takes the place the target has now: dropped upwards it ends up above the
+        // target, dropped downwards below it. Both indices are read before anything moves; "Main" is not a
+        // place to land, so a drop onto it means "first below Main".
+        int tabIndex = Math.Max(1, _chatTabs.IndexOf(target));
+        int rowIndex = target.Closeable ? target.RowPanel.GetIndex() : target.RowPanel.GetIndex() + 1;
+        _chatTabs.Remove(dragged);
+        _chatTabs.Insert(Math.Min(tabIndex, _chatTabs.Count), dragged);
+        _conversationList.MoveChild(dragged.RowPanel, rowIndex);
+    }
+
     private ChatTab AddChatTab(string id, string displayName, ChatLogKind kind, bool closeable, bool? isOnline = null,
         Guid? iconAgentId = null)
     {
@@ -1268,7 +1318,7 @@ public partial class ChatWindow : SLNGWindow
             inner.AddChild(iconRect);
         }
 
-        var label = new Button
+        var label = new ConversationButton
         {
             Text = displayName,
             Flat = true,
@@ -1303,6 +1353,12 @@ public partial class ChatWindow : SLNGWindow
         _chatTabs.Add(tab);
 
         label.Pressed += () => SelectChatTab(tab);
+
+        // Manual sorting: drag a conversation onto another to put it there. "Main" stays first and cannot be
+        // dragged; everything else can.
+        label.DragData = closeable ? ConversationDragPrefix + id : null;
+        label.CanDrop = data => data.StartsWith(ConversationDragPrefix, StringComparison.Ordinal) && data != ConversationDragPrefix + id;
+        label.Dropped = data => MoveConversation(data[ConversationDragPrefix.Length..], tab.Id);
 
         if (closeable)
         {
