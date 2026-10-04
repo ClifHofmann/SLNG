@@ -2934,6 +2934,8 @@ public partial class AvatarRenderer : Node3D
         // they are all in place and can tell which surfaces blend -- and whether any is drawn.
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
+            // Reattached first: the split reads the skeleton through mi.Skeleton.
+            ReattachSkeleton(mi);
             SplitSortedSurfaces(mi, meshId);
             UpdateWornMeshVisibility(mi);
         }, label: "avatar.split_sorted");
@@ -2958,6 +2960,14 @@ public partial class AvatarRenderer : Node3D
     ///
     /// <para>Rigged meshes only: a transparent rigid attachment is a common click target (an
     /// invisible HUD-like button worn on the body) and stays as it is.</para>
+    ///
+    /// <para>Hiding alone left the skin cost: Godot keeps a hidden instance's <see cref="Skin"/>
+    /// registered with the skeleton and writes every one of its binds to the RenderingServer on
+    /// each re-pose (measured after the first round: 52 of 255 meshes drawn, all 20,200 binds still
+    /// updated, ~1.8 ms post-flush). So a hidden mesh, and its split children (they share the
+    /// Skin, and Godot shares one binding per Skin), are also detached from the skeleton
+    /// (<see cref="DetachSkeleton"/>); <see cref="ReattachSkeleton"/> restores the path before the
+    /// next material pass looks at it.</para>
     /// </remarks>
     private void UpdateWornMeshVisibility(MeshInstance3D mi)
     {
@@ -2973,6 +2983,41 @@ public partial class AvatarRenderer : Node3D
             anyDrawn = !IsHiddenFaceMaterial(material);
         }
         if (mi.Visible != anyDrawn) mi.Visible = anyDrawn;
+        if (!anyDrawn) DetachSkeleton(mi);
+    }
+
+    private static readonly StringName DetachedSkeletonMeta = "slng_detached_skeleton";
+
+    /// <summary>Clears the skeleton path of <paramref name="mi"/> and its split children, keeping
+    /// it in metadata, so Godot unregisters their Skin and stops updating its binds.</summary>
+    private static void DetachSkeleton(MeshInstance3D mi)
+    {
+        Detach(mi);
+        foreach (var child in mi.GetChildren())
+            if (child is MeshInstance3D split) Detach(split);
+
+        static void Detach(MeshInstance3D m)
+        {
+            if (m.Skin == null || m.Skeleton.IsEmpty) return;
+            m.SetMeta(DetachedSkeletonMeta, m.Skeleton);
+            m.Skeleton = new NodePath();
+        }
+    }
+
+    /// <summary>Undoes <see cref="DetachSkeleton"/>; a no-op on a mesh that was never detached.</summary>
+    private static void ReattachSkeleton(MeshInstance3D mi)
+    {
+        if (!IsInstanceValid(mi)) return;
+        Reattach(mi);
+        foreach (var child in mi.GetChildren())
+            if (child is MeshInstance3D split) Reattach(split);
+
+        static void Reattach(MeshInstance3D m)
+        {
+            if (!m.HasMeta(DetachedSkeletonMeta)) return;
+            m.Skeleton = m.GetMeta(DetachedSkeletonMeta).AsNodePath();
+            m.RemoveMeta(DetachedSkeletonMeta);
+        }
     }
 
     /// <summary>A material that draws nothing. A surface with no material yet counts as drawn: it
@@ -5697,7 +5742,7 @@ void fragment() {
         if (_avatarCostAccum < AvatarCostIntervalSeconds) return;
         _avatarCostAccum = 0;
 
-        int avatars = 0, shown = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0;
+        int avatars = 0, shown = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0, boundBinds = 0;
         int surfaces = 0, hiddenSurfaces = 0;
         foreach (var visual in _visuals.Values)
         {
@@ -5709,22 +5754,22 @@ void fragment() {
             foreach (var node in visual.Skeleton.GetChildren())
             {
                 CountSkin(node as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
-                          ref surfaces, ref hiddenSurfaces);
+                          ref boundBinds, ref surfaces, ref hiddenSurfaces);
                 foreach (var grandchild in node.GetChildren())
                     CountSkin(grandchild as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
-                              ref surfaces, ref hiddenSurfaces);
+                              ref boundBinds, ref surfaces, ref hiddenSurfaces);
             }
         }
 
         SLNG.App.UI.StatsOverlay.EmitPerfLine(
             $"[AvatarCost] avatars={avatars} shown={shown} animating={animating} skinnedMeshes={skinned} " +
             $"drawnSkinnedMeshes={drawn} surfaces={surfaces} hiddenSurfaces={hiddenSurfaces} " +
-            $"skinBinds={binds} shownSkinBinds={shownBinds} controlAvatars={_controlAvatars.Count}");
+            $"skinBinds={binds} shownSkinBinds={shownBinds} boundSkinBinds={boundBinds} controlAvatars={_controlAvatars.Count}");
 
         // Surfaces are counted on the instance that owns the face: a split child counts its one
         // surface, and the parent's Hidden stand-in for it is not counted again.
         static void CountSkin(MeshInstance3D? mi, bool isShown, ref int skinned, ref int drawn, ref int binds,
-                              ref int shownBinds, ref int surfaces, ref int hiddenSurfaces)
+                              ref int shownBinds, ref int boundBinds, ref int surfaces, ref int hiddenSurfaces)
         {
             if (mi?.Skin == null) return;
             int n = mi.Skin.GetBindCount();
@@ -5732,6 +5777,10 @@ void fragment() {
             if (mi.Visible) drawn++;
             binds += n;
             if (isShown) shownBinds += n;
+            // Still registered with the skeleton, i.e. updated on every re-pose. A split child shares
+            // its parent's Skin and binding, so it is counted with the parent only.
+            if (!mi.Skeleton.IsEmpty && !mi.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
+                boundBinds += n;
             if (mi.Mesh is not ArrayMesh mesh) return;
             for (int s = 0; s < mesh.GetSurfaceCount(); s++)
             {
