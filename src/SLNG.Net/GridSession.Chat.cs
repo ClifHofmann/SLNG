@@ -474,18 +474,32 @@ public sealed partial class GridSession
             name = member.Name;
             return true;
         }
-        return TryGetCachedName(groupId, out name);
+        if (TryGetCachedName(groupId, out name) && !string.IsNullOrWhiteSpace(name)) return true;
+        name = groupId.ToString();
+        return false;
+    }
+
+    /// <summary>True when the shared name cache holds a NAME for this id; an entry with an empty name is not one.</summary>
+    private bool HasCachedName(Guid id) => _nameCache.TryGetValue(id, out var cached) && !string.IsNullOrWhiteSpace(cached);
+
+    /// <summary>Remembers a group's name learnt from somewhere other than a name reply, unless a real one is known
+    /// already, and tells the listeners (<see cref="NameResolved"/>) so a tab titled with the id is renamed.</summary>
+    private void RememberGroupName(Guid groupId, string name)
+    {
+        if (groupId == Guid.Empty || string.IsNullOrWhiteSpace(name) || HasCachedName(groupId)) return;
+        _nameCache[groupId] = name;
+        NameResolved?.Invoke(this, new NameResolvedEvent(groupId, name));
     }
 
     public void RequestAvatarName(Guid agentId)
     {
-        if (agentId == Guid.Empty || _nameCache.ContainsKey(agentId) || !_client.Network.Connected) return;
+        if (agentId == Guid.Empty || HasCachedName(agentId) || !_client.Network.Connected) return;
         _client.Avatars.RequestAvatarName(new UUID(agentId));
     }
 
     public void RequestGroupName(Guid groupId)
     {
-        if (groupId == Guid.Empty || _nameCache.ContainsKey(groupId) || !_client.Network.Connected) return;
+        if (groupId == Guid.Empty || HasCachedName(groupId) || !_client.Network.Connected) return;
         _client.Groups.RequestGroupName(new UUID(groupId));
     }
 
@@ -646,8 +660,13 @@ public sealed partial class GridSession
             // FEAT-UI-54: a group whose chat the user switched off is dropped before anything sees it.
             if (TryConsumeIgnoredGroupChat(e.IM.IMSessionID.Guid)) return;
             // For group chat the session id IS the group id.
+            // The message names its session in the binary bucket (the viewer's session name, llimprocessing /
+            // llimview.cpp): for a group, the group. That is the one source that needs neither the membership
+            // list nor a name request, so it is remembered before the tab is made.
+            string groupName = DecodeSessionName(e.IM.BinaryBucket);
+            RememberGroupName(e.IM.IMSessionID.Guid, groupName);
             GroupChatMessageReceived?.Invoke(this, new GroupChatMessageEvent(
-                e.IM.IMSessionID.Guid, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message));
+                e.IM.IMSessionID.Guid, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, groupName));
             return;
         }
 
@@ -725,7 +744,9 @@ public sealed partial class GridSession
         {
             // Cache the name too: group chat lines and object owners resolve through the same
             // shared name cache, and a membership reply is a free source for it.
-            _nameCache[g.ID.Guid] = g.Name ?? string.Empty;
+            // Only a real name: an empty one in the cache looks like "known" to every request that checks for
+            // the key, and the group is then never asked for (BUG-UI-21).
+            if (!string.IsNullOrWhiteSpace(g.Name)) _nameCache[g.ID.Guid] = g.Name;
             list.Add(GroupProfileMapper.ToEntry(g));
         }
         list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));

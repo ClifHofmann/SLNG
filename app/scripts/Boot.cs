@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.53-alpha";
+    public const string AppVersion = "v0.26.54-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4166,7 +4166,7 @@ public partial class Boot : Control
         // TryGetGroupName answers the id's TEXT when it does not know the name; that is not a name, and handed on
         // as one it made the tab "a937ce20-..." and kept ChatWindow from ever asking for the real one.
         string groupName = "";
-        if (_session == null || !_session.TryGetGroupName(e.GroupId, out groupName)) groupName = "";
+        if (_session == null || !_session.TryGetGroupName(e.GroupId, out groupName)) groupName = e.GroupName ?? "";
         CallDeferred(nameof(AppendGroupChatMessage), e.GroupId.ToString(), groupName ?? "",
             e.FromAgentId.ToString(), e.FromAgentName, e.Message);
     }

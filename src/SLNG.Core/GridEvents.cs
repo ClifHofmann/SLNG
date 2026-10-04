@@ -131,7 +131,9 @@ public record ActiveGroupChangedEvent(Guid GroupId, string GroupName, string Tit
 /// <c>GridSession.OnInstantMessage</c> uses, rather than inspecting the dialog by hand.</summary>
 /// <param name="GroupId">Group UUID — the same value as the chat session id.</param>
 /// <param name="FromAgentId">Speaker's agent id; <see cref="Guid.Empty"/> for a system line.</param>
-public record GroupChatMessageEvent(Guid GroupId, Guid FromAgentId, string FromAgentName, string Message);
+/// <param name="GroupName">The group's name as the message carried it (the binary bucket, which the reference viewer
+/// uses as the session's name), or empty. A group the agent's membership list does not name yet is still named by it.</param>
+public record GroupChatMessageEvent(Guid GroupId, Guid FromAgentId, string FromAgentName, string Message, string GroupName = "");
 
 /// <summary>An avatar's profile picture id became known (<c>GridSession.RequestProfileImage</c>, or any profile
 /// fetch). Never raised for an avatar with no picture.</summary>
