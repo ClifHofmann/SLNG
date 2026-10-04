@@ -15,7 +15,7 @@ letzten Zeilen des Protokolls und einem Bildschirmfoto.
 | Gruppe | Thema | Roadmap | Status |
 |---|---|---|---|
 | TC-GRID | Daten je Grid getrennt | BUG-GRID-01 | 🚧 |
-| TC-LOG | Chat-Protokolle wie Firestorm | FEAT-UI-41 | 🧪 |
+| TC-LOG | Chat-Protokolle wie Firestorm | FEAT-UI-41 | ✅ |
 | TC-KEY | Tastenkürzel und Tastatur-Seite | FEAT-UI-43 | 🧪 |
 | TC-INV | Inventar öffnet bereit zum Suchen | FEAT-INV-14 | 🧪 |
 | TC-DPI | Skalierung auf hochauflösendem Bildschirm | FEAT-UI-42 | ✅ (Reste offen) |
