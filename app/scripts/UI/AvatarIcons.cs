@@ -26,6 +26,50 @@ public sealed class AvatarIcons
     public const int IconSize = 20;
     private const int MaxPictures = 160;
 
+    private static ImageTexture? _placeholder;
+
+    /// <summary>The generic person symbol shown while a picture loads and for an avatar that has none --
+    /// what the reference viewer's avatar icon does (<c>default_icon_name</c>, "Generic_Person_Large"). Drawn
+    /// here instead of shipped as an image: a muted tile with a head and shoulders, at twice the icon size so
+    /// it stays sharp on a scaled UI. Built once, on first use, on the main thread.</summary>
+    public static Texture2D Placeholder => _placeholder ??= BuildPlaceholder();
+
+    private static ImageTexture BuildPlaceholder()
+    {
+        const int size = IconSize * 2;
+        var image = Image.CreateEmpty(size, size, false, Image.Format.Rgba8);
+
+        var tile = new Color(0.27f, 0.31f, 0.38f);
+        var figure = new Color(0.66f, 0.70f, 0.76f);
+        float c = size / 2f;
+        float cornerRadius = size * 0.2f;
+
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float px = x + 0.5f, py = y + 0.5f;
+
+                // Rounded tile: distance outside the inner rectangle, anti-aliased over one pixel.
+                float qx = Mathf.Max(Mathf.Abs(px - c) - (c - cornerRadius), 0f);
+                float qy = Mathf.Max(Mathf.Abs(py - c) - (c - cornerRadius), 0f);
+                float tileCover = Mathf.Clamp(cornerRadius - Mathf.Sqrt(qx * qx + qy * qy) + 0.5f, 0f, 1f);
+                if (tileCover <= 0f) { image.SetPixel(x, y, new Color(0, 0, 0, 0)); continue; }
+
+                // Head: a circle. Shoulders: an ellipse that runs off the bottom edge.
+                float head = Mathf.Clamp(size * 0.19f - Mathf.Sqrt(Sq(px - c) + Sq(py - size * 0.38f)) + 0.5f, 0f, 1f);
+                float ex = (px - c) / (size * 0.36f), ey = (py - size * 0.98f) / (size * 0.34f);
+                float shoulders = Mathf.Clamp((1f - Mathf.Sqrt(ex * ex + ey * ey)) * size * 0.34f + 0.5f, 0f, 1f);
+
+                var col = tile.Lerp(figure, Mathf.Max(head, shoulders));
+                image.SetPixel(x, y, new Color(col, tileCover));
+            }
+        }
+        return ImageTexture.CreateFromImage(image);
+    }
+
+    private static float Sq(float v) => v * v;
+
     private readonly GpuCache _gpu;
     private readonly SLNG.Assets.AssetService? _assets;
     private readonly Action<Guid> _ready;

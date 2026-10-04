@@ -146,7 +146,8 @@ public partial class RecentPanel : Control
         inner.AddThemeConstantOverride("separation", 6);
         row.AddChild(inner);
 
-        var picture = IconFor?.Invoke(item);
+        // An IM row always has a picture: the avatar's own, or the generic person until it arrives / when there is none.
+        var picture = IconFor?.Invoke(item) ?? (item.Kind == ChatLogKind.Im ? AvatarIcons.Placeholder : null);
         if (picture != null)
         {
             inner.AddChild(new TextureRect

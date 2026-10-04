@@ -1263,6 +1263,7 @@ public partial class ChatWindow : SLNGWindow
                 StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
                 SizeFlagsVertical = SizeFlags.ShrinkCenter,
                 MouseFilter = MouseFilterEnum.Ignore,
+                Texture = AvatarIcons.Placeholder, // until the real picture arrives, and for an avatar with none
             };
             inner.AddChild(iconRect);
         }
