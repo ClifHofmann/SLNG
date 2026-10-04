@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using SLNG.Core;
 using SLNG.Core.ChatLogs;
 using SLNG.Core.Services;
 using SLNG.Net;
@@ -68,7 +69,13 @@ public partial class ChatWindow : SLNGWindow
     private sealed class ChatTab
     {
         public string Id = "";
+        // What the row and the messages SHOW: the Display Name when the person has one. Changes when it
+        // resolves (RefreshNames).
         public string DisplayName = "";
+        // What the conversation IS: the name its log file, its History window and its Recent entry use --
+        // the legacy name, never a Display Name (those change, and would fork the history).
+        public string LogName = "";
+        public Button Label = null!;
         public PanelContainer RowPanel = null!;
         public Label UnreadLabel = null!;
         public ChatLogKind LogKind;
@@ -250,7 +257,10 @@ public partial class ChatWindow : SLNGWindow
     /// local agent's own chat lines apart by name (see FormatChatLine).</summary>
     public void BindSession(GridSession session)
     {
+        if (_session != null) _session.DisplayNameResolved -= OnDisplayNameResolved;
         _session = session;
+        _session.DisplayNameResolved += OnDisplayNameResolved;
+        if (Guid.TryParse(session.AgentId, out var ownId)) session.RequestDisplayName(ownId); // own lines show it too
         _friendsPanel.Initialize(session);
         _groupsPanel.Initialize(session);
 
@@ -263,6 +273,7 @@ public partial class ChatWindow : SLNGWindow
 
     public override void _ExitTree()
     {
+        if (_session != null) _session.DisplayNameResolved -= OnDisplayNameResolved;
         GroupMuteSettings.MuteChanged -= OnGroupMuteChanged;
         base._ExitTree();
     }
@@ -302,6 +313,7 @@ public partial class ChatWindow : SLNGWindow
         _groupsPanel.OnOpenGroupInfoRequested = (id, name) => OnOpenGroupInfoRequested?.Invoke(id, name);
         AddOuterTab("Groups", "group", _groupsPanel);
         _recentPanel = new RecentPanel();
+        _recentPanel.ShownName = item => item.Kind == ChatLogKind.Im ? NameDisplay.For(_session, item.Id, item.Name) : item.Name;
         _recentPanel.OnOpenRequested = OpenRecentConversation;
         _recentPanel.OnHistoryRequested = OpenHistoryFor;
         _recentPanel.OnRemoveRequested = (kind, id) => { if (_recent.Remove(kind, id)) SaveAndRefreshRecent(); };
@@ -368,7 +380,11 @@ public partial class ChatWindow : SLNGWindow
         // Presence is only known if this person happens to be a friend -- a stranger IMing you
         // isn't in GetFriends(), so the row gets no dot at all (see AddChatTab's isOnline param).
         bool? isOnline = _session?.GetFriends().FirstOrDefault(f => f.Id == agentId)?.IsOnline;
-        var tab = AddChatTab(agentId.ToString(), displayName, ChatLogKind.Im, closeable: true, isOnline);
+        // The conversation is named after the legacy name (its log file, its History, its Recent entry);
+        // only the row shows the Display Name. A caller may hand over either, so normalise.
+        string legacyName = NameDisplay.LegacyFor(_session, agentId, displayName);
+        var tab = AddChatTab(agentId.ToString(), NameDisplay.For(_session, agentId, legacyName), ChatLogKind.Im, closeable: true, isOnline);
+        tab.LogName = legacyName;
         tab.TargetAgentId = agentId;
         PreloadRecentHistory(tab);
         return tab;
@@ -468,7 +484,7 @@ public partial class ChatWindow : SLNGWindow
         // FEAT-UI-41: the last N messages from the end of the file (real logs are tens of megabytes), in
         // the file's own, Firestorm-compatible, format. This used to ask for "the last page", which is
         // not the last N lines but whatever partial page happens to be at the end.
-        var lines = _logger.GetTail(tab.LogKind, tab.DisplayName, PreloadHistoryLines);
+        var lines = _logger.GetTail(tab.LogKind, tab.LogName, PreloadHistoryLines);
         foreach (var line in lines)
             tab.Lines.Add($"[color=#777777][i]{BbEscape(line)}[/i][/color]");
     }
@@ -484,7 +500,7 @@ public partial class ChatWindow : SLNGWindow
         if (message == GridNotOnlineMessage || message == GridNotOnlineInventory) tab.OfflineNoticeShown = true;
         var now = DateTime.Now;
         AppendLineToTab(tab, FormatChatLine(now, sender, message, senderAgentId));
-        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, sender, message, now);
+        _ = _logger.AppendAsync(tab.LogKind, tab.LogName, sender, message, now);
         TrackRecent(tab, now);
     }
 
@@ -513,7 +529,7 @@ public partial class ChatWindow : SLNGWindow
         if (id == null) return; // nearby chat
 
         // Saved only when the order or a name changed -- not for every line of a running chat.
-        if (_recent.Touch(tab.LogKind, id.Value, tab.DisplayName, nowLocal.ToUniversalTime()))
+        if (_recent.Touch(tab.LogKind, id.Value, tab.LogName, nowLocal.ToUniversalTime()))
             SaveAndRefreshRecent();
         else if (_recentPanel.IsVisibleInTree())
             RefreshRecentPanel();
@@ -541,6 +557,36 @@ public partial class ChatWindow : SLNGWindow
         var win = new ChatHistoryWindow();
         GetParent().AddChild(win);
         win.Open(_logger, kind, name, name);
+    }
+
+    // ---- Display Names ---------------------------------------------------------------------------
+
+    private int _namesRefreshQueued;
+
+    /// <summary>Fires on a network thread for every Display Name the grid answers -- usually many in a
+    /// burst. One deferred refresh per burst, not one per name.</summary>
+    private void OnDisplayNameResolved(object? sender, NameResolvedEvent e)
+    {
+        if (System.Threading.Interlocked.Exchange(ref _namesRefreshQueued, 1) == 0)
+            CallDeferred(nameof(RefreshNames));
+    }
+
+    /// <summary>A Display Name arrived (or changed): re-title the IM rows and the Recent list. Lines already
+    /// in the log view keep the name they were shown with; new lines use the new one.</summary>
+    private void RefreshNames()
+    {
+        System.Threading.Volatile.Write(ref _namesRefreshQueued, 0);
+
+        foreach (var tab in _chatTabs)
+        {
+            if (tab.TargetAgentId is not { } id) continue;
+            string shown = NameDisplay.For(_session, id, tab.LogName);
+            if (shown == tab.DisplayName) continue;
+            tab.DisplayName = shown;
+            tab.Label.Text = shown;
+        }
+
+        if (_recentPanel.IsVisibleInTree()) RefreshRecentPanel();
     }
 
     /// <summary>Selftest: the Recent list as the window holds it.</summary>
@@ -581,7 +627,7 @@ public partial class ChatWindow : SLNGWindow
         AppendLineToTab(tab, $"[color=#E0A030][i]{BbEscape(notice)}[/i][/color]");
         // FEAT-UI-41: an empty sender is a system line -- written under the grid's system name
         // ("Second Life" / "Grid"), as Firestorm writes its own.
-        _ = _logger.AppendAsync(tab.LogKind, tab.DisplayName, "", notice, DateTime.Now);
+        _ = _logger.AppendAsync(tab.LogKind, tab.LogName, "", notice, DateTime.Now);
     }
 
     // Own messages get the same blue accent used for "selected" elsewhere in this window, so a
@@ -592,7 +638,13 @@ public partial class ChatWindow : SLNGWindow
         bool isOwn = !string.IsNullOrEmpty(_session?.AgentName) && sender == _session!.AgentName;
         string senderColor = isOwn ? "#79B8F0" : "#E0E0E0";
         string stamp = $"[color=#888888][lb]{timestamp:HH:mm}][/color]";
-        string name = $"[color={senderColor}][b]{BbEscape(sender)}[/b][/color]";
+
+        // The Display Name when there is one. Only what is shown: the log line (AppendMessageToTab) and
+        // the own-message test above keep the legacy name the network gave us.
+        Guid nameId = senderAgentId;
+        if (isOwn && nameId == Guid.Empty && Guid.TryParse(_session!.AgentId, out var ownId)) nameId = ownId;
+        string shownSender = nameId != Guid.Empty ? NameDisplay.For(_session, nameId, sender) : sender;
+        string name = $"[color={senderColor}][b]{BbEscape(shownSender)}[/b][/color]";
         // FEAT-UI-13: make a real resident's name a click target that opens their profile.
         if (senderAgentId != Guid.Empty)
             name = $"[url=avatar:{senderAgentId}]{name}[/url]";
@@ -953,7 +1005,7 @@ public partial class ChatWindow : SLNGWindow
 
         var win = new ChatHistoryWindow();
         GetParent().AddChild(win);
-        win.Open(_logger, _activeChatTab.LogKind, _activeChatTab.DisplayName, _activeChatTab.DisplayName);
+        win.Open(_logger, _activeChatTab.LogKind, _activeChatTab.LogName, _activeChatTab.DisplayName);
     }
 
     // RichTextLabel's word-wrapped line count / VScrollBar.MaxValue isn't final synchronously
@@ -1020,6 +1072,8 @@ public partial class ChatWindow : SLNGWindow
         {
             Id = id,
             DisplayName = displayName,
+            LogName = displayName,
+            Label = label,
             RowPanel = row,
             UnreadLabel = unreadLabel,
             LogKind = kind,

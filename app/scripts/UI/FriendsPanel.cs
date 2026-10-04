@@ -26,6 +26,8 @@ public partial class FriendsPanel : Control
     private Label _countLabel = null!;
     private Guid? _selectedFriendId;
     private string _selectedFriendName = "";
+    // The legacy name of the same friend: an IM tab and its log file are named after it, never after a Display Name.
+    private string _selectedFriendLegacyName = "";
 
     /// <summary>Wired by ChatWindow to ChatWindow.OpenOrFocusImTab -- fired by the "IM / Call"
     /// action button and by double-clicking a friend row.</summary>
@@ -98,12 +100,14 @@ public partial class FriendsPanel : Control
             _session.FriendStatusChanged -= OnFriendStatusChanged;
             _session.FriendListChanged -= OnFriendListChanged;
             _session.NameResolved -= OnNameResolved;
+            _session.DisplayNameResolved -= OnNameResolved;
         }
 
         _session = session;
         _session.FriendStatusChanged += OnFriendStatusChanged;
         _session.FriendListChanged += OnFriendListChanged;
         _session.NameResolved += OnNameResolved;
+        _session.DisplayNameResolved += OnNameResolved; // the list shows Display Names
 
         Refresh();
     }
@@ -153,7 +157,8 @@ public partial class FriendsPanel : Control
         string filterText = _filterEdit.Text.Trim();
         var visible = string.IsNullOrEmpty(filterText)
             ? friends
-            : friends.Where(f => DisplayName(f).Contains(filterText, StringComparison.OrdinalIgnoreCase)).ToList();
+            : friends.Where(f => DisplayName(f).Contains(filterText, StringComparison.OrdinalIgnoreCase)
+                          || f.Name.Contains(filterText, StringComparison.OrdinalIgnoreCase)).ToList();
 
         if (friends.Count == 0)
         {
@@ -179,8 +184,10 @@ public partial class FriendsPanel : Control
             _list.AddChild(BuildRow(friend));
     }
 
-    private static string DisplayName(FriendEntry friend) =>
-        string.IsNullOrEmpty(friend.Name) ? friend.Id.ToString() : friend.Name;
+    /// <summary>The name shown for a friend: their Display Name when they have one (and the preference is
+    /// on), else the legacy name. Only what is shown -- IMs and logs keep the legacy name.</summary>
+    private string DisplayName(FriendEntry friend) =>
+        string.IsNullOrEmpty(friend.Name) ? friend.Id.ToString() : NameDisplay.For(_session, friend.Id, friend.Name);
 
     private Control BuildRow(FriendEntry friend)
     {
@@ -215,15 +222,40 @@ public partial class FriendsPanel : Control
             friend.IsOnline ? new Color(0.92f, 0.92f, 0.92f) : new Color(0.62f, 0.62f, 0.62f));
         var friendId = friend.Id;
         var friendName = DisplayName(friend);
-        nameBtn.Pressed += () => { _selectedFriendId = friendId; _selectedFriendName = friendName; Refresh(); };
+        var legacyName = friend.Name;
+        nameBtn.Pressed += () =>
+        {
+            _selectedFriendId = friendId;
+            _selectedFriendName = friendName;
+            _selectedFriendLegacyName = legacyName;
+            Refresh();
+        };
         // Double-clicking a friend opens their IM directly (per the M5-3 spec), rather than
         // requiring a select-then-click-"IM / Call" round trip.
         nameBtn.GuiInput += (@event) =>
         {
             if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, DoubleClick: true })
-                OnOpenImRequested?.Invoke(friendId, friendName);
+                OnOpenImRequested?.Invoke(friendId, legacyName);
         };
-        inner.AddChild(nameBtn);
+
+        // BUG-UI-20: with a Display Name on show, the login name stays visible the way the nametag does it
+        // -- muted, in brackets, under it -- unless the "show usernames" preference is off; it is always
+        // in the tooltip.
+        var textCol = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        textCol.AddThemeConstantOverride("separation", 0);
+        inner.AddChild(textCol);
+        textCol.AddChild(nameBtn);
+        if (!string.IsNullOrEmpty(legacyName) && !string.Equals(friendName, legacyName, StringComparison.OrdinalIgnoreCase))
+        {
+            nameBtn.TooltipText = legacyName;
+            if (NameDisplay.ShowUsernames())
+            {
+                var legacyLabel = new Label { Text = $"({legacyName})", ClipText = true };
+                legacyLabel.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
+                legacyLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.55f, 0.55f));
+                textCol.AddChild(legacyLabel);
+            }
+        }
 
         var style = new StyleBoxFlat
         {
@@ -253,7 +285,7 @@ public partial class FriendsPanel : Control
         imButton.TooltipText = "Open IM (voice call not implemented)";
         imButton.Pressed += () =>
         {
-            if (_selectedFriendId is { } id) OnOpenImRequested?.Invoke(id, _selectedFriendName);
+            if (_selectedFriendId is { } id) OnOpenImRequested?.Invoke(id, _selectedFriendLegacyName);
         };
         panel.AddChild(imButton);
 

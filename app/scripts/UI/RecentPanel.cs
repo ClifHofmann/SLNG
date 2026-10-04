@@ -26,6 +26,9 @@ public partial class RecentPanel : Control
     private IReadOnlyList<RecentConversation> _items = Array.Empty<RecentConversation>();
     private ChatLogger? _logger;
 
+    /// <summary>Wired by ChatWindow: the name to show for a row (the Display Name when there is one).
+    /// The entry's own name stays the legacy name the log file is keyed by.</summary>
+    public Func<RecentConversation, string>? ShownName;
     /// <summary>Wired by ChatWindow: reopen one conversation.</summary>
     public Action<ChatLogKind, Guid, string>? OnOpenRequested;
     /// <summary>Wired by ChatWindow: show a conversation's full on-disk history.</summary>
@@ -155,7 +158,7 @@ public partial class RecentPanel : Control
 
         var nameBtn = new Button
         {
-            Text = item.Name,
+            Text = ShownName?.Invoke(item) ?? item.Name,
             Flat = true,
             ClipText = true,
             FocusMode = FocusModeEnum.None,

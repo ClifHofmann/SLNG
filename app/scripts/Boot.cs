@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.33-alpha";
+    public const string AppVersion = "v0.26.34-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -503,6 +503,8 @@ public partial class Boot : Control
         // is safe under --selftest.
         _uiSettings = new SLNG.App.UI.UiSettings();
         _uiSettings.Load();
+        SLNG.App.UI.NameDisplay.UseDisplayNames = () => _uiSettings.ShowDisplayNames;
+        SLNG.App.UI.NameDisplay.ShowUsernames = () => _uiSettings.ShowLegacyNames; // chat, Friends, Recent follow the nametag switch
         AddChild(new SLNG.App.UI.UiScaleWatcher(_uiSettings));
         GD.Print($"[Boot] UI scale {_uiSettings.Scale:0.##}x ({(_uiSettings.ScaleAutomatic ? "automatic" : "chosen")}, display reports {SLNG.App.UI.UiScale.OsScale:0.##}x)");
 

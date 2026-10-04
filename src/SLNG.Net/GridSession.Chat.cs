@@ -404,6 +404,17 @@ public sealed partial class GridSession
         return false;
     }
 
+    /// <summary>The agent's Display Name when one is known and is really their own (a resident who never set
+    /// one has none). Answers from the same cache the nametags use, so it is instant and never blocks; a
+    /// miss means "not asked yet or not answered yet" -- call <see cref="RequestDisplayName"/> and wait for
+    /// <see cref="DisplayNameResolved"/>. An answer past its freshness is still returned: a slightly old
+    /// name beats flashing the legacy name while the refresh is on its way.</summary>
+    public bool TryGetDisplayName(Guid id, out string name)
+    {
+        _displayNameCache.Lookup(id, DateTime.UtcNow, out name);
+        return name.Length > 0;
+    }
+
     public void RequestAvatarName(Guid agentId)
     {
         if (agentId == Guid.Empty || _nameCache.ContainsKey(agentId) || !_client.Network.Connected) return;
