@@ -2931,10 +2931,54 @@ public partial class AvatarRenderer : Node3D
         }
 
         // Same lane, queued after every surface's material: the lane is FIFO, so this runs once
-        // they are all in place and can tell which surfaces blend.
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => SplitSortedSurfaces(mi, meshId),
-            label: "avatar.split_sorted");
+        // they are all in place and can tell which surfaces blend -- and whether any is drawn.
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+        {
+            SplitSortedSurfaces(mi, meshId);
+            UpdateWornMeshVisibility(mi);
+        }, label: "avatar.split_sorted");
     }
+
+    /// <summary>
+    /// BUG-PERF-05: a worn rigged mesh whose every face is fully transparent is not drawn at all.
+    /// </summary>
+    /// <remarks>
+    /// Mesh bodies hide what is not shown -- the unused onion layers (tattoo, underwear, clothing),
+    /// and the segments an outfit's auto-alpha cuts away -- by setting those faces to alpha 0.
+    /// The reference viewer does not draw such a face. Here it got
+    /// <see cref="PrimShaderFamily.Hidden"/>, which rasterises nothing but is still a draw call in
+    /// every pass (depth prepass, colour, each shadow cascade) and is still skinned on the GPU
+    /// every frame; Godot has no per-surface visibility. Measured 2026-10-04: the user's own avatar
+    /// alone was 255 skinned meshes with 20,200 skin binds, at 49 fps on a spot where another
+    /// avatar ran at 70, and the frame was bound by draw-call submission on the CPU. So when NO
+    /// surface draws anything, the whole instance is hidden, which removes it from culling, from
+    /// every pass and from skinning. A face that comes back (the body HUD switching a layer on)
+    /// re-applies its materials through <see cref="ApplyFaceMaterialsAsync"/>, which ends here
+    /// again and shows the instance.
+    ///
+    /// <para>Rigged meshes only: a transparent rigid attachment is a common click target (an
+    /// invisible HUD-like button worn on the body) and stays as it is.</para>
+    /// </remarks>
+    private void UpdateWornMeshVisibility(MeshInstance3D mi)
+    {
+        if (!IsInstanceValid(mi) || mi.Skin == null || mi.Mesh is not ArrayMesh mesh) return;
+        bool anyDrawn = false;
+        int count = mesh.GetSurfaceCount();
+        for (int s = 0; s < count && !anyDrawn; s++)
+        {
+            // A surface moved onto its own child for sorting draws THERE; the parent's copy is Hidden
+            // by construction and says nothing about the face.
+            var split = mi.GetNodeOrNull<MeshInstance3D>(SortedSurfaceName(s));
+            var material = split != null ? split.GetSurfaceOverrideMaterial(0) : mi.GetSurfaceOverrideMaterial(s);
+            anyDrawn = !IsHiddenFaceMaterial(material);
+        }
+        if (mi.Visible != anyDrawn) mi.Visible = anyDrawn;
+    }
+
+    /// <summary>A material that draws nothing. A surface with no material yet counts as drawn: it
+    /// is waiting for one, not hidden.</summary>
+    private static bool IsHiddenFaceMaterial(Material? material) =>
+        material is ShaderMaterial sm && ReferenceEquals(sm.Shader, PrimShaderFamily.Hidden);
 
     // ---- BUG-RENDER-38: per-surface transparent sorting for worn meshes ----------------------
 
@@ -5653,7 +5697,8 @@ void fragment() {
         if (_avatarCostAccum < AvatarCostIntervalSeconds) return;
         _avatarCostAccum = 0;
 
-        int avatars = 0, shown = 0, animating = 0, skinned = 0, binds = 0, shownBinds = 0;
+        int avatars = 0, shown = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0;
+        int surfaces = 0, hiddenSurfaces = 0;
         foreach (var visual in _visuals.Values)
         {
             if (visual.Skeleton == null || !IsInstanceValid(visual.Skeleton)) continue;
@@ -5663,23 +5708,37 @@ void fragment() {
             if (isShown && visual.AnimPlayer.IsPlaying) animating++;
             foreach (var node in visual.Skeleton.GetChildren())
             {
-                CountSkin(node as MeshInstance3D, isShown, ref skinned, ref binds, ref shownBinds);
+                CountSkin(node as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
+                          ref surfaces, ref hiddenSurfaces);
                 foreach (var grandchild in node.GetChildren())
-                    CountSkin(grandchild as MeshInstance3D, isShown, ref skinned, ref binds, ref shownBinds);
+                    CountSkin(grandchild as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
+                              ref surfaces, ref hiddenSurfaces);
             }
         }
 
         SLNG.App.UI.StatsOverlay.EmitPerfLine(
             $"[AvatarCost] avatars={avatars} shown={shown} animating={animating} skinnedMeshes={skinned} " +
+            $"drawnSkinnedMeshes={drawn} surfaces={surfaces} hiddenSurfaces={hiddenSurfaces} " +
             $"skinBinds={binds} shownSkinBinds={shownBinds} controlAvatars={_controlAvatars.Count}");
 
-        static void CountSkin(MeshInstance3D? mi, bool isShown, ref int skinned, ref int binds, ref int shownBinds)
+        // Surfaces are counted on the instance that owns the face: a split child counts its one
+        // surface, and the parent's Hidden stand-in for it is not counted again.
+        static void CountSkin(MeshInstance3D? mi, bool isShown, ref int skinned, ref int drawn, ref int binds,
+                              ref int shownBinds, ref int surfaces, ref int hiddenSurfaces)
         {
             if (mi?.Skin == null) return;
             int n = mi.Skin.GetBindCount();
             skinned++;
+            if (mi.Visible) drawn++;
             binds += n;
             if (isShown) shownBinds += n;
+            if (mi.Mesh is not ArrayMesh mesh) return;
+            for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+            {
+                if (mi.GetNodeOrNull(SortedSurfaceName(s)) != null) continue;
+                surfaces++;
+                if (IsHiddenFaceMaterial(mi.GetSurfaceOverrideMaterial(s))) hiddenSurfaces++;
+            }
         }
     }
 
