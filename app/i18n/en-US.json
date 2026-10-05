@@ -283,6 +283,27 @@
       "prompt": "Remove {0} from your friends? You will no longer see each other's online status, and they will be removed from their list too.",
       "ok": "Remove friend"
     },
+    "friend_category": {
+      "button": "Category...",
+      "button_tooltip": "Move this friend into a category of your own",
+      "new_tooltip": "New category for your friends",
+      "none": "No category",
+      "new": "New category…",
+      "uncategorized": "No category",
+      "header_tooltip": "Click to fold or open. Right-click to rename or delete.",
+      "rename": "Rename…",
+      "delete": "Delete category",
+      "new_title": "NEW CATEGORY",
+      "new_prompt": "Name for the new category:",
+      "create": "Create",
+      "rename_title": "RENAME CATEGORY",
+      "rename_prompt": "New name for “{0}”:",
+      "rename_taken": "There is already a category called “{0}”. New name for “{1}”:",
+      "rename_ok": "Rename",
+      "delete_title": "DELETE CATEGORY",
+      "delete_prompt": "Delete the category “{0}”? Your friends in it stay on your list, they just have no category any more.",
+      "delete_ok": "Delete category"
+    },
     "friendship_offer": {
       "title": "FRIENDSHIP OFFER",
       "from": "{0} is offering friendship.",

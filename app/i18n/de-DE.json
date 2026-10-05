@@ -283,6 +283,27 @@
       "prompt": "{0} aus deiner Freundesliste entfernen? Ihr seht den Online-Status des anderen dann nicht mehr, und du verschwindest auch aus seiner Liste.",
       "ok": "Freund entfernen"
     },
+    "friend_category": {
+      "button": "Kategorie...",
+      "button_tooltip": "Diesen Freund in eine eigene Kategorie verschieben",
+      "new_tooltip": "Neue Kategorie für deine Freunde",
+      "none": "Keine Kategorie",
+      "new": "Neue Kategorie…",
+      "uncategorized": "Ohne Kategorie",
+      "header_tooltip": "Klick klappt auf oder zu. Rechtsklick zum Umbenennen oder Löschen.",
+      "rename": "Umbenennen…",
+      "delete": "Kategorie löschen",
+      "new_title": "NEUE KATEGORIE",
+      "new_prompt": "Name der neuen Kategorie:",
+      "create": "Anlegen",
+      "rename_title": "KATEGORIE UMBENENNEN",
+      "rename_prompt": "Neuer Name für „{0}“:",
+      "rename_taken": "Es gibt schon eine Kategorie „{0}“. Neuer Name für „{1}“:",
+      "rename_ok": "Umbenennen",
+      "delete_title": "KATEGORIE LÖSCHEN",
+      "delete_prompt": "Kategorie „{0}“ löschen? Die Freunde darin bleiben in deiner Liste, sie haben dann nur keine Kategorie mehr.",
+      "delete_ok": "Kategorie löschen"
+    },
     "friendship_offer": {
       "title": "FREUNDSCHAFTSANGEBOT",
       "from": "{0} bietet dir die Freundschaft an.",
