@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.65-alpha";
+    public const string AppVersion = "v0.26.66-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4010,10 +4010,21 @@ public partial class Boot : Control
             // FEAT-UI-23: the gizmo asks here where a worn item's attach point is. Only
             // AvatarRenderer knows -- it is the bone's current pose times the attachment point's
             // own offset on that bone.
+            // FEAT-UI-64: a worn HUD has its own frame (the anchor on the overlay) and its own world to draw
+            // the handles in, so the gizmo is told both.
             _selectionGizmo.AttachmentFrame = entity =>
-                _avatarRenderer != null && _avatarRenderer.TryGetAttachmentFrame(entity.Id, out var frame)
-                    ? frame
-                    : null;
+            {
+                if (_avatarRenderer == null) return null;
+                if (_avatarRenderer.TryGetAttachmentFrame(entity.Id, out var frame)) return frame;
+                return _avatarRenderer.TryGetHudFrame(entity.Id, out var hudFrame) ? hudFrame : null;
+            };
+            _selectionGizmo.IsHudEntity = entity => _avatarRenderer != null && _avatarRenderer.IsHudAttachment(entity.Id);
+            _selectionGizmo.HudSpace = () =>
+            {
+                if (_avatarRenderer != null && _avatarRenderer.TryGetHudSpace(out var hudRoot, out var hudCamera))
+                    return (hudRoot, hudCamera);
+                return null;
+            };
             // FEAT-UI-04: and here for the rest of a linked object, so the stretch box wraps the
             // whole thing rather than its root prim. WorldSimulation is the only holder of the
             // parent index, which is why this is wired from here rather than read by the gizmo.

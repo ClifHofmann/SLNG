@@ -40,8 +40,8 @@ Linksets resolve to their root as everywhere else (Edit Linked Parts off), stopp
 - `app/scripts/Boot.cs` — wires `PickHud` and `IsBuildMode`; `AppVersion` v0.26.62-alpha.
 
 ## Not in scope
-- A move/stretch gizmo on a HUD. The gizmo draws in the main 3D view; the reference viewer drags HUDs in the HUD
-  view. Position and size are typed in the edit window.
+- A move/stretch gizmo on a HUD -- done in [FEAT-UI-64](FEAT-UI-64-hud-gizmo.md). Until then position and size are
+  typed in the edit window.
 - Touch / Inspect entries in the object menu are still placeholders (`Boot`: "logic later"); unchanged.
 
 ## Sub-tasks / Progress

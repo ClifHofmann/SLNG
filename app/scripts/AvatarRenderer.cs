@@ -3777,7 +3777,9 @@ public partial class AvatarRenderer : Node3D
 
     private readonly Dictionary<Guid, Node3D> _hudNodes = new();
     private readonly Dictionary<Guid, (byte Point, System.Numerics.Vector3 SlOffset)> _hudPlacements = new();
-    private readonly Dictionary<Guid, (object ShapeKey, FaceTexture[]? Faces, FaceTexture DefaultFace)> _hudContent = new();
+    // Scale is part of the signature because it is baked into the vertices (BuildHudArrayMesh): a HUD that was
+    // stretched with the build tools has the same shape and textures and still needs its mesh rebuilt.
+    private readonly Dictionary<Guid, (object ShapeKey, FaceTexture[]? Faces, FaceTexture DefaultFace, System.Numerics.Vector3 Scale)> _hudContent = new();
     private readonly Dictionary<Guid, HudTriangle[]> _hudTriangles = new();
 
     /// <summary>Anchor offset of one HUD attachment point in SL's HUD frame (X=depth,
@@ -3946,11 +3948,45 @@ public partial class AvatarRenderer : Node3D
         if (_hudContent.TryGetValue(entityId, out var cur)
             && Equals(cur.ShapeKey, shapeKey)
             && cur.DefaultFace == defaultFace
+            && cur.Scale == prim.Scale
             && (cur.Faces == prim.Faces || (cur.Faces != null && prim.Faces != null && cur.Faces.SequenceEqual(prim.Faces))))
             return;
-        _hudContent[entityId] = (shapeKey, prim.Faces != null ? (FaceTexture[])prim.Faces.Clone() : null, defaultFace);
+        _hudContent[entityId] = (shapeKey, prim.Faces != null ? (FaceTexture[])prim.Faces.Clone() : null, defaultFace, prim.Scale);
 
         _ = LoadHudContentAsync(hudNode, entityId, prim, defaultFace);
+    }
+
+    /// <summary>FEAT-UI-64: is this a worn HUD prim that has been placed in the overlay?</summary>
+    public bool IsHudAttachment(Guid entityId) => _hudPlacements.ContainsKey(entityId);
+
+    /// <summary>FEAT-UI-64: the frame a HUD prim's offset and rotation are expressed in, in the overlay's own
+    /// world: its attach point's anchor, unrotated. That is exactly what <see cref="PositionHudNode"/> adds the
+    /// prim's offset to, so the move gizmo can turn the stored offset into a position in the overlay and back
+    /// -- the same job <see cref="TryGetAttachmentFrame"/> does for a prim worn on the body.</summary>
+    public bool TryGetHudFrame(Guid entityId, out Transform3D frame)
+    {
+        frame = Transform3D.Identity;
+        if (_hudViewport == null || !_hudPlacements.TryGetValue(entityId, out var p)) return false;
+
+        var size = _hudViewport.Size;
+        float aspect = size.Y > 0 ? (float)size.X / size.Y : 1f;
+        var a = HudAnchorSl(p.Point);
+        // Same map as PositionHudNode, with the prim's own offset left out.
+        frame = new Transform3D(Basis.Identity, new Godot.Vector3(a.X, a.Z, -(a.Y * aspect)));
+        return true;
+    }
+
+    /// <summary>FEAT-UI-64: the HUD overlay's 3D root and its orthographic camera, for a tool that has to draw
+    /// in the overlay (the move/stretch/turn handles). False while no HUD has been worn yet, since the overlay
+    /// is only built when the first one arrives.</summary>
+    public bool TryGetHudSpace(out Node3D root, out Camera3D camera)
+    {
+        root = null!;
+        camera = null!;
+        if (_hudRoot == null || !IsInstanceValid(_hudRoot) || _hudCamera == null || !IsInstanceValid(_hudCamera)) return false;
+        root = _hudRoot;
+        camera = _hudCamera;
+        return true;
     }
 
     /// <summary>Recomputes one HUD entity's overlay position from its anchor + SL-local offset.
@@ -3993,6 +4029,10 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(hudNode)) return;
+            // FEAT-UI-64: a stretch asks for a new mesh on every update, and these finish in any order. If a
+            // newer size has been asked for since, this one is already out of date -- and building it now
+            // would leave it on screen for good, because the signature on file says the newest is current.
+            if (_hudContent.TryGetValue(entityId, out var latest) && latest.Scale != scale) return;
             // Out of the tree first, then freed -- see the same loop in the static-attachment
             // path: a merely queue_free'd sibling is still there when "HudMesh" is re-added, and
             // Godot renames the newcomer, so the outline could never find it again.
