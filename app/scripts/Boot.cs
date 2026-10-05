@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.75-alpha";
+    public const string AppVersion = "v0.26.76-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4912,18 +4912,61 @@ public partial class Boot : Control
         CallDeferred(MethodName.ShowFriendPresenceToast, e.FriendId.ToString(), e.IsOnline);
     }
 
+    // Friends whose presence toast is waiting for their name, with the state to announce (the latest one wins).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<System.Guid, bool> _pendingPresenceToasts = new();
+
+    /// <summary>How long a presence toast waits for a name the grid has not delivered yet before it falls back to
+    /// "Someone". Right after login every online friend announces themselves at once, before their names are known.</summary>
+    private const double PresenceNameWaitSeconds = 6.0;
+
+    /// <summary>The friend's login name as far as it is known: from the friends list, else the name cache. Empty when
+    /// the grid has not told us yet (asking is <c>GetFriends</c>'s job: it requests every name it lacks).</summary>
+    private string KnownFriendName(System.Guid friendId)
+    {
+        if (_session == null) return string.Empty;
+        string name = _session.GetFriends().FirstOrDefault(f => f.Id == friendId)?.Name ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name) && _session.TryGetCachedName(friendId, out var cached)) name = cached;
+        return name ?? string.Empty;
+    }
+
     /// <summary>Main-thread half of <see cref="OnFriendStatusForToast"/>. The friend id travels as a string
-    /// because CallDeferred marshals Variants and a Guid is not one.</summary>
+    /// because CallDeferred marshals Variants and a Guid is not one.
+    /// <para>Right after login the names are usually not here yet, which used to give a row of identical "Someone is
+    /// online." toasts. A toast whose name is missing waits for it (<see cref="OnProfileNameResolved"/> shows it when it
+    /// arrives, <see cref="PresenceNameWaitSeconds"/> at most) and says it with the Display Name when there is one.</para></summary>
     private void ShowFriendPresenceToast(string friendIdText, bool online)
     {
         if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
         if (_session == null || !System.Guid.TryParse(friendIdText, out var friendId)) return;
 
-        string name = _session.GetFriends().FirstOrDefault(f => f.Id == friendId)?.Name ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(name)) name = SLNG.App.UI.L10n.Tr("ui.money.someone");
+        string legacy = KnownFriendName(friendId);
+        if (string.IsNullOrWhiteSpace(legacy))
+        {
+            _pendingPresenceToasts[friendId] = online;
+            GetTree().CreateTimer(PresenceNameWaitSeconds).Timeout += () =>
+            {
+                if (_pendingPresenceToasts.TryRemove(friendId, out var stillOnline))
+                    ShowPresenceToastNow(friendId, stillOnline, SLNG.App.UI.L10n.Tr("ui.money.someone"));
+            };
+            return;
+        }
 
-        string text = SLNG.App.UI.L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", name);
-        _notificationToasts.ShowPresence(text, online, () => _chatWindow.OpenOrFocusImTab(friendId, name));
+        ShowPresenceToastNow(friendId, online, SLNG.App.UI.NameDisplay.For(_session, friendId, legacy));
+    }
+
+    private void ShowPresenceToastNow(System.Guid friendId, bool online, string shownName)
+    {
+        if (!_uiSettings.ShowFriendPresenceToasts) return;
+        if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
+
+        string text = SLNG.App.UI.L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", shownName);
+        // The IM tab and its log are named after the login name, never the Display Name -- looked up when clicked, so
+        // a toast that fell back to "Someone" still opens the right conversation.
+        _notificationToasts.ShowPresence(text, online, () =>
+        {
+            string legacy = KnownFriendName(friendId);
+            _chatWindow.OpenOrFocusImTab(friendId, string.IsNullOrWhiteSpace(legacy) ? friendId.ToString() : legacy);
+        });
     }
 
     /// <summary>Main-thread half of a notification toast. Takes the pieces rather than the entry
@@ -4938,6 +4981,11 @@ public partial class Boot : Control
 
     private void OnProfileNameResolved(object? sender, SLNG.Core.NameResolvedEvent e)
     {
+        // A presence toast that was waiting for this friend's name (network thread: only the dictionary and
+        // CallDeferred are touched).
+        if (!_pendingPresenceToasts.IsEmpty && _pendingPresenceToasts.TryRemove(e.Id, out var pendingOnline))
+            CallDeferred(MethodName.ShowFriendPresenceToast, e.Id.ToString(), pendingOnline);
+
         // A payment is recorded the moment it lands, usually before the payer's name has
         // resolved. Without this the entry keeps saying "Jemand hat dir L$ 2200 bezahlt" -- the
         // one thing it exists to answer.
