@@ -195,6 +195,23 @@ public class GroupChatNamingAndMuteTests
     }
 
     [Fact]
+    public void A_group_notice_is_a_notice_and_never_a_chat_tab()
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        GroupNoticeEvent? notice = null;
+        session.GroupNoticeReceived += (_, e) => notice = e;
+
+        Invoke(session, "OnInstantMessage",
+            Im(InstantMessageDialog.GroupNotice, UUID.Random(), "September results |Well done winners", groupIM: true));
+
+        Assert.Empty(c.Groups);
+        Assert.NotNull(notice);
+        Assert.Equal("September results", notice!.Subject);
+        Assert.Equal("Well done winners", notice.Body);
+    }
+
+    [Fact]
     public void The_membership_list_name_beats_the_bucket()
     {
         using var session = new GridSession();

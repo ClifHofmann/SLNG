@@ -403,6 +403,9 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// <inheritdoc cref="GroupsUpdated"/>
     public event EventHandler<GroupInvitationEvent>? GroupInvitationReceived;
 
+    /// <summary>A group notice arrived (network thread). Shown as a notification, never as a chat tab.</summary>
+    public event EventHandler<GroupNoticeEvent>? GroupNoticeReceived;
+
     /// <summary>BUG-INV-04: another avatar or an in-world object offered the agent an inventory
     /// item. Answer with <see cref="RespondToInventoryOffer"/>. Raised on a LibreMetaverse network
     /// thread — marshal before touching a scene node.</summary>

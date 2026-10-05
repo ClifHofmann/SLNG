@@ -171,6 +171,14 @@ public record GroupChatJoinedEvent(Guid GroupId, string SessionName, bool Succes
 /// bucket, or 0 when the bucket is absent/malformed.</param>
 public record GroupInvitationEvent(Guid GroupId, Guid SessionId, string FromName, string Message, int MembershipFee);
 
+/// <summary>A group notice (IM dialog GroupNotice): the text is "subject|body", and the sender is a member
+/// of the group, not the group. It is a notice, not a chat line, so it must never open a chat tab (BUG-UI-25).</summary>
+/// <param name="GroupId">The group it came from (the session id or the from-id, whichever is one of our groups).</param>
+/// <param name="FromName">Who sent it.</param>
+/// <param name="Subject">The first part of the text, before the first '|'.</param>
+/// <param name="Body">The rest.</param>
+public record GroupNoticeEvent(Guid GroupId, string FromName, string Subject, string Body);
+
 /// <summary>Somebody — another avatar, or an in-world object — offered the agent an inventory
 /// item or folder. Answer with <c>GridSession.RespondToInventoryOffer</c>; until then nothing is
 /// sent, which is what the real viewer does while its "X gave you Y" notification sits on screen.

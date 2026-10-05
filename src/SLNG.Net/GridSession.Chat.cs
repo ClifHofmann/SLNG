@@ -457,6 +457,8 @@ public sealed partial class GridSession
 
     /// <summary>A group's name: from the membership list first (it already carries it, and is there before
     /// any name reply), then the shared name cache. False, with the id's text, when neither knows it yet.</summary>
+    private bool IsGroupMember(Guid id) => _groups?.Any(g => g.Id == id) == true;
+
     public bool TryGetGroupName(Guid groupId, out string name)
     {
         var member = _groups?.FirstOrDefault(g => g.Id == groupId);
@@ -657,6 +659,20 @@ public sealed partial class GridSession
                 RequestFriendOnlineStatus(answer.FromId); // LibreMetaverse asks once, possibly too early
             }
             FriendshipAnswered?.Invoke(this, answer);
+            return;
+        }
+
+        // A group NOTICE carries the group flag too, and used to fall into the group-chat branch below: it opened a
+        // chat tab titled with an id when the group was not in the list (BUG-UI-25). It is a notification.
+        if (e.IM.Dialog == InstantMessageDialog.GroupNotice)
+        {
+            Guid session = e.IM.IMSessionID.Guid, from = e.IM.FromAgentID.Guid;
+            Guid groupId = IsGroupMember(from) ? from : session;
+            string text = e.IM.Message ?? string.Empty;
+            int bar = text.IndexOf('|');
+            GroupNoticeReceived?.Invoke(this, new GroupNoticeEvent(
+                groupId, e.IM.FromAgentName ?? string.Empty,
+                bar < 0 ? string.Empty : text[..bar].Trim(), bar < 0 ? text : text[(bar + 1)..].Trim()));
             return;
         }
 

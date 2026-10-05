@@ -1085,6 +1085,8 @@
       "inventory_offer_accepted": "{0} is offering you “{1}” — accepted.",
       "inventory_offer_declined": "{0} is offering you “{1}” — declined.",
       "group_invite": "{0} invited you to a group.",
+      "group_notice": "Group notice from {0}: {1}",
+      "group_unknown": "a group",
       "inventory_offer": "{0} is offering you “{1}”.",
       "teleport_offer": "{0} offers to teleport you to their location.",
       "teleport_offer_accepted": "{0} offered to teleport you — accepted.",
