@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.62-alpha";
+    public const string AppVersion = "v0.26.63-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3627,6 +3627,11 @@ public partial class Boot : Control
         _session.ReattachMissingAttachments = !Diagnostics.NoReattach;
         _session.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;
         _session.PlayTypingAnimation = _animationSettings.PlayTypingAnimation;
+        // FEAT-UI-30: the stored "hide my group title" has to reach every NEW session. SetupButtonBar
+        // pushes it once at boot, when there is no session yet, and the change handler only fires when
+        // the box is toggled -- so after a login the flag stayed off and the title showed until the
+        // option was switched off and on again.
+        _session.HideOwnGroupTitle = _uiSettings.HideOwnGroupTitle;
         // FEAT-AVATAR-01: the JPEG2000 codec lives in SLNG.Assets and SLNG.Net may not reference it,
         // so the composition root supplies it. Without this a bake composites correctly and then
         // encodes to a few hundred bytes of nothing.

@@ -98,7 +98,20 @@ public sealed partial class GridSession
     /// AgentUpdate packet -- the simulator then leaves the Title NameValue off the broadcast.
     /// Distinct from the purely local nametag toggles in UiSettings: this one changes what other
     /// people's viewers receive.</summary>
-    public bool HideOwnGroupTitle { get; set; }
+    public bool HideOwnGroupTitle
+    {
+        get => _hideOwnGroupTitle;
+        set
+        {
+            _hideOwnGroupTitle = value;
+            // Straight onto the packet state as well, not only in SendAgentUpdate: the updates the
+            // library sends on its own around login read this too, and the first one is what the
+            // simulator builds the avatar's broadcast title from.
+            _client.Self.Movement.Flags = value ? LibreMetaverse.AgentFlags.HideTitle : LibreMetaverse.AgentFlags.None;
+        }
+    }
+
+    private bool _hideOwnGroupTitle;
 
     private bool _playTypingAnimation = false;
 
