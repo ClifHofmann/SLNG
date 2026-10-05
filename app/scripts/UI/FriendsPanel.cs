@@ -70,6 +70,12 @@ public partial class FriendsPanel : Control
     private const int NewCategoryItem = 100000;
     private const int RenameCategoryItem = 0;
     private const int DeleteCategoryItem = 1;
+    private const int MoveCategoryUpItem = 2;
+    private const int MoveCategoryDownItem = 3;
+
+    /// <summary>What a drag of a category header carries, in front of the name: a drag from somewhere else (an
+    /// inventory item, a conversation) must never be taken for one.</summary>
+    private const string CategoryDragPrefix = "slng-friend-category:";
 
     public override void _Ready()
     {
@@ -154,6 +160,9 @@ public partial class FriendsPanel : Control
         _sectionMenu = new PopupMenu();
         _sectionMenu.AddItem(L10n.Tr("ui.friend_category.rename"), RenameCategoryItem);
         _sectionMenu.AddItem(L10n.Tr("ui.friend_category.delete"), DeleteCategoryItem);
+        _sectionMenu.AddSeparator();
+        _sectionMenu.AddItem(L10n.Tr("ui.friend_category.move_up"), MoveCategoryUpItem);
+        _sectionMenu.AddItem(L10n.Tr("ui.friend_category.move_down"), MoveCategoryDownItem);
         _sectionMenu.IdPressed += OnSectionMenuIdPressed;
         AddChild(_sectionMenu);
     }
@@ -285,13 +294,15 @@ public partial class FriendsPanel : Control
     }
 
     /// <summary>The line above a block of friends: fold arrow, name and "online/total". Click folds or opens it;
-    /// right-click (on a real category, not the "no category" block) renames or deletes it.</summary>
+    /// right-click (on a real category, not the "no category" block) renames, deletes or moves it; dragging it onto
+    /// another header moves it there. The "no category" header cannot be dragged but is a place to drop: that
+    /// block is always last, so a category dropped on it goes to the end.</summary>
     private Control BuildSectionHeader(FriendSection section, bool filtering)
     {
         string name = section.Category ?? L10n.Tr("ui.friend_category.uncategorized");
         int online = section.Friends.Count(f => f.IsOnline);
 
-        var button = new Button
+        var button = new DragSortButton
         {
             Text = $"{(section.Collapsed ? "▶" : "▼")}  {name}  ({online}/{section.Friends.Count})",
             Flat = true,
@@ -306,6 +317,13 @@ public partial class FriendsPanel : Control
 
         var category = section.Category;
         bool collapsed = section.Collapsed;
+
+        button.DragData = category == null ? null : CategoryDragPrefix + category;
+        button.DragPreviewText = name;
+        button.CanDrop = data => data.StartsWith(CategoryDragPrefix, StringComparison.Ordinal)
+                                 && data != CategoryDragPrefix + category;
+        button.Dropped = data => MoveCategory(data[CategoryDragPrefix.Length..], category);
+
         button.Pressed += () =>
         {
             if (filtering) return; // everything is open while a filter is typed; the saved fold state waits
@@ -317,11 +335,7 @@ public partial class FriendsPanel : Control
         button.GuiInput += (@event) =>
         {
             if (category != null && @event is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
-            {
-                _menuCategory = category;
-                _sectionMenu.Position = (Vector2I)GetGlobalMousePosition();
-                _sectionMenu.Popup();
-            }
+                ShowSectionMenu(category);
         };
 
         var panel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -390,11 +404,42 @@ public partial class FriendsPanel : Control
         Refresh();
     }
 
+    /// <summary>Opens a category's menu at the mouse. "Move up" is off for the first category and "Move down" for the
+    /// last: the menu is the way to reorder without dragging, which a long list that scrolls makes hard.</summary>
+    private void ShowSectionMenu(string category)
+    {
+        _menuCategory = category;
+        int index = _book.IndexOf(category);
+        _sectionMenu.SetItemDisabled(_sectionMenu.GetItemIndex(MoveCategoryUpItem), index <= 0);
+        _sectionMenu.SetItemDisabled(_sectionMenu.GetItemIndex(MoveCategoryDownItem), index < 0 || index >= _book.Categories.Count - 1);
+
+        _sectionMenu.Position = (Vector2I)GetGlobalMousePosition();
+        _sectionMenu.Popup();
+    }
+
     private void OnSectionMenuIdPressed(long id)
     {
         if (_menuCategory is not { } category) return;
         if (id == RenameCategoryItem) PromptRenameCategory(category, taken: null);
         else if (id == DeleteCategoryItem) PromptDeleteCategory(category);
+        else if (id == MoveCategoryUpItem) MoveCategory(category, _book.IndexOf(category) - 1);
+        else if (id == MoveCategoryDownItem) MoveCategory(category, _book.IndexOf(category) + 1);
+    }
+
+    /// <summary>A category dragged onto another header takes the place that header has now: dropped upwards it ends
+    /// up above it, dropped downwards below it -- the same rule the conversation list follows. The "no category"
+    /// block is not in the list (it is always last), so a drop onto it means "to the end".</summary>
+    private void MoveCategory(string category, string? target)
+    {
+        MoveCategory(category, target == null ? _book.Categories.Count - 1 : _book.IndexOf(target));
+    }
+
+    private void MoveCategory(string category, int index)
+    {
+        if (index < 0 || !_book.Move(category, index)) return;
+        SaveBook();
+        // Deferred: this runs inside a drop on a header that the rebuild frees, and a drag's source is one too.
+        CallDeferred(nameof(Refresh));
     }
 
     /// <summary>Asks for a name and creates the category; with <paramref name="assignTo"/> the friend goes into it

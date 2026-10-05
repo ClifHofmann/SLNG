@@ -158,6 +158,26 @@ public sealed class FriendCategoryBook
         return true;
     }
 
+    /// <summary>Where a category stands in the list (0 is the top), or -1 when there is no such category.</summary>
+    public int IndexOf(string name) => Find(name) is { } existing ? _categories.IndexOf(existing) : -1;
+
+    /// <summary>Puts a category at a position in the list; the ones in between shift by one. An index outside the
+    /// list is cut to its first or last place, so "far past the end" means "last". Returns true only when the order
+    /// changed -- false for an unknown category and for one that already stands there.</summary>
+    public bool Move(string category, int newIndex)
+    {
+        string? existing = Find(category);
+        if (existing == null) return false;
+
+        int from = _categories.IndexOf(existing);
+        int to = Math.Clamp(newIndex, 0, _categories.Count - 1);
+        if (from == to) return false;
+
+        _categories.RemoveAt(from);
+        _categories.Insert(to, existing);
+        return true;
+    }
+
     /// <summary>Files a friend under a category, or under none when <paramref name="category"/> is <c>null</c>.
     /// Returns false for a category that does not exist; the friend stays where they were.</summary>
     public bool Assign(Guid friend, string? category)

@@ -117,6 +117,110 @@ public class FriendCategoryBookTests
         Assert.Equal(new[] { "FAMILY", "Work" }, book.Categories);
     }
 
+    private static FriendCategoryBook BookWith(params string[] categories)
+    {
+        var book = new FriendCategoryBook();
+        foreach (var name in categories) book.Add(name);
+        return book;
+    }
+
+    [Fact]
+    public void Move_Downwards_LandsBelowTheCategoryThatHeldThePlace()
+    {
+        var book = BookWith("A", "B", "C", "D");
+
+        Assert.True(book.Move("A", book.IndexOf("C")));
+
+        Assert.Equal(new[] { "B", "C", "A", "D" }, book.Categories);
+    }
+
+    [Fact]
+    public void Move_Upwards_LandsAboveTheCategoryThatHeldThePlace()
+    {
+        var book = BookWith("A", "B", "C", "D");
+
+        Assert.True(book.Move("D", book.IndexOf("B")));
+
+        Assert.Equal(new[] { "A", "D", "B", "C" }, book.Categories);
+    }
+
+    [Theory]
+    [InlineData(99, new[] { "B", "C", "A" })]
+    [InlineData(-5, new[] { "A", "B", "C" })]
+    public void Move_CutsAnIndexOutsideTheListToTheNearestEnd(int index, string[] expected)
+    {
+        var book = BookWith("A", "B", "C");
+
+        book.Move("A", index);
+
+        Assert.Equal(expected, book.Categories);
+    }
+
+    [Fact]
+    public void Move_WhereItAlreadyStands_ChangesNothingAndSaysSo()
+    {
+        var book = BookWith("A", "B");
+
+        Assert.False(book.Move("A", 0));
+        Assert.False(book.Move("B", 99));
+        Assert.Equal(new[] { "A", "B" }, book.Categories);
+    }
+
+    [Fact]
+    public void Move_OfAMissingCategory_IsRefused()
+    {
+        var book = BookWith("A", "B");
+
+        Assert.False(book.Move("Nope", 0));
+        Assert.Equal(new[] { "A", "B" }, book.Categories);
+    }
+
+    [Fact]
+    public void Move_KeepsFriendsAndFoldState_AndFindsTheCategoryIgnoringCase()
+    {
+        var book = BookWith("Family", "Work");
+        book.Assign(Anna.Id, "Family");
+        book.SetCollapsed("Family", true);
+
+        Assert.True(book.Move("family", 1));
+
+        Assert.Equal(new[] { "Work", "Family" }, book.Categories);
+        Assert.Equal("Family", book.CategoryOf(Anna.Id));
+        Assert.True(book.IsCollapsed("Family"));
+    }
+
+    [Fact]
+    public void Move_ChangesTheOrderGroupListsTheBlocksIn()
+    {
+        var book = BookWith("Family", "Work");
+        book.Assign(Anna.Id, "Family");
+        book.Assign(Ben.Id, "Work");
+
+        book.Move("Work", 0);
+
+        Assert.Equal(new string?[] { "Work", "Family", null }, book.Group(All).Select(s => s.Category));
+    }
+
+    [Fact]
+    public void IndexOf_IgnoresCase_AndIsMinusOneForAMissingCategory()
+    {
+        var book = BookWith("Family", "Work");
+
+        Assert.Equal(1, book.IndexOf("WORK"));
+        Assert.Equal(-1, book.IndexOf("Nope"));
+    }
+
+    [Fact]
+    public void Json_KeepsTheOrderAfterAMove()
+    {
+        var book = BookWith("A", "B", "C");
+        book.Move("C", 0);
+
+        var copy = FriendCategoryBook.FromJson(book.ToJson());
+
+        Assert.Equal(new[] { "C", "A", "B" }, copy.Categories);
+    }
+
     [Fact]
     public void Remove_SendsItsFriendsBackToNoCategory()
     {

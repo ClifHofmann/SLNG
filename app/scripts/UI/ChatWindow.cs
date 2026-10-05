@@ -1299,32 +1299,8 @@ public partial class ChatWindow : SLNGWindow
 
     private const string ConversationDragPrefix = "slng-conversation:";
 
-    /// <summary>The conversation's name button, which is also what you grab to drag it. The delegates are set by
-    /// <see cref="AddChatTab"/>; <c>DragData</c> null means this row cannot be dragged ("Main").</summary>
-    private partial class ConversationButton : Button
-    {
-        public string? DragData;
-        public Func<string, bool>? CanDrop;
-        public Action<string>? Dropped;
-
-        public override Variant _GetDragData(Vector2 atPosition)
-        {
-            if (DragData == null) return default;
-
-            var preview = new Label { Text = Text };
-            preview.AddThemeColorOverride("font_color", new Color(1, 1, 1, 0.9f));
-            SetDragPreview(preview);
-            return DragData;
-        }
-
-        public override bool _CanDropData(Vector2 atPosition, Variant data)
-            => data.VariantType == Variant.Type.String && CanDrop?.Invoke(data.AsString()) == true;
-
-        public override void _DropData(Vector2 atPosition, Variant data)
-        {
-            if (data.VariantType == Variant.Type.String) Dropped?.Invoke(data.AsString());
-        }
-    }
+    // The conversation's name button is also what you grab to drag it: a <see cref="DragSortButton"/>, whose
+    // delegates <see cref="AddChatTab"/> sets. DragData null means this row cannot be dragged ("Main").
 
     /// <summary>Moves a conversation to where another one is. The list keeps that order for the rest of the
     /// session (the open conversations are not restored at the next login, so there is nothing to save).
@@ -1530,7 +1506,7 @@ public partial class ChatWindow : SLNGWindow
             inner.AddChild(iconRect);
         }
 
-        var label = new ConversationButton
+        var label = new DragSortButton
         {
             Text = displayName,
             Flat = true,
