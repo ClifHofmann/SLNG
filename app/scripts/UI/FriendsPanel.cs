@@ -37,6 +37,8 @@ public partial class FriendsPanel : Control
     private string _agentId = "";
     private CheckBox _onlyOnlineCheck = null!;
     private bool _onlyOnline;
+    private CheckBox _showCategoriesCheck = null!;
+    private bool _showCategories = true;
     private ScrollContainer _scroll = null!;
     private Control _rightsHeaderSpacer = null!;
     private int _refreshQueued;
@@ -143,6 +145,11 @@ public partial class FriendsPanel : Control
         newCategoryButton.Pressed += () => PromptNewCategory(null);
         filterRow.AddChild(newCategoryButton);
 
+        // The two view switches share a row that wraps when the window is narrow, rather than forcing it wider.
+        var viewRow = new HFlowContainer();
+        viewRow.AddThemeConstantOverride("h_separation", 12);
+        leftVBox.AddChild(viewRow);
+
         _onlyOnlineCheck = new CheckBox
         {
             Text = L10n.Tr("ui.friend_view.only_online"),
@@ -156,7 +163,18 @@ public partial class FriendsPanel : Control
             if (_agentId.Length > 0) FriendCategoryStore.SaveOnlyOnline(_agentId, on);
             Refresh();
         };
-        leftVBox.AddChild(_onlyOnlineCheck);
+        viewRow.AddChild(_onlyOnlineCheck);
+
+        _showCategoriesCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.friend_view.show_categories"),
+            TooltipText = L10n.Tr("ui.friend_view.show_categories_tooltip"),
+            FocusMode = FocusModeEnum.None,
+            ButtonPressed = true,
+        };
+        _showCategoriesCheck.AddThemeFontSizeOverride("font_size", ChatWindow.LabelFontSize);
+        _showCategoriesCheck.Toggled += on => SetShowCategories(on);
+        viewRow.AddChild(_showCategoriesCheck);
 
         _emptyLabel = new Label
         {
@@ -218,6 +236,8 @@ public partial class FriendsPanel : Control
         _book = FriendCategoryStore.Load(_agentId);
         _onlyOnline = FriendCategoryStore.LoadOnlyOnline(_agentId);
         _onlyOnlineCheck.SetPressedNoSignal(_onlyOnline);
+        _showCategories = FriendCategoryStore.LoadShowCategories(_agentId);
+        _showCategoriesCheck.SetPressedNoSignal(_showCategories);
         _session.FriendStatusChanged += OnFriendStatusChanged;
         _session.FriendListChanged += OnFriendListChanged;
         _session.NameResolved += OnNameResolved;
@@ -321,6 +341,14 @@ public partial class FriendsPanel : Control
             .OrderByDescending(f => f.IsOnline)
             .ThenBy(DisplayName, StringComparer.OrdinalIgnoreCase);
 
+        // "Show categories" off: one plain list, online first. The categories and who is in them are kept as they are.
+        if (!_showCategories)
+        {
+            foreach (var friend in sorted)
+                _list.AddChild(BuildRow(friend));
+            return;
+        }
+
         // FEAT-UI-65: with a filter typed, show only the blocks that have a hit and show them open -- a match in
         // a folded block would otherwise look like no match at all. "Only online" hides the blocks nobody in is
         // online, but leaves the fold state alone: it is not a search. No category yet = no headers, a flat list.
@@ -333,6 +361,16 @@ public partial class FriendsPanel : Control
             foreach (var friend in section.Friends)
                 _list.AddChild(BuildRow(friend));
         }
+    }
+
+    /// <summary>Switches the grouped view on or off, remembers it, and keeps the checkbox in step (it is also called
+    /// when a category is made while the view is off: a category you cannot see would look like nothing happened).</summary>
+    private void SetShowCategories(bool show)
+    {
+        _showCategories = show;
+        _showCategoriesCheck.SetPressedNoSignal(show);
+        if (_agentId.Length > 0) FriendCategoryStore.SaveShowCategories(_agentId, show);
+        Refresh();
     }
 
     // No account yet (nobody is logged in) means no section to write to.
@@ -507,7 +545,8 @@ public partial class FriendsPanel : Control
             if (category == null) return;
             if (assignTo is { } friend) _book.Assign(friend, category);
             SaveBook();
-            Refresh();
+            if (_showCategories) Refresh();
+            else SetShowCategories(true);
         };
     }
 

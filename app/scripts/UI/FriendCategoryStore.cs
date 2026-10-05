@@ -8,8 +8,8 @@ namespace SLNG.App.UI;
 /// logged-in account -- same ConfigFile pattern and file as <see cref="UiSettings"/> / <see cref="GroupMuteSettings"/>.
 /// A second account on the same machine has other friends and its own idea of how to sort them, so the key is the
 /// agent id; a friend's UUID is the same for every account, but the categories are not.
-/// <para>The Friends list's "show only online" switch rides along under the same section: it is a view choice of
-/// the same list, and a second account may want it the other way round.</para>
+/// <para>The Friends list's two view switches, "show only online" and "show categories", ride along under the same
+/// section: they are view choices of the same list, and a second account may want them the other way round.</para>
 /// <para>The book is kept as one JSON string (<see cref="FriendCategoryBook.ToJson"/>) so the file holds a single
 /// key per account and the format can grow without a migration.</para>
 /// </summary>
@@ -19,6 +19,7 @@ public static class FriendCategoryStore
     private const string SectionPrefix = "friend_categories_";
     private const string Key = "data";
     private const string OnlyOnlineKey = "only_online";
+    private const string ShowCategoriesKey = "show_categories";
 
     /// <summary>False keeps every change in memory only. <c>--selftest</c> boots against the developer's real
     /// <c>user://</c>, so a check that changes categories switches this off and never touches preferences.cfg.</summary>
@@ -41,6 +42,25 @@ public static class FriendCategoryStore
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return false;
         return (bool)cfg.GetValue(SectionPrefix + agentId, OnlyOnlineKey, false);
+    }
+
+    /// <summary>Whether the list is drawn grouped under the categories. On by default; off draws one plain list and
+    /// leaves the categories and the filing as they are.</summary>
+    public static bool LoadShowCategories(string agentId)
+    {
+        var cfg = new ConfigFile();
+        if (cfg.Load(ConfigPath) != Error.Ok) return true;
+        return (bool)cfg.GetValue(SectionPrefix + agentId, ShowCategoriesKey, true);
+    }
+
+    public static void SaveShowCategories(string agentId, bool show)
+    {
+        if (!Persist) return;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(SectionPrefix + agentId, ShowCategoriesKey, show);
+        cfg.Save(ConfigPath);
     }
 
     public static void SaveOnlyOnline(string agentId, bool onlyOnline)

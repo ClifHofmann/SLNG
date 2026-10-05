@@ -37,6 +37,10 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
   Right-click a header for *Move up* / *Move down* (off at the top and bottom), for a list too long to drag across.
   The order is part of what is saved. `DragSortButton` (the button both this list and the conversation list use) carries
   the drag; the payload is prefixed `slng-friend-category:` so no other drag is taken for one.
+- **Show categories** (asked 2026-10-05, v0.26.70-alpha). A checkbox next to *Show only online*; on by default, saved
+  per account. Off draws one plain list (online first, then A-Z) without headers; the categories and who is in them
+  are untouched, and the friend and header menus still work. Creating a category while it is off turns it on, so
+  the new category is not invisible.
 - **Within a category** the order is the list's own: online first, then A-Z by shown name.
 - **Removing a friend** drops their filing.
 
@@ -45,6 +49,7 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
 - [x] Move a friend into a category, between categories, and out again
 - [x] Header click folds and opens; fold state survives a restart
 - [x] Categories and filing survive a restart, per account
+- [x] Show categories: off gives one plain list, categories kept, survives a restart
 - [x] Show only online: hides offline friends and empty categories, survives a restart
 - [x] Reorder a category by dragging its header, or with Move up / Move down; the order survives a restart
 - [x] Unit tests for the model and its JSON (38 cases, `FriendCategoryBookTests`)
@@ -59,7 +64,7 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
   string. Per account because friends and the way to sort them differ between accounts. `Persist` switch for a selftest.
 - `app/scripts/UI/FriendsPanel.cs` -- headers, menus, prompts, the only-online checkbox (`TextPromptWindow`, `ConfirmWindow`).
 - `app/i18n/en-US.json`, `de-DE.json` -- `ui.friend_category.*`, `ui.friend_view.*`.
-- `app/scripts/Boot.cs` -- `AppVersion` v0.26.68-alpha.
+- `app/scripts/Boot.cs` -- `AppVersion` v0.26.70-alpha.
 
 ## Not done
 - Drag and drop of a friend onto a header (the menu does it).

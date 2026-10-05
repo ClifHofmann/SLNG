@@ -309,7 +309,9 @@
     "friend_view": {
       "only_online": "Show only online",
       "only_online_tooltip": "Hide friends who are offline. Categories with nobody online are hidden too.",
-      "none_online": "None of your friends are online."
+      "none_online": "None of your friends are online.",
+      "show_categories": "Show categories",
+      "show_categories_tooltip": "Show your friends sorted into your categories. Off: one plain list. Your categories and who is in them are kept."
     },
     "friend_rights": {
       "group_friend": "Friend may…",
