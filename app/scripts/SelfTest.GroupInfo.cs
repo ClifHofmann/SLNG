@@ -159,6 +159,10 @@ public static partial class SelfTest
                 chat.Initialize(new SLNG.Core.Services.ChatLogger(logDir));
                 var speaker = Guid.NewGuid();
 
+                // After Enter sends a line the chat bar must go on taking text; Godot ends a LineEdit's editing
+                // state on submit unless told otherwise, and the person then types into nothing.
+                Expect("the chat bar keeps taking text after Enter", chat.InputKeepsEditingOnSubmit);
+
                 chat.AppendGroupChatMessage(groupId, "Test Explorers", speaker, "Bob", "hello");
                 Expect("chat on: a group line opens the tab", chat.HasGroupTab(groupId));
 

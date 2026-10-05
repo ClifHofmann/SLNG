@@ -1061,6 +1061,12 @@ public partial class ChatWindow : SLNGWindow
             OwnerWindow = this,
             PlaceholderText = "Write a message...",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            // Without this Godot ends the field's "editing" state the moment Enter submits: it keeps the focus (so
+            // the avatar does not walk off) but ignores every key until the person clicks into it again --
+            // LineEdit.unhandled_key_input returns at once while it is not editing. Reported as "the chat box goes
+            // inactive after writing". OnSendPressed's GrabFocus cannot help: the field still has the focus, so
+            // that call does nothing.
+            KeepEditingOnTextSubmit = true,
         };
         _inputEdit.AddThemeFontSizeOverride("font_size", BodyFontSize);
         // FEAT-UI-43: the key dispatcher tells the chat bar from other text fields (Enter sends here).
@@ -1252,7 +1258,8 @@ public partial class ChatWindow : SLNGWindow
         _inputEdit.Text = "";
         StopTyping();
 
-        // Keep keyboard focus in the input after sending. AvatarController disables movement and
+        // Keep keyboard focus in the input after sending (and, with KeepEditingOnTextSubmit on the field, keep it
+        // taking text -- see where _inputEdit is built). AvatarController disables movement and
         // camera rotation while a LineEdit/TextEdit holds Godot's control focus (hasUiFocus), so
         // this used to ReleaseFocus() here to make sure movement came back after a send. But that
         // drops the user out of the chat bar mid-conversation: typing the next line then walks the
@@ -1790,6 +1797,9 @@ public partial class ChatWindow : SLNGWindow
     /// <summary>Selects a page. The caller makes the window itself visible (the launcher does, so a
     /// minimized or hidden window takes the usual path).</summary>
     public void ShowPage(Page page) => SelectOuterTab(PageControl(page));
+
+    /// <summary>For the selftest: whether the chat bar goes on taking text after Enter has sent a line.</summary>
+    internal bool InputKeepsEditingOnSubmit => _inputEdit.KeepEditingOnTextSubmit;
 
     /// <summary>Puts the cursor in the chat bar on the Chat page - the "start typing" shortcut.</summary>
     public void FocusChatInput()

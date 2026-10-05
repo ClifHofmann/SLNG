@@ -102,6 +102,9 @@ public partial class WorldMapWindow : SLNGWindow
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             PlaceholderText = L10n.Tr("ui.worldmap.search_placeholder"),
+            // Enter runs the search and the field stays: without this Godot ends its "editing" state on Enter and
+            // the next search has to be started by clicking into the field again.
+            KeepEditingOnTextSubmit = true,
         };
         _searchEdit.TextSubmitted += _ => OnSearch();
         searchRow.AddChild(_searchEdit);
