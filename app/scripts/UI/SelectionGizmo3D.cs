@@ -565,6 +565,11 @@ namespace SLNG.App.UI
             // FEAT-UI-64: the HUD overlay's camera went away under a HUD selection (logout, teardown).
             if (_inHud && !IsInstanceValid(_camera)) { Detach(); return; }
 
+            // And the selected prim stopped being a HUD (dropped, or moved to a body point) -- or started
+            // being one. The space is decided in Attach, so without this the handles would stay in the
+            // overlay, placed at region coordinates far outside its camera.
+            if (_inHud != (IsHudEntity?.Invoke(_entity) == true)) { Detach(); return; }
+
             // The entity can be removed from the world under us (region change, object deleted
             // by its owner) -- the gizmo must not keep floating where it was.
             var transform = _entity.GetComponent<TransformComponent>();
@@ -1079,11 +1084,15 @@ namespace SLNG.App.UI
             var half = _dragStartBoxHalf;
 
             // Distance from the centre to this handle at drag start, along the drag direction.
-            // How far the handle sat from the centre along the drag direction at grab time:
-            // the diagonal for a corner, the half-edge for a face.
-            float startReach = corner
-                ? half.Length()
-                : System.MathF.Abs(System.Numerics.Vector3.Dot(half, localDir));
+            // How far the handle sat from the centre along the drag direction at grab time: the half-edge
+            // for a face, and for a corner the corner's PROJECTION onto the drag line.
+            //
+            // A corner's localDir is the sign vector (+-1, +-1, +-1), so the line it defines only passes
+            // through the corner when the box is a cube. The diagonal's length (half.Length()) is what
+            // this used here, and it is longer than the projection for any other box -- so the first mouse
+            // move after grabbing a corner already jumped the size by ~10 % for a flat prim, which is what
+            // nearly every HUD is. The projection is also what the factor below assumes the cursor to be at.
+            float startReach = System.MathF.Abs(System.Numerics.Vector3.Dot(half, localDir)) / localDir.Length();
             if (startReach <= 1e-4f) return;
 
             // The dragged side must land ON the cursor, not run ahead of it.

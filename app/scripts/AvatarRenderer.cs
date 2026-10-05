@@ -4033,6 +4033,17 @@ public partial class AvatarRenderer : Node3D
             // newer size has been asked for since, this one is already out of date -- and building it now
             // would leave it on screen for good, because the signature on file says the newest is current.
             if (_hudContent.TryGetValue(entityId, out var latest) && latest.Scale != scale) return;
+            // FEAT-UI-64: the materials the mesh being replaced is wearing. A stretch rebuilds the mesh on
+            // every update and the new one gets its materials asynchronously, so without this the HUD would
+            // show untextured geometry for a moment on every step of the drag.
+            var carried = new List<Material?>();
+            if (hudNode.GetNodeOrNull<MeshInstance3D>("HudMesh") is { } oldMi && IsInstanceValid(oldMi)
+                && oldMi.Mesh is ArrayMesh oldArrayMesh)
+            {
+                for (int surf = 0; surf < oldArrayMesh.GetSurfaceCount(); surf++)
+                    carried.Add(oldMi.GetSurfaceOverrideMaterial(surf));
+            }
+
             // Out of the tree first, then freed -- see the same loop in the static-attachment
             // path: a merely queue_free'd sibling is still there when "HudMesh" is re-added, and
             // Godot renames the newcomer, so the outline could never find it again.
@@ -4052,6 +4063,12 @@ public partial class AvatarRenderer : Node3D
 
             var mi = new MeshInstance3D { Name = "HudMesh", Mesh = arrayMesh };
             hudNode.AddChild(mi);
+            // Same number of surfaces: the old materials fit until the fresh ones arrive (a few frames).
+            if (carried.Count == arrayMesh.GetSurfaceCount())
+            {
+                for (int surf = 0; surf < carried.Count; surf++)
+                    if (carried[surf] != null) mi.SetSurfaceOverrideMaterial(surf, carried[surf]);
+            }
             _ = ApplyHudFaceMaterialsAsync(mi, faceIndices, faces, defaultFace);
 
             // Click detection: one combined trimesh collision shape per HUD prim. Tagged
