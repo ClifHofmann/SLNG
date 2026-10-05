@@ -93,17 +93,27 @@ public partial class FriendsPanel : Control
     private const int RightsGroupGap = 6;
 
     /// <summary>The rights columns, in order. <c>ByMe</c> columns are what the person grants (clickable); the others
-    /// are what the friend granted (read-only). The first <see cref="RightsByMeColumns"/> are the person's own.</summary>
-    private readonly record struct RightsColumn(FriendPermissions Permission, bool ByMe, string LabelKey, string TipKey);
+    /// are what the friend granted (read-only). The first <see cref="RightsByMeColumns"/> are the person's own.
+    /// <c>Glyph</c> is the Material Symbols name (a ligature) of the icon drawn in the cell.</summary>
+    private readonly record struct RightsColumn(FriendPermissions Permission, bool ByMe, string Glyph, string LabelKey, string TipKey);
 
     private static readonly RightsColumn[] RightsColumns =
     {
-        new(FriendPermissions.SeeOnline, true, "ui.friend_rights.online", "ui.friend_rights.tip_my_online"),
-        new(FriendPermissions.SeeOnMap, true, "ui.friend_rights.map", "ui.friend_rights.tip_my_map"),
-        new(FriendPermissions.ModifyObjects, true, "ui.friend_rights.edit", "ui.friend_rights.tip_my_objects"),
-        new(FriendPermissions.SeeOnMap, false, "ui.friend_rights.map", "ui.friend_rights.tip_their_map"),
-        new(FriendPermissions.ModifyObjects, false, "ui.friend_rights.edit", "ui.friend_rights.tip_their_objects"),
+        new(FriendPermissions.SeeOnline, true, "visibility", "ui.friend_rights.online", "ui.friend_rights.tip_my_online"),
+        new(FriendPermissions.SeeOnMap, true, "place", "ui.friend_rights.map", "ui.friend_rights.tip_my_map"),
+        new(FriendPermissions.ModifyObjects, true, "edit", "ui.friend_rights.edit", "ui.friend_rights.tip_my_objects"),
+        new(FriendPermissions.SeeOnMap, false, "place", "ui.friend_rights.map", "ui.friend_rights.tip_their_map"),
+        new(FriendPermissions.ModifyObjects, false, "edit", "ui.friend_rights.edit", "ui.friend_rights.tip_their_objects"),
     };
+
+    private static Font? _rightsIconFont;
+    private static Font RightsIconFont => _rightsIconFont ??= GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
+
+    // A right that is on is drawn in colour -- blue for what the person grants, green for what the friend granted, so
+    // the two sides read apart -- and one that is off as a faint ghost of the same icon.
+    private static readonly Color RightByMeOn = new(0.40f, 0.72f, 1f);
+    private static readonly Color RightToMeOn = new(0.50f, 0.88f, 0.55f);
+    private static readonly Color RightOff = new(1f, 1f, 1f, 0.2f);
 
     private const int RightsByMeColumns = 3;
 
@@ -856,8 +866,10 @@ public partial class FriendsPanel : Control
         _rightsHeaderSpacer.CustomMinimumSize = new Vector2(4 + (bar.Visible ? bar.GetCombinedMinimumSize().X : 0), 0);
     }
 
-    /// <summary>One friend's five rights. The person's own three are boxes to click; the friend's two are shown the
-    /// same way but dimmed, because only the friend can change them.</summary>
+    /// <summary>One friend's five rights, as small icons -- a right that is on in colour, one that is off a faint
+    /// ghost, as the reference viewer's list draws them. The person's own three are buttons (a click flips the right);
+    /// the friend's two are plain icons, because only the friend can change them. Every icon has the column's
+    /// explanation as its tooltip; the read-only ones are labels, not disabled buttons, which would lose the tooltip.</summary>
     private Control BuildRightsCells(FriendEntry friend)
     {
         var cells = new HBoxContainer();
@@ -868,31 +880,57 @@ public partial class FriendsPanel : Control
             if (i == RightsByMeColumns) cells.AddChild(new Control { CustomMinimumSize = new Vector2(RightsGroupGap, 0) });
 
             var column = RightsColumns[i];
-            var granted = column.ByMe ? friend.GrantedByMe : friend.GrantedToMe;
-            var box = new CheckBox
-            {
-                ButtonPressed = granted.HasFlag(column.Permission),
-                Disabled = !column.ByMe,
-                FocusMode = FocusModeEnum.None,
-            };
+            bool on = (column.ByMe ? friend.GrantedByMe : friend.GrantedToMe).HasFlag(column.Permission);
+            var onColor = column.ByMe ? RightByMeOn : RightToMeOn;
+            string tip = L10n.Tr(column.TipKey);
+
             if (column.ByMe)
             {
+                var button = new Button
+                {
+                    Text = column.Glyph,
+                    Flat = true,
+                    FocusMode = FocusModeEnum.None,
+                    CustomMinimumSize = new Vector2(RightsCellWidth, 24),
+                    MouseDefaultCursorShape = CursorShape.PointingHand,
+                    TooltipText = tip,
+                };
+                button.AddThemeFontOverride("font", RightsIconFont);
+                button.AddThemeFontSizeOverride("font_size", 18);
+                var hover = on ? onColor.Lightened(0.35f) : new Color(1f, 1f, 1f, 0.55f);
+                button.AddThemeColorOverride("font_color", on ? onColor : RightOff);
+                button.AddThemeColorOverride("font_hover_color", hover);
+                button.AddThemeColorOverride("font_pressed_color", hover);
+
                 var friendId = friend.Id;
                 var permission = column.Permission;
                 string name = DisplayName(friend);
-                box.Toggled += on => OnRightToggled(friendId, name, permission, on);
+                button.Pressed += () => OnRightToggled(friendId, name, permission, !on);
+                cells.AddChild(button);
             }
-
-            var holder = new CenterContainer { CustomMinimumSize = new Vector2(RightsCellWidth, 0) };
-            holder.AddChild(box);
-            cells.AddChild(holder);
+            else
+            {
+                var icon = new Label
+                {
+                    Text = column.Glyph,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    CustomMinimumSize = new Vector2(RightsCellWidth, 24),
+                    MouseFilter = MouseFilterEnum.Pass, // a label ignores the mouse by default, which also silences its tooltip
+                    TooltipText = tip,
+                };
+                icon.AddThemeFontOverride("font", RightsIconFont);
+                icon.AddThemeFontSizeOverride("font_size", 18);
+                icon.AddThemeColorOverride("font_color", on ? onColor : RightOff);
+                cells.AddChild(icon);
+            }
         }
         return cells;
     }
 
-    /// <summary>A box in the "friend may..." columns was clicked. Switching a right off, and the two harmless ones on,
-    /// go straight out. Letting someone edit, delete and take the person's objects asks first -- the reference viewer
-    /// does too -- and a "no" puts the box back.</summary>
+    /// <summary>A right in the "friend may..." columns was clicked (<paramref name="on"/> is what it becomes).
+    /// Switching a right off, and the two harmless ones on, go straight out. Letting someone edit, delete and take the
+    /// person's objects asks first -- the reference viewer does too -- and a "no" draws the icon as it was.</summary>
     private void OnRightToggled(Guid friendId, string name, FriendPermissions permission, bool on)
     {
         if (permission != FriendPermissions.ModifyObjects || !on)

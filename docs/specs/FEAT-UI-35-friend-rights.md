@@ -28,9 +28,15 @@ grant, i.e. the friend's `TheirFriendRights`, and **only sends the packet**: LMV
 wrong thing; `FriendPermissionsTests` pins the direction with a different set on each side.
 
 ## Behaviour
+- **Icons, not boxes** (asked 2026-10-05, v0.26.75-alpha: boxes were too heavy; the reference viewer draws icons that are
+  active or inactive). Each cell is a Material Symbols icon -- an eye (online), a pin (map), a pencil (edit) -- in colour
+  when the right is on (blue for what the person grants, green for what the friend granted, so the two sides read apart) and
+  a faint ghost when it is off. The person's three are flat buttons with a hand cursor (a click flips the right; hover
+  brightens); the friend's two are labels, since a disabled button would lose its tooltip. The tooltip is the column's
+  explanation. (The font has `place`, not `location_on`; every glyph name is checked against it.)
 - **Columns**, left to right, under two group labels. *Friend may...* (what we granted; boxes to click): **Online**
   (see when I am online), **Map** (see where I am), **Edit** (edit, delete and take my objects). *I may...* (what the
-  friend granted; dimmed, not clickable -- only they can change it): **Map** (see where they are), **Edit** (edit their
+  friend granted; not clickable -- only they can change it): **Map** (see where they are), **Edit** (edit their
   objects). The header stays put above the scrolling list; every label has the full explanation as its tooltip.
 - **Changing a right** sends the friend's whole set (`GrantUserRights` takes the set, never a bit), built from the
   session's current state, not from the row as drawn, so two quick clicks cannot undo each other. A change survives a
@@ -63,7 +69,7 @@ wrong thing; `FriendPermissionsTests` pins the direction with a different set on
   `OnFriendRightsUpdate`, `OnLoginResponseSeedFriendRights`, `FriendRightsChanged`), `GridSession.cs` (subscriptions).
 - `app/scripts/UI/FriendsPanel.cs` -- header, cells, confirmation, name text; event bursts are now folded into one
   rebuild per frame (`RefreshSoon`), since a row has five more controls than before.
-- `app/scripts/Boot.cs` -- `OnFriendRightsChanged` (notifications); `AppVersion` v0.26.69-alpha.
+- `app/scripts/Boot.cs` -- `OnFriendRightsChanged` (notifications); `AppVersion` v0.26.75-alpha.
 - `app/i18n/en-US.json`, `de-DE.json` -- `ui.friend_rights.*`, `ui.notifications.friend_right_*`.
 - Tests: `tests/SLNG.Net.Tests/FriendPermissionsTests.cs` (15), `tests/SLNG.Core.Tests/FriendPermissionsWithTests.cs`.
 
