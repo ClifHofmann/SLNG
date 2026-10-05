@@ -55,7 +55,7 @@ HUD overlay's root and swaps its camera for the overlay's orthographic one (`Ent
   orthographic sizing, handle filtering, snapping off.
 - `app/scripts/AvatarRenderer.cs` -- `IsHudAttachment`, `TryGetHudFrame`, `TryGetHudSpace`; scale in `_hudContent`;
   stale-build guard in `LoadHudContentAsync`.
-- `app/scripts/Boot.cs` -- wiring; `AppVersion` v0.26.66-alpha.
+- `app/scripts/Boot.cs` -- wiring; `AppVersion` v0.26.65-alpha.
 
 ## Sub-tasks / Progress
 - [x] gizmo lives in the overlay for a HUD selection

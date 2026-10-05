@@ -358,8 +358,13 @@ public sealed partial class GridSession
         foreach (var kvp in e.GroupNames)
         {
             var id = kvp.Key.Guid;
-            var name = string.IsNullOrEmpty(kvp.Value) ? "(unknown group)" : kvp.Value;
+            // An empty answer must not replace a name we already know, and is stored as the placeholder only
+            // for the object-owner displays; group chat treats it as "unknown" (GroupChatSessionLogic.IsRealName).
+            if (!GroupChatSessionLogic.IsRealName(kvp.Value) && HasCachedName(id)) continue;
+            var name = string.IsNullOrEmpty(kvp.Value) ? GroupChatSessionLogic.UnknownGroupName : kvp.Value;
             _nameCache[id] = name;
+            if (_pendingGroupNameRequests.TryRemove(id, out _) && Diag.Verbose)
+                Console.Error.WriteLine($"[GroupChat] name reply for {id}: \"{kvp.Value}\"");
             NameResolved?.Invoke(this, new NameResolvedEvent(id, name));
         }
     }
@@ -426,12 +431,7 @@ public sealed partial class GridSession
 
     /// <summary>The session name a message carries in its binary bucket (a UTF-8 string, NUL-terminated), or
     /// empty when there is none or it is not text.</summary>
-    internal static string DecodeSessionName(byte[]? bucket)
-    {
-        if (bucket == null || bucket.Length == 0 || bucket.Length > 256) return string.Empty;
-        string text = System.Text.Encoding.UTF8.GetString(bucket).TrimEnd('\0').Trim();
-        return text.Any(char.IsControl) ? string.Empty : text;
-    }
+    internal static string DecodeSessionName(byte[]? bucket) => GroupChatSessionLogic.DecodeSessionName(bucket);
 
     /// <summary>Sends a line into an ad-hoc conference session: <c>SessionSend</c> with the session id, addressed
     /// to the session's other participant as the viewer does (<c>LLIMModel::sendMessage</c>,
@@ -455,40 +455,66 @@ public sealed partial class GridSession
         return true;
     }
 
-    /// <summary>True when <paramref name="sessionId"/> is a group we belong to. Before the membership list has
-    /// arrived nothing can be ruled out, so every session counts as a group then -- the behaviour from before
-    /// this check existed, and the safer mistake (a group line in an odd tab beats a lost group line).</summary>
-    private bool IsKnownGroupSession(Guid sessionId)
-    {
-        var snapshot = _groups;
-        return snapshot == null || snapshot.Any(g => g.Id == sessionId);
-    }
-
     /// <summary>A group's name: from the membership list first (it already carries it, and is there before
     /// any name reply), then the shared name cache. False, with the id's text, when neither knows it yet.</summary>
+    private bool IsGroupMember(Guid id) => _groups?.Any(g => g.Id == id) == true;
+
     public bool TryGetGroupName(Guid groupId, out string name)
     {
         var member = _groups?.FirstOrDefault(g => g.Id == groupId);
-        if (member != null && !string.IsNullOrWhiteSpace(member.Name))
+        if (member != null && GroupChatSessionLogic.IsRealName(member.Name))
         {
             name = member.Name;
             return true;
         }
-        if (TryGetCachedName(groupId, out name) && !string.IsNullOrWhiteSpace(name)) return true;
+        if (TryGetCachedName(groupId, out name) && GroupChatSessionLogic.IsRealName(name)) return true;
         name = groupId.ToString();
         return false;
     }
 
-    /// <summary>True when the shared name cache holds a NAME for this id; an entry with an empty name is not one.</summary>
-    private bool HasCachedName(Guid id) => _nameCache.TryGetValue(id, out var cached) && !string.IsNullOrWhiteSpace(cached);
+    /// <summary>True when the shared name cache holds a NAME for this id; an entry with an empty name, or the
+    /// "(unknown group)" placeholder a blank name reply leaves behind, is not one (BUG-UI-23: it used to be, and
+    /// kept a group with no known name from ever being asked for again).</summary>
+    private bool HasCachedName(Guid id) => _nameCache.TryGetValue(id, out var cached) && GroupChatSessionLogic.IsRealName(cached);
 
     /// <summary>Remembers a group's name learnt from somewhere other than a name reply, unless a real one is known
     /// already, and tells the listeners (<see cref="NameResolved"/>) so a tab titled with the id is renamed.</summary>
     private void RememberGroupName(Guid groupId, string name)
     {
-        if (groupId == Guid.Empty || string.IsNullOrWhiteSpace(name) || HasCachedName(groupId)) return;
+        if (groupId == Guid.Empty || !GroupChatSessionLogic.IsRealName(name) || HasCachedName(groupId)) return;
         _nameCache[groupId] = name;
         NameResolved?.Invoke(this, new NameResolvedEvent(groupId, name));
+    }
+
+    private readonly GroupNameRequestGate _groupNameRequestGate = new();
+    private readonly ConcurrentDictionary<Guid, byte> _pendingGroupNameRequests = new();
+    private readonly ConcurrentDictionary<Guid, byte> _loggedGroupSessions = new();
+
+    /// <summary>Asks the grid for a group's name, at most once per <see cref="GroupNameRequestGate.MinInterval"/>.
+    /// The answer lands in the name cache and raises <see cref="NameResolved"/>, which re-titles the tab.</summary>
+    private void RequestUnknownGroupName(Guid groupId)
+    {
+        if (!_groupNameRequestGate.ShouldRequest(groupId, DateTime.UtcNow.Ticks)) return;
+        _pendingGroupNameRequests[groupId] = 0;
+        RequestGroupName(groupId);
+    }
+
+    /// <summary>BUG-UI-23 diagnostic, <c>--diag</c> only: one line the first time a group session is seen. Says
+    /// whether the membership list knew it as a group, where its name came from, and whether the user had it muted.
+    /// A report of "wrong tab title" or "muted group still shows" on Second Life cannot be reproduced on OpenSim,
+    /// so this line is how the next live session says which path it took.</summary>
+    private void LogNewGroupSession(
+        InstantMessage im, GroupNameSource source, string name, bool muted,
+        bool membershipLoaded = true, bool inMembership = false)
+    {
+        if (!Diag.Verbose || !_loggedGroupSessions.TryAdd(im.IMSessionID.Guid, 0)) return;
+        string nameSource = muted ? "skipped(muted)"
+            : source == GroupNameSource.None ? "none(name requested)"
+            : source.ToString().ToLowerInvariant();
+        Console.Error.WriteLine(
+            $"[GroupChat] new session {im.IMSessionID.Guid} dialog={im.Dialog} groupFlag={im.GroupIM}" +
+            $" membership={(!membershipLoaded ? "not-loaded" : inMembership ? "member" : "not-in-list")}" +
+            $" nameSource={nameSource} name=\"{name}\" muted={(muted ? "yes" : "no")}");
     }
 
     public void RequestAvatarName(Guid agentId)
@@ -636,37 +662,73 @@ public sealed partial class GridSession
             return;
         }
 
+        // A group NOTICE carries the group flag too, and used to fall into the group-chat branch below: it opened a
+        // chat tab titled with an id when the group was not in the list (BUG-UI-25). It is a notification.
+        if (e.IM.Dialog == InstantMessageDialog.GroupNotice)
+        {
+            Guid session = e.IM.IMSessionID.Guid, from = e.IM.FromAgentID.Guid;
+            Guid groupId = IsGroupMember(from) ? from : session;
+            string text = e.IM.Message ?? string.Empty;
+            int bar = text.IndexOf('|');
+            GroupNoticeReceived?.Invoke(this, new GroupNoticeEvent(
+                groupId, e.IM.FromAgentName ?? string.Empty,
+                bar < 0 ? string.Empty : text[..bar].Trim(), bar < 0 ? text : text[(bar + 1)..].Trim()));
+            return;
+        }
+
         // Group chat first, and NOT by inspecting the dialog byte: it arrives as
         // InstantMessageDialog.SessionSend, not MessageFromAgent, and its GroupIM flag is only set
         // on the first message of a session -- a later one carries just the session id. Both the
         // old `Dialog != MessageFromAgent` test and the old `|| e.IM.GroupIM` bail therefore
-        // dropped group chat, twice over. LibreMetaverse's own AgentManager.IsGroupMessage is the
-        // authoritative test (GroupIM || the session is a known group chat session), so use it
-        // rather than re-deriving the rule here.
-        // ...but IsGroupMessage is true for ANY session message, and a session is not always a group: a
-        // resident can IM from an ad-hoc conference session (IM_SESSION_SEND with a session id that is no
-        // group of ours). Treating that as group chat opened a tab named after the session's UUID, and a
-        // reply into it was answered with "You are the only participant in this IM session". Only a session
-        // that is one of our groups is group chat; the rest falls through to be shown as the speaker's IM.
-        if (_client.Self.IsGroupMessage(e.IM) && (e.IM.GroupIM || IsKnownGroupSession(e.IM.IMSessionID.Guid)))
+        // dropped group chat, twice over.
+        // ...but a session is not always a group: a resident can IM from an ad-hoc conference session
+        // (IM_SESSION_SEND with a session id that is no group of ours). Treating that as group chat opened a
+        // tab named after the session's UUID, and a reply into it was answered with "You are the only
+        // participant in this IM session". Only a session that is one of our groups is group chat; the rest
+        // falls through to be shown as the speaker's IM.
+        // BUG-UI-23: and a session that IS one of our groups is group chat even when LibreMetaverse's own
+        // GroupChatSessions table does not know it (see GroupChatSessionLogic.IsGroupSession).
+        Guid sessionId = e.IM.IMSessionID.Guid;
+        bool hasText = !string.IsNullOrEmpty(e.IM.Message);
+
+        // FEAT-UI-54 / BUG-UI-23: a group whose chat the user switched off is dropped before anything sees it,
+        // decided by the session id alone and ahead of every classification below -- the invitation that
+        // opens the session (LibreMetaverse has already joined it by now), a UDP line, and a stray line after
+        // we left all end here, so none of them can open a tab, count as unread, be logged or notify.
+        // The typing indicators are their own dialogs and are dropped further down anyway.
+        bool muted = GroupChatSessionLogic.IsSessionLineDialog(e.IM.Dialog) && GroupChatIgnored?.Invoke(sessionId) == true;
+        if (GroupChatSessionLogic.ShouldConsumeAsIgnored(e.IM.Dialog, hasText, muted))
         {
-            if (string.IsNullOrEmpty(e.IM.Message)) return; // typing/keep-alive, same as local chat
+            LogNewGroupSession(e.IM, GroupNameSource.None, string.Empty, muted: true);
+            TryConsumeIgnoredGroupChat(sessionId);
+            return;
+        }
+
+        var membership = _groups;
+        bool inMembership = membership != null && membership.Any(g => g.Id == sessionId);
+        if (GroupChatSessionLogic.IsGroupSession(
+                e.IM.Dialog, e.IM.GroupIM, _client.Self.IsGroupMessage(e.IM), membership != null, inMembership))
+        {
+            if (!hasText) return; // typing/keep-alive, same as local chat
             // The typing indicator is its own dialog (41/42) but carries the TEXT "typing", so it must be
             // told apart by the dialog -- the empty-message test above never caught it.
             if (e.IM.Dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping) return;
             // Our own line comes back through the session and is the ONLY copy: unlike a 1:1 IM the viewer does
             // not echo a session line locally (llimview.cpp, LLIMModel::sendMessage echoes only IM_NOTHING_SPECIAL).
             if (IsDuplicateSessionLine(e.IM)) return;
-            // FEAT-UI-54: a group whose chat the user switched off is dropped before anything sees it.
-            if (TryConsumeIgnoredGroupChat(e.IM.IMSessionID.Guid)) return;
             // For group chat the session id IS the group id.
-            // The message names its session in the binary bucket (the viewer's session name, llimprocessing /
-            // llimview.cpp): for a group, the group. That is the one source that needs neither the membership
-            // list nor a name request, so it is remembered before the tab is made.
-            string groupName = DecodeSessionName(e.IM.BinaryBucket);
-            RememberGroupName(e.IM.IMSessionID.Guid, groupName);
+            // The name: the membership list, then the message's binary bucket (the viewer's session name,
+            // llimview.cpp:3172-3178 -- the speaker's name, FromAgentName, is never the group's), then the shared
+            // name cache. When nobody knows it a request goes out and the tab is re-titled when the answer arrives.
+            string bucketName = DecodeSessionName(e.IM.BinaryBucket);
+            var member = membership?.FirstOrDefault(g => g.Id == sessionId);
+            _nameCache.TryGetValue(sessionId, out var cachedName);
+            var (groupName, nameSource) = GroupChatSessionLogic.ChooseName(member?.Name, bucketName, cachedName);
+            if (nameSource == GroupNameSource.Bucket) RememberGroupName(sessionId, groupName);
+            if (nameSource == GroupNameSource.None) RequestUnknownGroupName(sessionId);
+            LogNewGroupSession(e.IM, nameSource, groupName, muted: false, membership != null, inMembership);
             GroupChatMessageReceived?.Invoke(this, new GroupChatMessageEvent(
-                e.IM.IMSessionID.Guid, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, groupName));
+                sessionId, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, groupName));
             return;
         }
 
@@ -689,7 +751,6 @@ public sealed partial class GridSession
         {
             if (string.IsNullOrEmpty(e.IM.Message) || IsDuplicateSessionLine(e.IM)) return;
 
-            Guid sessionId = e.IM.IMSessionID.Guid;
             Guid from = e.IM.FromAgentID.Guid;
             // Who to address replies to: the viewer sends a session line to the session's "other participant",
             // which for an invited session is whoever invited us (llimview.cpp addMessage -> target_id).
@@ -959,6 +1020,11 @@ public sealed partial class GridSession
 
     private void OnGroupChatJoined(object? sender, GroupChatJoinedEventArgs e)
     {
+        // The grid's own name for the session it just let us into -- for a group, the group's. A free name source
+        // (BUG-UI-23), taken only for a session that is one of our groups: a conference's name is not a group's.
+        if (e.Success && _groups?.Any(g => g.Id == e.SessionID.Guid) == true)
+            RememberGroupName(e.SessionID.Guid, e.SessionName ?? string.Empty);
+
         GroupChatJoined?.Invoke(this, new GroupChatJoinedEvent(
             e.SessionID.Guid, e.SessionName ?? string.Empty, e.Success));
     }
