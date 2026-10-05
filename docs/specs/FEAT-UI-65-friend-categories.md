@@ -35,7 +35,13 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
   place the target has now -- dropped upwards it lands above the target, downwards below it, the rule the conversation
   list already follows. *No category* cannot be dragged and is always last; a category dropped on it goes to the end.
   Right-click a header for *Move up* / *Move down* (off at the top and bottom), for a list too long to drag across.
-  The order is part of what is saved. `DragSortButton` (the button both this list and the conversation list use) carries
+  The order is part of what is saved. **Seeing that it can be moved** (asked 2026-10-05, v0.26.74-alpha): each category
+  header carries a six-dot grip on its left with a hand cursor and a tooltip, the grip being as much a drag source as the
+  name; the *No category* header has none but keeps the same indent. While a category is held over another header, that
+  header is tinted and a 3 px bar marks its top edge (the dragged one would land above it) or its bottom edge (below it);
+  over *No category* the bar is on its top edge (it lands just above it) and nothing shows when the category is already
+  last. The bar is a border inside fixed content margins, so showing it moves nothing. The preview is a small accent card
+  beside the cursor. `DragSortButton` (the button both this list and the conversation list use) carries
   the drag; the payload is prefixed `slng-friend-category:` so no other drag is taken for one.
 - **Show categories** (asked 2026-10-05, v0.26.70-alpha). A checkbox next to *Show only online*; on by default, saved
   per account. Off draws one plain list (online first, then A-Z) without headers; the categories and who is in them
@@ -62,12 +68,12 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
 - `src/SLNG.Core/FriendCategoryBook.cs` -- the model: categories, filing, fold state, `Group(...)` into blocks, JSON.
   Engine-agnostic, no Godot.
 - `tests/SLNG.Core.Tests/FriendCategoryBookTests.cs`
-- `app/scripts/UI/DragSortButton.cs` -- the shared drag-to-sort button (moved out of `ChatWindow`, which uses it too).
+- `app/scripts/UI/DragSortButton.cs` -- the shared drag-to-sort button (moved out of `ChatWindow`, which uses it too); `DropHover` tells the owner where a drop would land. `app/scripts/UI/DragGrip.cs` -- the drawn six-dot handle.
 - `app/scripts/UI/FriendCategoryStore.cs` -- `user://preferences.cfg`, section `friend_categories_<agentId>`, one JSON
   string. Per account because friends and the way to sort them differ between accounts. `Persist` switch for a selftest.
 - `app/scripts/UI/FriendsPanel.cs` -- headers, menus, prompts, the only-online checkbox (`TextPromptWindow`, `ConfirmWindow`).
 - `app/i18n/en-US.json`, `de-DE.json` -- `ui.friend_category.*`, `ui.friend_view.*`.
-- `app/scripts/Boot.cs` -- `AppVersion` v0.26.71-alpha.
+- `app/scripts/Boot.cs` -- `AppVersion` v0.26.74-alpha.
 
 ## Not done
 - Drag and drop of a friend onto a header (the menu does it).

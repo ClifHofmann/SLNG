@@ -387,6 +387,15 @@ public partial class FriendsPanel : Control
     {
         string name = section.Category ?? L10n.Tr("ui.friend_category.uncategorized");
         int online = section.Friends.Count(f => f.IsOnline);
+        var category = section.Category;
+        bool collapsed = section.Collapsed;
+
+        var panel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        SetHeaderStyle(panel, DropMark.None);
+
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 2);
+        panel.AddChild(row);
 
         var button = new DragSortButton
         {
@@ -396,19 +405,45 @@ public partial class FriendsPanel : Control
             FocusMode = FocusModeEnum.None,
             Alignment = HorizontalAlignment.Left,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            TooltipText = section.Category == null ? "" : L10n.Tr("ui.friend_category.header_tooltip"),
+            MouseDefaultCursorShape = CursorShape.PointingHand,
+            TooltipText = L10n.Tr(category == null
+                ? "ui.friend_category.uncategorized_tooltip"
+                : "ui.friend_category.header_tooltip"),
         };
         button.AddThemeFontSizeOverride("font_size", ChatWindow.LabelFontSize);
         button.AddThemeColorOverride("font_color", new Color(0.82f, 0.9f, 1f));
 
-        var category = section.Category;
-        bool collapsed = section.Collapsed;
+        // What lets a category be picked up and moved: the grip on its left says so, and is itself part of the
+        // drag, as is the name. The "no category" block has no grip -- it cannot move -- but is a place to drop.
+        void MakeDraggable(DragSortButton b)
+        {
+            b.DragData = category == null ? null : CategoryDragPrefix + category;
+            b.DragPreviewText = name;
+            b.CanDrop = data => data.StartsWith(CategoryDragPrefix, StringComparison.Ordinal)
+                                && data != CategoryDragPrefix + category;
+            b.Dropped = data => MoveCategory(data[CategoryDragPrefix.Length..], category);
+            b.DropHover = data => SetHeaderStyle(panel, DropMarkFor(data, category));
+        }
+        MakeDraggable(button);
 
-        button.DragData = category == null ? null : CategoryDragPrefix + category;
-        button.DragPreviewText = name;
-        button.CanDrop = data => data.StartsWith(CategoryDragPrefix, StringComparison.Ordinal)
-                                 && data != CategoryDragPrefix + category;
-        button.Dropped = data => MoveCategory(data[CategoryDragPrefix.Length..], category);
+        if (category != null)
+        {
+            var grip = new DragSortButton
+            {
+                Flat = true,
+                FocusMode = FocusModeEnum.None,
+                CustomMinimumSize = new Vector2(20, 24),
+                MouseDefaultCursorShape = CursorShape.Drag,
+                TooltipText = L10n.Tr("ui.friend_category.grip_tooltip"),
+            };
+            grip.AddChild(new DragGrip());
+            MakeDraggable(grip);
+            row.AddChild(grip);
+        }
+        else
+        {
+            row.AddChild(new Control { CustomMinimumSize = new Vector2(20, 0) }); // keeps the names in line
+        }
 
         button.Pressed += () =>
         {
@@ -424,19 +459,48 @@ public partial class FriendsPanel : Control
                 ShowSectionMenu(category);
         };
 
-        var panel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        row.AddChild(button);
+        return panel;
+    }
+
+    /// <summary>Where a category being dragged would land relative to a header it is held over: a bar on the top edge
+    /// when it would go above it, on the bottom edge when below. A category takes the place the header has now, so
+    /// moving up lands above and moving down lands below; the "no category" block is always last, so a drop on it
+    /// goes just above it.</summary>
+    private enum DropMark { None, Above, Below }
+
+    private DropMark DropMarkFor(string? dragged, string? target)
+    {
+        if (dragged == null || !dragged.StartsWith(CategoryDragPrefix, StringComparison.Ordinal)) return DropMark.None;
+        int from = _book.IndexOf(dragged[CategoryDragPrefix.Length..]);
+        if (from < 0) return DropMark.None;
+        if (target == null) return from == _book.Categories.Count - 1 ? DropMark.None : DropMark.Above;
+        int to = _book.IndexOf(target);
+        if (to < 0 || to == from) return DropMark.None;
+        return from > to ? DropMark.Above : DropMark.Below;
+    }
+
+    // The bar is a border; the content margins are fixed at the border's width so that showing or hiding it moves
+    // nothing -- a list that shifts under the cursor mid-drag would flicker.
+    private static void SetHeaderStyle(PanelContainer panel, DropMark mark)
+    {
+        var accent = new Color(0.4f, 0.75f, 1f);
+        var style = new StyleBoxFlat
         {
-            BgColor = new Color(1, 1, 1, 0.07f),
+            BgColor = mark == DropMark.None ? new Color(1, 1, 1, 0.07f) : new Color(0.3f, 0.6f, 0.9f, 0.28f),
             CornerRadiusTopLeft = 4,
             CornerRadiusTopRight = 4,
             CornerRadiusBottomLeft = 4,
             CornerRadiusBottomRight = 4,
             ContentMarginLeft = 4,
             ContentMarginRight = 4,
-        });
-        panel.AddChild(button);
-        return panel;
+            ContentMarginTop = 3,
+            ContentMarginBottom = 3,
+            BorderColor = accent,
+            BorderWidthTop = mark == DropMark.Above ? 3 : 0,
+            BorderWidthBottom = mark == DropMark.Below ? 3 : 0,
+        };
+        panel.AddThemeStyleboxOverride("panel", style);
     }
 
     private void SelectFriend(Guid friendId, string displayName, string legacyName)

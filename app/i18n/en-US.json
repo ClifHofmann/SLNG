@@ -291,6 +291,8 @@
       "new": "New category…",
       "uncategorized": "No category",
       "header_tooltip": "Click to fold or open. Drag onto another category to move it there. Right-click for more.",
+      "grip_tooltip": "Drag to move this category",
+      "uncategorized_tooltip": "Drag a category here to move it to the end.",
       "rename": "Rename…",
       "delete": "Delete category",
       "move_up": "Move up",

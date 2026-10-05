@@ -291,6 +291,8 @@
       "new": "Neue Kategorie…",
       "uncategorized": "Ohne Kategorie",
       "header_tooltip": "Klick klappt auf oder zu. Auf eine andere Kategorie ziehen, um sie dorthin zu verschieben. Rechtsklick für mehr.",
+      "grip_tooltip": "Ziehen, um diese Kategorie zu verschieben",
+      "uncategorized_tooltip": "Eine Kategorie hierher ziehen, um sie ans Ende zu stellen.",
       "rename": "Umbenennen…",
       "delete": "Kategorie löschen",
       "move_up": "Nach oben",
