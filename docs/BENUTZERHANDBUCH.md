@@ -89,6 +89,7 @@ Rechtsklick auf ein gespeichertes Outfit im Reiter *Outfits*:
 - **Kontext-Mauszeiger:** Der Mauszeiger ändert sich automatisch, wenn Sie über Objekte fahren:
   - *Stuhl-Symbol:* Ein Linksklick (oder Rechtsklick -> `Sit`) lässt Ihren Avatar Platz nehmen. Ein erneuter Druck auf eine Bewegungstaste lässt Sie aufstehen.
   - *Hand-Symbol:* Sie können das Objekt berühren (Touch).
+- **Getragene HUDs auswählen:** Ein HUD lässt sich wie ein Objekt auswählen. Ein Rechtsklick auf das HUD öffnet sein Menü mit `Edit` und `Detach` (Ablegen); ein Linksklick berührt es wie bisher. Ist das Bearbeiten-Fenster offen, wählt ein Linksklick das HUD stattdessen aus (mit `Umschalt` fügen Sie weitere hinzu), und das Mausrad zoomt die HUD-Ebene heraus, damit Sie auch ein HUD erreichen, das außerhalb des Bildschirms liegt. Einen Verschiebe-Pfeil gibt es dafür noch nicht; Position und Größe tragen Sie im Bearbeiten-Fenster ein.
 - **Fliegen:** Aktivieren Sie den Flugmodus (Standard: Taste `F` oder über das Menü), um die Region von oben zu erkunden.
 - **Klicken über Regionsgrenzen:** Objekte auf der anderen Seite einer Regionsgrenze lassen sich berühren, auswählen und kaufen wie Objekte in Ihrer eigenen Region.
 - **Berühren mit Fläche:** Ein Klick meldet dem Objekt auch, *welche Fläche* Sie getroffen haben. Verkaufstafeln mit einem Produkt pro Fläche reagieren deshalb richtig.

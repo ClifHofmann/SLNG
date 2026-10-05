@@ -207,6 +207,78 @@ namespace SLNG.App
             OnLinkSelectionChanged?.Invoke();
         }
 
+        /// <summary>Is the build floater open? While it is, a left click picks instead of touching.</summary>
+        public bool EditSessionOpen => _editSessionOpen;
+
+        /// <summary>Supplied by Boot: the worn HUD prim under a screen position, or null. A HUD is drawn
+        /// in an overlay with a physics world of its own, so the raycast below never sees it -- and
+        /// being on top of everything, it has to be asked first.</summary>
+        public System.Func<Vector2, Entity?>? PickHud;
+
+        /// <summary>Edit Linked Parts OFF (default): a clicked prim stands for its linkset, so resolve up to
+        /// the root. ON: the specifically-clicked part is the target (FEAT-UI-06).</summary>
+        /// <remarks>An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it,
+        /// so walking up would select the avatar instead of the item (FEAT-UI-23).
+        /// WorldSimulation.ResolveWorldTransform draws the same line.</remarks>
+        private (Entity Entity, uint LocalId) ResolveSelectionTarget(Entity rawEntity, uint rawLocalId)
+        {
+            if (SelectionSettings.EditLinkedParts) return (rawEntity, rawLocalId);
+
+            var transform = rawEntity.GetComponent<TransformComponent>();
+            if (transform != null && transform.ParentLocalId != 0)
+            {
+                var parent = _world.GetEntity(rawEntity.RegionHandle, transform.ParentLocalId);
+                if (parent != null && parent.GetComponent<AvatarComponent>() == null)
+                    return (parent, transform.ParentLocalId);
+            }
+            return (rawEntity, rawLocalId);
+        }
+
+        /// <summary>A right-click marks what it is about to act on, in or out of an edit session -- asked
+        /// for in-world, and the reference viewer highlights its pie menu's target the same way. Outside a
+        /// session that is the plain click highlight, which the next click elsewhere clears.</summary>
+        private void MarkRightClicked(Entity entity, uint localId)
+        {
+            if (_editSessionOpen)
+            {
+                SelectOnly(entity, localId);
+                return;
+            }
+
+            if (_lastClicked != null && _lastClicked.Id != entity.Id)
+            {
+                _world.DeselectEntity(_lastClicked);
+            }
+            _world.SelectEntity(entity);
+            SelectFamily(entity, localId);
+            _lastClicked = entity;
+        }
+
+        /// <summary>A click on one of your worn HUDs: select it like any object. Right opens its menu (Edit,
+        /// Detach); left, in build mode, picks it -- shift adds or drops it. Outside build mode a left click
+        /// is a touch and AvatarRenderer has already sent it.</summary>
+        /// <returns>True when the click belonged to a HUD, so it does not reach the world behind it.</returns>
+        private bool TryHandleHudClick(InputEventMouseButton click)
+        {
+            var raw = PickHud?.Invoke(click.Position);
+            if (raw == null) return false;
+
+            if (click.ButtonIndex == MouseButton.Left && !_editSessionOpen) return true;
+
+            var (entity, localId) = ResolveSelectionTarget(raw, raw.LocalId);
+            if (click.ButtonIndex == MouseButton.Left)
+            {
+                if (click.ShiftPressed) ToggleSelection(entity, localId);
+                else SelectOnly(entity, localId);
+                return true;
+            }
+
+            MarkRightClicked(entity, localId);
+            // No surface point to rez onto: a HUD lives on the screen, not in the region.
+            _contextMenu.ShowMenu(click.Position, entity, localId, Vector3.Zero);
+            return true;
+        }
+
         public void Initialize(World world, GridSession session, Camera3D camera, UI.InWorldContextMenu contextMenu)
         {
             _world = world;
@@ -264,6 +336,13 @@ namespace SLNG.App
 
                 if (mouseBtn.ButtonIndex == MouseButton.Right || mouseBtn.ButtonIndex == MouseButton.Left)
                 {
+                    // A worn HUD is on top of everything else, so it gets the click first.
+                    if (TryHandleHudClick(mouseBtn))
+                    {
+                        GetViewport().SetInputAsHandled();
+                        return;
+                    }
+
                     var exclude = new Godot.Collections.Array<Rid>();
                     var result = RaycastFromMouse(mouseBtn.Position, exclude);
 
@@ -421,24 +500,9 @@ namespace SLNG.App
                                         ObjectRenderer.LogFaceTextureParams(rawEntity);
 
                                         // Edit Linked Parts OFF (default): resolve up to the
-                                        // linkset's root, matching pre-existing behavior. ON:
-                                        // leave the specifically-clicked part as-is (FEAT-UI-06).
-                                        var entity = rawEntity;
-                                        uint localId = rawLocalId;
-                                        if (!SelectionSettings.EditLinkedParts)
-                                        {
-                                            var transform = rawEntity.GetComponent<TransformComponent>();
-                                            if (transform != null && transform.ParentLocalId != 0)
-                                            {
-                                                var parent = _world.GetEntity(rawEntity.RegionHandle, transform.ParentLocalId);
-                                                // An AVATAR is not a link root. A worn item's ParentLocalId is the avatar that wears it, so walking up would select the avatar instead of the item (FEAT-UI-23). WorldSimulation.ResolveWorldTransform draws the same line.
-                                                if (parent != null && parent.GetComponent<AvatarComponent>() == null)
-                                                {
-                                                    entity = parent;
-                                                    localId = transform.ParentLocalId;
-                                                }
-                                            }
-                                        }
+                                        // linkset's root. ON: leave the specifically-clicked part
+                                        // as-is (FEAT-UI-06).
+                                        var (entity, localId) = ResolveSelectionTarget(rawEntity, rawLocalId);
 
                                         if (mouseBtn.ButtonIndex == MouseButton.Left)
                                         {
@@ -540,25 +604,7 @@ namespace SLNG.App
                                             return;
                                         }
 
-                                        // A right-click marks what it is about to act on, in or
-                                        // out of an edit session -- asked for in-world, and the
-                                        // reference viewer highlights its pie menu's target the
-                                        // same way. Outside a session that is the plain click
-                                        // highlight, which the next click elsewhere clears.
-                                        if (_editSessionOpen)
-                                        {
-                                            SelectOnly(entity, localId);
-                                        }
-                                        else
-                                        {
-                                            if (_lastClicked != null && _lastClicked.Id != entity.Id)
-                                            {
-                                                _world.DeselectEntity(_lastClicked);
-                                            }
-                                            _world.SelectEntity(entity);
-                                            SelectFamily(entity, localId);
-                                            _lastClicked = entity;
-                                        }
+                                        MarkRightClicked(entity, localId);
 
                                         _contextMenu.ShowMenu(mouseBtn.Position, entity, localId,
                                             RezPointFrom(result));

@@ -5473,23 +5473,53 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
-    /// <summary>Raycasts a screen click into the HUD overlay's own isolated World3D (via its own
-    /// orthographic camera) and, on a hit, sends an SL touch (GridSession.ClickObjectAsync — a
-    /// grab/de-grab pair, which is what fires touch_start/touch_end on the object's script) for
-    /// the entity the hit collision body is tagged with. Returns true if a HUD collider was hit
-    /// and processed so caller can mark input as handled.</summary>
-    private bool TryClickHud(Godot.Vector2 screenPos)
+    /// <summary>Set by Boot: is build mode (the edit window) open? There a left click picks what it hits
+    /// instead of touching it, the way the reference viewer's build floater does -- which for a HUD means the
+    /// click is left for <see cref="ObjectSelectionController"/> rather than sent to the script.</summary>
+    public System.Func<bool>? IsBuildMode;
+
+    /// <summary>What a ray through a click found in the HUD overlay: the prim, and where on it.</summary>
+    private readonly struct HudHit
     {
+        public readonly Entity Entity;
+        public readonly Guid EntityId;
+        public readonly int FaceIndex;
+        public readonly System.Numerics.Vector3 PositionSl;
+        public readonly System.Numerics.Vector3 NormalSl;
+        public readonly System.Numerics.Vector3 UvSl;
+
+        public HudHit(Entity entity, Guid entityId, int faceIndex,
+            System.Numerics.Vector3 positionSl, System.Numerics.Vector3 normalSl, System.Numerics.Vector3 uvSl)
+        {
+            Entity = entity;
+            EntityId = entityId;
+            FaceIndex = faceIndex;
+            PositionSl = positionSl;
+            NormalSl = normalSl;
+            UvSl = uvSl;
+        }
+    }
+
+    /// <summary>Raycasts a screen click into the HUD overlay's own isolated World3D (via its own
+    /// orthographic camera) and resolves the hit back to the HUD prim it landed on, with the face, surface
+    /// point, normal and texture coordinate in SL space. False when no HUD prim is under the cursor.</summary>
+    /// <param name="announce">Say why a click found nothing. A touch wants that (it is the only answer to
+    /// "the HUD does not react"); a pick runs on every click anywhere and must stay quiet.</param>
+    private bool TryHitHud(Godot.Vector2 screenPos, bool announce, out HudHit found)
+    {
+        found = default;
+        bool say = announce && Diagnostics.Enabled;
+
         if (_hudViewport == null || _session == null || _world == null)
         {
-            if (Diagnostics.Enabled) GD.Print($"[HUD] click ignored: viewport={_hudViewport != null} "
+            if (say) GD.Print($"[HUD] click ignored: viewport={_hudViewport != null} "
                      + $"session={_session != null} world={_world != null}");
             return false;
         }
         var cam = _hudViewport.GetCamera3D();
         if (cam == null)
         {
-            if (Diagnostics.Enabled) GD.Print("[HUD] click ignored: viewport has no Camera3D");
+            if (say) GD.Print("[HUD] click ignored: viewport has no Camera3D");
             return false;
         }
 
@@ -5515,50 +5545,50 @@ public partial class AvatarRenderer : Node3D
         var dir = cam.ProjectRayNormal(hudScreenPos);
         var query = PhysicsRayQueryParameters3D.Create(from, from + dir * 20f);
         query.HitBackFaces = false;
-        var hit = spaceState.IntersectRay(query);
+        var ray = spaceState.IntersectRay(query);
 
         // Every exit below used to be silent, which is why "the HUD does not react" could not be
         // told apart from "the click never got here".
         //
-        // Unconditional GD.Print, deliberately, and not behind --diag: the SUCCESS line below
-        // already prints unconditionally, so gating only the failures made a broken click quieter
-        // than a working one -- backwards, and it cost a round trip to discover. A click is
-        // user-initiated and rare, so one line per click is not the per-asset spam the quiet-log
-        // decision was about.
-        if (hit.Count == 0)
+        // Unconditional GD.Print, deliberately, and not behind --diag: the SUCCESS line in
+        // TryClickHud already prints unconditionally, so gating only the failures made a broken
+        // click quieter than a working one -- backwards, and it cost a round trip to discover. A
+        // click is user-initiated and rare, so one line per click is not the per-asset spam the
+        // quiet-log decision was about.
+        if (ray.Count == 0)
         {
-            if (Diagnostics.Enabled) GD.Print($"[HUD] click at {screenPos}: ray missed every collider "
+            if (say) GD.Print($"[HUD] click at {screenPos}: ray missed every collider "
                      + $"({_hudPlacements.Count} HUD attachment(s) placed)");
             return false;
         }
 
-        if (hit["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId"))
+        if (ray["collider"].As<Node>() is not { } collider || !collider.HasMeta("EntityId"))
         {
-            if (Diagnostics.Enabled) GD.Print("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
+            if (say) GD.Print("[HUD] click hit a body with no EntityId meta -- it is not one of ours");
             return false;
         }
         if (!Guid.TryParse(collider.GetMeta("EntityId").AsString(), out var entityId))
         {
-            if (Diagnostics.Enabled) GD.Print($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
+            if (say) GD.Print($"[HUD] click hit '{collider.Name}' whose EntityId meta does not parse");
             return false;
         }
 
         var entity = _world.GetEntity(entityId);
         if (entity == null)
         {
-            if (Diagnostics.Enabled) GD.Print($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
+            if (say) GD.Print($"[HUD] click hit entity {entityId:N}, which is no longer in the world");
             return false;
         }
 
         // Convert hit position and normal from Godot to SL space: SL (X, Y, Z) = Godot (X, -Z, Y)
-        var hitPosGodot = hit.TryGetValue("position", out var hp) ? hp.AsVector3() : Godot.Vector3.Zero;
-        var hitNormGodot = hit.TryGetValue("normal", out var hn) ? hn.AsVector3() : Godot.Vector3.Zero;
+        var hitPosGodot = ray.TryGetValue("position", out var hp) ? hp.AsVector3() : Godot.Vector3.Zero;
+        var hitNormGodot = ray.TryGetValue("normal", out var hn) ? hn.AsVector3() : Godot.Vector3.Zero;
         var hitPosSl = new System.Numerics.Vector3(hitPosGodot.X, -hitPosGodot.Z, hitPosGodot.Y);
         var hitNormSl = new System.Numerics.Vector3(hitNormGodot.X, -hitNormGodot.Z, hitNormGodot.Y);
 
         int hitFaceIndex = 0;
         var hitUvSl = System.Numerics.Vector3.Zero;
-        int hitTriIdx = hit.TryGetValue("face_index", out var fi) ? fi.AsInt32() : -1;
+        int hitTriIdx = ray.TryGetValue("face_index", out var fi) ? fi.AsInt32() : -1;
         if (_hudTriangles.TryGetValue(entityId, out var triMap) && hitTriIdx >= 0 && hitTriIdx < triMap.Length)
         {
             var tri = triMap[hitTriIdx];
@@ -5582,6 +5612,35 @@ public partial class AvatarRenderer : Node3D
             hitUvSl = new System.Numerics.Vector3(uv.X, uv.Y, 0f);
         }
 
+        found = new HudHit(entity, entityId, hitFaceIndex, hitPosSl, hitNormSl, hitUvSl);
+        return true;
+    }
+
+    /// <summary>The HUD prim under a screen position, if any -- how a click is told to belong to a worn
+    /// HUD before it is allowed through to the world behind it. Quiet when there is none.</summary>
+    public bool TryPickHud(Godot.Vector2 screenPos, out Entity entity)
+    {
+        if (TryHitHud(screenPos, announce: false, out var found))
+        {
+            entity = found.Entity;
+            return true;
+        }
+        entity = null!;
+        return false;
+    }
+
+    /// <summary>Sends an SL touch (GridSession.ClickObjectAsync — a grab/de-grab pair, which is what
+    /// fires touch_start/touch_end on the object's script) for the HUD prim under a screen click.
+    /// Returns true if a HUD collider was hit and processed so caller can mark input as handled.
+    /// Not in build mode: there the same click picks the prim, which is the selection controller's job.</summary>
+    private bool TryClickHud(Godot.Vector2 screenPos)
+    {
+        if (IsBuildMode?.Invoke() == true) return false;
+        if (!TryHitHud(screenPos, announce: true, out var h)) return false;
+
+        var entity = h.Entity;
+        var entityId = h.EntityId;
+
         // BUG-AVATAR-07: clicking a reference prim is the cheapest way to get a hard, world-space
         // number to compare an avatar's rendered height against — the prim is at the same Z in
         // every viewer, so "where does its lower edge sit on the head" needs no camera assumptions.
@@ -5595,16 +5654,16 @@ public partial class AvatarRenderer : Node3D
             ? $" scale=({clickedP.Scale.X:0.###}, {clickedP.Scale.Y:0.###}, {clickedP.Scale.Z:0.###})" +
               (clickedT != null ? $" -> Z bottom {clickedT.Position.Z - clickedP.Scale.Z / 2f:0.###} top {clickedT.Position.Z + clickedP.Scale.Z / 2f:0.###}" : "")
             : "";
-        if (Diagnostics.Enabled) GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={hitFaceIndex} uv=({hitUvSl.X:0.###}, {hitUvSl.Y:0.###}){where}{how}");
+        if (Diagnostics.Enabled) GD.Print($"[HUD] clicked entity {entityId:N} (LocalId {entity.LocalId}) face={h.FaceIndex} uv=({h.UvSl.X:0.###}, {h.UvSl.Y:0.###}){where}{how}");
 
-        _ = _session.ClickObjectAsync(
+        _ = _session!.ClickObjectAsync(
             entity.RegionHandle,
             entity.LocalId,
-            faceIndex: hitFaceIndex,
-            position: hitPosSl,
-            normal: hitNormSl,
-            uvCoord: hitUvSl,
-            stCoord: hitUvSl);
+            faceIndex: h.FaceIndex,
+            position: h.PositionSl,
+            normal: h.NormalSl,
+            uvCoord: h.UvSl,
+            stCoord: h.UvSl);
         return true;
     }
 
