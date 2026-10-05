@@ -41,6 +41,7 @@ public partial class FriendsPanel : Control
     private ScrollContainer _scroll = null!;
     private Control _rightsHeaderSpacer = null!;
     private int _refreshQueued;
+    private bool _dirtyWhileHidden;
     private PopupMenu _categoryMenu = null!;
     private PopupMenu _sectionMenu = null!;
     // What the open menu acts on, and the categories its items stand for (item id - 1).
@@ -120,6 +121,12 @@ public partial class FriendsPanel : Control
     {
         SizeFlagsHorizontal = SizeFlags.ExpandFill;
         SizeFlagsVertical = SizeFlags.ExpandFill;
+
+        // What arrived while the list was hidden is drawn when it is shown again (see RefreshQueued).
+        VisibilityChanged += () =>
+        {
+            if (_dirtyWhileHidden && IsVisibleInTree()) RefreshSoon();
+        };
 
         var hbox = new HBoxContainer();
         hbox.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -272,7 +279,7 @@ public partial class FriendsPanel : Control
             if (_selectedFriendId == friendId) _selectedFriendId = null;
             _session?.RemoveFriend(friendId);
             // The filing is ours, not the grid's: without this the id would sit in the file for good.
-            if (_book.Assign(friendId, null)) SaveBook();
+            if (_book.CategoryOf(friendId) != null && _book.Assign(friendId, null)) SaveBook();
         };
     }
 
@@ -307,11 +314,20 @@ public partial class FriendsPanel : Control
     private void RefreshQueued()
     {
         Interlocked.Exchange(ref _refreshQueued, 0);
+        // A rebuild creates about twenty controls per friend, and a name resolving can be for anyone (every avatar in
+        // view, every object's owner). While the list is not on screen -- another tab in front, or the window closed --
+        // it waits, and is rebuilt once when it is shown again (VisibilityChanged, connected in _Ready).
+        if (!IsVisibleInTree())
+        {
+            _dirtyWhileHidden = true;
+            return;
+        }
         Refresh();
     }
 
     private void Refresh()
     {
+        _dirtyWhileHidden = false;
         foreach (Node child in _list.GetChildren())
         {
             _list.RemoveChild(child);

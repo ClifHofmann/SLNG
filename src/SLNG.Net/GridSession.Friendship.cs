@@ -129,10 +129,19 @@ public sealed partial class GridSession
     public bool SetFriendPermissions(Guid friendId, FriendPermissions mine)
     {
         if (!_client.Network.Connected) return false;
+        return ApplyGrantedRights(friendId, mine, (id, rights) => _client.Friends.GrantRights(id, rights));
+    }
+
+    /// <summary>The part of <see cref="SetFriendPermissions"/> after the connection check, with the send handed in so a
+    /// test can see what would go out. Only the three bits the grid defines are sent (a stray higher bit in
+    /// <paramref name="mine"/> would otherwise reach the wire), and LibreMetaverse's copy of what the FRIEND may do with
+    /// us is set to the same set.</summary>
+    internal bool ApplyGrantedRights(Guid friendId, FriendPermissions mine, Action<UUID, FriendRights> send)
+    {
         if (!_client.Friends.FriendList.TryGetValue(new UUID(friendId), out var friend)) return false;
 
-        var rights = (FriendRights)(int)mine;
-        _client.Friends.GrantRights(friend.UUID, rights);
+        var rights = (FriendRights)((int)mine & (int)(FriendRights.CanSeeOnline | FriendRights.CanSeeOnMap | FriendRights.CanModifyObjects));
+        send(friend.UUID, rights);
         friend.TheirFriendRights = rights;
         FriendListChanged?.Invoke(this, EventArgs.Empty);
         return true;
@@ -146,6 +155,7 @@ public sealed partial class GridSession
         FriendListChanged?.Invoke(this, EventArgs.Empty);
 
         Guid id = e.AgentID.Guid;
+        _rightsGrantedToUs.TryRemove(id, out _); // see RemoveFriend
         if (ConsumeSelfRemoval(id)) return;
         string name = e.AgentName ?? string.Empty;
         if (string.IsNullOrEmpty(name)) TryGetCachedName(id, out name!);
@@ -177,6 +187,7 @@ public sealed partial class GridSession
         var id = new UUID(agentId);
         if (!_client.Friends.FriendList.ContainsKey(id)) return false;
         _selfRemovedFriends[agentId] = DateTime.UtcNow;
+        _rightsGrantedToUs.TryRemove(agentId, out _); // a friendship formed again later starts from its own rights
         _client.Friends.TerminateFriendship(id);
         FriendListChanged?.Invoke(this, EventArgs.Empty);
         return true;

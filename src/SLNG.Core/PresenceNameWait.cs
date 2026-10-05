@@ -21,7 +21,8 @@ public enum PresenceNameWaitDecision
 /// <para>The two names wait differently. The <b>login name</b> is needed: without it the toast has nothing to say,
 /// so it waits up to <see cref="MaxPolls"/> polls. The <b>Display Name</b> is a refinement: it is waited for only
 /// while the grid has not answered at all (an answer of "none" counts), and only for <see cref="DisplayNamePolls"/>
-/// polls -- a grid that serves no Display Names never answers, and must not hold every toast for the full time.</para>
+/// polls counted from when the login name appeared -- a grid that serves no Display Names never answers, and must not
+/// hold every toast for the full time.</para>
 /// </summary>
 public static class PresenceNameWait
 {
@@ -33,16 +34,18 @@ public static class PresenceNameWait
     /// <summary>Longest wait for a Display Name answer once the login name is known: 2 s.</summary>
     public const int DisplayNamePolls = 8;
 
-    /// <param name="haveLoginName">The friend's login name is known.</param>
-    /// <param name="wantDisplayName">The person uses Display Names (the preference).</param>
+    /// <param name="wantDisplayName">The person uses Display Names (the preference) and the grid can serve them.</param>
     /// <param name="displayNameAnswered">The grid has answered for this friend, even if only "no Display Name of their own".</param>
     /// <param name="pollsDone">How many times the toast has already waited.</param>
-    public static PresenceNameWaitDecision Decide(bool haveLoginName, bool wantDisplayName, bool displayNameAnswered, int pollsDone)
+    /// <param name="loginNameKnownAtPoll">The poll at which the login name was first known, or <c>null</c> while it is not.
+    /// The Display Name wait counts from there, not from the start: the login name can arrive after several seconds, and the
+    /// Display Name is only asked for once it has, so a wait counted from the start would already be over.</param>
+    public static PresenceNameWaitDecision Decide(bool wantDisplayName, bool displayNameAnswered, int pollsDone, int? loginNameKnownAtPoll)
     {
-        if (!haveLoginName)
+        if (loginNameKnownAtPoll is not { } knownAt)
             return pollsDone >= MaxPolls ? PresenceNameWaitDecision.ShowWithoutName : PresenceNameWaitDecision.Wait;
 
-        if (wantDisplayName && !displayNameAnswered && pollsDone < DisplayNamePolls)
+        if (wantDisplayName && !displayNameAnswered && pollsDone - knownAt < DisplayNamePolls)
             return PresenceNameWaitDecision.Wait;
 
         return PresenceNameWaitDecision.Show;

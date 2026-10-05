@@ -66,4 +66,13 @@ public class DisplayNameAnswerTests
 
         Assert.False(session.HasDisplayNameAnswer(Guid.NewGuid()));
     }
+
+    [Fact]
+    public void ANewSession_DoesNotYetKnowThatDisplayNamesAreAvailable()
+    {
+        // Not connected, no capability handshake: "false" means "not known", which is why callers allow for a grace period.
+        using var session = new GridSession();
+
+        Assert.False(session.DisplayNamesAvailable);
+    }
 }

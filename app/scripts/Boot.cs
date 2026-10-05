@@ -3638,6 +3638,7 @@ public partial class Boot : Control
         _session.UseBakeEncoder(new SLNG.Assets.J2KBakeTextureEncoder());
         _friendPresence.Reset(); // a new login starts from an empty friends list
         _pendingPresenceToasts.Clear(); // ...and a toast still waiting for a name from the last session must not appear
+        _presenceSessionStartMsec = Godot.Time.GetTicksMsec();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
         _worldSimulation.SelfAnimationStopRequested += OnSelfAnimationStopRequested;
 
@@ -4911,8 +4912,27 @@ public partial class Boot : Control
         CallDeferred(MethodName.ShowFriendPresenceToast, e.FriendId.ToString(), e.IsOnline);
     }
 
-    // Friends whose presence toast is waiting for their name, with the state to announce (the latest one wins).
-    private readonly System.Collections.Generic.Dictionary<System.Guid, bool> _pendingPresenceToasts = new();
+    /// <summary>A presence toast waiting for a name: the state to announce (the latest one wins) and the poll at which the
+    /// login name first appeared (the Display Name wait counts from there).</summary>
+    private sealed class PendingPresence
+    {
+        public bool Online;
+        public int? LoginKnownAtPoll;
+    }
+
+    private readonly System.Collections.Generic.Dictionary<System.Guid, PendingPresence> _pendingPresenceToasts = new();
+
+    /// <summary>When this login began, for <see cref="PresenceDisplayNamesPossible"/>.</summary>
+    private ulong _presenceSessionStartMsec;
+
+    /// <summary>Whether it is worth waiting for a friend's Display Name: the person wants them, and the grid serves them
+    /// -- or might yet: the capability is only known after the first region's handshake, so for the first
+    /// <c>20</c> s after login its absence says nothing. After that an OpenSim grid, which never has it, no longer
+    /// holds every toast back.</summary>
+    private bool PresenceDisplayNamesPossible() =>
+        SLNG.App.UI.NameDisplay.UseDisplayNames()
+        && _session != null
+        && (_session.DisplayNamesAvailable || Godot.Time.GetTicksMsec() - _presenceSessionStartMsec < 20_000);
 
     /// <summary>The friend's login name as far as it is known: from the friends list, else the name cache. Empty when
     /// the grid has not told us yet (asking is <c>GetFriends</c>'s job: it requests every name it lacks).</summary>
@@ -4935,23 +4955,28 @@ public partial class Boot : Control
         if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
         if (_session == null || !System.Guid.TryParse(friendIdText, out var friendId)) return;
 
-        bool alreadyWaiting = _pendingPresenceToasts.ContainsKey(friendId);
-        _pendingPresenceToasts[friendId] = online; // flips while waiting: the latest state is the one announced
-        if (!alreadyWaiting) PollPresenceName(friendId, pollsDone: 0);
+        if (_pendingPresenceToasts.TryGetValue(friendId, out var waiting))
+        {
+            waiting.Online = online; // flips while waiting: the latest state is the one announced
+            return;
+        }
+        _pendingPresenceToasts[friendId] = new PendingPresence { Online = online };
+        PollPresenceName(friendId, pollsDone: 0);
     }
 
     private void PollPresenceName(System.Guid friendId, int pollsDone)
     {
-        if (!_pendingPresenceToasts.TryGetValue(friendId, out var online)) return;
+        if (!_pendingPresenceToasts.TryGetValue(friendId, out var pending)) return;
         if (_session == null) { _pendingPresenceToasts.Remove(friendId); return; }
 
         string legacy = KnownFriendName(friendId);
         bool haveLegacy = !string.IsNullOrWhiteSpace(legacy);
+        if (haveLegacy) pending.LoginKnownAtPoll ??= pollsDone;
         // NameDisplay.For also asks the grid for the Display Name the first time, which is what makes the answer come.
         string shown = haveLegacy ? SLNG.App.UI.NameDisplay.For(_session, friendId, legacy) : string.Empty;
 
         var decision = SLNG.Core.PresenceNameWait.Decide(
-            haveLegacy, SLNG.App.UI.NameDisplay.UseDisplayNames(), _session.HasDisplayNameAnswer(friendId), pollsDone);
+            PresenceDisplayNamesPossible(), _session.HasDisplayNameAnswer(friendId), pollsDone, pending.LoginKnownAtPoll);
         if (decision == SLNG.Core.PresenceNameWaitDecision.Wait)
         {
             GetTree().CreateTimer(SLNG.Core.PresenceNameWait.PollSeconds).Timeout += () => PollPresenceName(friendId, pollsDone + 1);
@@ -4959,7 +4984,7 @@ public partial class Boot : Control
         }
 
         _pendingPresenceToasts.Remove(friendId);
-        ShowPresenceToastNow(friendId, online,
+        ShowPresenceToastNow(friendId, pending.Online,
             decision == SLNG.Core.PresenceNameWaitDecision.Show ? shown : SLNG.App.UI.L10n.Tr("ui.money.someone"));
     }
 

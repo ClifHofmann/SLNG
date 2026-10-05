@@ -426,6 +426,11 @@ public sealed partial class GridSession
     public bool HasDisplayNameAnswer(Guid id) =>
         _displayNameCache.Lookup(id, DateTime.UtcNow, out _) != DisplayNameCache.Freshness.Miss;
 
+    /// <summary>Whether the grid's Display Names capability is known to be there. False right after login, before the
+    /// region's capability handshake -- so "false" alone does not say a grid has none; a caller deciding whether to wait
+    /// for an answer should allow for that (an OpenSim grid keeps it false for good).</summary>
+    public bool DisplayNamesAvailable => _client.Avatars.DisplayNamesAvailable();
+
     private readonly SessionLineGate _sessionLineGate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Guid> _conferencePeers = new();
 

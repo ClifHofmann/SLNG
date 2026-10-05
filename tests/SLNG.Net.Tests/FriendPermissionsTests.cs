@@ -208,6 +208,96 @@ public class FriendPermissionsTests
         Assert.Equal(0, reported);
     }
 
+    // ---- the sending path of SetFriendPermissions --------------------------------------------------
+
+    [Fact]
+    public void ApplyGrantedRights_SendsTheWholeSet_AndSetsTheFriendsCopy_NotOurs()
+    {
+        using var session = new GridSession();
+        var info = AddFriend(session, Denise, friendMayDo: FriendRights.CanSeeOnline, iMayDo: FriendRights.CanSeeOnMap);
+        UUID? sentTo = null; FriendRights sent = FriendRights.None; int redraws = 0;
+        session.FriendListChanged += (_, _) => redraws++;
+
+        bool ok = session.ApplyGrantedRights(Denise.Guid, FriendPermissions.SeeOnline | FriendPermissions.ModifyObjects,
+            (id, rights) => { sentTo = id; sent = rights; });
+
+        Assert.True(ok);
+        Assert.Equal(Denise, sentTo);
+        Assert.Equal(FriendRights.CanSeeOnline | FriendRights.CanModifyObjects, sent);                // the whole set, sent to the friend
+        Assert.Equal(FriendRights.CanSeeOnline | FriendRights.CanModifyObjects, info.TheirFriendRights); // what the FRIEND may do with us
+        Assert.Equal(FriendRights.CanSeeOnMap, info.MyFriendRights);                                  // what we may do with them: untouched
+        Assert.Equal(1, redraws);
+    }
+
+    [Fact]
+    public void ApplyGrantedRights_SendsOnlyTheBitsTheGridDefines()
+    {
+        using var session = new GridSession();
+        AddFriend(session, Denise, FriendRights.None, FriendRights.None);
+        FriendRights sent = FriendRights.None;
+
+        session.ApplyGrantedRights(Denise.Guid, (FriendPermissions)0xFF, (_, rights) => sent = rights);
+
+        Assert.Equal((FriendRights)7, sent);
+    }
+
+    [Fact]
+    public void ApplyGrantedRights_ForSomeoneWhoIsNotAFriend_SendsNothing()
+    {
+        using var session = new GridSession();
+        bool called = false;
+
+        bool ok = session.ApplyGrantedRights(Guid.NewGuid(), FriendPermissions.SeeOnline, (_, _) => called = true);
+
+        Assert.False(ok);
+        Assert.False(called);
+    }
+
+    [Fact]
+    public void ApplyGrantedRights_CanTakeEverythingBack()
+    {
+        using var session = new GridSession();
+        var info = AddFriend(session, Denise, FriendRights.CanSeeOnline | FriendRights.CanModifyObjects, FriendRights.None);
+        FriendRights sent = FriendRights.CanSeeOnMap;
+
+        session.ApplyGrantedRights(Denise.Guid, FriendPermissions.None, (_, rights) => sent = rights);
+
+        Assert.Equal(FriendRights.None, sent);
+        Assert.Equal(FriendRights.None, info.TheirFriendRights);
+    }
+
+    // ---- a friendship that ends forgets what was granted in it ---------------------------------------
+
+    private static void RemoveFromLibrary(GridSession session, UUID id) =>
+        ((ConcurrentDictionary<UUID, FriendInfo>)typeof(FriendsManager)
+            .GetField("m_FriendList", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(ClientOf(session).Friends)!).TryRemove(id, out _);
+
+    [Fact]
+    public void AFriendshipThatEnded_DoesNotLeaveABaselineForTheNextOne()
+    {
+        using var session = new GridSession();
+        var first = AddFriend(session, Denise, FriendRights.None, FriendRights.CanSeeOnMap);
+        session.GetFriends(); // baseline: she lets us see her on the map
+
+        // She removes us, and later they are friends again with nothing granted yet.
+        typeof(GridSession).GetMethod("OnFriendshipTerminated", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(session, new object?[] { null, new FriendshipTerminatedEventArgs(Denise, "Denise Resident") });
+        RemoveFromLibrary(session, Denise);
+        var second = AddFriend(session, Denise, FriendRights.None, FriendRights.None);
+        session.GetFriends();
+
+        FriendRightsChangedEvent? changed = null;
+        session.FriendRightsChanged += (_, e) => changed = e;
+        second.MyFriendRights = FriendRights.CanSeeOnline; // her first grant in the new friendship
+        RightsUpdate(session, second);
+
+        // Compared with the NEW baseline (nothing), so it is reported as what it is, not as a change from the old map right.
+        Assert.NotNull(changed);
+        Assert.Equal(FriendPermissions.None, changed!.Before);
+        Assert.Equal(FriendPermissions.SeeOnline, changed.After);
+        Assert.Equal(FriendPermissions.SeeOnMap, (FriendPermissions)(int)first.MyFriendRights);
+    }
+
     [Fact]
     public void AFriendChangingTheirRights_TellsTheListToRedraw()
     {
