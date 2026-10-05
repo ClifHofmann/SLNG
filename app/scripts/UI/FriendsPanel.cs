@@ -29,6 +29,8 @@ public partial class FriendsPanel : Control
     private Label _countLabel = null!;
     private FriendCategoryBook _book = new();
     private string _agentId = "";
+    private CheckBox _onlyOnlineCheck = null!;
+    private bool _onlyOnline;
     private PopupMenu _categoryMenu = null!;
     private PopupMenu _sectionMenu = null!;
     // What the open menu acts on, and the categories its items stand for (item id - 1).
@@ -107,6 +109,21 @@ public partial class FriendsPanel : Control
         newCategoryButton.Pressed += () => PromptNewCategory(null);
         filterRow.AddChild(newCategoryButton);
 
+        _onlyOnlineCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.friend_view.only_online"),
+            TooltipText = L10n.Tr("ui.friend_view.only_online_tooltip"),
+            FocusMode = FocusModeEnum.None,
+        };
+        _onlyOnlineCheck.AddThemeFontSizeOverride("font_size", ChatWindow.LabelFontSize);
+        _onlyOnlineCheck.Toggled += on =>
+        {
+            _onlyOnline = on;
+            if (_agentId.Length > 0) FriendCategoryStore.SaveOnlyOnline(_agentId, on);
+            Refresh();
+        };
+        leftVBox.AddChild(_onlyOnlineCheck);
+
         _emptyLabel = new Label
         {
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -156,6 +173,8 @@ public partial class FriendsPanel : Control
         _session = session;
         _agentId = session.AgentId;
         _book = FriendCategoryStore.Load(_agentId);
+        _onlyOnline = FriendCategoryStore.LoadOnlyOnline(_agentId);
+        _onlyOnlineCheck.SetPressedNoSignal(_onlyOnline);
         _session.FriendStatusChanged += OnFriendStatusChanged;
         _session.FriendListChanged += OnFriendListChanged;
         _session.NameResolved += OnNameResolved;
@@ -221,6 +240,7 @@ public partial class FriendsPanel : Control
             ? friends
             : friends.Where(f => DisplayName(f).Contains(filterText, StringComparison.OrdinalIgnoreCase)
                           || f.Name.Contains(filterText, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (_onlyOnline) visible = visible.Where(f => f.IsOnline).ToList();
 
         if (friends.Count == 0)
         {
@@ -229,7 +249,9 @@ public partial class FriendsPanel : Control
         }
         else if (visible.Count == 0)
         {
-            _emptyLabel.Text = "No friends match your filter.";
+            _emptyLabel.Text = _onlyOnline && string.IsNullOrEmpty(filterText)
+                ? L10n.Tr("ui.friend_view.none_online")
+                : "No friends match your filter.";
             _emptyLabel.Visible = true;
         }
         else
@@ -243,10 +265,11 @@ public partial class FriendsPanel : Control
             .ThenBy(DisplayName, StringComparer.OrdinalIgnoreCase);
 
         // FEAT-UI-65: with a filter typed, show only the blocks that have a hit and show them open -- a match in
-        // a folded block would otherwise look like no match at all. No category yet = no headers, a flat list.
+        // a folded block would otherwise look like no match at all. "Only online" hides the blocks nobody in is
+        // online, but leaves the fold state alone: it is not a search. No category yet = no headers, a flat list.
         bool filtering = !string.IsNullOrEmpty(filterText);
         bool categorised = _book.Categories.Count > 0;
-        foreach (var section in _book.Group(sorted, hideEmpty: filtering, ignoreCollapsed: filtering))
+        foreach (var section in _book.Group(sorted, hideEmpty: filtering || _onlyOnline, ignoreCollapsed: filtering))
         {
             if (categorised) _list.AddChild(BuildSectionHeader(section, filtering));
             if (section.Collapsed) continue;

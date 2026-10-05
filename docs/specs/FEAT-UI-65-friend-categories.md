@@ -1,4 +1,4 @@
-# [FEAT-UI-65] Friends list: your own categories, which can be folded up
+# [FEAT-UI-65] Friends list: your own categories, which can be folded up; show only online
 
 - **Feature ID:** `FEAT-UI-65`
 - **Track:** `ui` / `core`
@@ -26,6 +26,11 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
 - **Filter.** With text in the filter only categories with a match are shown, and all of them open -- a hit inside a
   folded category would otherwise look like no hit. The saved fold state is left alone and a header click does nothing
   meanwhile.
+- **Show only online.** A checkbox under the filter hides offline friends (asked 2026-10-05, v0.26.67-alpha). Categories
+  with nobody online are hidden too, like in a filter, but unlike a filter it leaves the fold state alone: it narrows the
+  list, it does not search it. It combines with the text filter. With nobody online the list says so instead of
+  "no match". Saved per account, off by default (`FriendCategoryStore.LoadOnlyOnline`). The `(online/total)` count in a
+  header then counts the shown friends only.
 - **Within a category** the order is the list's own: online first, then A-Z by shown name.
 - **Removing a friend** drops their filing.
 
@@ -34,6 +39,7 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
 - [x] Move a friend into a category, between categories, and out again
 - [x] Header click folds and opens; fold state survives a restart
 - [x] Categories and filing survive a restart, per account
+- [x] Show only online: hides offline friends and empty categories, survives a restart
 - [x] Unit tests for the model and its JSON (28 cases, `FriendCategoryBookTests`)
 - [ ] Seen working in the client (needs an in-world look; the selftest was not run where this was written)
 
@@ -43,9 +49,9 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
 - `tests/SLNG.Core.Tests/FriendCategoryBookTests.cs`
 - `app/scripts/UI/FriendCategoryStore.cs` -- `user://preferences.cfg`, section `friend_categories_<agentId>`, one JSON
   string. Per account because friends and the way to sort them differ between accounts. `Persist` switch for a selftest.
-- `app/scripts/UI/FriendsPanel.cs` -- headers, menus, prompts (`TextPromptWindow`, `ConfirmWindow`).
-- `app/i18n/en-US.json`, `de-DE.json` -- `ui.friend_category.*`.
-- `app/scripts/Boot.cs` -- `AppVersion` v0.26.66-alpha.
+- `app/scripts/UI/FriendsPanel.cs` -- headers, menus, prompts, the only-online checkbox (`TextPromptWindow`, `ConfirmWindow`).
+- `app/i18n/en-US.json`, `de-DE.json` -- `ui.friend_category.*`, `ui.friend_view.*`.
+- `app/scripts/Boot.cs` -- `AppVersion` v0.26.67-alpha.
 
 ## Not done
 - Reordering categories (they stay in the order they were made).

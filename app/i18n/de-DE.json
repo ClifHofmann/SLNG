@@ -304,6 +304,11 @@
       "delete_prompt": "Kategorie „{0}“ löschen? Die Freunde darin bleiben in deiner Liste, sie haben dann nur keine Kategorie mehr.",
       "delete_ok": "Kategorie löschen"
     },
+    "friend_view": {
+      "only_online": "Nur Online anzeigen",
+      "only_online_tooltip": "Blendet Freunde aus, die offline sind. Kategorien, in denen niemand online ist, verschwinden auch.",
+      "none_online": "Gerade ist keiner deiner Freunde online."
+    },
     "friendship_offer": {
       "title": "FREUNDSCHAFTSANGEBOT",
       "from": "{0} bietet dir die Freundschaft an.",

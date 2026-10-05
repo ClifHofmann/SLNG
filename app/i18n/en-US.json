@@ -304,6 +304,11 @@
       "delete_prompt": "Delete the category “{0}”? Your friends in it stay on your list, they just have no category any more.",
       "delete_ok": "Delete category"
     },
+    "friend_view": {
+      "only_online": "Show only online",
+      "only_online_tooltip": "Hide friends who are offline. Categories with nobody online are hidden too.",
+      "none_online": "None of your friends are online."
+    },
     "friendship_offer": {
       "title": "FRIENDSHIP OFFER",
       "from": "{0} is offering friendship.",
