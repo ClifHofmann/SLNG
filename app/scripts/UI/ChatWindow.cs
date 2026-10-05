@@ -38,9 +38,18 @@ public partial class ChatWindow : SLNGWindow
     {
         public PanelContainer Pill = null!;
         public Label Icon = null!;
-        public Button Label = null!;
+        public Label Label = null!;
+        /// <summary>The red count after the name -- used by the Chat tab, hidden on the others.</summary>
+        public Label Badge = null!;
         public Control Page = null!;
+        public bool Selected;
+        public bool Hover;
+        /// <summary>Something new is waiting behind this tab: it is drawn warm, in front of the grey of the others.</summary>
+        public bool HasUnread;
     }
+
+    /// <summary>The total last put on the Chat tab's badge, so the per-frame check only touches the controls when it changes.</summary>
+    private int _chatTabBadgeTotal = -1;
 
     private readonly List<OuterTab> _outerTabs = new();
     private HBoxContainer _outerTabStrip = null!;
@@ -364,6 +373,7 @@ public partial class ChatWindow : SLNGWindow
     {
         using var _phase = MainThreadPhase.Enter("ui.chat"); // BUG-PERF-05
         ExpirePeerTyping();
+        UpdateChatTabBadge();
 
         // Detect the user scrolling away from (or back to) the bottom of the live log so we can
         // pause auto-follow while they're reading history, per the M5-3 UX decision -- there's no
@@ -1643,6 +1653,14 @@ public partial class ChatWindow : SLNGWindow
             return;
         }
 
+        // The selected conversation is read as it arrives -- unless the window is open on another page (Friends...),
+        // where nobody sees it. Then it counts, and the Chat tab says so.
+        if (countUnread && ChatPageHiddenBehindAnotherPage)
+        {
+            tab.UnreadCount++;
+            UpdateUnreadBadge(tab);
+        }
+
         if (overflowed)
             RebuildLogContent(tab); // full rebuild -- capped at MaxLogLines, cheap, and rare
         else
@@ -1714,10 +1732,13 @@ public partial class ChatWindow : SLNGWindow
         page.SetAnchorsPreset(LayoutPreset.FullRect);
         _outerPageHost.AddChild(page);
 
-        var pill = new PanelContainer();
+        // The whole pill is the button: icon, name, badge and the padding around them. It used to be only the name
+        // (a flat Button inside the pill), so a click on the icon or the edge of the tab did nothing and the tabs
+        // were hard to hit.
+        var pill = new PanelContainer { MouseDefaultCursorShape = CursorShape.PointingHand };
         _outerTabStrip.AddChild(pill);
 
-        var inner = new HBoxContainer();
+        var inner = new HBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
         inner.AddThemeConstantOverride("separation", 6);
         pill.AddChild(inner);
 
@@ -1726,30 +1747,65 @@ public partial class ChatWindow : SLNGWindow
         icon.AddThemeFontSizeOverride("font_size", 15);
         inner.AddChild(icon);
 
-        var label = new Button
+        var label = new Label
         {
             Text = tabName,
-            Flat = true,
-            FocusMode = FocusModeEnum.None,
+            VerticalAlignment = VerticalAlignment.Center,
             CustomMinimumSize = new Vector2(0, 24),
         };
         label.AddThemeFontSizeOverride("font_size", LabelFontSize);
         inner.AddChild(label);
 
-        var tab = new OuterTab { Pill = pill, Icon = icon, Label = label, Page = page };
-        _outerTabs.Add(tab);
-        label.Pressed += () => SelectOuterTab(page);
+        var badge = new Label { Visible = false, VerticalAlignment = VerticalAlignment.Center };
+        badge.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
+        badge.AddThemeFontSizeOverride("font_size", MetaFontSize + 1);
+        inner.AddChild(badge);
 
-        ApplyOuterTabStyle(tab, selected: isFirst);
+        var tab = new OuterTab { Pill = pill, Icon = icon, Label = label, Badge = badge, Page = page, Selected = isFirst };
+        _outerTabs.Add(tab);
+        pill.GuiInput += @event =>
+        {
+            if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true }) SelectOuterTab(page);
+        };
+        pill.MouseEntered += () => { tab.Hover = true; ApplyOuterTabStyle(tab); };
+        pill.MouseExited += () => { tab.Hover = false; ApplyOuterTabStyle(tab); };
+
+        ApplyOuterTabStyle(tab);
     }
+
+    /// <summary>Keeps the Chat tab's badge at the number of unread messages across every conversation -- what the
+    /// toolbar's chat button shows -- so a message that arrives while the Friends page is open is not invisible.
+    /// Polled each frame (cheap: a few tabs, and the controls are only touched when the number changes), because the
+    /// count changes in many places: a line, a tab selected, a tab closed.</summary>
+    private void UpdateChatTabBadge()
+    {
+        int total = TotalUnread;
+        if (total == _chatTabBadgeTotal) return;
+        _chatTabBadgeTotal = total;
+
+        var tab = _outerTabs.Find(t => t.Page == _chatPageControl);
+        if (tab == null) return;
+        tab.HasUnread = total > 0;
+        tab.Badge.Visible = total > 0;
+        tab.Badge.Text = total > UnreadCap ? "9+" : total.ToString();
+        ApplyOuterTabStyle(tab);
+    }
+
+    /// <summary>True while the window is open and showing some other page (Friends, Groups, Recent) than the Chat
+    /// page -- the one case where the conversation selected on the Chat page is not being looked at although it is
+    /// the selected one.</summary>
+    private bool ChatPageHiddenBehindAnotherPage => Visible && !IsMinimized && !_chatPageControl.Visible;
 
     // Rounded "pill" tabs -- the classic top tab bar look, distinct from the conversation list's
     // rounded-left rows so the two axes read as visually different kinds of navigation.
-    private static void ApplyOuterTabStyle(OuterTab tab, bool selected)
+    private static void ApplyOuterTabStyle(OuterTab tab)
     {
+        bool selected = tab.Selected;
         var style = new StyleBoxFlat
         {
-            BgColor = selected ? new Color(1, 1, 1, 0.10f) : new Color(0, 0, 0, 0),
+            BgColor = selected ? new Color(1, 1, 1, 0.10f)
+                : tab.Hover ? new Color(1, 1, 1, 0.06f)
+                : new Color(0, 0, 0, 0),
             CornerRadiusTopLeft = 8,
             CornerRadiusTopRight = 8,
             CornerRadiusBottomLeft = 8,
@@ -1761,10 +1817,13 @@ public partial class ChatWindow : SLNGWindow
         };
         tab.Pill.AddThemeStyleboxOverride("panel", style);
 
-        var fg = selected ? new Color(1, 1, 1) : new Color(0.72f, 0.72f, 0.72f);
+        // Something waiting behind a tab you are not on: warm instead of grey, next to the badge's count.
+        var fg = selected ? new Color(1, 1, 1)
+            : tab.HasUnread ? new Color(1f, 0.78f, 0.55f)
+            : tab.Hover ? new Color(1, 1, 1)
+            : new Color(0.72f, 0.72f, 0.72f);
         tab.Icon.AddThemeColorOverride("font_color", fg);
         tab.Label.AddThemeColorOverride("font_color", fg);
-        tab.Label.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
     }
 
     private void SelectOuterTab(Control selectedPage)
@@ -1773,7 +1832,14 @@ public partial class ChatWindow : SLNGWindow
         {
             bool selected = tab.Page == selectedPage;
             tab.Page.Visible = selected;
-            ApplyOuterTabStyle(tab, selected);
+            tab.Selected = selected;
+            ApplyOuterTabStyle(tab);
+        }
+        // Back on the Chat page: what came in for the selected conversation meanwhile is on screen now.
+        if (selectedPage == _chatPageControl && _activeChatTab is { UnreadCount: > 0 } active)
+        {
+            active.UnreadCount = 0;
+            UpdateUnreadBadge(active);
         }
         if (selectedPage == _recentPanel) RefreshRecentPanel(); // previews are read when the page is shown
         if (selectedPage == _friendsPanel) _friendsPanel.RefreshIcons(); // pictures that arrived while it was hidden
