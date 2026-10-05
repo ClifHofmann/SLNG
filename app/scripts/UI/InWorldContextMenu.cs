@@ -236,7 +236,8 @@ namespace SLNG.App.UI
             // FEAT-UI-23: a worn item takes Detach in place of Sit and Delete. You cannot sit on
             // something you are wearing, and Delete on a worn item is not what the reference
             // viewer offers there either -- it offers Detach.
-            bool isWorn = entity.GetComponent<AttachmentComponent>() != null;
+            var attachment = entity.GetComponent<AttachmentComponent>();
+            bool isWorn = attachment != null;
             _detachButton.Visible = isWorn;
             _sitButton.Visible = !isWorn;
             _deleteButton.Visible = !isWorn;
@@ -246,7 +247,8 @@ namespace SLNG.App.UI
             _objectButtons.Visible = true;
             _avatarButtons.Visible = false;
             _groundOnlyButtons.Visible = false;
-            _createRoot.Visible = true;
+            // A HUD is on the screen, not in the region: there is no surface point to rez onto.
+            _createRoot.Visible = attachment == null || !AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint);
             _createShapes.Visible = false;
             _createHeader.Text = CreateHeaderCollapsed;
             Position = position;
