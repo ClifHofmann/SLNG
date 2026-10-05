@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.62-alpha";
+    public const string AppVersion = "v0.26.64-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3700,6 +3700,7 @@ public partial class Boot : Control
         _session.GroupsUpdated += OnGroupsUpdatedForInfo;
         _session.ActiveGroupChanged += OnActiveGroupChangedForInfo;
         _session.GroupInvitationReceived += OnGroupInvitationReceived;
+        _session.GroupNoticeReceived += OnGroupNoticeReceived;
         // BUG-INV-04: inventory offers. Same network-thread buffering as the invitations above.
         _session.InventoryOfferReceived += OnInventoryOfferReceived;
         // BUG-NET-27: teleport offers and requests. Same buffering; never answered without a click.
@@ -4218,6 +4219,22 @@ public partial class Boot : Control
     /// record and so not Variant-safe for CallDeferred — same reason the profile events ride a
     /// queue rather than a deferred call.</summary>
     private readonly System.Collections.Concurrent.ConcurrentQueue<SLNG.Core.GroupInvitationEvent> _pendingGroupInvites = new();
+
+    private void OnGroupNoticeReceived(object? sender, SLNG.Core.GroupNoticeEvent e)
+    {
+        // Network thread: hop to the main thread, then record it (BUG-UI-25).
+        CallDeferred(nameof(AddGroupNotice), e.GroupId.ToString(), e.FromName, e.Subject, e.Body);
+    }
+
+    private void AddGroupNotice(string groupId, string fromName, string subject, string body)
+    {
+        var id = System.Guid.TryParse(groupId, out var g) ? g : System.Guid.Empty;
+        string group = _session != null && _session.TryGetGroupName(id, out var known) ? known : "";
+        if (string.IsNullOrWhiteSpace(group)) { group = SLNG.App.UI.L10n.Tr("ui.notifications.group_unknown"); _session?.RequestGroupName(id); }
+        _notifications.Add(SLNG.Core.NotificationKind.Group, id,
+            SLNG.App.UI.L10n.TrFormat("ui.notifications.group_notice", group, string.IsNullOrWhiteSpace(subject) ? fromName : subject),
+            detail: body, senderName: group, senderIsGroup: true);
+    }
 
     private void OnGroupInvitationReceived(object? sender, SLNG.Core.GroupInvitationEvent e)
     {

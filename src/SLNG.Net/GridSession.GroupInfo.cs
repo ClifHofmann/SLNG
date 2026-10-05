@@ -34,6 +34,8 @@ public sealed partial class GridSession
 
     private void OnGroupProfile(object? sender, GroupProfileEventArgs e)
     {
+        // A profile names its group too (BUG-UI-23): a free source for a chat tab still titled with the id.
+        RememberGroupName(e.Group.ID.Guid, e.Group.Name ?? string.Empty);
         GroupProfileReceived?.Invoke(this, new GroupProfileEvent(GroupProfileMapper.ToProfile(e.Group)));
     }
 
