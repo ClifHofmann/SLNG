@@ -10,4 +10,10 @@ namespace SLNG.Core;
 /// <c>GridSession.RequestAvatarName</c>/<c>NameResolved</c> the same way other UUID-keyed names
 /// in this codebase resolve.</param>
 /// <param name="IsOnline">Current online/offline presence.</param>
-public record FriendEntry(Guid Id, string Name, bool IsOnline);
+/// <param name="GrantedByMe">What I have allowed this friend to do with me (see my online status, find me on the map,
+/// edit my objects).</param>
+/// <param name="GrantedToMe">What this friend has allowed me to do with them. Read-only: only they can change it.</param>
+public record FriendEntry(
+    Guid Id, string Name, bool IsOnline,
+    FriendPermissions GrantedByMe = FriendPermissions.None,
+    FriendPermissions GrantedToMe = FriendPermissions.None);

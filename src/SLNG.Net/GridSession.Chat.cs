@@ -552,7 +552,15 @@ public sealed partial class GridSession
                 name = "";
                 RequestAvatarName(id);
             }
-            result.Add(new FriendEntry(id, name, friend.IsOnline));
+            // LibreMetaverse names the rights by who HOLDS them: TheirFriendRights is what the friend may do with
+            // us (what we granted), MyFriendRights what we may do with them (what they granted). Checked against
+            // FriendInfo.CanSeeMeOnline ("the friend can see if I am online") and the way its ChangeUserRights
+            // handler fills them.
+            var grantedToMe = (FriendPermissions)(int)friend.MyFriendRights;
+            _rightsGrantedToUs.TryAdd(id, grantedToMe); // a friend added since login: the first sight is the baseline
+            result.Add(new FriendEntry(id, name, friend.IsOnline,
+                GrantedByMe: (FriendPermissions)(int)friend.TheirFriendRights,
+                GrantedToMe: grantedToMe));
         }
         return result;
     }

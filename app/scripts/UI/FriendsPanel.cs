@@ -2,6 +2,8 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using System.Threading;
 using SLNG.Core;
 using SLNG.Net;
 
@@ -19,6 +21,10 @@ namespace SLNG.App.UI;
 /// <para>FEAT-UI-65: the person can file friends into categories of their own and fold them up. The list is
 /// flat until the first category exists. The filing lives in <see cref="FriendCategoryBook"/>, saved per account
 /// by <see cref="FriendCategoryStore"/>.</para>
+/// <para>FEAT-UI-35: five columns of rights, as in the reference viewer's list -- three the person grants (they may
+/// see me online, find me on the map, edit my objects; clickable) and two the friend has granted (I may find them
+/// on the map, edit their objects; read-only, only they can change them) -- and the login name stands behind the
+/// Display Name instead of under it.</para>
 /// </summary>
 public partial class FriendsPanel : Control
 {
@@ -31,6 +37,9 @@ public partial class FriendsPanel : Control
     private string _agentId = "";
     private CheckBox _onlyOnlineCheck = null!;
     private bool _onlyOnline;
+    private ScrollContainer _scroll = null!;
+    private Control _rightsHeaderSpacer = null!;
+    private int _refreshQueued;
     private PopupMenu _categoryMenu = null!;
     private PopupMenu _sectionMenu = null!;
     // What the open menu acts on, and the categories its items stand for (item id - 1).
@@ -51,7 +60,7 @@ public partial class FriendsPanel : Control
     public Func<Guid, Texture2D?>? IconFor;
 
     /// <summary>Redraws the rows, e.g. because a profile picture arrived.</summary>
-    internal void RefreshIcons() => Refresh();
+    internal void RefreshIcons() => RefreshSoon();
 
     /// <summary>FEAT-UI-13: wired (through ChatWindow) to Boot's profile-window opener -- fired by
     /// the "Profile" action button.</summary>
@@ -76,6 +85,25 @@ public partial class FriendsPanel : Control
     /// <summary>What a drag of a category header carries, in front of the name: a drag from somewhere else (an
     /// inventory item, a conversation) must never be taken for one.</summary>
     private const string CategoryDragPrefix = "slng-friend-category:";
+
+    /// <summary>Width of one rights column, and the gap between the person's own grants and the friend's.</summary>
+    private const int RightsCellWidth = 32;
+    private const int RightsGroupGap = 6;
+
+    /// <summary>The rights columns, in order. <c>ByMe</c> columns are what the person grants (clickable); the others
+    /// are what the friend granted (read-only). The first <see cref="RightsByMeColumns"/> are the person's own.</summary>
+    private readonly record struct RightsColumn(FriendPermissions Permission, bool ByMe, string LabelKey, string TipKey);
+
+    private static readonly RightsColumn[] RightsColumns =
+    {
+        new(FriendPermissions.SeeOnline, true, "ui.friend_rights.online", "ui.friend_rights.tip_my_online"),
+        new(FriendPermissions.SeeOnMap, true, "ui.friend_rights.map", "ui.friend_rights.tip_my_map"),
+        new(FriendPermissions.ModifyObjects, true, "ui.friend_rights.edit", "ui.friend_rights.tip_my_objects"),
+        new(FriendPermissions.SeeOnMap, false, "ui.friend_rights.map", "ui.friend_rights.tip_their_map"),
+        new(FriendPermissions.ModifyObjects, false, "ui.friend_rights.edit", "ui.friend_rights.tip_their_objects"),
+    };
+
+    private const int RightsByMeColumns = 3;
 
     public override void _Ready()
     {
@@ -140,16 +168,22 @@ public partial class FriendsPanel : Control
         _emptyLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
         leftVBox.AddChild(_emptyLabel);
 
-        var scroll = new ScrollContainer
+        leftVBox.AddChild(BuildRightsHeader());
+
+        _scroll = new ScrollContainer
         {
             HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
-        leftVBox.AddChild(scroll);
+        leftVBox.AddChild(_scroll);
+        // The header sits outside the scroll area so it stays put; the rows lose the width of the scrollbar when it
+        // shows, so the header gives up the same width and the columns stay under their labels.
+        _scroll.GetVScrollBar().VisibilityChanged += UpdateRightsHeaderSpacer;
+        UpdateRightsHeaderSpacer();
 
         _list = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _list.AddThemeConstantOverride("separation", 2);
-        scroll.AddChild(_list);
+        _scroll.AddChild(_list);
 
         hbox.AddChild(BuildActionPanel());
 
@@ -224,14 +258,28 @@ public partial class FriendsPanel : Control
         return win;
     }
 
-    private void OnFriendStatusChanged(object? sender, FriendStatusEvent e) => CallDeferred(nameof(Refresh));
+    private void OnFriendStatusChanged(object? sender, FriendStatusEvent e) => RefreshSoon();
 
     // BUG-NET-28: a friendship accepted (by us or by them) adds a row no presence event announces.
-    private void OnFriendListChanged(object? sender, EventArgs e) => CallDeferred(nameof(Refresh));
+    private void OnFriendListChanged(object? sender, EventArgs e) => RefreshSoon();
 
     // A name resolving could be for anything (object owner, group, ...) -- Refresh() is a cheap
     // full rebuild from GetFriends(), so there's no need to filter to friend ids here.
-    private void OnNameResolved(object? sender, NameResolvedEvent e) => CallDeferred(nameof(Refresh));
+    private void OnNameResolved(object? sender, NameResolvedEvent e) => RefreshSoon();
+
+    // Many events arrive in a burst (a name per friend at login, a picture per friend), and a rebuild now creates a
+    // handful of controls per friend, so they are folded into one rebuild at the end of the frame. Safe to call from
+    // a network thread: only the flag and CallDeferred are touched.
+    private void RefreshSoon()
+    {
+        if (Interlocked.Exchange(ref _refreshQueued, 1) == 0) CallDeferred(nameof(RefreshQueued));
+    }
+
+    private void RefreshQueued()
+    {
+        Interlocked.Exchange(ref _refreshQueued, 0);
+        Refresh();
+    }
 
     private void Refresh()
     {
@@ -439,7 +487,7 @@ public partial class FriendsPanel : Control
         if (index < 0 || !_book.Move(category, index)) return;
         SaveBook();
         // Deferred: this runs inside a drop on a header that the rebuild frees, and a drag's source is one too.
-        CallDeferred(nameof(Refresh));
+        RefreshSoon();
     }
 
     /// <summary>Asks for a name and creates the category; with <paramref name="assignTo"/> the friend goes into it
@@ -539,21 +587,26 @@ public partial class FriendsPanel : Control
             MouseFilter = MouseFilterEnum.Ignore,
         });
 
-        var nameBtn = new Button
-        {
-            Text = DisplayName(friend),
-            Flat = true,
-            ClipText = true,
-            FocusMode = FocusModeEnum.None,
-            Alignment = HorizontalAlignment.Left,
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-        };
-        nameBtn.AddThemeFontSizeOverride("font_size", ChatWindow.BodyFontSize);
-        nameBtn.AddThemeColorOverride("font_color",
-            friend.IsOnline ? new Color(0.92f, 0.92f, 0.92f) : new Color(0.62f, 0.62f, 0.62f));
         var friendId = friend.Id;
         var friendName = DisplayName(friend);
         var legacyName = friend.Name;
+        bool differs = !string.IsNullOrEmpty(legacyName)
+                       && !string.Equals(friendName, legacyName, StringComparison.OrdinalIgnoreCase);
+
+        // The button is the click target -- select, double-click for the IM, right-click for the category menu --
+        // and the text is drawn by a label inside it: the Display Name and, behind it, the login name muted are two
+        // colours on one line, which a Button's own text cannot be. BUG-UI-20 put the login name under the Display
+        // Name; it now stands behind it (unless the "show usernames" preference is off), and is always in the tooltip.
+        var nameBtn = new Button
+        {
+            Flat = true,
+            ClipContents = true,
+            FocusMode = FocusModeEnum.None,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 22),
+            TooltipText = differs ? legacyName : "",
+        };
+        nameBtn.AddChild(BuildNameText(friend.IsOnline, friendName, differs && NameDisplay.ShowUsernames() ? legacyName : null));
         nameBtn.Pressed += () => SelectFriend(friendId, friendName, legacyName);
         // Double-clicking a friend opens their IM directly (per the M5-3 spec), rather than
         // requiring a select-then-click-"IM / Call" round trip. Right-click files them into a category.
@@ -567,25 +620,8 @@ public partial class FriendsPanel : Control
                 ShowCategoryMenu(friendId);
             }
         };
-
-        // BUG-UI-20: with a Display Name on show, the login name stays visible the way the nametag does it
-        // -- muted, in brackets, under it -- unless the "show usernames" preference is off; it is always
-        // in the tooltip.
-        var textCol = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        textCol.AddThemeConstantOverride("separation", 0);
-        inner.AddChild(textCol);
-        textCol.AddChild(nameBtn);
-        if (!string.IsNullOrEmpty(legacyName) && !string.Equals(friendName, legacyName, StringComparison.OrdinalIgnoreCase))
-        {
-            nameBtn.TooltipText = legacyName;
-            if (NameDisplay.ShowUsernames())
-            {
-                var legacyLabel = new Label { Text = $"({legacyName})", ClipText = true };
-                legacyLabel.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
-                legacyLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.55f, 0.55f));
-                textCol.AddChild(legacyLabel);
-            }
-        }
+        inner.AddChild(nameBtn);
+        inner.AddChild(BuildRightsCells(friend));
 
         var style = new StyleBoxFlat
         {
@@ -602,6 +638,163 @@ public partial class FriendsPanel : Control
         row.AddThemeStyleboxOverride("panel", style);
 
         return row;
+    }
+
+    private static RichTextLabel BuildNameText(bool online, string name, string? legacyName)
+    {
+        var label = new RichTextLabel
+        {
+            BbcodeEnabled = true,
+            ScrollActive = false,
+            FitContent = false,
+            AutowrapMode = TextServer.AutowrapMode.Off,
+            ClipContents = true,
+            MouseFilter = MouseFilterEnum.Ignore, // the button under it takes every click
+            Text = BbEscape(name) + (legacyName == null ? "" : $"  [color=#8c8c8c][font_size={ChatWindow.BodyFontSize - 2}]({BbEscape(legacyName)})[/font_size][/color]"),
+        };
+        label.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        label.OffsetLeft = 6;
+        label.OffsetTop = 2;
+        label.AddThemeFontSizeOverride("normal_font_size", ChatWindow.BodyFontSize);
+        label.AddThemeColorOverride("default_color",
+            online ? new Color(0.92f, 0.92f, 0.92f) : new Color(0.62f, 0.62f, 0.62f));
+        return label;
+    }
+
+    /// <summary>A name can hold anything a person typed, brackets included; unescaped, "[b]" would be read as markup.</summary>
+    private static string BbEscape(string text)
+    {
+        var sb = new StringBuilder(text.Length + 8);
+        foreach (char c in text)
+        {
+            if (c == '[') sb.Append("[lb]");
+            else if (c == ']') sb.Append("[rb]");
+            else sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>The labels above the rights columns: which side the group is about, and which right it is. Each has
+    /// the full explanation as its tooltip. The columns line up with <see cref="BuildRightsCells"/> -- same widths,
+    /// same gap -- and the filler on the left takes whatever the name column does not.</summary>
+    private Control BuildRightsHeader()
+    {
+        var outer = new HBoxContainer();
+        outer.AddThemeConstantOverride("separation", 0);
+        outer.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+        outer.AddChild(new Control { CustomMinimumSize = new Vector2(8, 0) }); // the row's gap before its cells
+
+        var columns = new VBoxContainer();
+        columns.AddThemeConstantOverride("separation", 0);
+        outer.AddChild(columns);
+
+        var groups = new HBoxContainer();
+        groups.AddThemeConstantOverride("separation", 0);
+        groups.AddChild(HeaderLabel(L10n.Tr("ui.friend_rights.group_friend"), RightsCellWidth * RightsByMeColumns, null));
+        groups.AddChild(new Control { CustomMinimumSize = new Vector2(RightsGroupGap, 0) });
+        groups.AddChild(HeaderLabel(L10n.Tr("ui.friend_rights.group_me"),
+            RightsCellWidth * (RightsColumns.Length - RightsByMeColumns), null));
+        columns.AddChild(groups);
+
+        var labels = new HBoxContainer();
+        labels.AddThemeConstantOverride("separation", 0);
+        for (int i = 0; i < RightsColumns.Length; i++)
+        {
+            if (i == RightsByMeColumns) labels.AddChild(new Control { CustomMinimumSize = new Vector2(RightsGroupGap, 0) });
+            labels.AddChild(HeaderLabel(L10n.Tr(RightsColumns[i].LabelKey), RightsCellWidth, L10n.Tr(RightsColumns[i].TipKey)));
+        }
+        columns.AddChild(labels);
+
+        // A row's right margin (4), plus the scrollbar's width while it shows -- see UpdateRightsHeaderSpacer.
+        _rightsHeaderSpacer = new Control();
+        outer.AddChild(_rightsHeaderSpacer);
+        return outer;
+    }
+
+    private static Label HeaderLabel(string text, int width, string? tooltip)
+    {
+        var label = new Label
+        {
+            Text = text,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            ClipText = true,
+            CustomMinimumSize = new Vector2(width, 0),
+            MouseFilter = MouseFilterEnum.Pass, // a label ignores the mouse by default, which also silences its tooltip
+            TooltipText = tooltip ?? "",
+        };
+        label.AddThemeFontSizeOverride("font_size", ChatWindow.MetaFontSize);
+        label.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
+        return label;
+    }
+
+    private void UpdateRightsHeaderSpacer()
+    {
+        var bar = _scroll.GetVScrollBar();
+        _rightsHeaderSpacer.CustomMinimumSize = new Vector2(4 + (bar.Visible ? bar.GetCombinedMinimumSize().X : 0), 0);
+    }
+
+    /// <summary>One friend's five rights. The person's own three are boxes to click; the friend's two are shown the
+    /// same way but dimmed, because only the friend can change them.</summary>
+    private Control BuildRightsCells(FriendEntry friend)
+    {
+        var cells = new HBoxContainer();
+        cells.AddThemeConstantOverride("separation", 0);
+
+        for (int i = 0; i < RightsColumns.Length; i++)
+        {
+            if (i == RightsByMeColumns) cells.AddChild(new Control { CustomMinimumSize = new Vector2(RightsGroupGap, 0) });
+
+            var column = RightsColumns[i];
+            var granted = column.ByMe ? friend.GrantedByMe : friend.GrantedToMe;
+            var box = new CheckBox
+            {
+                ButtonPressed = granted.HasFlag(column.Permission),
+                Disabled = !column.ByMe,
+                FocusMode = FocusModeEnum.None,
+            };
+            if (column.ByMe)
+            {
+                var friendId = friend.Id;
+                var permission = column.Permission;
+                string name = DisplayName(friend);
+                box.Toggled += on => OnRightToggled(friendId, name, permission, on);
+            }
+
+            var holder = new CenterContainer { CustomMinimumSize = new Vector2(RightsCellWidth, 0) };
+            holder.AddChild(box);
+            cells.AddChild(holder);
+        }
+        return cells;
+    }
+
+    /// <summary>A box in the "friend may..." columns was clicked. Switching a right off, and the two harmless ones on,
+    /// go straight out. Letting someone edit, delete and take the person's objects asks first -- the reference viewer
+    /// does too -- and a "no" puts the box back.</summary>
+    private void OnRightToggled(Guid friendId, string name, FriendPermissions permission, bool on)
+    {
+        if (permission != FriendPermissions.ModifyObjects || !on)
+        {
+            ApplyRight(friendId, permission, on);
+            return;
+        }
+
+        var win = ShowWindow<ConfirmWindow>();
+        win.Initialize(
+            L10n.Tr("ui.friend_rights.grant_edit_title"),
+            L10n.TrFormat("ui.friend_rights.grant_edit_prompt", name),
+            L10n.Tr("ui.friend_rights.grant_edit_ok"),
+            danger: true);
+        win.Confirmed += () => ApplyRight(friendId, permission, true);
+        win.Closed += RefreshSoon; // a no (or a dismissal) leaves the box as it was drawn, so draw it again
+    }
+
+    /// <summary>Sends the friend's whole set with one right changed -- built from what the session holds now, not
+    /// from what the row was drawn with, so two quick clicks cannot undo each other.</summary>
+    private void ApplyRight(Guid friendId, FriendPermissions permission, bool on)
+    {
+        var current = _session?.GetFriends().FirstOrDefault(f => f.Id == friendId);
+        if (current == null || _session!.SetFriendPermissions(friendId, current.GrantedByMe.With(permission, on))) return;
+        RefreshSoon(); // not sent (offline, or no longer a friend): show what is true
     }
 
     /// <summary>Per-friend actions, fixed to the right of the filter/list column. All disabled

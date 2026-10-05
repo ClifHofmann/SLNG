@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.68-alpha";
+    public const string AppVersion = "v0.26.69-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3718,6 +3718,7 @@ public partial class Boot : Control
         _session.FriendshipOfferReceived += OnFriendshipOfferReceived;
         _session.FriendshipAnswered += OnFriendshipAnswered;
         _session.FriendshipEnded += OnFriendshipEnded;
+        _session.FriendRightsChanged += OnFriendRightsChanged;
         // FEAT-NET-01: llRequestPermissions. Same buffering; never answered without a click.
         _session.ScriptPermissionRequested += OnScriptPermissionRequested;
         // FEAT-UI-13: profile replies + name resolution, routed to whichever profile window is open
@@ -4773,6 +4774,27 @@ public partial class Boot : Control
         _notifications.Add(SLNG.Core.NotificationKind.System, e.FromId,
             SLNG.App.UI.L10n.TrFormat("ui.notifications.friendship_ended", name),
             senderName: name);
+    }
+
+    /// <summary>FEAT-UI-35: a friend gave us a right over them or took one back -- one history line per right, under
+    /// System (a statement, nothing to decide).</summary>
+    private void OnFriendRightsChanged(object? sender, SLNG.Core.FriendRightsChangedEvent e)
+    {
+        string name = string.IsNullOrEmpty(e.FriendName) ? e.FriendId.ToString() : e.FriendName;
+        foreach (var (right, word) in new[]
+        {
+            (SLNG.Core.FriendPermissions.SeeOnline, "online"),
+            (SLNG.Core.FriendPermissions.SeeOnMap, "map"),
+            (SLNG.Core.FriendPermissions.ModifyObjects, "objects"),
+        })
+        {
+            string? key = e.Gained.HasFlag(right) ? $"ui.notifications.friend_right_gained_{word}"
+                : e.Lost.HasFlag(right) ? $"ui.notifications.friend_right_lost_{word}"
+                : null;
+            if (key == null) continue;
+            _notifications.Add(SLNG.Core.NotificationKind.System, e.FriendId,
+                SLNG.App.UI.L10n.TrFormat(key, name), senderName: name);
+        }
     }
 
     // ---- FEAT-UI-13: avatar profile events -----------------------------------------------------

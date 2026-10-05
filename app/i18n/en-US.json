@@ -311,6 +311,21 @@
       "only_online_tooltip": "Hide friends who are offline. Categories with nobody online are hidden too.",
       "none_online": "None of your friends are online."
     },
+    "friend_rights": {
+      "group_friend": "Friend may…",
+      "group_me": "I may…",
+      "online": "Online",
+      "map": "Map",
+      "edit": "Edit",
+      "tip_my_online": "Your friend can see when you are online. Click a box in the list to allow or forbid it.",
+      "tip_my_map": "Your friend can see where you are on the world map. Click a box in the list to allow or forbid it.",
+      "tip_my_objects": "Your friend can edit, delete and take your objects. Click a box in the list to allow or forbid it.",
+      "tip_their_map": "You can see where this friend is on the world map. Only they can change this.",
+      "tip_their_objects": "You can edit this friend's objects. Only they can change this.",
+      "grant_edit_title": "EDIT RIGHTS",
+      "grant_edit_prompt": "Allow {0} to edit, delete and take your objects? That is a lot of trust. You can take it back at any time.",
+      "grant_edit_ok": "Allow"
+    },
     "friendship_offer": {
       "title": "FRIENDSHIP OFFER",
       "from": "{0} is offering friendship.",
@@ -1130,6 +1145,12 @@
       "friendship_answer_accepted": "{0} accepted your friendship offer.",
       "friendship_answer_declined": "{0} declined your friendship offer.",
       "friendship_ended": "{0} removed you as a friend.",
+      "friend_right_gained_online": "{0} now lets you see when they are online.",
+      "friend_right_lost_online": "{0} no longer lets you see when they are online.",
+      "friend_right_gained_map": "{0} now lets you see where they are on the map.",
+      "friend_right_lost_map": "{0} no longer lets you see where they are on the map.",
+      "friend_right_gained_objects": "{0} now lets you edit their objects.",
+      "friend_right_lost_objects": "{0} no longer lets you edit their objects.",
       "script_permission": "“{0}” by {1} is asking for permissions.",
       "display_name_changed": "{0} ({1}) is now known as {2}."
     },

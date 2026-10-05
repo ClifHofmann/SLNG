@@ -277,6 +277,22 @@ public record FriendshipAnsweredEvent(Guid FromId, string FromName, bool Accepte
 /// <param name="FromName">Their name, from the friend list or the name cache; empty if neither knew it.</param>
 public record FriendshipEndedEvent(Guid FromId, string FromName);
 
+/// <summary>FEAT-UI-35: a friend changed what the agent may do with THEM -- gave a right (see them online, find them
+/// on the map, edit their objects) or took one back. Never raised for the agent's own grants (what the friend may do
+/// with the agent), which the agent changes and so needs no telling.</summary>
+/// <param name="FriendId">The friend who changed it.</param>
+/// <param name="FriendName">Their name, from the friend list or the name cache; empty if neither knew it.</param>
+/// <param name="Before">What the agent could do with them before.</param>
+/// <param name="After">What the agent can do with them now.</param>
+public record FriendRightsChangedEvent(Guid FriendId, string FriendName, FriendPermissions Before, FriendPermissions After)
+{
+    /// <summary>The rights just given.</summary>
+    public FriendPermissions Gained => After & ~Before;
+
+    /// <summary>The rights just taken back.</summary>
+    public FriendPermissions Lost => Before & ~After;
+}
+
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
 /// <param name="AttachmentPoint">SL AttachmentPoint enum byte value; non-zero when the object
