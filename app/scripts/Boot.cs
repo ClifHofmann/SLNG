@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.61-alpha";
+    public const string AppVersion = "v0.26.62-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4013,6 +4013,13 @@ public partial class Boot : Control
             _selectionGizmo.RecomposeLinkset = root =>
                 _worldSimulation?.RecomposeChildren(root.RegionHandle, root.LocalId);
             _objectSelectionController.LinksetParts = CollectLinksetParts;
+            // A worn HUD is drawn in an overlay with a physics world of its own, so the selection
+            // raycast cannot see it: the controller asks the renderer first, and the renderer, in
+            // build mode, leaves the click to the controller instead of sending a touch.
+            _objectSelectionController.PickHud = pos =>
+                _avatarRenderer != null && _avatarRenderer.TryPickHud(pos, out var hud) ? hud : null;
+            if (_avatarRenderer != null)
+                _avatarRenderer.IsBuildMode = () => _objectSelectionController.EditSessionOpen;
             // FEAT-ECON-02: a left click on an object whose click action is Pay or Buy opens the
             // same dialog the context menu opens.
             _objectSelectionController.OnPayRequested = (entity, _) => ShowPayWindow(entity);
