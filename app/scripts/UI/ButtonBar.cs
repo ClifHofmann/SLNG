@@ -41,6 +41,14 @@ public partial class ButtonBar : Control
     private const string BadgeName = "Badge";
     private const int BadgeCap = 9;
 
+    private const string PulsingMeta = "toolbar_pulsing";
+    private static readonly Color IconIdleColor = new(0.85f, 0.85f, 0.85f);
+    private static readonly Color IconAlertColor = new(1f, 0.8f, 0.4f);
+
+    /// <summary>One slow breath of the icon colour, in seconds. Long on purpose: the point is to be
+    /// noticed in the corner of the eye, not to flash.</summary>
+    private const double PulsePeriodSeconds = 2.4;
+
     public override void _Ready()
     {
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
@@ -131,7 +139,7 @@ public partial class ButtonBar : Control
         btn.SetMeta(MetaKey, def.Id);
         btn.AddThemeFontOverride("font", _iconFont);
         btn.AddThemeFontSizeOverride("font_size", 24);
-        btn.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f));
+        btn.AddThemeColorOverride("font_color", IconIdleColor);
         btn.AddThemeColorOverride("font_pressed_color", new Color(1f, 1f, 1f));
 
         var normalStyle = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0), CornerRadiusTopLeft = 0, CornerRadiusTopRight = 0, CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 0 };
@@ -279,7 +287,32 @@ public partial class ButtonBar : Control
                 // Capped, because the badge is 18px wide and "127" in it is a smear. The point is
                 // "something is waiting", not the exact number.
                 if (count > 0) badge.Text = count > BadgeCap ? $"{BadgeCap}+" : count.ToString();
+
+                // Something is waiting behind a closed window: let the icon breathe. An open window
+                // is already being looked at, so it stays still (the count still shows).
+                PulseIcon(btn, count > 0 && !btn.ButtonPressed);
             }
         }
+    }
+
+    /// <summary>Fades a button's icon between its resting colour and a warm one and back, slowly, while
+    /// <paramref name="pulse"/> holds; puts the resting colour back once when it stops. A colour change
+    /// rather than <c>Modulate</c>, which the reorder drag already uses for its own look.</summary>
+    private static void PulseIcon(Button btn, bool pulse)
+    {
+        bool wasPulsing = btn.HasMeta(PulsingMeta);
+        if (!pulse)
+        {
+            if (!wasPulsing) return;
+            btn.RemoveMeta(PulsingMeta);
+            btn.AddThemeColorOverride("font_color", IconIdleColor);
+            return;
+        }
+
+        btn.SetMeta(PulsingMeta, true);
+        // Cosine ease: resting colour at the start of each period, the warm one at the middle.
+        double phase = Time.GetTicksMsec() / 1000.0 / PulsePeriodSeconds;
+        float t = (float)(0.5 - 0.5 * Math.Cos(phase * Math.Tau));
+        btn.AddThemeColorOverride("font_color", IconIdleColor.Lerp(IconAlertColor, t));
     }
 }

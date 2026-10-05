@@ -508,6 +508,8 @@
       "show_display_names": "Show Display Names",
       "conference_as_im": "Show conference chats as IMs",
       "conference_as_im_tip": "A chat with several people (not a group) normally gets its own conversation, where everyone's lines appear and your reply goes to all of them. On: each speaker's lines appear in a normal IM conversation with them instead, and your reply goes to that person alone. Lines from the grid itself and your own lines in the conference are not shown then.",
+      "friend_presence_toasts": "Show a pop-up when friends log in or out",
+      "friend_presence_toasts_tip": "A small notice at the top right when one of your friends comes online or goes offline. Click it to open an IM with them. The line in their IM tab stays either way.",
       "show_display_names_tip": "Off shows everyone's username instead. The bracketed line below disappears with it, since there is nothing left to tell apart.",
       "show_legacy_names": "Show username under Display Name",
       "show_legacy_names_tip": "Shows the account's unchangeable username in brackets below the Display Name. Avatars without a Display Name are unaffected.",

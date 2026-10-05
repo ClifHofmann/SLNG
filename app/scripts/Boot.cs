@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.64-alpha";
+    public const string AppVersion = "v0.26.65-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3627,10 +3627,16 @@ public partial class Boot : Control
         _session.ReattachMissingAttachments = !Diagnostics.NoReattach;
         _session.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;
         _session.PlayTypingAnimation = _animationSettings.PlayTypingAnimation;
+        // FEAT-UI-30: the stored "hide my group title" has to reach every NEW session. SetupButtonBar
+        // pushes it once at boot, when there is no session yet, and the change handler only fires when
+        // the box is toggled -- so after a login the flag stayed off and the title showed until the
+        // option was switched off and on again.
+        _session.HideOwnGroupTitle = _uiSettings.HideOwnGroupTitle;
         // FEAT-AVATAR-01: the JPEG2000 codec lives in SLNG.Assets and SLNG.Net may not reference it,
         // so the composition root supplies it. Without this a bake composites correctly and then
         // encodes to a few hundred bytes of nothing.
         _session.UseBakeEncoder(new SLNG.Assets.J2KBakeTextureEncoder());
+        _friendPresence.Reset(); // a new login starts from an empty friends list
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
         _worldSimulation.SelfAnimationStopRequested += OnSelfAnimationStopRequested;
 
@@ -3694,6 +3700,8 @@ public partial class Boot : Control
         // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
         _session.ConferenceChatMessageReceived += OnConferenceChatMessageReceived;
+        // A friend logging in or out: network thread, so it is judged here and shown from the main thread.
+        _session.FriendStatusChanged += OnFriendStatusForToast;
         _session.GroupChatJoined += OnGroupChatJoinedResult;
         // FEAT-UI-54: the group info window. All three fire on a network thread.
         _session.GroupProfileReceived += OnGroupProfileReceived;
@@ -4003,10 +4011,21 @@ public partial class Boot : Control
             // FEAT-UI-23: the gizmo asks here where a worn item's attach point is. Only
             // AvatarRenderer knows -- it is the bone's current pose times the attachment point's
             // own offset on that bone.
+            // FEAT-UI-64: a worn HUD has its own frame (the anchor on the overlay) and its own world to draw
+            // the handles in, so the gizmo is told both.
             _selectionGizmo.AttachmentFrame = entity =>
-                _avatarRenderer != null && _avatarRenderer.TryGetAttachmentFrame(entity.Id, out var frame)
-                    ? frame
-                    : null;
+            {
+                if (_avatarRenderer == null) return null;
+                if (_avatarRenderer.TryGetAttachmentFrame(entity.Id, out var frame)) return frame;
+                return _avatarRenderer.TryGetHudFrame(entity.Id, out var hudFrame) ? hudFrame : null;
+            };
+            _selectionGizmo.IsHudEntity = entity => _avatarRenderer != null && _avatarRenderer.IsHudAttachment(entity.Id);
+            _selectionGizmo.HudSpace = () =>
+            {
+                if (_avatarRenderer != null && _avatarRenderer.TryGetHudSpace(out var hudRoot, out var hudCamera))
+                    return (hudRoot, hudCamera);
+                return null;
+            };
             // FEAT-UI-04: and here for the rest of a linked object, so the stretch box wraps the
             // whole thing rather than its root prim. WorldSimulation is the only holder of the
             // parent index, which is why this is wired from here rather than read by the gizmo.
@@ -4857,6 +4876,32 @@ public partial class Boot : Control
         // otherwise the placeholder, which ResolveSender later swaps in both places at once.
         _notifications.Add(SLNG.Core.NotificationKind.Transaction, e.OtherPartyId, text,
             senderName: name, senderIsGroup: e.OtherPartyIsGroup);
+    }
+
+    private readonly SLNG.Core.FriendPresenceTracker _friendPresence = new();
+
+    /// <summary>A friend's presence message (network thread). The library repeats itself -- an offline
+    /// friend "going offline", a new friend asked about twice -- so only a real change gets a toast, and
+    /// only while the preference is on. The line in the friend's IM tab is the chat window's own business.</summary>
+    private void OnFriendStatusForToast(object? sender, SLNG.Core.FriendStatusEvent e)
+    {
+        if (!_friendPresence.Update(e.FriendId, e.IsOnline)) return;
+        if (!_uiSettings.ShowFriendPresenceToasts) return;
+        CallDeferred(MethodName.ShowFriendPresenceToast, e.FriendId.ToString(), e.IsOnline);
+    }
+
+    /// <summary>Main-thread half of <see cref="OnFriendStatusForToast"/>. The friend id travels as a string
+    /// because CallDeferred marshals Variants and a Guid is not one.</summary>
+    private void ShowFriendPresenceToast(string friendIdText, bool online)
+    {
+        if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
+        if (_session == null || !System.Guid.TryParse(friendIdText, out var friendId)) return;
+
+        string name = _session.GetFriends().FirstOrDefault(f => f.Id == friendId)?.Name ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name)) name = SLNG.App.UI.L10n.Tr("ui.money.someone");
+
+        string text = SLNG.App.UI.L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", name);
+        _notificationToasts.ShowPresence(text, online, () => _chatWindow.OpenOrFocusImTab(friendId, name));
     }
 
     /// <summary>Main-thread half of a notification toast. Takes the pieces rather than the entry

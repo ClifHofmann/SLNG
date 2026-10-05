@@ -220,6 +220,26 @@ namespace SLNG.App.UI
         };
 
         private Camera3D _camera = null!;
+
+        // FEAT-UI-64: the gizmo has two homes. Normally it is a node in the main 3D world, looking
+        // through the avatar camera. While a worn HUD is selected it moves into the HUD overlay's own
+        // world and looks through that orthographic camera, because that is where the HUD is drawn.
+        private Camera3D _mainCamera = null!;
+        private Node? _mainParent;
+        private bool _inHud;
+
+        /// <summary>FEAT-UI-64: is this a worn HUD prim? Supplied by Boot from AvatarRenderer.</summary>
+        public System.Func<Entity, bool>? IsHudEntity;
+
+        /// <summary>FEAT-UI-64: the HUD overlay's 3D root and camera, or null while there is no HUD. The
+        /// gizmo is parented there for as long as a HUD is selected.</summary>
+        public System.Func<(Node3D Root, Camera3D Camera)?>? HudSpace;
+
+        /// <summary>FEAT-UI-64: the HUD viewport is in physical pixels, the mouse in UI units, so in the HUD
+        /// everything measured in pixels -- the mouse itself, the grab radius, the handle length -- is
+        /// multiplied by the UI scale (the same conversion AvatarRenderer.TryHitHud makes).</summary>
+        private float PixelScale => _inHud ? UiScale.Current : 1f;
+
         private World _world = null!;
         private SLNG.Net.GridSession _session = null!;
 
@@ -302,6 +322,8 @@ namespace SLNG.App.UI
             _world = world;
             _session = session;
             _camera = camera;
+            _mainCamera = camera;
+            _mainParent = GetParent();
             BuildHandles();
             Visible = false;
             SetProcess(true);
@@ -477,11 +499,47 @@ namespace SLNG.App.UI
                 return;
             }
 
+            // FEAT-UI-64: a HUD is drawn in the overlay, so the handles have to be there too.
+            if (!EnterSpace(IsHudEntity?.Invoke(entity) == true))
+            {
+                Detach();
+                return;
+            }
+
             _entity = entity;
             _localId = entity.LocalId;
             _regionHandle = entity.RegionHandle;
             _dragging = Handle.None;
             Visible = true;
+        }
+
+        /// <summary>Moves the gizmo into the HUD overlay (<paramref name="hud"/>) or back to the main
+        /// world. False when the HUD overlay is asked for and does not exist.</summary>
+        private bool EnterSpace(bool hud)
+        {
+            if (hud == _inHud) return true;
+            if (!hud)
+            {
+                LeaveHudSpace();
+                return true;
+            }
+
+            if (HudSpace?.Invoke() is not { } space) return false;
+            Reparent(space.Root, false);
+            _camera = space.Camera;
+            _inHud = true;
+            return true;
+        }
+
+        private void LeaveHudSpace()
+        {
+            if (!_inHud) return;
+            _inHud = false;
+            _camera = _mainCamera;
+            // Back to where it was made, so it can never be left behind in the overlay (the overlay
+            // is not the gizmo's to keep, and a HUD that goes away takes its children with it).
+            if (_mainParent != null && IsInstanceValid(_mainParent) && IsInsideTree())
+                Reparent(_mainParent, false);
         }
 
         public void Detach()
@@ -496,12 +554,21 @@ namespace SLNG.App.UI
             _hovered = Handle.None;
             _snapping = false;
             _dragFrameCaptured = false;
+            LeaveHudSpace();
             Visible = false;
         }
 
         public override void _Process(double delta)
         {
             if (_entity == null || _camera == null) { Visible = false; return; }
+
+            // FEAT-UI-64: the HUD overlay's camera went away under a HUD selection (logout, teardown).
+            if (_inHud && !IsInstanceValid(_camera)) { Detach(); return; }
+
+            // And the selected prim stopped being a HUD (dropped, or moved to a body point) -- or started
+            // being one. The space is decided in Attach, so without this the handles would stay in the
+            // overlay, placed at region coordinates far outside its camera.
+            if (_inHud != (IsHudEntity?.Invoke(_entity) == true)) { Detach(); return; }
 
             // The entity can be removed from the world under us (region change, object deleted
             // by its owner) -- the gizmo must not keep floating where it was.
@@ -519,11 +586,21 @@ namespace SLNG.App.UI
             // Constant screen size. Uses the vertical FOV and the distance along the camera's
             // forward axis rather than the straight-line distance, so the gizmo does not swell
             // as it moves towards the edge of a wide viewport.
-            float depth = Mathf.Max(0.05f,
-                (GlobalPosition - _camera.GlobalPosition).Dot(-_camera.GlobalBasis.Z));
             float viewportH = Mathf.Max(1f, GetViewport().GetVisibleRect().Size.Y);
-            float worldPerPixel = 2f * depth * Mathf.Tan(Mathf.DegToRad(_camera.Fov) * 0.5f) / viewportH;
-            float length = ScreenLengthPixels * worldPerPixel;
+            float worldPerPixel;
+            if (_camera.Projection == Camera3D.ProjectionType.Orthogonal)
+            {
+                // The HUD camera: no perspective, Size is how many HUD units tall the view is, so a
+                // pixel is a fixed fraction of it whatever the depth.
+                worldPerPixel = _camera.Size / viewportH;
+            }
+            else
+            {
+                float depth = Mathf.Max(0.05f,
+                    (GlobalPosition - _camera.GlobalPosition).Dot(-_camera.GlobalBasis.Z));
+                worldPerPixel = 2f * depth * Mathf.Tan(Mathf.DegToRad(_camera.Fov) * 0.5f) / viewportH;
+            }
+            float length = ScreenLengthPixels * PixelScale * worldPerPixel;
 
             // FEAT-UI-04: hold Ctrl to rotate, the way the reference viewer does it, rather
             // than a pair of buttons in the edit window. It keeps the choice under the hand
@@ -553,14 +630,20 @@ namespace SLNG.App.UI
                 // One tool's handles at a time. All three sets at once is unreadable, and the
                 // hit-test would have to arbitrate between overlapping handles that mean
                 // different things.
-                _arrows[i].Visible = moving;
-                _planeQuads[i].Visible = moving;
-                _guides[i].Visible = moving;
+                // FEAT-UI-64: a HUD is seen straight down the SL X axis, so that axis is a dot and the
+                // two planes containing it are edge-on lines -- there is nothing to grab. Only Y, Z and
+                // the plane between them (index 2) are drawn.
+                bool depthAxis = _inHud && (i == 0);
+                bool edgeOnPlane = _inHud && (i < 2);
+                _arrows[i].Visible = moving && !depthAxis;
+                _planeQuads[i].Visible = moving && !edgeOnPlane;
+                _guides[i].Visible = moving && !depthAxis;
                 // Only the ring being turned, once a turn is under way. Three tori and a dial
                 // on top of each other is unreadable, and the two you are not using tell you
                 // nothing -- the reference viewer drops them for the same reason.
                 _rings[i].Visible = _tool == Tool.Rotate
-                    && (_dragging == Handle.None || RingHandle(i) == _dragging);
+                    && (_dragging == Handle.None || RingHandle(i) == _dragging)
+                    && (!_inHud || i == 0); // in a HUD only the turn in the screen plane (about X) is meaningful
 
                 bool ringLit = active == RingHandle(i);
                 var ringColor = AxisColor[i];
@@ -584,7 +667,7 @@ namespace SLNG.App.UI
 
                 // Only while actually dragging: a grid that appeared on hover would flash on and
                 // off as the cursor crosses the handle.
-                bool gridOn = _dragging == PlaneHandle(i);
+                bool gridOn = _dragging == PlaneHandle(i) && !_inHud; // a metre grid means nothing on a 1-unit-tall HUD
                 _grids[i].Visible = gridOn;
                 if (gridOn) _grids[i].GlobalPosition = SnappedGridOrigin(i, GlobalPosition);
             }
@@ -627,10 +710,11 @@ namespace SLNG.App.UI
 
             var origin2D = _camera.UnprojectPosition(GlobalPosition);
             float scale = _arrows[0].Scale.X;
+            float grab = GrabPixels * PixelScale;
 
             if (_tool == Tool.Scale)
             {
-                float bestScale = GrabPixels;
+                float bestScale = grab;
                 var bestScaleHandle = Handle.None;
                 for (int n = 0; n < _scaleHandles.Length; n++)
                 {
@@ -646,10 +730,11 @@ namespace SLNG.App.UI
 
             if (_tool == Tool.Rotate)
             {
-                float bestRing = GrabPixels;
+                float bestRing = grab;
                 var bestRingHandle = Handle.None;
                 for (int i = 0; i < 3; i++)
                 {
+                    if (_inHud && i != 0) continue; // see _Process: only the in-plane turn exists in a HUD
                     float d = DistanceToRing(mouse, i, scale);
                     if (d < bestRing) { bestRing = d; bestRingHandle = RingHandle(i); }
                 }
@@ -661,14 +746,16 @@ namespace SLNG.App.UI
             // priority makes the plane handles nearly unclickable.
             for (int i = 0; i < 3; i++)
             {
+                if (_inHud && i < 2) continue; // edge-on in a HUD
                 if (!TryPlaneCorners2D(i, scale, out var p0, out var p1, out var p2)) continue;
                 if (PointInTriangle(mouse, p0, p1, p2)) return PlaneHandle(i);
             }
 
-            float bestDist = GrabPixels;
+            float bestDist = grab;
             var best = Handle.None;
             for (int i = 0; i < 3; i++)
             {
+                if (_inHud && i == 0) continue; // the depth axis is a dot in a HUD
                 var tipWorld = GlobalPosition + AxisDirGodot[i] * scale;
                 // A tip behind the camera projects to a mirrored, meaningless point; skip rather
                 // than compute a segment that does not exist on screen.
@@ -680,12 +767,15 @@ namespace SLNG.App.UI
             return best;
         }
 
-        public void SetHover(Vector2 mouse) => _hovered = _dragging == Handle.None ? HitTest(mouse) : _hovered;
+        // The three mouse entry points take UI-unit positions (what the controller has) and convert to the
+        // pixels of whichever viewport the handles are in -- see PixelScale.
+        public void SetHover(Vector2 mouse) => _hovered = _dragging == Handle.None ? HitTest(mouse * PixelScale) : _hovered;
 
         /// <summary>Starts a drag if the cursor is on a handle. Returns false when it is not, so
         /// the caller can fall through to its ordinary click handling.</summary>
         public bool TryBeginDrag(Vector2 mouse)
         {
+            mouse *= PixelScale;
             var handle = HitTest(mouse);
             if (handle == Handle.None || _entity == null) return false;
 
@@ -737,9 +827,12 @@ namespace SLNG.App.UI
 
                 // Park the grid where the object started. TopLevel means it keeps this position
                 // for the whole drag instead of being dragged along.
-                int gi = (int)handle - (int)Handle.PlaneXY;
-                _grids[gi].GlobalPosition = _dragAxisOrigin;
-                BuildGridMesh(gi, GridExtentFor(_dragAxisOrigin));
+                if (!_inHud)
+                {
+                    int gi = (int)handle - (int)Handle.PlaneXY;
+                    _grids[gi].GlobalPosition = _dragAxisOrigin;
+                    BuildGridMesh(gi, GridExtentFor(_dragAxisOrigin));
+                }
             }
             else
             {
@@ -767,6 +860,7 @@ namespace SLNG.App.UI
         public void UpdateDrag(Vector2 mouse)
         {
             if (_dragging == Handle.None || _entity == null) return;
+            mouse *= PixelScale;
 
             if (_dragging == Handle.Scale)
             {
@@ -990,11 +1084,15 @@ namespace SLNG.App.UI
             var half = _dragStartBoxHalf;
 
             // Distance from the centre to this handle at drag start, along the drag direction.
-            // How far the handle sat from the centre along the drag direction at grab time:
-            // the diagonal for a corner, the half-edge for a face.
-            float startReach = corner
-                ? half.Length()
-                : System.MathF.Abs(System.Numerics.Vector3.Dot(half, localDir));
+            // How far the handle sat from the centre along the drag direction at grab time: the half-edge
+            // for a face, and for a corner the corner's PROJECTION onto the drag line.
+            //
+            // A corner's localDir is the sign vector (+-1, +-1, +-1), so the line it defines only passes
+            // through the corner when the box is a cube. The diagonal's length (half.Length()) is what
+            // this used here, and it is longer than the projection for any other box -- so the first mouse
+            // move after grabbing a corner already jumped the size by ~10 % for a flat prim, which is what
+            // nearly every HUD is. The projection is also what the factor below assumes the cursor to be at.
+            float startReach = System.MathF.Abs(System.Numerics.Vector3.Dot(half, localDir)) / localDir.Length();
             if (startReach <= 1e-4f) return;
 
             // The dragged side must land ON the cursor, not run ahead of it.
@@ -1169,6 +1267,8 @@ namespace SLNG.App.UI
         /// and the stretch handles so the gesture is the same one in both.</summary>
         private bool CursorIsOffLine(Vector2 mouse, Vector3 axis)
         {
+            // FEAT-UI-64: no linear snapping in a HUD -- the ruler steps in metres and a HUD is one unit tall.
+            if (_inHud) return false;
             if (_camera.IsPositionBehind(GlobalPosition)) return false;
             var far = GlobalPosition + axis * _arrows[0].Scale.X;
             if (_camera.IsPositionBehind(far)) return false;
@@ -1842,7 +1942,10 @@ namespace SLNG.App.UI
         /// which is exactly what was reported: the second prim briefly follows the local preview
         /// and then snaps back to its old size.
         /// </remarks>
-        private bool AllowedHandle(int n) => n >= 6 || !_multiPrimSelection;
+        private bool AllowedHandle(int n)
+            // FEAT-UI-64: handles 0 and 1 are the +/-X faces, which sit on top of each other (and of the
+            // centre) when a HUD is seen straight down X.
+            => (n >= 6 || !_multiPrimSelection) && !(_inHud && n < 2);
 
         /// <summary>Re-measures the box the handles sit on: the bounding box of the whole
         /// SELECTION, in the root prim's frame.</summary>
@@ -2114,7 +2217,7 @@ namespace SLNG.App.UI
             // a three-element array -- 944 exceptions in one session, one per frame of every
             // rotation drag, which also killed UpdateDial on the line below and is why the snap
             // dial never appeared.
-            if (!IsAxis(_dragging) || _entity == null)
+            if (!IsAxis(_dragging) || _entity == null || _inHud)
             {
                 if (_ruler.Visible)
                 {

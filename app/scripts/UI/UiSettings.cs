@@ -66,6 +66,10 @@ public sealed class UiSettings
     /// default OFF.</summary>
     public bool HideOwnGroupTitle { get; private set; }
 
+    /// <summary>Show a toast when a friend logs in or out. Default on; the line in the friend's IM
+    /// tab is not affected, only the pop-up.</summary>
+    public bool ShowFriendPresenceToasts { get; private set; } = true;
+
     /// <summary>FEAT-UI-04: the build grid's cell size in metres — the spacing of the move
     /// gizmo's plane grid and of its single-axis ruler's ticks, and therefore what a snapped
     /// drag lands on. Default 1 m, SL's own build grid.</summary>
@@ -94,6 +98,7 @@ public sealed class UiSettings
             ShowDisplayNames = (bool)cfg.GetValue(Section, "show_display_names", true);
             HideOwnGroupTitle = (bool)cfg.GetValue(Section, "hide_own_group_title", false);
             ConferenceChatsAsIm = (bool)cfg.GetValue(Section, "conference_chats_as_im", false);
+            ShowFriendPresenceToasts = (bool)cfg.GetValue(Section, "friend_presence_toasts", true);
             BuildGridSpacing = Mathf.Clamp((float)cfg.GetValue(Section, "build_grid_spacing", 1.0), 0.01f, 64f);
             BuildRotationSnapDegrees = Mathf.Clamp((float)cfg.GetValue(Section, "build_rotation_snap_degrees", 15.0), 0.1f, 90f);
         }
@@ -214,6 +219,16 @@ public sealed class UiSettings
     }
 
     public event System.Action<float>? BuildRotationSnapDegreesChanged;
+
+    public void SetShowFriendPresenceToasts(bool show)
+    {
+        ShowFriendPresenceToasts = show;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "friend_presence_toasts", ShowFriendPresenceToasts);
+        cfg.Save(ConfigPath);
+    }
 
     /// <summary>FEAT-UI-30. Separate event from the display toggles: this one has to reach
     /// GridSession, not the renderer, because it changes an outgoing packet.</summary>
