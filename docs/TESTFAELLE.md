@@ -1,16 +1,17 @@
 # Testfälle für die offenen Themen
 
-Stand: v0.26.22-alpha (2026-10-03). Gilt für die Funktionen, die gebaut, aber noch **nicht im echten Betrieb
+Stand: v0.26.77-alpha (2026-10-05). Gilt für die Funktionen, die gebaut, aber noch **nicht im echten Betrieb
 bestätigt** sind (Roadmap-Status 🧪 oder 🚧, oder ein „Not yet seen“ im Roadmap-Eintrag).
 
-**Wie testen:** Der Build ist `PurisViewer_Setup_v0.26.22-alpha.exe` aus dem Release oder `build/windows/` (lokaler
+**Wie testen:** Der Build ist `PurisViewer_Setup_v0.26.77-alpha.exe` aus dem Release oder `build/windows/` (lokaler
 Export). Das Protokoll liegt in `%APPDATA%\Godot\app_userdata\Puris Viewer\logs\godot.log` (die Datei der letzten
 Sitzung heißt `godot<Zeitstempel>.log`). Ein Testfall ist bestanden, wenn **alle** Erwartungen stimmen. Trage das
 Ergebnis in die Spalte *Ergebnis* ein (✅ / ❌ / ⏭ nicht getestet) und bei ❌ die Beobachtung, am besten mit den
 letzten Zeilen des Protokolls und einem Bildschirmfoto.
 
 **Konten:** Für TC-GRID und TC-LOG brauchst du denselben Namen auf **Second Life** und auf **OSGrid**
-(z. B. „Clifton Howlett“ auf beiden). Für TC-ANGEBOT brauchst du ein zweites Konto oder eine zweite Person.
+(z. B. „Clifton Howlett“ auf beiden). Für TC-ANGEBOT, TC-RECHTE und TC-PRAESENZ brauchst du ein zweites Konto oder eine zweite Person (am besten mit
+Firestorm, damit du die andere Seite siehst).
 
 | Gruppe | Thema | Roadmap | Status |
 |---|---|---|---|
@@ -24,6 +25,11 @@ letzten Zeilen des Protokolls und einem Bildschirmfoto.
 | TC-AVATAR | „Schaufensterpuppe“ beim Login | BUG-AVATAR-05 | ✅ (nicht nachgestellt) |
 | TC-WARN | Engine-Warnungen im vollen Hub | BUG-RENDER-40 | 🚧 |
 | TC-EQ | Tote EventQueue | BUG-NET-20 | 🧪 |
+| TC-KAT | Freundeskategorien, Ansichts-Schalter, Online-Punkt | FEAT-UI-65 | 🧪 |
+| TC-RECHTE | Freundesrechte als Symbole, Anmeldename hinter dem Namen | FEAT-UI-35 | 🧪 |
+| TC-REITER | Reiter im Kommunikationsfenster, Ungelesen-Zähler am Chat-Reiter | FEAT-UI-66 | 🧪 |
+| TC-CHATFOKUS | Eingabefeld bleibt nach Enter aktiv | BUG-UI-27 | 🧪 |
+| TC-PRAESENZ | „… ist online“-Hinweise mit Namen | BUG-UI-28 | 🧪 |
 
 ---
 
@@ -214,6 +220,87 @@ mit Estate-Rechten ohne Abmeldung). Kein künstlich herstellbarer Test; nur beob
 | ID | Schritte | Erwartung | Ergebnis |
 |---|---|---|---|
 | TC-EQ-01 | Bei einem passenden Ereignis das Protokoll nach `[EventQueue] … not recovering` suchen. | Genau **eine** solche Zeile (kein Schwall von 65 Wiederholungen) und im Client eine Meldung, dass die Ereigniswarteschlange tot ist. | ☐ |
+
+---
+
+## TC-KAT — Freundeskategorien, Ansichts-Schalter, Online-Punkt (FEAT-UI-65)
+
+Reiter **Freunde** im Kommunikationsfenster. Am besten mit mindestens fünf Freunden, davon zwei online.
+
+| ID | Schritte | Erwartung | Ergebnis |
+|---|---|---|---|
+| TC-KAT-01 | Ohne vorhandene Kategorie die Liste ansehen. Dann das **+** neben dem Filterfeld drücken, „Familie“ eingeben, bestätigen. | Vorher eine einfache Liste ohne Überschriften. Danach gibt es die Überschrift **Familie** mit „(0/0)“, darunter (neu) **Ohne Kategorie** mit allen Freunden. | ☐ |
+| TC-KAT-02 | Rechtsklick auf einen Freund → **Familie**. Dasselbe über den Knopf **Kategorie…** rechts. Dann Rechtsklick → **Neue Kategorie…** → „Arbeit“. | Der Freund steht unter der gewählten Kategorie (im Menü ist die aktuelle abgehakt). „Neue Kategorie…“ legt „Arbeit“ an und sortiert den Freund **gleich** hinein. **Keine Kategorie** nimmt ihn wieder heraus. | ☐ |
+| TC-KAT-03 | Auf die Überschrift einer Kategorie klicken. Erneut klicken. Abmelden, wieder einloggen. | Klick klappt zu (▶) und auf (▼); hinter dem Namen steht „(online/gesamt)“. Der Zustand ist nach dem Neustart **derselbe**. | ☐ |
+| TC-KAT-04 | Rechtsklick auf die Überschrift → **Umbenennen…** (neuer Name), dann nochmal mit dem Namen einer **anderen** Kategorie. | Der erste Name wird übernommen, die Freunde bleiben darin. Beim doppelten Namen kommt die Abfrage **zurück** und sagt, dass es den Namen schon gibt. | ☐ |
+| TC-KAT-05 | Rechtsklick auf die Überschrift → **Kategorie löschen**, erst abbrechen, dann bestätigen. | Abbrechen ändert nichts. Bestätigen entfernt die Kategorie; ihre Freunde bleiben in der Liste unter **Ohne Kategorie**. | ☐ |
+| TC-KAT-06 | Drei Kategorien anlegen. Eine Überschrift am **Griff** (sechs Punkte links) auf eine andere ziehen — einmal nach oben, einmal nach unten. Auch am Namen ziehen. | Der Griff ist sichtbar, der Mauszeiger wird zur Hand. Beim Ziehen hängt eine kleine blaue Karte am Zeiger, und an der Zielüberschrift zeigt ein heller Balken **oben** (landet darüber) oder **unten** (landet darunter). Nach dem Loslassen steht die Kategorie dort; die Reihenfolge bleibt nach einem Neustart. | ☐ |
+| TC-KAT-07 | Eine Kategorie auf **Ohne Kategorie** ziehen. | Sie rutscht an das **Ende** der Kategorien. Ist sie schon die letzte, passiert nichts und es erscheint kein Balken. | ☐ |
+| TC-KAT-08 | Rechtsklick auf eine Überschrift → **Nach oben** / **Nach unten**. | Verschiebt um einen Platz. Bei der obersten ist „Nach oben“, bei der untersten „Nach unten“ ausgegraut. | ☐ |
+| TC-KAT-09 | Kästchen **Kategorien anzeigen** ausschalten, wieder einschalten. Ausgeschaltet eine neue Kategorie mit **+** anlegen. | Aus: eine einfache Liste ohne Überschriften (online zuerst), die Einteilung bleibt erhalten. Beim Anlegen einer Kategorie schaltet sich das Kästchen **von selbst** wieder ein. | ☐ |
+| TC-KAT-10 | Kästchen **Nur Online anzeigen** einschalten. Eine Kategorie zuklappen, dann das Kästchen aus- und wieder einschalten. Danach (mit einem zweiten Konto) alle Freunde offline lassen. | Offline-Freunde und Kategorien ohne jemanden online verschwinden; zugeklappte bleiben zugeklappt. Ist niemand online, steht dort „Gerade ist keiner deiner Freunde online.“ Der Zustand bleibt nach einem Neustart. | ☐ |
+| TC-KAT-11 | Etwas ins **Filterfeld** tippen (Teil eines Namens), auch mit einer zugeklappten Kategorie, die einen Treffer enthält. | Nur Kategorien mit Treffern sind sichtbar, **alle aufgeklappt**. Nach dem Löschen des Textes ist der alte Zustand zurück. Ein Klick auf eine Überschrift tut währenddessen nichts. | ☐ |
+| TC-KAT-12 | Mit einem **zweiten Konto** auf demselben Rechner einloggen. | Dieses Konto hat **keine** Kategorien des ersten; was dort angelegt wird, erscheint beim ersten nicht. | ☐ |
+| TC-KAT-13 | Den **Online-Punkt** vor einem Freund ansehen, die Maus darüber halten. | Ein deutlich sichtbarer Kreis (grün = online, grau = offline) in der Größe der Symbole daneben; der Hinweis sagt „Online“ / „Offline“. | ☐ |
+
+---
+
+## TC-RECHTE — Freundesrechte als Symbole, Anmeldename hinter dem Namen (FEAT-UI-35)
+
+Zweites Konto nötig, am besten mit **Firestorm**, um die Gegenseite zu sehen. Die drei Rechte heißen: **Online** (Auge),
+**Karte** (Pin), **Edit** (Stift). Blau = was **du** dem Freund erlaubst (anklickbar), grün = was der Freund **dir**
+erlaubt (nicht anklickbar). Ein eingeschaltetes Recht ist farbig, ein ausgeschaltetes ein blasses Symbol.
+
+| ID | Schritte | Erwartung | Ergebnis |
+|---|---|---|---|
+| TC-RECHTE-01 | Die Freundesliste ansehen, mit der Maus über die Spaltenköpfe fahren; viele Freunde, sodass die Liste scrollt. | Fünf Spalten rechts: unter **Freund darf…** Online/Karte/Edit, unter **Ich darf…** Karte/Edit. Die Symbole stehen genau **unter** ihren Köpfen, auch mit Scrollleiste. Jeder Kopf hat einen Hinweis. | ☐ |
+| TC-RECHTE-02 | Das blaue **Karte**-Symbol eines Freundes anklicken. In Firestorm beim Freund nachsehen (Freundesliste → dein Name → Rechte). | Das Symbol wird blau, und beim Freund steht, dass er dich **auf der Karte** sehen darf. Nochmal anklicken nimmt es zurück. | ☐ |
+| TC-RECHTE-03 | Dasselbe mit **Online** (Auge). | Der Freund darf deinen Online-Status sehen / nicht mehr sehen. (Nicht das „Karte“-Recht verwechseln.) | ☐ |
+| TC-RECHTE-04 | Das blaue **Edit**-Symbol anklicken, erst **abbrechen**, dann nochmal und bestätigen. | Es kommt eine Rückfrage („… erlauben, deine Objekte zu bearbeiten …“). Abbrechen lässt das Symbol blass. Bestätigen färbt es, und beim Freund steht, dass er deine Objekte bearbeiten darf. **Zurücknehmen fragt nicht.** | ☐ |
+| TC-RECHTE-05 | **Richtung prüfen:** Einem Freund nur das Recht **Karte** geben, sonst nichts. In Firestorm bei diesem Freund nachsehen. | Dort ist **nur** „darf mich auf der Karte sehen“ gesetzt — nicht Online, nicht Edit. In **deiner** Liste ist nur das blaue Pin an. | ☐ |
+| TC-RECHTE-06 | Der Freund gibt dir in Firestorm das Recht, ihn auf der Karte zu sehen. | Das grüne **Karte**-Symbol unter **Ich darf…** geht **ohne Neustart** an, und im Benachrichtigungsfenster steht unter **System** „… : Du siehst jetzt auf der Karte, wo diese Person ist.“ | ☐ |
+| TC-RECHTE-07 | Der Freund nimmt dir ein Recht wieder weg. | Das grüne Symbol wird blass; Eintrag unter **System** („… nicht mehr …“). Eigene Änderungen an den blauen Symbolen lösen **keinen** solchen Eintrag aus. | ☐ |
+| TC-RECHTE-08 | Ein **grünes** Symbol anklicken, mit der Maus darüber halten. | Klick tut nichts; der Hinweis erklärt das Recht und sagt, dass nur der Freund es ändern kann. | ☐ |
+| TC-RECHTE-09 | Zwei verschiedene Rechte desselben Freundes kurz hintereinander umstellen. Abmelden, wieder einloggen. | Nach dem Neustart sind **beide** Änderungen noch da (keine hebt die andere auf). | ☐ |
+| TC-RECHTE-10 | Einen Freund mit Anzeigenamen ansehen; dann die Maus über den Namen halten; dann unter `Einstellungen` → `Anzeige` die Option für Benutzernamen ausschalten. | Der Anmeldename steht **hinter** dem Anzeigenamen, blass, in Klammern, auf derselben Zeile. Ausgeschaltet steht er nur im Hinweis. Eckige Klammern im Namen werden **nicht** als Formatierung gelesen. | ☐ |
+
+---
+
+## TC-REITER — Reiter im Kommunikationsfenster, Ungelesen-Zähler am Chat-Reiter (FEAT-UI-66)
+
+| ID | Schritte | Erwartung | Ergebnis |
+|---|---|---|---|
+| TC-REITER-01 | Nacheinander auf **Symbol**, **Namen** und den **Rand** eines Reiters (Chat / Freunde / Gruppen / Verlauf) klicken. | Jeder Klick wechselt den Reiter. Unter der Maus wird der Reiter heller, der Mauszeiger ist die Hand. | ☐ |
+| TC-REITER-02 | Reiter **Freunde** öffnen. Jemand schreibt im **Umgebungschat** (Main ausgewählt). | Am Reiter **Chat** erscheint eine **rote Zahl**; Symbol und Name sind warm gefärbt. | ☐ |
+| TC-REITER-03 | Zurück auf **Chat** klicken. | Die Zahl verschwindet, sobald die Nachricht zu sehen ist. | ☐ |
+| TC-REITER-04 | Eine IM-Unterhaltung auswählen, dann **Freunde** öffnen; die Person schreibt. | Der Chat-Reiter zählt die Nachricht (auch für die ausgewählte Unterhaltung). Beim Zurückwechseln ist sie gelesen. | ☐ |
+| TC-REITER-05 | Mehr als neun ungelesene Nachrichten sammeln. | Es steht „9+“. Die Zahl entspricht der am Chat-Knopf in der Symbolleiste. | ☐ |
+| TC-REITER-06 | Das Fenster **schließen** (oder minimieren), währenddessen schreibt jemand in der **ausgewählten** Unterhaltung. | Unverändert zu früher: Diese Zeile zählt nicht als ungelesen (bekannte Lücke, siehe Roadmap `FEAT-UI-66`). Nur beobachten. | ☐ |
+
+---
+
+## TC-CHATFOKUS — Eingabefeld bleibt nach Enter aktiv (BUG-UI-27)
+
+| ID | Schritte | Erwartung | Ergebnis |
+|---|---|---|---|
+| TC-CHATFOKUS-01 | Im Chat eine Zeile tippen, **Enter**, sofort die nächste tippen — mindestens zehnmal hintereinander, nur mit der Tastatur. | Jede Zeile landet im Eingabefeld; der Cursor blinkt weiter; der Avatar läuft **nicht** los. Man muss nie neu hineinklicken. | ☐ |
+| TC-CHATFOKUS-02 | Dasselbe in einer **IM**-Unterhaltung und im Gruppenchat. | Wie oben. | ☐ |
+| TC-CHATFOKUS-03 | **Escape** drücken, dann W/A/S/D. | Escape verlässt die Chat-Leiste; der Avatar läuft wieder. | ☐ |
+| TC-CHATFOKUS-04 | Senden mit dem **Senden-Knopf**, danach tippen. | Funktioniert wie vorher. | ☐ |
+| TC-CHATFOKUS-05 | In der **Weltkarte** einen Namen ins Suchfeld tippen, **Enter**, dann sofort einen anderen Namen tippen. | Die zweite Eingabe landet im Suchfeld, ohne vorher hineinzuklicken. | ☐ |
+
+---
+
+## TC-PRAESENZ — „… ist online“-Hinweise mit Namen (BUG-UI-28)
+
+Zweites Konto nötig; für TC-PRAESENZ-01 mindestens zwei Freunde, die beim Login online sind.
+
+| ID | Schritte | Erwartung | Ergebnis |
+|---|---|---|---|
+| TC-PRAESENZ-01 | Einloggen, während mindestens zwei Freunde online sind. | Die Hinweise oben rechts nennen **Namen** und nie „Someone“. Hat der Freund einen **Anzeigenamen**, steht **dieser** da, nicht der Anmeldename (z. B. „Zora“ statt „anna.resident“). Sie erscheinen bis zu ein paar Sekunden verzögert, wenn die Namen erst eintreffen müssen (der Anzeigename wartet höchstens 2 s). | ☐ |
+| TC-PRAESENZ-02 | Auf einen Hinweis klicken. | Der IM mit diesem Freund öffnet sich. | ☐ |
+| TC-PRAESENZ-03 | Ein Freund meldet sich später an und ab (nach dem Login, die Namen sind längst bekannt). | Hinweise „… ist online.“ / „… ist offline.“ sofort und mit Namen. | ☐ |
+| TC-PRAESENZ-04 | Unter `Einstellungen` → `Anzeige` den Hinweis abschalten, ein Freund meldet sich an. | Kein Hinweis; die graue Zeile im offenen IM-Reiter bleibt. | ☐ |
 
 ---
 

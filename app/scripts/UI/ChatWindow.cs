@@ -38,9 +38,18 @@ public partial class ChatWindow : SLNGWindow
     {
         public PanelContainer Pill = null!;
         public Label Icon = null!;
-        public Button Label = null!;
+        public Label Label = null!;
+        /// <summary>The red count after the name -- used by the Chat tab, hidden on the others.</summary>
+        public Label Badge = null!;
         public Control Page = null!;
+        public bool Selected;
+        public bool Hover;
+        /// <summary>Something new is waiting behind this tab: it is drawn warm, in front of the grey of the others.</summary>
+        public bool HasUnread;
     }
+
+    /// <summary>The total last put on the Chat tab's badge, so the per-frame check only touches the controls when it changes.</summary>
+    private int _chatTabBadgeTotal = -1;
 
     private readonly List<OuterTab> _outerTabs = new();
     private HBoxContainer _outerTabStrip = null!;
@@ -364,6 +373,7 @@ public partial class ChatWindow : SLNGWindow
     {
         using var _phase = MainThreadPhase.Enter("ui.chat"); // BUG-PERF-05
         ExpirePeerTyping();
+        UpdateChatTabBadge();
 
         // Detect the user scrolling away from (or back to) the bottom of the live log so we can
         // pause auto-follow while they're reading history, per the M5-3 UX decision -- there's no
@@ -1061,6 +1071,12 @@ public partial class ChatWindow : SLNGWindow
             OwnerWindow = this,
             PlaceholderText = "Write a message...",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            // Without this Godot ends the field's "editing" state the moment Enter submits: it keeps the focus (so
+            // the avatar does not walk off) but ignores every key until the person clicks into it again --
+            // LineEdit.unhandled_key_input returns at once while it is not editing. Reported as "the chat box goes
+            // inactive after writing". OnSendPressed's GrabFocus cannot help: the field still has the focus, so
+            // that call does nothing.
+            KeepEditingOnTextSubmit = true,
         };
         _inputEdit.AddThemeFontSizeOverride("font_size", BodyFontSize);
         // FEAT-UI-43: the key dispatcher tells the chat bar from other text fields (Enter sends here).
@@ -1252,7 +1268,8 @@ public partial class ChatWindow : SLNGWindow
         _inputEdit.Text = "";
         StopTyping();
 
-        // Keep keyboard focus in the input after sending. AvatarController disables movement and
+        // Keep keyboard focus in the input after sending (and, with KeepEditingOnTextSubmit on the field, keep it
+        // taking text -- see where _inputEdit is built). AvatarController disables movement and
         // camera rotation while a LineEdit/TextEdit holds Godot's control focus (hasUiFocus), so
         // this used to ReleaseFocus() here to make sure movement came back after a send. But that
         // drops the user out of the chat bar mid-conversation: typing the next line then walks the
@@ -1299,32 +1316,8 @@ public partial class ChatWindow : SLNGWindow
 
     private const string ConversationDragPrefix = "slng-conversation:";
 
-    /// <summary>The conversation's name button, which is also what you grab to drag it. The delegates are set by
-    /// <see cref="AddChatTab"/>; <c>DragData</c> null means this row cannot be dragged ("Main").</summary>
-    private partial class ConversationButton : Button
-    {
-        public string? DragData;
-        public Func<string, bool>? CanDrop;
-        public Action<string>? Dropped;
-
-        public override Variant _GetDragData(Vector2 atPosition)
-        {
-            if (DragData == null) return default;
-
-            var preview = new Label { Text = Text };
-            preview.AddThemeColorOverride("font_color", new Color(1, 1, 1, 0.9f));
-            SetDragPreview(preview);
-            return DragData;
-        }
-
-        public override bool _CanDropData(Vector2 atPosition, Variant data)
-            => data.VariantType == Variant.Type.String && CanDrop?.Invoke(data.AsString()) == true;
-
-        public override void _DropData(Vector2 atPosition, Variant data)
-        {
-            if (data.VariantType == Variant.Type.String) Dropped?.Invoke(data.AsString());
-        }
-    }
+    // The conversation's name button is also what you grab to drag it: a <see cref="DragSortButton"/>, whose
+    // delegates <see cref="AddChatTab"/> sets. DragData null means this row cannot be dragged ("Main").
 
     /// <summary>Moves a conversation to where another one is. The list keeps that order for the rest of the
     /// session (the open conversations are not restored at the next login, so there is nothing to save).
@@ -1530,7 +1523,7 @@ public partial class ChatWindow : SLNGWindow
             inner.AddChild(iconRect);
         }
 
-        var label = new ConversationButton
+        var label = new DragSortButton
         {
             Text = displayName,
             Flat = true,
@@ -1650,15 +1643,15 @@ public partial class ChatWindow : SLNGWindow
         tab.Lines.Add(bbcodeLine);
         if (overflowed) tab.Lines.RemoveAt(0);
 
-        if (tab != _activeChatTab)
+        // Unread when nobody is looking: another conversation, or the selected one while the window is open on another
+        // page (Friends...) -- see ChatUnreadPolicy.
+        bool selected = tab == _activeChatTab;
+        if (ChatUnreadPolicy.CountsAsUnread(countUnread, selected, ChatPageHiddenBehindAnotherPage))
         {
-            if (countUnread)
-            {
-                tab.UnreadCount++;
-                UpdateUnreadBadge(tab);
-            }
-            return;
+            tab.UnreadCount++;
+            UpdateUnreadBadge(tab);
         }
+        if (!selected) return;
 
         if (overflowed)
             RebuildLogContent(tab); // full rebuild -- capped at MaxLogLines, cheap, and rare
@@ -1731,10 +1724,13 @@ public partial class ChatWindow : SLNGWindow
         page.SetAnchorsPreset(LayoutPreset.FullRect);
         _outerPageHost.AddChild(page);
 
-        var pill = new PanelContainer();
+        // The whole pill is the button: icon, name, badge and the padding around them. It used to be only the name
+        // (a flat Button inside the pill), so a click on the icon or the edge of the tab did nothing and the tabs
+        // were hard to hit.
+        var pill = new PanelContainer { MouseDefaultCursorShape = CursorShape.PointingHand };
         _outerTabStrip.AddChild(pill);
 
-        var inner = new HBoxContainer();
+        var inner = new HBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
         inner.AddThemeConstantOverride("separation", 6);
         pill.AddChild(inner);
 
@@ -1743,30 +1739,65 @@ public partial class ChatWindow : SLNGWindow
         icon.AddThemeFontSizeOverride("font_size", 15);
         inner.AddChild(icon);
 
-        var label = new Button
+        var label = new Label
         {
             Text = tabName,
-            Flat = true,
-            FocusMode = FocusModeEnum.None,
+            VerticalAlignment = VerticalAlignment.Center,
             CustomMinimumSize = new Vector2(0, 24),
         };
         label.AddThemeFontSizeOverride("font_size", LabelFontSize);
         inner.AddChild(label);
 
-        var tab = new OuterTab { Pill = pill, Icon = icon, Label = label, Page = page };
-        _outerTabs.Add(tab);
-        label.Pressed += () => SelectOuterTab(page);
+        var badge = new Label { Visible = false, VerticalAlignment = VerticalAlignment.Center };
+        badge.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
+        badge.AddThemeFontSizeOverride("font_size", MetaFontSize + 1);
+        inner.AddChild(badge);
 
-        ApplyOuterTabStyle(tab, selected: isFirst);
+        var tab = new OuterTab { Pill = pill, Icon = icon, Label = label, Badge = badge, Page = page, Selected = isFirst };
+        _outerTabs.Add(tab);
+        pill.GuiInput += @event =>
+        {
+            if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true }) SelectOuterTab(page);
+        };
+        pill.MouseEntered += () => { tab.Hover = true; ApplyOuterTabStyle(tab); };
+        pill.MouseExited += () => { tab.Hover = false; ApplyOuterTabStyle(tab); };
+
+        ApplyOuterTabStyle(tab);
     }
+
+    /// <summary>Keeps the Chat tab's badge at the number of unread messages across every conversation -- what the
+    /// toolbar's chat button shows -- so a message that arrives while the Friends page is open is not invisible.
+    /// Polled each frame (cheap: a few tabs, and the controls are only touched when the number changes), because the
+    /// count changes in many places: a line, a tab selected, a tab closed.</summary>
+    private void UpdateChatTabBadge()
+    {
+        int total = TotalUnread;
+        if (total == _chatTabBadgeTotal) return;
+        _chatTabBadgeTotal = total;
+
+        var tab = _outerTabs.Find(t => t.Page == _chatPageControl);
+        if (tab == null) return;
+        tab.HasUnread = total > 0;
+        tab.Badge.Visible = total > 0;
+        tab.Badge.Text = total > UnreadCap ? "9+" : total.ToString();
+        ApplyOuterTabStyle(tab);
+    }
+
+    /// <summary>True while the window is open and showing some other page (Friends, Groups, Recent) than the Chat
+    /// page -- the one case where the conversation selected on the Chat page is not being looked at although it is
+    /// the selected one.</summary>
+    private bool ChatPageHiddenBehindAnotherPage => Visible && !IsMinimized && !_chatPageControl.Visible;
 
     // Rounded "pill" tabs -- the classic top tab bar look, distinct from the conversation list's
     // rounded-left rows so the two axes read as visually different kinds of navigation.
-    private static void ApplyOuterTabStyle(OuterTab tab, bool selected)
+    private static void ApplyOuterTabStyle(OuterTab tab)
     {
+        bool selected = tab.Selected;
         var style = new StyleBoxFlat
         {
-            BgColor = selected ? new Color(1, 1, 1, 0.10f) : new Color(0, 0, 0, 0),
+            BgColor = selected ? new Color(1, 1, 1, 0.10f)
+                : tab.Hover ? new Color(1, 1, 1, 0.06f)
+                : new Color(0, 0, 0, 0),
             CornerRadiusTopLeft = 8,
             CornerRadiusTopRight = 8,
             CornerRadiusBottomLeft = 8,
@@ -1778,10 +1809,13 @@ public partial class ChatWindow : SLNGWindow
         };
         tab.Pill.AddThemeStyleboxOverride("panel", style);
 
-        var fg = selected ? new Color(1, 1, 1) : new Color(0.72f, 0.72f, 0.72f);
+        // Something waiting behind a tab you are not on: warm instead of grey, next to the badge's count.
+        var fg = selected ? new Color(1, 1, 1)
+            : tab.HasUnread ? new Color(1f, 0.78f, 0.55f)
+            : tab.Hover ? new Color(1, 1, 1)
+            : new Color(0.72f, 0.72f, 0.72f);
         tab.Icon.AddThemeColorOverride("font_color", fg);
         tab.Label.AddThemeColorOverride("font_color", fg);
-        tab.Label.AddThemeColorOverride("font_hover_color", new Color(1, 1, 1));
     }
 
     private void SelectOuterTab(Control selectedPage)
@@ -1790,7 +1824,14 @@ public partial class ChatWindow : SLNGWindow
         {
             bool selected = tab.Page == selectedPage;
             tab.Page.Visible = selected;
-            ApplyOuterTabStyle(tab, selected);
+            tab.Selected = selected;
+            ApplyOuterTabStyle(tab);
+        }
+        // Back on the Chat page: what came in for the selected conversation meanwhile is on screen now.
+        if (selectedPage == _chatPageControl && _activeChatTab is { UnreadCount: > 0 } active)
+        {
+            active.UnreadCount = 0;
+            UpdateUnreadBadge(active);
         }
         if (selectedPage == _recentPanel) RefreshRecentPanel(); // previews are read when the page is shown
         if (selectedPage == _friendsPanel) _friendsPanel.RefreshIcons(); // pictures that arrived while it was hidden
@@ -1814,6 +1855,9 @@ public partial class ChatWindow : SLNGWindow
     /// <summary>Selects a page. The caller makes the window itself visible (the launcher does, so a
     /// minimized or hidden window takes the usual path).</summary>
     public void ShowPage(Page page) => SelectOuterTab(PageControl(page));
+
+    /// <summary>For the selftest: whether the chat bar goes on taking text after Enter has sent a line.</summary>
+    internal bool InputKeepsEditingOnSubmit => _inputEdit.KeepEditingOnTextSubmit;
 
     /// <summary>Puts the cursor in the chat bar on the Chat page - the "start typing" shortcut.</summary>
     public void FocusChatInput()

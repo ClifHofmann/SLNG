@@ -753,6 +753,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // store from the skeleton -- see OnLoginResponseOpenCaches.
         _client.Network.RegisterLoginResponseCallback(OnLoginResponseOpenCaches);
         _client.Network.RegisterLoginResponseCallback(OnLoginResponseRememberMapServer);
+        _client.Network.RegisterLoginResponseCallback(OnLoginResponseSeedFriendRights);
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
@@ -809,6 +810,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOnline += OnFriendOnline;
         _client.Friends.FriendOffline += OnFriendOffline;
         _client.Friends.FriendshipTerminated += OnFriendshipTerminated;
+        _client.Friends.FriendRightsUpdate += OnFriendRightsUpdate;
         _client.Self.IM += OnInstantMessage;
         _client.Self.ScriptDialog += OnScriptDialog;
         // Without this subscription the simulator's question is never even seen: LibreMetaverse's
@@ -894,6 +896,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _parcelEnvironmentPollCts.Dispose();
         try { _wearableRebakeCts?.Cancel(); _wearableRebakeCts?.Dispose(); } catch { }
         _client.Network.UnregisterLoginResponseCallback(OnLoginResponseOpenCaches);
+        _client.Network.UnregisterLoginResponseCallback(OnLoginResponseSeedFriendRights);
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
@@ -922,6 +925,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendOnline -= OnFriendOnline;
         _client.Friends.FriendOffline -= OnFriendOffline;
         _client.Friends.FriendshipTerminated -= OnFriendshipTerminated;
+        _client.Friends.FriendRightsUpdate -= OnFriendRightsUpdate;
         _client.Self.IM -= OnInstantMessage;
         _client.Self.ScriptDialog -= OnScriptDialog;
         _client.Self.MoneyBalanceReply -= OnMoneyBalanceReply;

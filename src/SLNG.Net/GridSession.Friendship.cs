@@ -81,6 +81,72 @@ public sealed partial class GridSession
     /// Raised on a LibreMetaverse network thread — marshal before touching a scene node.</summary>
     public event EventHandler? FriendListChanged;
 
+    // What each friend lets us do with them, as last seen -- the "before" of the next change. LibreMetaverse
+    // overwrites its own copy before it raises FriendRightsUpdate, so without this the old value is gone by the time
+    // we are told. Seeded when the login response has filled the friend list, and for a friend added later the first
+    // time GetFriends sees them.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, FriendPermissions> _rightsGrantedToUs = new();
+
+    private void OnLoginResponseSeedFriendRights(
+        bool loginSuccess, bool redirect, string message, string reason, LoginResponseData? reply)
+    {
+        if (!loginSuccess) return;
+        foreach (var friend in _client.Friends.FriendList.Values)
+            _rightsGrantedToUs[friend.UUID.Guid] = (FriendPermissions)(int)friend.MyFriendRights;
+    }
+
+    /// <summary>Raised on a NETWORK thread when a friend gives us a right over them or takes one back. Not raised for
+    /// the first sight of a friend (there is nothing to compare with), nor for our own grants.</summary>
+    public event EventHandler<FriendRightsChangedEvent>? FriendRightsChanged;
+
+    // A friend changed what we may do with them, or the grid echoed a change of ours. LibreMetaverse has already
+    // stored it in the FriendInfo; the UI has to be told to re-read GetFriends, and a change of THEIR grant to us is
+    // worth a notification. Our own echo changes the other half (TheirFriendRights) and compares equal here.
+    private void OnFriendRightsUpdate(object? sender, FriendInfoEventArgs e)
+    {
+        FriendListChanged?.Invoke(this, EventArgs.Empty);
+
+        Guid id = e.Friend.UUID.Guid;
+        var after = (FriendPermissions)(int)e.Friend.MyFriendRights;
+        bool known = _rightsGrantedToUs.TryGetValue(id, out var before);
+        _rightsGrantedToUs[id] = after;
+        if (!known || before == after) return;
+
+        string name = e.Friend.Name ?? string.Empty;
+        if (string.IsNullOrEmpty(name)) TryGetCachedName(id, out name!);
+        FriendRightsChanged?.Invoke(this, new FriendRightsChangedEvent(id, name ?? string.Empty, before, after));
+    }
+
+    /// <summary>Sets what this friend may do with us: see that we are online, find us on the map, edit our objects.
+    /// <paramref name="mine"/> is the friend's WHOLE set, not a change -- the grid takes the set in one message
+    /// (<c>GrantUserRights</c>); build it from <c>FriendEntry.GrantedByMe</c> with
+    /// <see cref="FriendPermissionsExtensions.With"/>. Returns false when we are not connected or the friend is not
+    /// on the list; nothing is sent then.</summary>
+    /// <remarks>LibreMetaverse's <c>GrantRights</c> only sends the packet and leaves its own copy as it was, so the
+    /// copy is set here -- otherwise <see cref="GetFriends"/> would keep reporting the old set until the next login.
+    /// What we grant is the FRIEND's rights over us, hence <c>TheirFriendRights</c>. Raises
+    /// <see cref="FriendListChanged"/> so lists redraw.</remarks>
+    public bool SetFriendPermissions(Guid friendId, FriendPermissions mine)
+    {
+        if (!_client.Network.Connected) return false;
+        return ApplyGrantedRights(friendId, mine, (id, rights) => _client.Friends.GrantRights(id, rights));
+    }
+
+    /// <summary>The part of <see cref="SetFriendPermissions"/> after the connection check, with the send handed in so a
+    /// test can see what would go out. Only the three bits the grid defines are sent (a stray higher bit in
+    /// <paramref name="mine"/> would otherwise reach the wire), and LibreMetaverse's copy of what the FRIEND may do with
+    /// us is set to the same set.</summary>
+    internal bool ApplyGrantedRights(Guid friendId, FriendPermissions mine, Action<UUID, FriendRights> send)
+    {
+        if (!_client.Friends.FriendList.TryGetValue(new UUID(friendId), out var friend)) return false;
+
+        var rights = (FriendRights)((int)mine & (int)(FriendRights.CanSeeOnline | FriendRights.CanSeeOnMap | FriendRights.CanModifyObjects));
+        send(friend.UUID, rights);
+        friend.TheirFriendRights = rights;
+        FriendListChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     // The other side ended the friendship (TerminateFriendship, from any viewer). LibreMetaverse's
     // own handler has already dropped them from FriendList; the UI has to be told to re-read it,
     // or the friend stays on screen until the next relog.
@@ -89,6 +155,7 @@ public sealed partial class GridSession
         FriendListChanged?.Invoke(this, EventArgs.Empty);
 
         Guid id = e.AgentID.Guid;
+        _rightsGrantedToUs.TryRemove(id, out _); // see RemoveFriend
         if (ConsumeSelfRemoval(id)) return;
         string name = e.AgentName ?? string.Empty;
         if (string.IsNullOrEmpty(name)) TryGetCachedName(id, out name!);
@@ -120,6 +187,7 @@ public sealed partial class GridSession
         var id = new UUID(agentId);
         if (!_client.Friends.FriendList.ContainsKey(id)) return false;
         _selfRemovedFriends[agentId] = DateTime.UtcNow;
+        _rightsGrantedToUs.TryRemove(agentId, out _); // a friendship formed again later starts from its own rights
         _client.Friends.TerminateFriendship(id);
         FriendListChanged?.Invoke(this, EventArgs.Empty);
         return true;
