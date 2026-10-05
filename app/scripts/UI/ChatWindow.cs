@@ -1643,23 +1643,15 @@ public partial class ChatWindow : SLNGWindow
         tab.Lines.Add(bbcodeLine);
         if (overflowed) tab.Lines.RemoveAt(0);
 
-        if (tab != _activeChatTab)
-        {
-            if (countUnread)
-            {
-                tab.UnreadCount++;
-                UpdateUnreadBadge(tab);
-            }
-            return;
-        }
-
-        // The selected conversation is read as it arrives -- unless the window is open on another page (Friends...),
-        // where nobody sees it. Then it counts, and the Chat tab says so.
-        if (countUnread && ChatPageHiddenBehindAnotherPage)
+        // Unread when nobody is looking: another conversation, or the selected one while the window is open on another
+        // page (Friends...) -- see ChatUnreadPolicy.
+        bool selected = tab == _activeChatTab;
+        if (ChatUnreadPolicy.CountsAsUnread(countUnread, selected, ChatPageHiddenBehindAnotherPage))
         {
             tab.UnreadCount++;
             UpdateUnreadBadge(tab);
         }
+        if (!selected) return;
 
         if (overflowed)
             RebuildLogContent(tab); // full rebuild -- capped at MaxLogLines, cheap, and rare

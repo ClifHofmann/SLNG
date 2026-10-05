@@ -402,4 +402,157 @@ public class FriendCategoryBookTests
         Assert.Empty(book.Categories);
         Assert.Empty(book.Assignments);
     }
+
+    // ---- where a dragged category would land --------------------------------------------------------
+
+    [Fact]
+    public void DropPlacement_MovingUp_LandsAboveTheTarget()
+    {
+        var book = BookWith("A", "B", "C");
+
+        Assert.Equal(CategoryDropPlacement.Above, book.DropPlacement("C", "A"));
+        Assert.Equal(CategoryDropPlacement.Above, book.DropPlacement("C", "B"));
+    }
+
+    [Fact]
+    public void DropPlacement_MovingDown_LandsBelowTheTarget()
+    {
+        var book = BookWith("A", "B", "C");
+
+        Assert.Equal(CategoryDropPlacement.Below, book.DropPlacement("A", "B"));
+        Assert.Equal(CategoryDropPlacement.Below, book.DropPlacement("A", "C"));
+    }
+
+    [Fact]
+    public void DropPlacement_OnTheNoCategoryBlock_MeansJustAboveItUnlessAlreadyLast()
+    {
+        var book = BookWith("A", "B", "C");
+
+        Assert.Equal(CategoryDropPlacement.Above, book.DropPlacement("A", null));
+        Assert.Equal(CategoryDropPlacement.Above, book.DropPlacement("B", null));
+        Assert.Equal(CategoryDropPlacement.None, book.DropPlacement("C", null)); // already last
+    }
+
+    [Fact]
+    public void DropPlacement_IsNoneWhenNothingWouldChange()
+    {
+        var book = BookWith("A", "B");
+
+        Assert.Equal(CategoryDropPlacement.None, book.DropPlacement("A", "A"));
+        Assert.Equal(CategoryDropPlacement.None, book.DropPlacement("Nope", "A"));
+        Assert.Equal(CategoryDropPlacement.None, book.DropPlacement("A", "Nope"));
+        Assert.Equal(CategoryDropPlacement.None, book.DropPlacement("Nope", null));
+    }
+
+    [Fact]
+    public void DropPlacement_IgnoresCase()
+    {
+        var book = BookWith("Family", "Work");
+
+        Assert.Equal(CategoryDropPlacement.Below, book.DropPlacement("family", "WORK"));
+    }
+
+    [Theory]
+    [InlineData("A", "C")]
+    [InlineData("C", "A")]
+    [InlineData("B", "C")]
+    [InlineData("A", "B")]
+    public void DropPlacement_AgreesWithWhereMoveActuallyPutsIt(string dragged, string target)
+    {
+        var book = BookWith("A", "B", "C");
+        var placement = book.DropPlacement(dragged, target);
+        int targetBefore = book.IndexOf(target);
+
+        book.Move(dragged, targetBefore);
+
+        int now = book.IndexOf(dragged), tgt = book.IndexOf(target);
+        Assert.Equal(placement == CategoryDropPlacement.Above, now < tgt);
+        Assert.Equal(placement == CategoryDropPlacement.Below, now > tgt);
+    }
+
+    // ---- more edges of the filing -------------------------------------------------------------------
+
+    [Fact]
+    public void Normalize_TrimsAgainAfterCuttingALongName()
+    {
+        string name = new string('x', FriendCategoryBook.MaxNameLength - 1) + " tail";
+
+        string normalized = FriendCategoryBook.Normalize(name);
+
+        Assert.Equal(FriendCategoryBook.MaxNameLength - 1, normalized.Length); // no trailing space left from the cut
+        Assert.False(normalized.EndsWith(' '));
+    }
+
+    [Fact]
+    public void Group_IgnoresFriendsThatAreNotInTheList_WithoutLosingTheirFiling()
+    {
+        var book = BookWith("Family");
+        var gone = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        book.Assign(gone, "Family");
+
+        var sections = book.Group(new[] { Anna });
+
+        Assert.Empty(sections[0].Friends);
+        Assert.Equal("Family", book.CategoryOf(gone)); // still filed, in case they are back
+    }
+
+    [Fact]
+    public void Group_FoldingTheUncategorisedBlock_DoesNotTouchTheOthers()
+    {
+        var book = BookWith("Family");
+        book.Assign(Anna.Id, "Family");
+        book.UncategorizedCollapsed = true;
+
+        var sections = book.Group(All);
+
+        Assert.False(sections.Single(s => s.Category == "Family").Collapsed);
+        Assert.True(sections.Single(s => s.Category == null).Collapsed);
+    }
+
+    [Fact]
+    public void Remove_ThenAddingTheSameNameAgain_StartsEmpty()
+    {
+        var book = BookWith("Family");
+        book.Assign(Anna.Id, "Family");
+        book.SetCollapsed("Family", true);
+
+        book.Remove("Family");
+        book.Add("Family");
+
+        Assert.Null(book.CategoryOf(Anna.Id));
+        Assert.False(book.IsCollapsed("Family"));
+    }
+
+    [Fact]
+    public void FromJson_IgnoresFieldsItDoesNotKnow()
+    {
+        var book = FriendCategoryBook.FromJson("{\"Categories\":[\"Family\"],\"Assignments\":{},\"Collapsed\":[],\"UncategorizedCollapsed\":true,\"FutureThing\":42}");
+
+        Assert.Equal(new[] { "Family" }, book.Categories);
+        Assert.True(book.UncategorizedCollapsed);
+    }
+
+    [Fact]
+    public void FromJson_DropsAnAssignmentToACategoryThatIsGone()
+    {
+        string json = "{\"Categories\":[\"Family\"],\"Assignments\":{\"11111111-1111-1111-1111-111111111111\":\"Deleted\"},\"Collapsed\":[],\"UncategorizedCollapsed\":false}";
+
+        var book = FriendCategoryBook.FromJson(json);
+
+        Assert.Null(book.CategoryOf(Anna.Id));
+        Assert.Empty(book.Assignments);
+    }
+
+    [Fact]
+    public void TheOrderOfManyCategories_SurvivesManyMoves()
+    {
+        var book = BookWith("A", "B", "C", "D", "E");
+
+        book.Move("E", 0);   // E A B C D
+        book.Move("A", 4);   // E B C D A
+        book.Move("C", 1);   // E C B D A
+
+        Assert.Equal(new[] { "E", "C", "B", "D", "A" }, book.Categories);
+        Assert.Equal(book.Categories, FriendCategoryBook.FromJson(book.ToJson()).Categories);
+    }
 }

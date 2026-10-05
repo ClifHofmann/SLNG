@@ -420,6 +420,12 @@ public sealed partial class GridSession
         return name.Length > 0;
     }
 
+    /// <summary>True once the grid has answered for this agent -- with a Display Name or with "none of their own" --
+    /// even when the answer is old. <see cref="TryGetDisplayName"/> cannot tell "none" from "not answered yet"; a
+    /// caller that wants to wait for the answer needs this. A grid that serves no Display Names never answers.</summary>
+    public bool HasDisplayNameAnswer(Guid id) =>
+        _displayNameCache.Lookup(id, DateTime.UtcNow, out _) != DisplayNameCache.Freshness.Miss;
+
     private readonly SessionLineGate _sessionLineGate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Guid> _conferencePeers = new();
 

@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.76-alpha";
+    public const string AppVersion = "v0.26.77-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3637,6 +3637,7 @@ public partial class Boot : Control
         // encodes to a few hundred bytes of nothing.
         _session.UseBakeEncoder(new SLNG.Assets.J2KBakeTextureEncoder());
         _friendPresence.Reset(); // a new login starts from an empty friends list
+        _pendingPresenceToasts.Clear(); // ...and a toast still waiting for a name from the last session must not appear
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
         _worldSimulation.SelfAnimationStopRequested += OnSelfAnimationStopRequested;
 
@@ -4781,17 +4782,15 @@ public partial class Boot : Control
     private void OnFriendRightsChanged(object? sender, SLNG.Core.FriendRightsChangedEvent e)
     {
         string name = string.IsNullOrEmpty(e.FriendName) ? e.FriendId.ToString() : e.FriendName;
-        foreach (var (right, word) in new[]
+        foreach (var change in e.Changes)
         {
-            (SLNG.Core.FriendPermissions.SeeOnline, "online"),
-            (SLNG.Core.FriendPermissions.SeeOnMap, "map"),
-            (SLNG.Core.FriendPermissions.ModifyObjects, "objects"),
-        })
-        {
-            string? key = e.Gained.HasFlag(right) ? $"ui.notifications.friend_right_gained_{word}"
-                : e.Lost.HasFlag(right) ? $"ui.notifications.friend_right_lost_{word}"
-                : null;
-            if (key == null) continue;
+            string right = change.Right switch
+            {
+                SLNG.Core.FriendPermissions.SeeOnline => "online",
+                SLNG.Core.FriendPermissions.SeeOnMap => "map",
+                _ => "objects",
+            };
+            string key = $"ui.notifications.friend_right_{(change.Gained ? "gained" : "lost")}_{right}";
             _notifications.Add(SLNG.Core.NotificationKind.System, e.FriendId,
                 SLNG.App.UI.L10n.TrFormat(key, name), senderName: name);
         }
@@ -4913,11 +4912,7 @@ public partial class Boot : Control
     }
 
     // Friends whose presence toast is waiting for their name, with the state to announce (the latest one wins).
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<System.Guid, bool> _pendingPresenceToasts = new();
-
-    /// <summary>How long a presence toast waits for a name the grid has not delivered yet before it falls back to
-    /// "Someone". Right after login every online friend announces themselves at once, before their names are known.</summary>
-    private const double PresenceNameWaitSeconds = 6.0;
+    private readonly System.Collections.Generic.Dictionary<System.Guid, bool> _pendingPresenceToasts = new();
 
     /// <summary>The friend's login name as far as it is known: from the friends list, else the name cache. Empty when
     /// the grid has not told us yet (asking is <c>GetFriends</c>'s job: it requests every name it lacks).</summary>
@@ -4932,26 +4927,40 @@ public partial class Boot : Control
     /// <summary>Main-thread half of <see cref="OnFriendStatusForToast"/>. The friend id travels as a string
     /// because CallDeferred marshals Variants and a Guid is not one.
     /// <para>Right after login the names are usually not here yet, which used to give a row of identical "Someone is
-    /// online." toasts. A toast whose name is missing waits for it (<see cref="OnProfileNameResolved"/> shows it when it
-    /// arrives, <see cref="PresenceNameWaitSeconds"/> at most) and says it with the Display Name when there is one.</para></summary>
+    /// online." toasts, and a Display Name is only asked for the first time it is shown, so the toast named the login
+    /// name instead. A toast therefore waits (<see cref="SLNG.Core.PresenceNameWait"/> decides how long, and for what)
+    /// and then shows the Display Name when there is one. Nothing known missing = no wait at all.</para></summary>
     private void ShowFriendPresenceToast(string friendIdText, bool online)
     {
         if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
         if (_session == null || !System.Guid.TryParse(friendIdText, out var friendId)) return;
 
+        bool alreadyWaiting = _pendingPresenceToasts.ContainsKey(friendId);
+        _pendingPresenceToasts[friendId] = online; // flips while waiting: the latest state is the one announced
+        if (!alreadyWaiting) PollPresenceName(friendId, pollsDone: 0);
+    }
+
+    private void PollPresenceName(System.Guid friendId, int pollsDone)
+    {
+        if (!_pendingPresenceToasts.TryGetValue(friendId, out var online)) return;
+        if (_session == null) { _pendingPresenceToasts.Remove(friendId); return; }
+
         string legacy = KnownFriendName(friendId);
-        if (string.IsNullOrWhiteSpace(legacy))
+        bool haveLegacy = !string.IsNullOrWhiteSpace(legacy);
+        // NameDisplay.For also asks the grid for the Display Name the first time, which is what makes the answer come.
+        string shown = haveLegacy ? SLNG.App.UI.NameDisplay.For(_session, friendId, legacy) : string.Empty;
+
+        var decision = SLNG.Core.PresenceNameWait.Decide(
+            haveLegacy, SLNG.App.UI.NameDisplay.UseDisplayNames(), _session.HasDisplayNameAnswer(friendId), pollsDone);
+        if (decision == SLNG.Core.PresenceNameWaitDecision.Wait)
         {
-            _pendingPresenceToasts[friendId] = online;
-            GetTree().CreateTimer(PresenceNameWaitSeconds).Timeout += () =>
-            {
-                if (_pendingPresenceToasts.TryRemove(friendId, out var stillOnline))
-                    ShowPresenceToastNow(friendId, stillOnline, SLNG.App.UI.L10n.Tr("ui.money.someone"));
-            };
+            GetTree().CreateTimer(SLNG.Core.PresenceNameWait.PollSeconds).Timeout += () => PollPresenceName(friendId, pollsDone + 1);
             return;
         }
 
-        ShowPresenceToastNow(friendId, online, SLNG.App.UI.NameDisplay.For(_session, friendId, legacy));
+        _pendingPresenceToasts.Remove(friendId);
+        ShowPresenceToastNow(friendId, online,
+            decision == SLNG.Core.PresenceNameWaitDecision.Show ? shown : SLNG.App.UI.L10n.Tr("ui.money.someone"));
     }
 
     private void ShowPresenceToastNow(System.Guid friendId, bool online, string shownName)
@@ -4981,11 +4990,6 @@ public partial class Boot : Control
 
     private void OnProfileNameResolved(object? sender, SLNG.Core.NameResolvedEvent e)
     {
-        // A presence toast that was waiting for this friend's name (network thread: only the dictionary and
-        // CallDeferred are touched).
-        if (!_pendingPresenceToasts.IsEmpty && _pendingPresenceToasts.TryRemove(e.Id, out var pendingOnline))
-            CallDeferred(MethodName.ShowFriendPresenceToast, e.Id.ToString(), pendingOnline);
-
         // A payment is recorded the moment it lands, usually before the payer's name has
         // resolved. Without this the entry keeps saying "Jemand hat dir L$ 2200 bezahlt" -- the
         // one thing it exists to answer.

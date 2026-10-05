@@ -2,7 +2,6 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using SLNG.Core;
 using SLNG.Net;
@@ -323,18 +322,15 @@ public partial class FriendsPanel : Control
         _countLabel.Text = $"Friends: {friends.Count}";
 
         string filterText = _filterEdit.Text.Trim();
-        var visible = string.IsNullOrEmpty(filterText)
-            ? friends
-            : friends.Where(f => DisplayName(f).Contains(filterText, StringComparison.OrdinalIgnoreCase)
-                          || f.Name.Contains(filterText, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (_onlyOnline) visible = visible.Where(f => f.IsOnline).ToList();
+        // The rule (filter by shown or login name, only online, online first then A-Z) lives in Core, where it is tested.
+        var sorted = FriendListView.Select(friends, DisplayName, filterText, _onlyOnline);
 
         if (friends.Count == 0)
         {
             _emptyLabel.Text = "No friends yet. Add friends in-world to see them here.";
             _emptyLabel.Visible = true;
         }
-        else if (visible.Count == 0)
+        else if (sorted.Count == 0)
         {
             _emptyLabel.Text = _onlyOnline && string.IsNullOrEmpty(filterText)
                 ? L10n.Tr("ui.friend_view.none_online")
@@ -345,11 +341,6 @@ public partial class FriendsPanel : Control
         {
             _emptyLabel.Visible = false;
         }
-
-        // Online first, then alphabetical within each group -- standard SL/Firestorm behavior.
-        var sorted = visible
-            .OrderByDescending(f => f.IsOnline)
-            .ThenBy(DisplayName, StringComparer.OrdinalIgnoreCase);
 
         // "Show categories" off: one plain list, online first. The categories and who is in them are kept as they are.
         if (!_showCategories)
@@ -401,7 +392,7 @@ public partial class FriendsPanel : Control
         bool collapsed = section.Collapsed;
 
         var panel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        SetHeaderStyle(panel, DropMark.None);
+        SetHeaderStyle(panel, CategoryDropPlacement.None);
 
         var row = new HBoxContainer();
         row.AddThemeConstantOverride("separation", 2);
@@ -474,30 +465,20 @@ public partial class FriendsPanel : Control
     }
 
     /// <summary>Where a category being dragged would land relative to a header it is held over: a bar on the top edge
-    /// when it would go above it, on the bottom edge when below. A category takes the place the header has now, so
-    /// moving up lands above and moving down lands below; the "no category" block is always last, so a drop on it
-    /// goes just above it.</summary>
-    private enum DropMark { None, Above, Below }
-
-    private DropMark DropMarkFor(string? dragged, string? target)
-    {
-        if (dragged == null || !dragged.StartsWith(CategoryDragPrefix, StringComparison.Ordinal)) return DropMark.None;
-        int from = _book.IndexOf(dragged[CategoryDragPrefix.Length..]);
-        if (from < 0) return DropMark.None;
-        if (target == null) return from == _book.Categories.Count - 1 ? DropMark.None : DropMark.Above;
-        int to = _book.IndexOf(target);
-        if (to < 0 || to == from) return DropMark.None;
-        return from > to ? DropMark.Above : DropMark.Below;
-    }
+    /// when it would go above it, on the bottom edge when below (the rule is <see cref="FriendCategoryBook.DropPlacement"/>).</summary>
+    private CategoryDropPlacement DropMarkFor(string? dragged, string? target) =>
+        dragged != null && dragged.StartsWith(CategoryDragPrefix, StringComparison.Ordinal)
+            ? _book.DropPlacement(dragged[CategoryDragPrefix.Length..], target)
+            : CategoryDropPlacement.None;
 
     // The bar is a border; the content margins are fixed at the border's width so that showing or hiding it moves
     // nothing -- a list that shifts under the cursor mid-drag would flicker.
-    private static void SetHeaderStyle(PanelContainer panel, DropMark mark)
+    private static void SetHeaderStyle(PanelContainer panel, CategoryDropPlacement mark)
     {
         var accent = new Color(0.4f, 0.75f, 1f);
         var style = new StyleBoxFlat
         {
-            BgColor = mark == DropMark.None ? new Color(1, 1, 1, 0.07f) : new Color(0.3f, 0.6f, 0.9f, 0.28f),
+            BgColor = mark == CategoryDropPlacement.None ? new Color(1, 1, 1, 0.07f) : new Color(0.3f, 0.6f, 0.9f, 0.28f),
             CornerRadiusTopLeft = 4,
             CornerRadiusTopRight = 4,
             CornerRadiusBottomLeft = 4,
@@ -507,8 +488,8 @@ public partial class FriendsPanel : Control
             ContentMarginTop = 3,
             ContentMarginBottom = 3,
             BorderColor = accent,
-            BorderWidthTop = mark == DropMark.Above ? 3 : 0,
-            BorderWidthBottom = mark == DropMark.Below ? 3 : 0,
+            BorderWidthTop = mark == CategoryDropPlacement.Above ? 3 : 0,
+            BorderWidthBottom = mark == CategoryDropPlacement.Below ? 3 : 0,
         };
         panel.AddThemeStyleboxOverride("panel", style);
     }
@@ -783,7 +764,7 @@ public partial class FriendsPanel : Control
             AutowrapMode = TextServer.AutowrapMode.Off,
             ClipContents = true,
             MouseFilter = MouseFilterEnum.Ignore, // the button under it takes every click
-            Text = BbEscape(name) + (legacyName == null ? "" : $"  [color=#8c8c8c][font_size={ChatWindow.BodyFontSize - 2}]({BbEscape(legacyName)})[/font_size][/color]"),
+            Text = ChatWindow.BbEscape(name) + (legacyName == null ? "" : $"  [color=#8c8c8c][font_size={ChatWindow.BodyFontSize - 2}]({ChatWindow.BbEscape(legacyName)})[/font_size][/color]"),
         };
         label.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         label.OffsetLeft = 6;
@@ -792,19 +773,6 @@ public partial class FriendsPanel : Control
         label.AddThemeColorOverride("default_color",
             online ? new Color(0.92f, 0.92f, 0.92f) : new Color(0.62f, 0.62f, 0.62f));
         return label;
-    }
-
-    /// <summary>A name can hold anything a person typed, brackets included; unescaped, "[b]" would be read as markup.</summary>
-    private static string BbEscape(string text)
-    {
-        var sb = new StringBuilder(text.Length + 8);
-        foreach (char c in text)
-        {
-            if (c == '[') sb.Append("[lb]");
-            else if (c == ']') sb.Append("[rb]");
-            else sb.Append(c);
-        }
-        return sb.ToString();
     }
 
     /// <summary>The labels above the rights columns: which side the group is about, and which right it is. Each has

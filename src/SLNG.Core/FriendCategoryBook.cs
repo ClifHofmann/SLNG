@@ -178,6 +178,23 @@ public sealed class FriendCategoryBook
         return true;
     }
 
+    /// <summary>Where <paramref name="dragged"/> would land if dropped on <paramref name="target"/>: it takes the place the
+    /// target has now, so moving up lands above and moving down lands below. A <c>null</c> target stands for the block of
+    /// friends without a category, which is always last, so a drop on it goes to the end, just above that block.
+    /// <see cref="CategoryDropPlacement.None"/> when nothing would change: unknown names, onto itself, or to the end when
+    /// it is already last.</summary>
+    public CategoryDropPlacement DropPlacement(string dragged, string? target)
+    {
+        int from = IndexOf(dragged);
+        if (from < 0) return CategoryDropPlacement.None;
+        if (target == null)
+            return from == _categories.Count - 1 ? CategoryDropPlacement.None : CategoryDropPlacement.Above;
+
+        int to = IndexOf(target);
+        if (to < 0 || to == from) return CategoryDropPlacement.None;
+        return from > to ? CategoryDropPlacement.Above : CategoryDropPlacement.Below;
+    }
+
     /// <summary>Files a friend under a category, or under none when <paramref name="category"/> is <c>null</c>.
     /// Returns false for a category that does not exist; the friend stays where they were.</summary>
     public bool Assign(Guid friend, string? category)

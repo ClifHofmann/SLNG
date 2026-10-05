@@ -291,7 +291,18 @@ public record FriendRightsChangedEvent(Guid FriendId, string FriendName, FriendP
 
     /// <summary>The rights just taken back.</summary>
     public FriendPermissions Lost => Before & ~After;
+
+    private static readonly FriendPermissions[] InOrder =
+        { FriendPermissions.SeeOnline, FriendPermissions.SeeOnMap, FriendPermissions.ModifyObjects };
+
+    /// <summary>One entry per right that changed, in the order online, map, edit -- what a notification says, one line
+    /// each. Empty when nothing changed.</summary>
+    public IReadOnlyList<FriendRightChange> Changes =>
+        InOrder.Where(r => (Gained | Lost).HasFlag(r)).Select(r => new FriendRightChange(r, Gained.HasFlag(r))).ToList();
 }
+
+/// <summary>One right a friend gave (<c>Gained</c>) or took back.</summary>
+public readonly record struct FriendRightChange(FriendPermissions Right, bool Gained);
 
 /// <summary>Represents a spatial update for a simulator object or avatar.</summary>
 /// <param name="ParentLocalId">Local ID of the parent object, or 0 if unparented.</param>
