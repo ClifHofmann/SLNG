@@ -311,7 +311,9 @@
       "only_online_tooltip": "Blendet Freunde aus, die offline sind. Kategorien, in denen niemand online ist, verschwinden auch.",
       "none_online": "Gerade ist keiner deiner Freunde online.",
       "show_categories": "Kategorien anzeigen",
-      "show_categories_tooltip": "Zeigt deine Freunde nach deinen Kategorien sortiert. Aus: eine einfache Liste. Deine Kategorien und wer darin ist, bleiben erhalten."
+      "show_categories_tooltip": "Zeigt deine Freunde nach deinen Kategorien sortiert. Aus: eine einfache Liste. Deine Kategorien und wer darin ist, bleiben erhalten.",
+      "status_online": "Online",
+      "status_offline": "Offline"
     },
     "friend_rights": {
       "group_friend": "Freund darf…",

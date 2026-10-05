@@ -41,6 +41,9 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
   per account. Off draws one plain list (online first, then A-Z) without headers; the categories and who is in them
   are untouched, and the friend and header menus still work. Creating a category while it is off turns it on, so
   the new category is not invisible.
+- **Online dot** (asked 2026-10-05, v0.26.71-alpha). It was a 9 pt "●" glyph, a speck beside the 20 px rights boxes. It
+  is now a drawn 14 px disc (green online, grey offline, a thin lighter rim) with an Online / Offline tooltip; the colour
+  alone told a colour-blind person nothing. `FriendsPanel` only -- the chat's conversation list keeps its own dot.
 - **Within a category** the order is the list's own: online first, then A-Z by shown name.
 - **Removing a friend** drops their filing.
 
@@ -64,7 +67,7 @@ The grid has no friend categories, so this is purely local: it is not sent anywh
   string. Per account because friends and the way to sort them differ between accounts. `Persist` switch for a selftest.
 - `app/scripts/UI/FriendsPanel.cs` -- headers, menus, prompts, the only-online checkbox (`TextPromptWindow`, `ConfirmWindow`).
 - `app/i18n/en-US.json`, `de-DE.json` -- `ui.friend_category.*`, `ui.friend_view.*`.
-- `app/scripts/Boot.cs` -- `AppVersion` v0.26.70-alpha.
+- `app/scripts/Boot.cs` -- `AppVersion` v0.26.71-alpha.
 
 ## Not done
 - Drag and drop of a friend onto a header (the menu does it).

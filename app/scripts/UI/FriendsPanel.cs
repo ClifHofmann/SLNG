@@ -605,16 +605,7 @@ public partial class FriendsPanel : Control
         inner.AddThemeConstantOverride("separation", 8);
         row.AddChild(inner);
 
-        var dot = new Label
-        {
-            Text = "●",
-            VerticalAlignment = VerticalAlignment.Center,
-            SizeFlagsVertical = SizeFlags.ShrinkCenter,
-        };
-        dot.AddThemeFontSizeOverride("font_size", 9);
-        dot.AddThemeColorOverride("font_color",
-            friend.IsOnline ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f));
-        inner.AddChild(dot);
+        inner.AddChild(BuildPresenceDot(friend.IsOnline));
 
         inner.AddChild(new TextureRect
         {
@@ -677,6 +668,35 @@ public partial class FriendsPanel : Control
         row.AddThemeStyleboxOverride("panel", style);
 
         return row;
+    }
+
+    /// <summary>Diameter of the presence dot. The rights boxes next to it are 20 px; a 9 pt "●" glyph beside them
+    /// looked like a speck, so it is a drawn circle of a size that holds its own.</summary>
+    private const int PresenceDotSize = 14;
+
+    /// <summary>The green (online) or grey (offline) circle before a friend. A drawn disc rather than a glyph so its
+    /// size does not depend on the font, with a tooltip because a colour alone says nothing to a colour-blind eye.</summary>
+    private static Control BuildPresenceDot(bool online)
+    {
+        var style = new StyleBoxFlat
+        {
+            BgColor = online ? new Color(0.3f, 0.85f, 0.3f) : new Color(0.4f, 0.4f, 0.4f),
+            BorderColor = online ? new Color(0.65f, 1f, 0.65f, 0.55f) : new Color(1f, 1f, 1f, 0.18f),
+            CornerRadiusTopLeft = PresenceDotSize / 2,
+            CornerRadiusTopRight = PresenceDotSize / 2,
+            CornerRadiusBottomLeft = PresenceDotSize / 2,
+            CornerRadiusBottomRight = PresenceDotSize / 2,
+        };
+        style.SetBorderWidthAll(1);
+
+        var dot = new Panel
+        {
+            CustomMinimumSize = new Vector2(PresenceDotSize, PresenceDotSize),
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            TooltipText = L10n.Tr(online ? "ui.friend_view.status_online" : "ui.friend_view.status_offline"),
+        };
+        dot.AddThemeStyleboxOverride("panel", style);
+        return dot;
     }
 
     private static RichTextLabel BuildNameText(bool online, string name, string? legacyName)
