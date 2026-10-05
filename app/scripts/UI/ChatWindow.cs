@@ -426,7 +426,19 @@ public partial class ChatWindow : SLNGWindow
     private ChatTab GetOrCreateImTab(Guid agentId, string displayName)
     {
         var existing = _chatTabs.Find(t => t.Id == agentId.ToString());
-        if (existing != null) return existing;
+        if (existing != null)
+        {
+            // A tab opened by a typing indicator before the name was known is titled with the id; a message
+            // that carries the name must not leave it that way (the name request may never be answered).
+            if (existing.DisplayName == existing.Id && !string.IsNullOrWhiteSpace(displayName) && displayName != existing.Id)
+            {
+                string legacy = NameDisplay.LegacyFor(_session, agentId, displayName);
+                existing.LogName = legacy;
+                existing.DisplayName = NameDisplay.For(_session, agentId, legacy);
+                existing.Label.Text = existing.DisplayName;
+            }
+            return existing;
+        }
 
         // Presence is only known if this person happens to be a friend -- a stranger IMing you
         // isn't in GetFriends(), so the row gets no dot at all (see AddChatTab's isOnline param).
