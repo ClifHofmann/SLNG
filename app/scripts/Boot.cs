@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.63-alpha";
+    public const string AppVersion = "v0.26.64-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3636,6 +3636,7 @@ public partial class Boot : Control
         // so the composition root supplies it. Without this a bake composites correctly and then
         // encodes to a few hundred bytes of nothing.
         _session.UseBakeEncoder(new SLNG.Assets.J2KBakeTextureEncoder());
+        _friendPresence.Reset(); // a new login starts from an empty friends list
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
         _worldSimulation.SelfAnimationStopRequested += OnSelfAnimationStopRequested;
 
@@ -3699,6 +3700,8 @@ public partial class Boot : Control
         // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
         _session.ConferenceChatMessageReceived += OnConferenceChatMessageReceived;
+        // A friend logging in or out: network thread, so it is judged here and shown from the main thread.
+        _session.FriendStatusChanged += OnFriendStatusForToast;
         _session.GroupChatJoined += OnGroupChatJoinedResult;
         // FEAT-UI-54: the group info window. All three fire on a network thread.
         _session.GroupProfileReceived += OnGroupProfileReceived;
@@ -4845,6 +4848,32 @@ public partial class Boot : Control
         // otherwise the placeholder, which ResolveSender later swaps in both places at once.
         _notifications.Add(SLNG.Core.NotificationKind.Transaction, e.OtherPartyId, text,
             senderName: name, senderIsGroup: e.OtherPartyIsGroup);
+    }
+
+    private readonly SLNG.Core.FriendPresenceTracker _friendPresence = new();
+
+    /// <summary>A friend's presence message (network thread). The library repeats itself -- an offline
+    /// friend "going offline", a new friend asked about twice -- so only a real change gets a toast, and
+    /// only while the preference is on. The line in the friend's IM tab is the chat window's own business.</summary>
+    private void OnFriendStatusForToast(object? sender, SLNG.Core.FriendStatusEvent e)
+    {
+        if (!_friendPresence.Update(e.FriendId, e.IsOnline)) return;
+        if (!_uiSettings.ShowFriendPresenceToasts) return;
+        CallDeferred(MethodName.ShowFriendPresenceToast, e.FriendId.ToString(), e.IsOnline);
+    }
+
+    /// <summary>Main-thread half of <see cref="OnFriendStatusForToast"/>. The friend id travels as a string
+    /// because CallDeferred marshals Variants and a Guid is not one.</summary>
+    private void ShowFriendPresenceToast(string friendIdText, bool online)
+    {
+        if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
+        if (_session == null || !System.Guid.TryParse(friendIdText, out var friendId)) return;
+
+        string name = _session.GetFriends().FirstOrDefault(f => f.Id == friendId)?.Name ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name)) name = SLNG.App.UI.L10n.Tr("ui.money.someone");
+
+        string text = SLNG.App.UI.L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", name);
+        _notificationToasts.ShowPresence(text, online, () => _chatWindow.OpenOrFocusImTab(friendId, name));
     }
 
     /// <summary>Main-thread half of a notification toast. Takes the pieces rather than the entry

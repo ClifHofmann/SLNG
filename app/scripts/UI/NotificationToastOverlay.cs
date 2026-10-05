@@ -61,6 +61,19 @@ public partial class NotificationToastOverlay : CanvasLayer
 
     public void Show(NotificationEntry entry)
     {
+        var kind = entry.Kind;
+        Present(entry.Text, AccentFor(kind), () => Clicked?.Invoke(kind));
+    }
+
+    /// <summary>A friend logged in or out. Not a <see cref="NotificationEntry"/> on purpose: presence is
+    /// a glance, not a record -- it would fill the notification list and its unread count with "X is
+    /// online" -- so it only ever lives here, and clicking it does what the name suggests (the caller
+    /// opens the conversation).</summary>
+    public void ShowPresence(string text, bool online, Action onClick) =>
+        Present(text, online ? PresenceOnlineAccent : PresenceOfflineAccent, onClick);
+
+    private void Present(string text, Color accent, Action onClick)
+    {
         if (!IsInstanceValid(_stack)) return;
 
         while (_live.Count >= MaxVisible) Retire(_live[0]);
@@ -77,7 +90,7 @@ public partial class NotificationToastOverlay : CanvasLayer
             // we control.
             BgColor = new Color(0, 0, 0, 0.88f),
             BorderWidthLeft = 3,
-            BorderColor = AccentFor(entry.Kind),
+            BorderColor = accent,
             CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8,
             CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
             ContentMarginLeft = 10, ContentMarginRight = 10,
@@ -86,19 +99,18 @@ public partial class NotificationToastOverlay : CanvasLayer
 
         var label = new Label
         {
-            Text = entry.Text,
+            Text = text,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
             MouseFilter = Control.MouseFilterEnum.Ignore,
         };
         label.AddThemeFontSizeOverride("font_size", 12);
         panel.AddChild(label);
 
-        var kind = entry.Kind;
         panel.GuiInput += @event =>
         {
             if (@event is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left })
             {
-                Clicked?.Invoke(kind);
+                onClick();
                 Retire(panel);
             }
         };
@@ -123,6 +135,11 @@ public partial class NotificationToastOverlay : CanvasLayer
         _stack.RemoveChild(panel);
         panel.QueueFree();
     }
+
+    /// <summary>Green for a friend arriving, grey for one leaving: the stripe says which before the
+    /// sentence is read.</summary>
+    private static readonly Color PresenceOnlineAccent = new(0.35f, 0.85f, 0.45f);
+    private static readonly Color PresenceOfflineAccent = new(0.55f, 0.55f, 0.58f);
 
     /// <summary>The stripe down the left edge, so the kind reads before the sentence does.</summary>
     private static Color AccentFor(NotificationKind kind) => kind switch
