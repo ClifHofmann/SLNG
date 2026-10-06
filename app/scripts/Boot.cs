@@ -369,6 +369,7 @@ public partial class Boot : Control
     private SLNG.App.UI.MinimapOverlay _minimapOverlay = null!;
     private SLNG.App.UI.WorldMapWindow _worldMapWindow = null!;
     private SLNG.App.UI.LandmarksWindow _landmarksWindow = null!;
+    private SLNG.App.UI.LandmarkDedupWindow _landmarkDedupWindow = null!;
     private MapTileTextures? _mapTileTextures; // FEAT-UI-39
     // FEAT-UI-18: teleport loading overlay. Fed by GridSession.TeleportProgress events buffered
     // off the network thread into _pendingTeleportProgress and drained in _Process.
@@ -429,7 +430,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.82-alpha";
+    public const string AppVersion = "v0.26.83-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1342,6 +1343,20 @@ public partial class Boot : Control
         };
         _landmarksWindow.OnCreateLandmarkRequested = () => OpenCreateLandmarkWindow(hudLayer);
         _landmarksWindow.OnToast = msg => ShowToast(msg);
+
+        _landmarkDedupWindow = new SLNG.App.UI.LandmarkDedupWindow { Name = "LandmarkDedupWindow" };
+        hudLayer.AddChild(_landmarkDedupWindow);
+        _landmarkDedupWindow.OnDuplicatesRemoved = () => _ = _landmarksWindow.RefreshLandmarksAsync();
+        _landmarkDedupWindow.OnToast = msg => ShowToast(msg);
+
+        _landmarksWindow.OnOpenDedupRequested = () =>
+        {
+            var favIds = _topMenu?.FavoritesBar?.FavoritesList?.Items?
+                .Select(i => i.ItemId != System.Guid.Empty ? i.ItemId : i.AssetId)
+                .ToHashSet();
+            _landmarkDedupWindow.Initialize(_session, favIds);
+            _landmarkDedupWindow.OpenAndScan();
+        };
 
         _chatLogger = new SLNG.Core.Services.ChatLogger();
         _chatWindow = new SLNG.App.UI.ChatWindow { Name = "ChatWindow" };
@@ -3790,6 +3805,10 @@ public partial class Boot : Control
         _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
         _landmarksWindow.Initialize(_session);
         _topMenu.FavoritesBar.Initialize(_session.AgentId.ToString());
+        var favIds = _topMenu.FavoritesBar.FavoritesList.Items
+            .Select(i => i.ItemId != System.Guid.Empty ? i.ItemId : i.AssetId)
+            .ToHashSet();
+        _landmarkDedupWindow.Initialize(_session, favIds);
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
@@ -5527,6 +5546,7 @@ public partial class Boot : Control
             if (_chatWindow != null) _chatWindow.Visible = false;
             if (_inventoryPanel != null) _inventoryPanel.Visible = false;
             if (_landmarksWindow != null) _landmarksWindow.Visible = false;
+            if (_landmarkDedupWindow != null) _landmarkDedupWindow.Visible = false;
             _teleportOverlay?.ForceHide();
             if (_dialogLayer != null) _dialogLayer.Visible = false;
 

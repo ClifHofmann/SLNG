@@ -3,21 +3,25 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Godot;
-using SLNG.Core;
+using SLNG.Core.Landmarks;
 using SLNG.Net;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Dedicated floating Landmarks window for browsing, filtering and teleporting to saved landmarks (FEAT-UI-67).
-/// Inherits SLNGWindow, supports double-click teleportation, search filter, and adding to Favorites Bar.
+/// Dedicated floating Landmarks window for browsing, filtering and teleporting to saved landmarks (FEAT-UI-67 / FEAT-UI-68).
+/// Supports folder-tree categorization, flat list mode, duplicate cleaning dialog,
+/// search filter, double-click teleportation, and adding to Favorites Bar.
 /// </summary>
 public partial class LandmarksWindow : SLNGWindow
 {
     private GridSession? _session;
-    private readonly List<InventoryEntry> _landmarks = new();
+    private readonly List<LandmarkInventoryItem> _landmarks = new();
+    private bool _folderViewMode = true;
 
     private LineEdit _searchEdit = null!;
+    private Button _viewModeBtn = null!;
+    private Button _cleanDuplicatesBtn = null!;
     private Button _refreshBtn = null!;
     private Button _createBtn = null!;
     private LandmarkTree _tree = null!;
@@ -29,6 +33,7 @@ public partial class LandmarksWindow : SLNGWindow
     public Action<Guid, Guid, string>? OnTeleportRequested;
     public Action<Guid, Guid, string>? OnAddToFavoritesRequested;
     public Action? OnCreateLandmarkRequested;
+    public Action? OnOpenDedupRequested;
     public Action<string>? OnToast;
 
     private sealed partial class LandmarkTree : Tree
@@ -56,7 +61,7 @@ public partial class LandmarksWindow : SLNGWindow
 
         PersistId = "landmarks";
         Title = L10n.Tr("ui.landmarks.title");
-        CustomMinimumSize = new Vector2(380, 480);
+        CustomMinimumSize = new Vector2(400, 500);
         Size = CustomMinimumSize;
         Visible = false;
         OnCloseRequested = () => Visible = false;
@@ -80,6 +85,24 @@ public partial class LandmarksWindow : SLNGWindow
         };
         _searchEdit.TextChanged += _ => FilterList();
         searchRow.AddChild(_searchEdit);
+
+        _viewModeBtn = new Button
+        {
+            Text = _folderViewMode ? "📂" : "📋",
+            TooltipText = L10n.Tr("ui.landmarks.toggle_view_mode_tooltip"),
+            FocusMode = FocusModeEnum.None
+        };
+        _viewModeBtn.Pressed += OnToggleViewMode;
+        searchRow.AddChild(_viewModeBtn);
+
+        _cleanDuplicatesBtn = new Button
+        {
+            Text = "🧹",
+            TooltipText = L10n.Tr("ui.landmarks.clean_duplicates_btn"),
+            FocusMode = FocusModeEnum.None
+        };
+        _cleanDuplicatesBtn.Pressed += () => OnOpenDedupRequested?.Invoke();
+        searchRow.AddChild(_cleanDuplicatesBtn);
 
         _refreshBtn = new Button
         {
@@ -147,6 +170,8 @@ public partial class LandmarksWindow : SLNGWindow
         _contextMenu.AddItem(L10n.Tr("ui.landmarks.teleport"), 0);
         _contextMenu.AddItem(L10n.Tr("ui.landmarks.add_to_favorites_btn"), 1);
         _contextMenu.AddItem(L10n.Tr("ui.landmarks.copy_slurl"), 2);
+        _contextMenu.AddSeparator();
+        _contextMenu.AddItem(L10n.Tr("ui.landmarks.delete_to_trash"), 3);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         AddChild(_contextMenu);
 
@@ -156,8 +181,15 @@ public partial class LandmarksWindow : SLNGWindow
     private void ApplyFirstOpenDefaultIfNeeded()
     {
         if (Position != Vector2.Zero) return;
-        Size = new Vector2(380, 480);
-        Position = new Vector2(180, 80);
+        Size = new Vector2(400, 500);
+        Position = new Vector2(180, Mathf.Max(TopInset + 20f, 80f));
+    }
+
+    private void OnToggleViewMode()
+    {
+        _folderViewMode = !_folderViewMode;
+        _viewModeBtn.Text = _folderViewMode ? "📂" : "📋";
+        UpdateTree();
     }
 
     public void Initialize(GridSession? session)
@@ -187,7 +219,7 @@ public partial class LandmarksWindow : SLNGWindow
         _statusLabel.Text = L10n.Tr("ui.landmarks.loading");
         try
         {
-            var landmarks = await _session.GetLandmarksAsync().ConfigureAwait(false);
+            var landmarks = await _session.GetLandmarksWithFoldersAsync().ConfigureAwait(false);
             Callable.From(() =>
             {
                 if (!IsInstanceValid(this)) return;
@@ -220,14 +252,44 @@ public partial class LandmarksWindow : SLNGWindow
 
         var matching = string.IsNullOrEmpty(filter)
             ? _landmarks
-            : _landmarks.Where(l => l.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+            : _landmarks.Where(l =>
+                l.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
+                l.FolderPath.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 
-        foreach (var lm in matching)
+        if (_folderViewMode)
         {
-            var item = _tree.CreateItem(root);
-            item.SetText(0, $"📍 {lm.Name}");
-            // Metadata format: itemId|assetId|name
-            item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+            var folderGroups = matching
+                .GroupBy(l => string.IsNullOrWhiteSpace(l.FolderPath) ? "Landmarks" : l.FolderPath)
+                .OrderBy(g => g.Key, StringComparer.CurrentCultureIgnoreCase);
+
+            foreach (var group in folderGroups)
+            {
+                var folderItem = _tree.CreateItem(root);
+                folderItem.SetText(0, $"📁 {group.Key} ({group.Count()})");
+                folderItem.SetSelectable(0, false);
+
+                // Auto-expand folders when filter is typed so hits are visible immediately
+                if (!string.IsNullOrEmpty(filter))
+                {
+                    folderItem.Collapsed = false;
+                }
+
+                foreach (var lm in group.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    var item = _tree.CreateItem(folderItem);
+                    item.SetText(0, $"📍 {lm.Name}");
+                    item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+                }
+            }
+        }
+        else
+        {
+            foreach (var lm in matching.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+            {
+                var item = _tree.CreateItem(root);
+                item.SetText(0, $"📍 {lm.Name} ({lm.FolderName})");
+                item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+            }
         }
 
         if (_landmarks.Count == 0)
@@ -250,9 +312,9 @@ public partial class LandmarksWindow : SLNGWindow
     private void UpdateActionButtons()
     {
         var selected = _tree.GetSelected();
-        bool hasSelection = selected != null;
-        _teleportBtn.Disabled = !hasSelection;
-        _addToFavoritesBtn.Disabled = !hasSelection;
+        bool hasLandmarkSelection = GetSelectedLandmark() != null;
+        _teleportBtn.Disabled = !hasLandmarkSelection;
+        _addToFavoritesBtn.Disabled = !hasLandmarkSelection;
     }
 
     private (Guid ItemId, Guid AssetId, string Name)? GetSelectedLandmark()
@@ -302,9 +364,12 @@ public partial class LandmarksWindow : SLNGWindow
             {
                 _tree.SetSelected(item, 0);
                 UpdateActionButtons();
-                _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
-                _contextMenu.Popup();
-                _tree.AcceptEvent();
+                if (GetSelectedLandmark() != null)
+                {
+                    _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
+                    _contextMenu.Popup();
+                    _tree.AcceptEvent();
+                }
             }
         }
     }
@@ -327,5 +392,43 @@ public partial class LandmarksWindow : SLNGWindow
             DisplayServer.ClipboardSet(slurl);
             OnToast?.Invoke(L10n.TrFormat("ui.topmenu.slurl_copied", slurl));
         }
+        else if (id == 3) // Move to Trash
+        {
+            ConfirmDeleteSingleLandmark(lm.ItemId, lm.Name);
+        }
+    }
+
+    private void ConfirmDeleteSingleLandmark(Guid itemId, string name)
+    {
+        if (_session == null) return;
+        var confirm = new ConfirmWindow();
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                   ?? (Node?)GetParent() ?? this;
+        host.AddChild(confirm);
+        confirm.Initialize(
+            title: L10n.Tr("ui.landmarks.delete_confirm_title"),
+            question: L10n.TrFormat("ui.landmarks.delete_confirm_question", name),
+            confirmLabel: L10n.Tr("ui.landmarks.delete_to_trash"),
+            danger: true);
+
+        confirm.Confirmed += () =>
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _session.MoveToTrashAsync(itemId, isFolder: false).ConfigureAwait(false);
+                    Callable.From(() =>
+                    {
+                        OnToast?.Invoke(L10n.TrFormat("ui.landmarks.deleted_toast", name));
+                        _ = RefreshLandmarksAsync();
+                    }).CallDeferred();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[LandmarksWindow] MoveToTrash failed: {ex.Message}");
+                }
+            });
+        };
     }
 }

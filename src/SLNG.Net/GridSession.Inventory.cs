@@ -8,6 +8,7 @@ using LibreMetaverse.Packets;
 using LibreMetaverse.StructuredData;
 using Microsoft.Extensions.Logging;
 using SLNG.Core;
+using SLNG.Core.Landmarks;
 
 namespace SLNG.Net;
 
@@ -510,6 +511,90 @@ public sealed partial class GridSession
 
         return found.Values
             .OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Fetches all non-trash landmark items from the inventory store, resolving their parent folder
+    /// names and full paths for categorization and duplicate detection (FEAT-UI-68).
+    /// </summary>
+    public async Task<IReadOnlyList<LandmarkInventoryItem>> GetLandmarksWithFoldersAsync(CancellationToken ct = default)
+    {
+        var store = _client.Inventory.Store;
+        if (store?.RootFolder == null) return Array.Empty<LandmarkInventoryItem>();
+
+        if (LandmarksFolderId is { } landmarksFolder && landmarksFolder != Guid.Empty)
+        {
+            var pending = new Queue<Guid>();
+            pending.Enqueue(landmarksFolder);
+            for (int fetches = 0; pending.Count > 0 && fetches < MaxLandmarkFolderFetches; fetches++)
+            {
+                ct.ThrowIfCancellationRequested();
+                foreach (var child in await FetchInventoryChildrenAsync(pending.Dequeue(), ct).ConfigureAwait(false))
+                    if (child.IsFolder) pending.Enqueue(child.Id);
+            }
+        }
+
+        var trash = TrashFolderId is { } t && t != Guid.Empty ? new LibreMetaverse.UUID(t) : LibreMetaverse.UUID.Zero;
+        var folderPaths = new Dictionary<LibreMetaverse.UUID, (string Name, string Path)>();
+        (string Name, string Path) GetFolderPath(LibreMetaverse.UUID folderId)
+        {
+            if (folderPaths.TryGetValue(folderId, out var cached)) return cached;
+            var segments = new List<string>();
+            var curr = folderId;
+            string folderName = "Unknown";
+            while (curr != LibreMetaverse.UUID.Zero && curr != store.RootFolder.UUID)
+            {
+                var node = store.GetNodeOrDefault(curr);
+                if (node?.Data is LibreMetaverse.InventoryFolder f)
+                {
+                    if (segments.Count == 0) folderName = f.Name;
+                    segments.Insert(0, f.Name);
+                    curr = f.ParentUUID;
+                }
+                else break;
+            }
+            string path = segments.Count > 0 ? string.Join('/', segments) : folderName;
+            var result = (folderName, path);
+            folderPaths[folderId] = result;
+            return result;
+        }
+
+        var found = new Dictionary<Guid, LandmarkInventoryItem>();
+        var stack = new Stack<LibreMetaverse.UUID>();
+        stack.Push(store.RootFolder.UUID);
+        while (stack.Count > 0)
+        {
+            var node = store.GetNodeOrDefault(stack.Pop());
+            if (node == null) continue;
+            foreach (var child in node.Nodes.Values)
+            {
+                switch (child.Data)
+                {
+                    case LibreMetaverse.InventoryFolder f:
+                        if (f.UUID != trash) stack.Push(f.UUID);
+                        break;
+                    case LibreMetaverse.InventoryItem i
+                        when !i.IsLink()
+                        && (i.InventoryType == LibreMetaverse.InventoryType.Landmark || i is LibreMetaverse.InventoryLandmark)
+                        && i.ResolvedAssetID != LibreMetaverse.UUID.Zero:
+                        var (fName, fPath) = GetFolderPath(i.ParentUUID);
+                        found[i.UUID.Guid] = new LandmarkInventoryItem(
+                            i.UUID.Guid,
+                            i.ParentUUID.Guid,
+                            i.ResolvedAssetID.Guid,
+                            i.Name,
+                            fName,
+                            fPath,
+                            i.CreationDate);
+                        break;
+                }
+            }
+        }
+
+        return found.Values
+            .OrderBy(e => e.FolderPath, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
 
