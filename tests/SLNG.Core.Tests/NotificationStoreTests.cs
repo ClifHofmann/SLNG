@@ -134,6 +134,20 @@ public class NotificationStoreTests
     }
 
     [Fact]
+    public void ResolvingGroupSenderUpdatesGroupNotificationPlaceholder()
+    {
+        var store = new NotificationStore();
+        var groupId = Guid.NewGuid();
+        store.Add(NotificationKind.Group, groupId, "Group notice from a group: MELODY GIFT", senderName: "a group");
+
+        int changed = store.ResolveSender(groupId, "a group", "MELODY");
+
+        Assert.Equal(1, changed);
+        Assert.Equal("MELODY", store.Entries[0].SenderName);
+        Assert.Equal("Group notice from MELODY: MELODY GIFT", store.Entries[0].Text);
+    }
+
+    [Fact]
     public void ResolvingAnUnknownSenderChangesNothing()
     {
         var store = new NotificationStore();

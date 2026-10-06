@@ -173,11 +173,23 @@ public record GroupInvitationEvent(Guid GroupId, Guid SessionId, string FromName
 
 /// <summary>A group notice (IM dialog GroupNotice): the text is "subject|body", and the sender is a member
 /// of the group, not the group. It is a notice, not a chat line, so it must never open a chat tab (BUG-UI-25).</summary>
-/// <param name="GroupId">The group it came from (the session id or the from-id, whichever is one of our groups).</param>
+/// <param name="GroupId">The group it came from (extracted from the binary bucket header or session id).</param>
 /// <param name="FromName">Who sent it.</param>
 /// <param name="Subject">The first part of the text, before the first '|'.</param>
 /// <param name="Body">The rest.</param>
-public record GroupNoticeEvent(Guid GroupId, string FromName, string Subject, string Body);
+/// <param name="GroupName">The group's name if already known, or empty.</param>
+/// <param name="HasInventory">Whether an inventory item was attached.</param>
+/// <param name="AssetType">The asset type of the attachment, if any.</param>
+/// <param name="ItemName">The name of the attached item, if any.</param>
+public record GroupNoticeEvent(
+    Guid GroupId,
+    string FromName,
+    string Subject,
+    string Body,
+    string GroupName = "",
+    bool HasInventory = false,
+    int AssetType = 0,
+    string ItemName = "");
 
 /// <summary>Somebody — another avatar, or an in-world object — offered the agent an inventory
 /// item or folder. Answer with <c>GridSession.RespondToInventoryOffer</c>; until then nothing is

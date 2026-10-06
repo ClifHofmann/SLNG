@@ -212,6 +212,72 @@ public class GroupChatNamingAndMuteTests
     }
 
     [Fact]
+    public void A_group_notice_decodes_group_id_and_attachment_from_binary_bucket()
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        GroupNoticeEvent? notice = null;
+        session.GroupNoticeReceived += (_, e) => notice = e;
+
+        var groupId = UUID.Random();
+        var bucket = new byte[18 + 15];
+        bucket[0] = 1; // hasInventory
+        bucket[1] = (byte)AssetType.Object;
+        Buffer.BlockCopy(groupId.GetBytes(), 0, bucket, 2, 16);
+        var nameBytes = System.Text.Encoding.UTF8.GetBytes("October Gift\0");
+        Buffer.BlockCopy(nameBytes, 0, bucket, 18, nameBytes.Length);
+
+        Invoke(session, "OnInstantMessage",
+            Im(InstantMessageDialog.GroupNotice, UUID.Random(), "MELODY OCTOBER GROUP GIFT!!! |Gift is in the box", groupIM: true, bucket: bucket));
+
+        Assert.NotNull(notice);
+        Assert.Equal(groupId.Guid, notice!.GroupId);
+        Assert.Equal("MELODY OCTOBER GROUP GIFT!!!", notice.Subject);
+        Assert.Equal("Gift is in the box", notice.Body);
+        Assert.True(notice.HasInventory);
+        Assert.Equal((int)AssetType.Object, notice.AssetType);
+        Assert.Equal("October Gift", notice.ItemName);
+    }
+
+    [Fact]
+    public void A_group_notice_resolves_group_name_from_membership_list()
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        var group = UUID.Random();
+        SetMembership(session, group, "MELODY");
+
+        GroupNoticeEvent? notice = null;
+        session.GroupNoticeReceived += (_, e) => notice = e;
+
+        var bucket = new byte[18];
+        Buffer.BlockCopy(group.GetBytes(), 0, bucket, 2, 16);
+
+        Invoke(session, "OnInstantMessage",
+            Im(InstantMessageDialog.GroupNotice, UUID.Random(), "OCTOBER GIFT |Enjoy", groupIM: true, bucket: bucket));
+
+        Assert.NotNull(notice);
+        Assert.Equal(group.Guid, notice!.GroupId);
+        Assert.Equal("MELODY", notice.GroupName);
+    }
+
+    [Fact]
+    public void TryParseGroupNoticeBucket_handles_truncated_and_invalid_buckets()
+    {
+        Assert.False(GridSession.TryParseGroupNoticeBucket(null, out _, out _, out _, out _));
+        Assert.False(GridSession.TryParseGroupNoticeBucket(new byte[17], out _, out _, out _, out _));
+
+        var id = UUID.Random();
+        var bucket = new byte[18];
+        Buffer.BlockCopy(id.GetBytes(), 0, bucket, 2, 16);
+        Assert.True(GridSession.TryParseGroupNoticeBucket(bucket, out var parsedId, out var hasInv, out var assetType, out var item));
+        Assert.Equal(id.Guid, parsedId);
+        Assert.False(hasInv);
+        Assert.Equal(0, assetType);
+        Assert.Empty(item);
+    }
+
+    [Fact]
     public void The_membership_list_name_beats_the_bucket()
     {
         using var session = new GridSession();

@@ -683,15 +683,46 @@ public sealed partial class GridSession
 
         // A group NOTICE carries the group flag too, and used to fall into the group-chat branch below: it opened a
         // chat tab titled with an id when the group was not in the list (BUG-UI-25). It is a notification.
-        if (e.IM.Dialog == InstantMessageDialog.GroupNotice)
+        // In Second Life, the group ID is packed into the binary bucket header (llimprocessing.cpp:702-728).
+        if (e.IM.Dialog is InstantMessageDialog.GroupNotice or InstantMessageDialog.GroupNoticeRequested)
         {
+            Guid groupId = Guid.Empty;
+            bool hasInventory = false;
+            int assetType = 0;
+            string itemName = string.Empty;
+
+            if (TryParseGroupNoticeBucket(e.IM.BinaryBucket, out var bucketGroupId, out hasInventory, out assetType, out itemName))
+            {
+                groupId = bucketGroupId;
+            }
+
             Guid session = e.IM.IMSessionID.Guid, from = e.IM.FromAgentID.Guid;
-            Guid groupId = IsGroupMember(from) ? from : session;
+            if (groupId == Guid.Empty)
+            {
+                groupId = IsGroupMember(session) ? session : (IsGroupMember(from) ? from : session);
+            }
+
+            string groupName = string.Empty;
+            if (groupId != Guid.Empty)
+            {
+                if (TryGetGroupName(groupId, out var resolvedName))
+                {
+                    groupName = resolvedName;
+                }
+                else
+                {
+                    RequestUnknownGroupName(groupId);
+                }
+            }
+
             string text = e.IM.Message ?? string.Empty;
             int bar = text.IndexOf('|');
+            string subject = bar < 0 ? string.Empty : text[..bar].Trim();
+            string body = bar < 0 ? text : text[(bar + 1)..].Trim();
+
             GroupNoticeReceived?.Invoke(this, new GroupNoticeEvent(
                 groupId, e.IM.FromAgentName ?? string.Empty,
-                bar < 0 ? string.Empty : text[..bar].Trim(), bar < 0 ? text : text[(bar + 1)..].Trim()));
+                subject, body, groupName, hasInventory, assetType, itemName));
             return;
         }
 
@@ -936,6 +967,31 @@ public sealed partial class GridSession
         assetType = bucket[0];
         itemId = new UUID(bucket, 1).Guid;
         return true;
+    }
+
+    internal static bool TryParseGroupNoticeBucket(
+        byte[]? bucket, out Guid groupId, out bool hasInventory, out int assetType, out string itemName)
+    {
+        groupId = Guid.Empty;
+        hasInventory = false;
+        assetType = 0;
+        itemName = string.Empty;
+        if (bucket == null || bucket.Length < 18) return false;
+
+        hasInventory = bucket[0] != 0;
+        assetType = bucket[1];
+        groupId = new UUID(bucket, 2).Guid;
+
+        if (bucket.Length > 18)
+        {
+            int nameLen = 0;
+            while (18 + nameLen < bucket.Length && bucket[18 + nameLen] != 0)
+                nameLen++;
+            if (nameLen > 0)
+                itemName = System.Text.Encoding.UTF8.GetString(bucket, 18, nameLen).Trim();
+        }
+
+        return groupId != Guid.Empty;
     }
 
     /// <summary>Accepts or declines a pending inventory offer (BUG-INV-04). Both answers are sent

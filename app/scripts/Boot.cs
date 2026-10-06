@@ -428,7 +428,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.77-alpha";
+    public const string AppVersion = "v0.26.78-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1664,8 +1664,14 @@ public partial class Boot : Control
 
     private void OnGroupsUpdatedForInfo(object? sender, SLNG.Core.GroupsUpdatedEvent e)
     {
-        if (_openGroupInfoWindows == 0) return;
         var groups = e.Groups;
+        foreach (var group in groups)
+        {
+            if (!string.IsNullOrWhiteSpace(group.Name))
+                _notifications.ResolveSender(group.Id, SLNG.App.UI.L10n.Tr("ui.notifications.group_unknown"), group.Name);
+        }
+
+        if (_openGroupInfoWindows == 0) return;
         _profileUiWork.Enqueue(() =>
         {
             foreach (var (id, win) in _groupInfoWindows)
@@ -4245,17 +4251,55 @@ public partial class Boot : Control
     private void OnGroupNoticeReceived(object? sender, SLNG.Core.GroupNoticeEvent e)
     {
         // Network thread: hop to the main thread, then record it (BUG-UI-25).
-        CallDeferred(nameof(AddGroupNotice), e.GroupId.ToString(), e.FromName, e.Subject, e.Body);
+        CallDeferred(nameof(AddGroupNotice), e.GroupId.ToString(), e.FromName, e.Subject, e.Body, e.GroupName, e.ItemName);
     }
 
-    private void AddGroupNotice(string groupId, string fromName, string subject, string body)
+    private void AddGroupNotice(string groupId, string fromName, string subject, string body, string groupName, string itemName)
     {
         var id = System.Guid.TryParse(groupId, out var g) ? g : System.Guid.Empty;
-        string group = _session != null && _session.TryGetGroupName(id, out var known) ? known : "";
-        if (string.IsNullOrWhiteSpace(group)) { group = SLNG.App.UI.L10n.Tr("ui.notifications.group_unknown"); _session?.RequestGroupName(id); }
+        string detail = !string.IsNullOrWhiteSpace(itemName)
+            ? (!string.IsNullOrWhiteSpace(body) ? $"{body}\n\n({itemName})" : itemName)
+            : body;
+
+        string group = !string.IsNullOrWhiteSpace(groupName) ? groupName
+            : (_session != null && _session.TryGetGroupName(id, out var known) ? known : "");
+
+        if (!string.IsNullOrWhiteSpace(group))
+        {
+            PostGroupNoticeNotification(id, group, fromName, subject, detail);
+            return;
+        }
+
+        // The group name is not known yet (e.g. membership list still in flight at login, or name request pending).
+        // Request the name and wait briefly so the notification toast shows the real group name rather than "a group".
+        _session?.RequestGroupName(id);
+        PollGroupNoticeName(id, fromName, subject, detail, pollsDone: 0);
+    }
+
+    private void PollGroupNoticeName(System.Guid id, string fromName, string subject, string detail, int pollsDone)
+    {
+        if (_session != null && _session.TryGetGroupName(id, out var known) && !string.IsNullOrWhiteSpace(known))
+        {
+            PostGroupNoticeNotification(id, known, fromName, subject, detail);
+            return;
+        }
+
+        const int maxPolls = 12; // 12 * 0.25s = 3.0s
+        if (pollsDone < maxPolls && _session != null)
+        {
+            GetTree().CreateTimer(0.25).Timeout += () => PollGroupNoticeName(id, fromName, subject, detail, pollsDone + 1);
+            return;
+        }
+
+        // Timed out: show placeholder. If the name arrives later, ResolveSender will update the notification store.
+        PostGroupNoticeNotification(id, SLNG.App.UI.L10n.Tr("ui.notifications.group_unknown"), fromName, subject, detail);
+    }
+
+    private void PostGroupNoticeNotification(System.Guid id, string group, string fromName, string subject, string detail)
+    {
         _notifications.Add(SLNG.Core.NotificationKind.Group, id,
             SLNG.App.UI.L10n.TrFormat("ui.notifications.group_notice", group, string.IsNullOrWhiteSpace(subject) ? fromName : subject),
-            detail: body, senderName: group, senderIsGroup: true);
+            detail: detail, senderName: group, senderIsGroup: true);
     }
 
     private void OnGroupInvitationReceived(object? sender, SLNG.Core.GroupInvitationEvent e)
@@ -5019,6 +5063,7 @@ public partial class Boot : Control
         // resolved. Without this the entry keeps saying "Jemand hat dir L$ 2200 bezahlt" -- the
         // one thing it exists to answer.
         _notifications.ResolveSender(e.Id, SLNG.App.UI.L10n.Tr("ui.money.someone"), e.Name);
+        _notifications.ResolveSender(e.Id, SLNG.App.UI.L10n.Tr("ui.notifications.group_unknown"), e.Name);
 
         // FEAT-UI-54: the founder's name in an open group info window.
         if (_openGroupInfoWindows != 0)
