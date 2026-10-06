@@ -71,6 +71,7 @@ public static class LandmarkFavoritesStore
         cfg.Load(ConfigPath);
         string section = GetSection(agentId);
         cfg.SetValue(section, VisibleKey, visible);
+        cfg.SetValue(GlobalSection, VisibleKey, visible);
         cfg.Save(ConfigPath);
     }
 }

@@ -19,8 +19,10 @@ public partial class FavoritesBar : PanelContainer
     private Label _emptyLabel = null!;
     private Button _starBtn = null!;
     private Button _addBtn = null!;
+    private Button _closeBtn = null!;
     private PopupMenu _itemContextMenu = null!;
     private PopupMenu _addMenu = null!;
+    private PopupMenu _barContextMenu = null!;
     private LandmarkFavoriteItem? _contextItem;
 
     public Action<Guid, Guid, string>? OnTeleportRequested;
@@ -36,17 +38,17 @@ public partial class FavoritesBar : PanelContainer
 
         AddThemeStyleboxOverride("panel", new StyleBoxFlat
         {
-            BgColor = new Color(0.04f, 0.07f, 0.11f, 0.95f),
+            BgColor = new Color(0.02f, 0.04f, 0.07f, 0.45f),
             BorderWidthBottom = 1,
-            BorderColor = new Color(0.15f, 0.6f, 0.9f, 0.25f),
-            ContentMarginLeft = 8,
-            ContentMarginRight = 8,
-            ContentMarginTop = 2,
-            ContentMarginBottom = 2
+            BorderColor = new Color(0.15f, 0.6f, 0.9f, 0.15f),
+            ContentMarginLeft = 6,
+            ContentMarginRight = 6,
+            ContentMarginTop = 1,
+            ContentMarginBottom = 1
         });
 
         var mainHBox = new HBoxContainer();
-        mainHBox.AddThemeConstantOverride("separation", 6);
+        mainHBox.AddThemeConstantOverride("separation", 4);
         AddChild(mainHBox);
 
         _starBtn = new Button
@@ -57,8 +59,8 @@ public partial class FavoritesBar : PanelContainer
             TooltipText = L10n.Tr("ui.favorites_bar.open_landmarks_tooltip"),
             SizeFlagsVertical = SizeFlags.ShrinkCenter
         };
-        _starBtn.AddThemeFontSizeOverride("font_size", 13);
-        _starBtn.AddThemeColorOverride("font_color", new Color(0.95f, 0.85f, 0.4f, 0.9f));
+        _starBtn.AddThemeFontSizeOverride("font_size", 11);
+        _starBtn.AddThemeColorOverride("font_color", new Color(0.85f, 0.75f, 0.35f, 0.8f));
         _starBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 0.95f, 0.6f, 1.0f));
         _starBtn.Pressed += () => OnOpenLandmarksWindow?.Invoke();
         mainHBox.AddChild(_starBtn);
@@ -68,7 +70,7 @@ public partial class FavoritesBar : PanelContainer
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             HorizontalScrollMode = ScrollContainer.ScrollMode.Auto,
             VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,
-            CustomMinimumSize = new Vector2(0, 24)
+            CustomMinimumSize = new Vector2(0, 20)
         };
         mainHBox.AddChild(_scroll);
 
@@ -77,7 +79,7 @@ public partial class FavoritesBar : PanelContainer
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ShrinkCenter
         };
-        _itemsHBox.AddThemeConstantOverride("separation", 4);
+        _itemsHBox.AddThemeConstantOverride("separation", 2);
         _scroll.AddChild(_itemsHBox);
 
         _emptyLabel = new Label
@@ -86,8 +88,8 @@ public partial class FavoritesBar : PanelContainer
             VerticalAlignment = VerticalAlignment.Center,
             SizeFlagsVertical = SizeFlags.ShrinkCenter
         };
-        _emptyLabel.AddThemeFontSizeOverride("font_size", 11);
-        _emptyLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.65f, 0.75f, 0.65f));
+        _emptyLabel.AddThemeFontSizeOverride("font_size", 10);
+        _emptyLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.6f, 0.7f, 0.5f));
         _itemsHBox.AddChild(_emptyLabel);
 
         _addBtn = new Button
@@ -98,11 +100,25 @@ public partial class FavoritesBar : PanelContainer
             TooltipText = L10n.Tr("ui.favorites_bar.add_tooltip"),
             SizeFlagsVertical = SizeFlags.ShrinkCenter
         };
-        _addBtn.AddThemeFontSizeOverride("font_size", 14);
-        _addBtn.AddThemeColorOverride("font_color", new Color(0.7f, 0.85f, 1.0f, 0.85f));
+        _addBtn.AddThemeFontSizeOverride("font_size", 11);
+        _addBtn.AddThemeColorOverride("font_color", new Color(0.6f, 0.75f, 0.9f, 0.75f));
         _addBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
         _addBtn.Pressed += OnAddBtnPressed;
         mainHBox.AddChild(_addBtn);
+
+        _closeBtn = new Button
+        {
+            Text = "×",
+            Flat = true,
+            FocusMode = FocusModeEnum.None,
+            TooltipText = L10n.Tr("ui.favorites_bar.hide"),
+            SizeFlagsVertical = SizeFlags.ShrinkCenter
+        };
+        _closeBtn.AddThemeFontSizeOverride("font_size", 11);
+        _closeBtn.AddThemeColorOverride("font_color", new Color(0.55f, 0.65f, 0.75f, 0.65f));
+        _closeBtn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 0.45f, 0.45f, 1.0f));
+        _closeBtn.Pressed += () => SetVisibleState(false);
+        mainHBox.AddChild(_closeBtn);
 
         _itemContextMenu = new PopupMenu();
         _itemContextMenu.AddItem(L10n.Tr("ui.favorites_bar.teleport"), 0);
@@ -122,7 +138,27 @@ public partial class FavoritesBar : PanelContainer
         };
         AddChild(_addMenu);
 
-        RebuildItems();
+        _barContextMenu = new PopupMenu();
+        _barContextMenu.AddItem(L10n.Tr("ui.favorites_bar.manage_landmarks"), 0);
+        _barContextMenu.AddItem(L10n.Tr("ui.favorites_bar.hide"), 1);
+        _barContextMenu.IdPressed += (id) =>
+        {
+            if (id == 0) OnOpenLandmarksWindow?.Invoke();
+            else if (id == 1) SetVisibleState(false);
+        };
+        AddChild(_barContextMenu);
+
+        GuiInput += (ev) =>
+        {
+            if (ev is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Right)
+            {
+                _barContextMenu.Position = (Vector2I)GetGlobalMousePosition();
+                _barContextMenu.Popup();
+                AcceptEvent();
+            }
+        };
+
+        Initialize(null);
     }
 
     public void Initialize(string? agentId)
@@ -193,8 +229,8 @@ public partial class FavoritesBar : PanelContainer
             TooltipText = L10n.TrFormat("ui.favorites_bar.teleport_to", item.Name),
             SizeFlagsVertical = SizeFlags.ShrinkCenter
         };
-        btn.AddThemeFontSizeOverride("font_size", 12);
-        btn.AddThemeColorOverride("font_color", new Color(0.85f, 0.92f, 1.0f, 0.9f));
+        btn.AddThemeFontSizeOverride("font_size", 11);
+        btn.AddThemeColorOverride("font_color", new Color(0.82f, 0.9f, 0.98f, 0.85f));
         btn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
         btn.AddThemeColorOverride("font_pressed_color", new Color(0.4f, 0.8f, 1.0f, 1.0f));
 

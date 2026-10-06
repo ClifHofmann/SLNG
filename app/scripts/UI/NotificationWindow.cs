@@ -47,12 +47,15 @@ public partial class NotificationWindow : SLNGWindow
     {
         base._Ready();
 
+        PersistId = "notifications";
         CustomMinimumSize = new Vector2(420, 380);
         Size = CustomMinimumSize;
         Visible = false;
         OnCloseRequested = () => Visible = false;
 
         Title = L10n.Tr("ui.notifications.title");
+
+        CallDeferred(nameof(ApplyFirstOpenDefaultIfNeeded));
 
         var margin = new MarginContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         ContentContainer.AddChild(margin);
@@ -119,6 +122,12 @@ public partial class NotificationWindow : SLNGWindow
     /// <summary>Off the main thread is possible (the store is fed from network events), so the
     /// redraw hops rather than touching nodes directly.</summary>
     private void OnStoreChanged(object? sender, EventArgs e) => CallDeferred(MethodName.Rebuild);
+
+    private void ApplyFirstOpenDefaultIfNeeded()
+    {
+        if (GeometryRestored) return;
+        Position = new Vector2(80, Mathf.Max(TopInset + 10f, 60f));
+    }
 
     public void Toggle()
     {

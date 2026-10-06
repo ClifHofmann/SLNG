@@ -282,6 +282,7 @@
       "teleport_to": "Teleport to \"{0}\"\nRight-click for options",
       "remove": "Remove from Favorites",
       "copy_slurl": "Copy SLurl",
+      "hide": "Hide Favorites Bar",
       "added_toast": "\"{0}\" added to Favorites Bar.",
       "removed_toast": "\"{0}\" removed from Favorites Bar."
     },

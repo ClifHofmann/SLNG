@@ -98,6 +98,8 @@ namespace SLNG.App.UI
 
         private FavoritesBar _favoritesBar = null!;
         public FavoritesBar FavoritesBar => _favoritesBar;
+        private PanelContainer _panel = null!;
+        public float TotalHeight => Visible && _panel != null && _panel.Visible ? _panel.Size.Y : 0f;
 
         private int _lastFps = -1;
 
@@ -275,8 +277,8 @@ namespace SLNG.App.UI
         {
             Layer = 100; // Always on top
 
-            var panel = new PanelContainer();
-            panel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+            _panel = new PanelContainer();
+            _panel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
             
             var styleBox = new StyleBoxFlat
             {
@@ -286,12 +288,12 @@ namespace SLNG.App.UI
                 ContentMarginBottom = 2,
                 ContentMarginTop = 2
             };
-            panel.AddThemeStyleboxOverride("panel", styleBox);
-            AddChild(panel);
+            _panel.AddThemeStyleboxOverride("panel", styleBox);
+            AddChild(_panel);
 
             var rootVBox = new VBoxContainer();
             rootVBox.AddThemeConstantOverride("separation", 0);
-            panel.AddChild(rootVBox);
+            _panel.AddChild(rootVBox);
 
             var margin = new MarginContainer();
             margin.AddThemeConstantOverride("margin_left", 12);
@@ -651,10 +653,28 @@ namespace SLNG.App.UI
             _favoritesBar.OnOpenLandmarksWindow = () => OnOpenLandmarks?.Invoke();
             rootVBox.AddChild(_favoritesBar);
 
+            _panel.Resized += UpdateTopInset;
+            VisibilityChanged += UpdateTopInset;
+            _favoritesBar.VisibilityChanged += UpdateTopInset;
+            UpdateTopInset();
+
             // FEAT-UI-43: menu entries show the chord the key table currently has for them, so a
             // rebinding (or the language) never leaves a stale hint behind.
             RefreshShortcutHints();
             KeyBindings.Table.Changed += RefreshShortcutHints;
+        }
+
+        private void UpdateTopInset()
+        {
+            CallDeferred(nameof(ApplyTopInsetDeferred));
+        }
+
+        private void ApplyTopInsetDeferred()
+        {
+            if (!IsInstanceValid(this) || _panel == null || !IsInstanceValid(_panel)) return;
+            float h = Visible && _panel.Visible ? _panel.Size.Y : 0f;
+            SLNGWindow.TopInset = h;
+            SetFavoritesBarChecked(_favoritesBar.Visible);
         }
 
         public void SetFavoritesBarChecked(bool show)

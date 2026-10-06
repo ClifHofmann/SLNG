@@ -282,6 +282,7 @@
       "teleport_to": "Teleportiere nach \"{0}\"\nRechtsklick für Optionen",
       "remove": "Aus Favoriten entfernen",
       "copy_slurl": "SLurl kopieren",
+      "hide": "Favoritenleiste ausblenden",
       "added_toast": "\"{0}\" zur Favoritenleiste hinzugefügt.",
       "removed_toast": "\"{0}\" aus Favoritenleiste entfernt."
     },

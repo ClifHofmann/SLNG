@@ -59,6 +59,10 @@ public partial class SLNGWindow : MarginContainer
     /// <summary>Scene tree group every active floating window is registered in.</summary>
     public const string WindowGroupName = "slng_windows";
 
+    /// <summary>Vertical clearance reserved for the top menu bar and favorites bar so window headers
+    /// never slide under the top menu or become unclickable.</summary>
+    public static float TopInset { get; set; } = 28f;
+
     /// <summary>The standard content inset, horizontal and vertical. Applied to every window in
     /// <see cref="_Ready"/>.</summary>
     public const int DefaultContentMarginH = 14;
@@ -471,9 +475,10 @@ public partial class SLNGWindow : MarginContainer
         if (vp.X <= 0f || vp.Y <= 0f) return false;
 
         float w = Size.X;
+        float minY = TopInset;
         var clamped = new Vector2(
             Mathf.Clamp(Position.X, -w + 40f, Mathf.Max(vp.X - 40f, 0f)),
-            Mathf.Clamp(Position.Y, 0f, Mathf.Max(vp.Y - 40f, 0f)));
+            Mathf.Clamp(Position.Y, minY, Mathf.Max(vp.Y - 40f, minY)));
 
         if (clamped == Position) return false;
         Position = clamped;
@@ -548,7 +553,9 @@ public partial class SLNGWindow : MarginContainer
         {
             if (_isDragging)
             {
-                GlobalPosition = mouseMotion.GlobalPosition - _dragOffset;
+                var target = mouseMotion.GlobalPosition - _dragOffset;
+                if (target.Y < TopInset) target.Y = TopInset;
+                GlobalPosition = target;
             }
         }
     }
