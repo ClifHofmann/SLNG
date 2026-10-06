@@ -368,6 +368,7 @@ public partial class Boot : Control
     // MVP2-3: minimap radar overlay + world map/search window.
     private SLNG.App.UI.MinimapOverlay _minimapOverlay = null!;
     private SLNG.App.UI.WorldMapWindow _worldMapWindow = null!;
+    private SLNG.App.UI.LandmarksWindow _landmarksWindow = null!;
     private MapTileTextures? _mapTileTextures; // FEAT-UI-39
     // FEAT-UI-18: teleport loading overlay. Fed by GridSession.TeleportProgress events buffered
     // off the network thread into _pendingTeleportProgress and drained in _Process.
@@ -428,7 +429,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.80-alpha";
+    public const string AppVersion = "v0.26.81-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -959,6 +960,19 @@ public partial class Boot : Control
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
         };
+        _topMenu.OnOpenLandmarks = () => ActivateLauncher(_landmarksWindow, _landmarksWindow.Toggle);
+
+        _topMenu.FavoritesBar.OnTeleportRequested = (assetId, itemId, name) =>
+        {
+            _ = TeleportToLandmarkAsync(assetId, itemId, name);
+        };
+        _topMenu.FavoritesBar.OnOpenLandmarksWindow = () => ActivateLauncher(_landmarksWindow, _landmarksWindow.Toggle);
+        _topMenu.FavoritesBar.OnAddCurrentLocation = () =>
+        {
+            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
+            if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
+        };
+        _topMenu.FavoritesBar.OnToast = msg => ShowToast(msg);
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
         _topMenu.OnOpenHoverHeight = () => ActivateLauncher(_avatarHoverWindow, _avatarHoverWindow.Toggle);
@@ -1185,6 +1199,16 @@ public partial class Boot : Control
         {
             _avatarRenderer?.StopSelfAnimationLocal(assetId);
         };
+        _inventoryPanel.OnAddToFavorites = (itemId, assetId, name) =>
+        {
+            if (_topMenu?.FavoritesBar != null)
+            {
+                if (_topMenu.FavoritesBar.AddFavorite(itemId, assetId, name))
+                {
+                    ShowToast(SLNG.App.UI.L10n.TrFormat("ui.favorites_bar.added_toast", name));
+                }
+            }
+        };
 
         _inWorldContextMenu = new SLNG.App.UI.InWorldContextMenu();
         hudLayer.AddChild(_inWorldContextMenu);
@@ -1299,6 +1323,25 @@ public partial class Boot : Control
         _minimapOverlay.OnWorldMapRequested = () => { if (_worldMapWindow.Visible && !_worldMapWindow.IsMinimized) _worldMapWindow.BringToFront(); else InvokeLauncher("worldmap"); };
         _worldMapWindow = new SLNG.App.UI.WorldMapWindow { Name = "WorldMapWindow" };
         hudLayer.AddChild(_worldMapWindow);
+
+        _landmarksWindow = new SLNG.App.UI.LandmarksWindow { Name = "LandmarksWindow" };
+        hudLayer.AddChild(_landmarksWindow);
+        _landmarksWindow.OnTeleportRequested = (assetId, itemId, name) =>
+        {
+            _ = TeleportToLandmarkAsync(assetId, itemId, name);
+        };
+        _landmarksWindow.OnAddToFavoritesRequested = (itemId, assetId, name) =>
+        {
+            if (_topMenu?.FavoritesBar != null)
+            {
+                if (_topMenu.FavoritesBar.AddFavorite(itemId, assetId, name))
+                {
+                    ShowToast(SLNG.App.UI.L10n.TrFormat("ui.favorites_bar.added_toast", name));
+                }
+            }
+        };
+        _landmarksWindow.OnCreateLandmarkRequested = () => OpenCreateLandmarkWindow(hudLayer);
+        _landmarksWindow.OnToast = msg => ShowToast(msg);
 
         _chatLogger = new SLNG.Core.Services.ChatLogger();
         _chatWindow = new SLNG.App.UI.ChatWindow { Name = "ChatWindow" };
@@ -1708,8 +1751,48 @@ public partial class Boot : Control
         // If the Landmarks folder (or the subfolder just created into) happens to already be
         // expanded in the Inventory panel, refresh it so the new item shows up immediately --
         // otherwise it's invisible until the user manually collapses/re-expands that folder.
-        win.OnLandmarkCreated = (folderId, itemId, assetId) => _inventoryPanel?.RefreshFolder(folderId, itemId, assetId);
+        win.OnLandmarkCreated = (folderId, itemId, assetId) =>
+        {
+            _inventoryPanel?.RefreshFolder(folderId, itemId, assetId);
+            _ = _landmarksWindow?.RefreshLandmarksAsync();
+        };
         win.OpenForCurrentLocation();
+    }
+
+    private async System.Threading.Tasks.Task TeleportToLandmarkAsync(System.Guid assetId, System.Guid itemId, string name)
+    {
+        if (_session == null)
+        {
+            ShowToast("Not connected.");
+            return;
+        }
+        if (assetId == System.Guid.Empty && itemId != System.Guid.Empty)
+        {
+            var landmarks = await _session.GetLandmarksAsync().ConfigureAwait(false);
+            var found = System.Linq.Enumerable.FirstOrDefault(landmarks, l => l.Id == itemId);
+            if (found != null && found.AssetId != System.Guid.Empty)
+            {
+                assetId = found.AssetId;
+            }
+        }
+        if (assetId == System.Guid.Empty)
+        {
+            ShowToast("Landmark not ready yet — try again in a moment.");
+            return;
+        }
+        ShowToast(SLNG.App.UI.L10n.TrFormat("ui.landmarks.teleporting", name));
+        var result = await _session.TeleportToLandmarkAsync(assetId).ConfigureAwait(false);
+        Callable.From(() =>
+        {
+            if (!result.Success && !string.IsNullOrEmpty(result.Message))
+            {
+                ShowToast(SLNG.App.UI.L10n.TrFormat("ui.landmarks.teleport_failed", result.Message));
+            }
+            else if (result.Success)
+            {
+                GetViewport().GuiReleaseFocus();
+            }
+        }).CallDeferred();
     }
 
     /// <summary>
@@ -1752,6 +1835,9 @@ public partial class Boot : Control
             new("worldmap", "World Map", "map",
                 () => ActivateLauncher(_worldMapWindow, _worldMapWindow.Toggle),
                 () => _worldMapWindow.Visible),
+            new("landmarks", SLNG.App.UI.L10n.Tr("ui.landmarks.title"), "place",
+                () => ActivateLauncher(_landmarksWindow, _landmarksWindow.Toggle),
+                () => _landmarksWindow?.Visible ?? false),
             new("notifications", SLNG.App.UI.L10n.Tr("ui.notifications.toolbar"), "notifications",
                 () => { var win = _notificationWindow; if (win != null) ActivateLauncher(win, win.Toggle); },
                 () => _notificationWindow?.Visible ?? false,
@@ -3702,6 +3788,8 @@ public partial class Boot : Control
             GridData.MapTileDirectory(_sessionGridUri));
         _minimapOverlay.Initialize(_world, _session, _mapTileTextures);
         _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
+        _landmarksWindow.Initialize(_session);
+        _topMenu.FavoritesBar.Initialize(_session.AgentId.ToString());
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
@@ -5438,6 +5526,7 @@ public partial class Boot : Control
 
             if (_chatWindow != null) _chatWindow.Visible = false;
             if (_inventoryPanel != null) _inventoryPanel.Visible = false;
+            if (_landmarksWindow != null) _landmarksWindow.Visible = false;
             _teleportOverlay?.ForceHide();
             if (_dialogLayer != null) _dialogLayer.Visible = false;
 

@@ -19,6 +19,8 @@ namespace SLNG.App.UI
         /// <summary>FEAT-SL-01: opens the About window the TPV Policy §1.g requires.</summary>
         public Action? OnOpenAbout;
         public Action? OnCreateLandmark;
+        /// <summary>FEAT-UI-67: opens the dedicated Landmarks window.</summary>
+        public Action? OnOpenLandmarks;
         /// <summary>FEAT-LAND-01: opens the Land-Info (About Land) window for the parcel the agent stands on.</summary>
         public Action? OnOpenLandInfo;
         public Action? OnOpenEnvironment;
@@ -93,6 +95,9 @@ namespace SLNG.App.UI
         private PopupMenu? _freezeMenu;
         private bool _freezeSelfChecked;
         private bool _freezeAllChecked;
+
+        private FavoritesBar _favoritesBar = null!;
+        public FavoritesBar FavoritesBar => _favoritesBar;
 
         private int _lastFps = -1;
 
@@ -284,10 +289,14 @@ namespace SLNG.App.UI
             panel.AddThemeStyleboxOverride("panel", styleBox);
             AddChild(panel);
 
+            var rootVBox = new VBoxContainer();
+            rootVBox.AddThemeConstantOverride("separation", 0);
+            panel.AddChild(rootVBox);
+
             var margin = new MarginContainer();
             margin.AddThemeConstantOverride("margin_left", 12);
             margin.AddThemeConstantOverride("margin_right", 12);
-            panel.AddChild(margin);
+            rootVBox.AddChild(margin);
             
             var hbox = new HBoxContainer();
             hbox.AddThemeConstantOverride("separation", 6);
@@ -472,6 +481,8 @@ namespace SLNG.App.UI
             viewMenu.AddCheckItem(L10n.Tr("ui.menu.show_focus_marker"), 7);
             int focusCheckIdx = viewMenu.GetItemIndex(7);
             if (focusCheckIdx >= 0) viewMenu.SetItemChecked(focusCheckIdx, _showFocusMarker);
+            viewMenu.AddCheckItem(L10n.Tr("ui.menu.favorites_bar"), 9);
+            viewMenu.AboutToPopup += () => SetFavoritesBarChecked(_favoritesBar.Visible);
             _graphicsProfileMenu = new PopupMenu();
             _graphicsProfileMenu.Name = "GraphicsProfileMenu";
             _graphicsProfileMenu.IdPressed += id => OnProfileMenuItemSelected((int)id);
@@ -497,6 +508,12 @@ namespace SLNG.App.UI
                     SetShowFocusMarker(!_showFocusMarker);
                     OnToggleShowFocusMarker?.Invoke(_showFocusMarker);
                 }
+                if (id == 9)
+                {
+                    bool next = !_favoritesBar.Visible;
+                    _favoritesBar.SetVisibleState(next);
+                    SetFavoritesBarChecked(next);
+                }
                 if (id >= 1 && id <= 3) OnCameraMode?.Invoke((int)id - 1);
             };
             menuBar.AddChild(viewMenu);
@@ -505,6 +522,7 @@ namespace SLNG.App.UI
             var worldMenu = new PopupMenu();
             worldMenu.Name = L10n.Tr("ui.menu.world");
             worldMenu.AddItem(L10n.Tr("ui.menu.create_landmark"), 0);
+            worldMenu.AddItem(L10n.Tr("ui.menu.landmarks"), 7);
             worldMenu.AddItem(L10n.Tr("ui.menu.about_land"), 6);
             worldMenu.AddItem(L10n.Tr("ui.menu.environment"), 3);
             AddHinted(worldMenu, "ui.menu.world_map", 4, KeyActionIds.WindowWorldMap);
@@ -512,6 +530,7 @@ namespace SLNG.App.UI
             worldMenu.IdPressed += (id) =>
             {
                 if (id == 0) OnCreateLandmark?.Invoke();
+                else if (id == 7) OnOpenLandmarks?.Invoke();
                 else if (id == 6) OnOpenLandInfo?.Invoke();
                 else if (id == 3) OnOpenEnvironment?.Invoke();
                 else if (id == 4) OnOpenWorldMap?.Invoke();
@@ -628,10 +647,23 @@ namespace SLNG.App.UI
             };
             menuBar.AddChild(devMenu);
 
+            _favoritesBar = new FavoritesBar();
+            _favoritesBar.OnOpenLandmarksWindow = () => OnOpenLandmarks?.Invoke();
+            rootVBox.AddChild(_favoritesBar);
+
             // FEAT-UI-43: menu entries show the chord the key table currently has for them, so a
             // rebinding (or the language) never leaves a stale hint behind.
             RefreshShortcutHints();
             KeyBindings.Table.Changed += RefreshShortcutHints;
+        }
+
+        public void SetFavoritesBarChecked(bool show)
+        {
+            if (_viewMenu != null)
+            {
+                int idx = _viewMenu.GetItemIndex(9);
+                if (idx >= 0) _viewMenu.SetItemChecked(idx, show);
+            }
         }
 
         // A menu entry whose label gets the current chord of an action appended: "Always Run (Ctrl+R)".

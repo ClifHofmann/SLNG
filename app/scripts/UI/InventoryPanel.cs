@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using SLNG.Net;
 using System;
 using System.Collections.Generic;
@@ -80,6 +80,8 @@ public partial class InventoryPanel : SLNGWindow
     public Func<Guid, string, System.Threading.Tasks.Task<bool>>? PlayAnimationLocalHandler;
     /// <summary>FEAT-ANIM-06: Handler to stop a locally playing animation on the self avatar.</summary>
     public Action<Guid>? StopAnimationLocalHandler;
+    /// <summary>FEAT-UI-67: Handler to add a landmark to the Favorites Bar.</summary>
+    public Action<Guid, Guid, string>? OnAddToFavorites;
     private Guid _lastInWorldAnimId;
 
     // FEAT-INV-04: Outfits tab.
@@ -192,6 +194,7 @@ public partial class InventoryPanel : SLNGWindow
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.edit"), 2);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.delete"), 4);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.teleport"), 5);
+        _contextMenu.AddItem(L10n.Tr("ui.inventory.context.add_to_favorites"), 15);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.detach"), 6);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_local"), 7);
         _contextMenu.AddItem(L10n.Tr("ui.inventory.context.play_inworld"), 8);
@@ -1778,6 +1781,7 @@ public partial class InventoryPanel : SLNGWindow
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(2), !canModify); // Edit
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(4), false); // Delete
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(5), !isLandmark); // Teleport
+                    _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(15), !isLandmark); // Add to Favorites Bar
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(6), !isWorn); // Detach
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(7), !isAnimation); // Play Locally
                     _contextMenu.SetItemDisabled(_contextMenu.GetItemIndex(8), !isAnimation); // Play Inworld
@@ -2685,6 +2689,19 @@ public partial class InventoryPanel : SLNGWindow
         {
             if (isFolder) return;
             TryTeleportFromItem(item);
+        }
+        else if (id == 15) // Add to Favorites Bar
+        {
+            if (isFolder) return;
+            var parts = metaStr.Split(',');
+            if (parts.Length >= 7)
+            {
+                Guid.TryParse(parts[5], out var assetId);
+                string rawName = item.GetText(0).Replace("  ⇢", "");
+                string name = _tree.NameOf?.Invoke(itemId) ?? rawName;
+                if (string.IsNullOrEmpty(name)) name = rawName;
+                OnAddToFavorites?.Invoke(itemId, assetId, name);
+            }
         }
         else if (id == 0) // Wear / Attach
         {
