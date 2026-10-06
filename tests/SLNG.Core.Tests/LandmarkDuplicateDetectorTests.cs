@@ -73,6 +73,20 @@ public class LandmarkDuplicateDetectorTests
     }
 
     [Fact]
+    public void ScoreAndSelectKeepItem_prefers_newest_creation_date()
+    {
+        var oldDate = new DateTime(2021, 5, 10, 12, 0, 0, DateTimeKind.Utc);
+        var newDate = new DateTime(2026, 3, 15, 14, 30, 0, DateTimeKind.Utc);
+        var itemOld = new LandmarkInventoryItem(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "Club Nova", "Landmarks", "Landmarks/Clubs", oldDate);
+        var itemNew = new LandmarkInventoryItem(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "Club Nova", "Received Items", "Received Items/Gifts", newDate);
+
+        var result = LandmarkDuplicateDetector.FindDuplicates(new[] { itemOld, itemNew });
+
+        Assert.Single(result);
+        Assert.Equal(itemNew.Id, result[0].RecommendedKeepItemId);
+    }
+
+    [Fact]
     public void Unique_items_are_not_reported_as_duplicates()
     {
         var item1 = new LandmarkInventoryItem(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "Place A", "Landmarks", "Landmarks");

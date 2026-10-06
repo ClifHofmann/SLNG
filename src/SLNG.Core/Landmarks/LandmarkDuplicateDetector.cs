@@ -102,48 +102,21 @@ public static class LandmarkDuplicateDetector
         if (items.Count == 0) return Guid.Empty;
         if (items.Count == 1) return items[0].Id;
 
-        LandmarkInventoryItem bestItem = items[0];
-        int bestScore = int.MinValue;
-
-        foreach (var item in items)
-        {
-            int score = 0;
-
-            // Priority 1: Is in favorites bar (+10000)
-            if (favoriteIds != null && (favoriteIds.Contains(item.Id) || (item.AssetId != Guid.Empty && favoriteIds.Contains(item.AssetId))))
-            {
-                score += 10000;
-            }
-
-            // Priority 2: In primary Landmarks folder or subfolder (+500)
-            if (!string.IsNullOrEmpty(primaryFolderName) &&
-                item.FolderPath.Contains(primaryFolderName, StringComparison.OrdinalIgnoreCase))
-            {
-                score += 500;
-            }
-
-            // Priority 3: Not in "Received Items" / "Trash" / "Unpack" (+200)
-            if (!item.FolderPath.Contains("Received Items", StringComparison.OrdinalIgnoreCase) &&
-                !item.FolderPath.Contains("Trash", StringComparison.OrdinalIgnoreCase) &&
-                !item.FolderPath.Contains("Unpack", StringComparison.OrdinalIgnoreCase))
-            {
-                score += 200;
-            }
-
-            // Priority 4: Oldest creation date (earlier date gets higher score if dates available)
-            if (item.CreationDate != default)
-            {
-                // Invert unix timestamp so earlier date gets higher score
-                long daysSinceEpoch = (long)(item.CreationDate - DateTime.UnixEpoch).TotalDays;
-                score += (int)Math.Clamp(50000 - daysSinceEpoch, -100, 100);
-            }
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestItem = item;
-            }
-        }
+        // Order candidates so the single best item to KEEP comes first:
+        // 1. Is in favorites bar (user explicitly pinned it)
+        // 2. Newest creation date (latest landmark is preferred over outdated copies)
+        // 3. Primary folder (e.g. Landmarks)
+        // 4. Not in Received Items / Trash / Unpack
+        // 5. Shortest path length
+        var bestItem = items
+            .OrderByDescending(item => favoriteIds != null && (favoriteIds.Contains(item.Id) || (item.AssetId != Guid.Empty && favoriteIds.Contains(item.AssetId))))
+            .ThenByDescending(item => item.CreationDate != default ? item.CreationDate : DateTime.MinValue)
+            .ThenByDescending(item => !string.IsNullOrEmpty(primaryFolderName) && item.FolderPath.Contains(primaryFolderName, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(item => !item.FolderPath.Contains("Received Items", StringComparison.OrdinalIgnoreCase) &&
+                                      !item.FolderPath.Contains("Trash", StringComparison.OrdinalIgnoreCase) &&
+                                      !item.FolderPath.Contains("Unpack", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(item => item.FolderPath.Length)
+            .First();
 
         return bestItem.Id;
     }
