@@ -317,7 +317,7 @@ namespace SLNG.App
                 }
                 else if (@event is InputEventMouseButton down && down.Pressed
                          && down.ButtonIndex == MouseButton.Left && !down.AltPressed
-                         && GetViewport().GuiGetHoveredControl() == null
+                         && !IsClickBlockedByUi(down.Position)
                          && _gizmo.TryBeginDrag(down.Position))
                 {
                     GetViewport().SetInputAsHandled();
@@ -327,12 +327,12 @@ namespace SLNG.App
 
             if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed && !mouseBtn.AltPressed)
             {
-                // Same defensive hover check as AvatarController's wheel-zoom guard: reaching
-                // _UnhandledInput is supposed to already mean "no Control claimed this," but live
-                // testing showed clicks on a window could still land here and raycast/select
-                // whatever's in the 3D scene behind it. Checking GuiGetHoveredControl() directly
-                // closes that regardless of why the click wasn't actually consumed upstream.
-                if (GetViewport().GuiGetHoveredControl() != null) return;
+                // Defensive UI check: reaching _UnhandledInput is supposed to mean "no Control claimed
+                // this," but live testing showed unconsumed clicks on a window or clicks while a popup
+                // is active (when GuiGetHoveredControl() evaluates to null) could still land here and
+                // raycast/select whatever's in the 3D scene behind it. Checking both GuiGetHoveredControl()
+                // and visible window rectangles closes this completely.
+                if (IsClickBlockedByUi(mouseBtn.Position)) return;
 
                 if (mouseBtn.ButtonIndex == MouseButton.Right || mouseBtn.ButtonIndex == MouseButton.Left)
                 {
@@ -733,6 +733,28 @@ namespace SLNG.App
             // does -- that would silently break right-click-to-create-on-ground.
 
             return spaceState.IntersectRay(query);
+        }
+
+        private bool IsClickBlockedByUi(Vector2 screenPosition)
+        {
+            if (GetViewport().GuiGetHoveredControl() != null) return true;
+
+            if (_contextMenu != null && _contextMenu.Visible && _contextMenu.GetGlobalRect().HasPoint(screenPosition))
+                return true;
+
+            var tree = GetTree();
+            if (tree == null) return false;
+
+            var windows = tree.GetNodesInGroup(UI.SLNGWindow.WindowGroupName);
+            for (int i = 0; i < windows.Count; i++)
+            {
+                if (windows[i] is Control { Visible: true } ctrl && ctrl.IsVisibleInTree())
+                {
+                    if (ctrl.GetGlobalRect().HasPoint(screenPosition)) return true;
+                }
+            }
+
+            return false;
         }
     }
 }

@@ -56,6 +56,9 @@ public partial class SLNGWindow : MarginContainer
 
     public MarginContainer ContentContainer => _contentContainer;
 
+    /// <summary>Scene tree group every active floating window is registered in.</summary>
+    public const string WindowGroupName = "slng_windows";
+
     /// <summary>The standard content inset, horizontal and vertical. Applied to every window in
     /// <see cref="_Ready"/>.</summary>
     public const int DefaultContentMarginH = 14;
@@ -96,6 +99,7 @@ public partial class SLNGWindow : MarginContainer
         // event to siblings/behind regardless, which is exactly the "clicks go through the
         // window" bug this fixes.
         MouseFilter = MouseFilterEnum.Stop;
+        AddToGroup(WindowGroupName);
 
         // FEAT-UI-42: a window no longer scales itself. The interface scale is the root window's
         // ContentScaleFactor (UiScale), which scales every Control in the app at once; a Scale on

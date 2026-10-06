@@ -472,8 +472,13 @@ public partial class FriendsPanel : Control
         };
         button.GuiInput += (@event) =>
         {
-            if (category != null && @event is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
-                ShowSectionMenu(category);
+            if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right)
+            {
+                button.AcceptEvent();
+                GetViewport().SetInputAsHandled();
+                if (category != null && mb.Pressed)
+                    ShowSectionMenu(category);
+            }
         };
 
         row.AddChild(button);
@@ -670,7 +675,11 @@ public partial class FriendsPanel : Control
 
     private Control BuildRow(FriendEntry friend)
     {
-        var row = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        var row = new PanelContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            MouseFilter = MouseFilterEnum.Stop,
+        };
 
         var inner = new HBoxContainer();
         inner.AddThemeConstantOverride("separation", 8);
@@ -714,15 +723,45 @@ public partial class FriendsPanel : Control
         nameBtn.GuiInput += (@event) =>
         {
             if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, DoubleClick: true })
-                OnOpenImRequested?.Invoke(friendId, legacyName);
-            else if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
             {
-                SelectFriend(friendId, friendName, legacyName);
-                ShowCategoryMenu(friendId);
+                nameBtn.AcceptEvent();
+                GetViewport().SetInputAsHandled();
+                OnOpenImRequested?.Invoke(friendId, legacyName);
+            }
+            else if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right)
+            {
+                nameBtn.AcceptEvent();
+                GetViewport().SetInputAsHandled();
+                if (mb.Pressed)
+                {
+                    SelectFriend(friendId, friendName, legacyName);
+                    ShowCategoryMenu(friendId);
+                }
             }
         };
         inner.AddChild(nameBtn);
         inner.AddChild(BuildRightsCells(friend));
+
+        row.GuiInput += (@event) =>
+        {
+            if (@event is InputEventMouseButton mb)
+            {
+                if (mb.ButtonIndex == MouseButton.Right)
+                {
+                    row.AcceptEvent();
+                    GetViewport().SetInputAsHandled();
+                    if (mb.Pressed)
+                    {
+                        SelectFriend(friendId, friendName, legacyName);
+                        ShowCategoryMenu(friendId);
+                    }
+                }
+                else if (mb.ButtonIndex == MouseButton.Left && mb.Pressed)
+                {
+                    SelectFriend(friendId, friendName, legacyName);
+                }
+            }
+        };
 
         var style = new StyleBoxFlat
         {
