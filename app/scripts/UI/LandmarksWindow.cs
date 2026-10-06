@@ -260,7 +260,13 @@ public partial class LandmarksWindow : SLNGWindow
         {
             var folderGroups = matching
                 .GroupBy(l => string.IsNullOrWhiteSpace(l.FolderPath) ? "Landmarks" : l.FolderPath)
-                .OrderBy(g => g.Key, StringComparer.CurrentCultureIgnoreCase);
+                .OrderBy(g =>
+                {
+                    if (string.Equals(g.Key, "Landmarks", StringComparison.OrdinalIgnoreCase)) return 0;
+                    if (g.Key.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase)) return 1;
+                    return 2;
+                })
+                .ThenBy(g => g.Key, StringComparer.CurrentCultureIgnoreCase);
 
             foreach (var group in folderGroups)
             {

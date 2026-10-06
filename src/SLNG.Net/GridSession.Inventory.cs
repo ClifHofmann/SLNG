@@ -592,8 +592,16 @@ public sealed partial class GridSession
             }
         }
 
+        static int FolderPriority(string path)
+        {
+            if (string.Equals(path, "Landmarks", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (path.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase)) return 1;
+            return 2;
+        }
+
         return found.Values
-            .OrderBy(e => e.FolderPath, StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(e => FolderPriority(e.FolderPath))
+            .ThenBy(e => e.FolderPath, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
