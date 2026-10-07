@@ -195,6 +195,11 @@ public sealed partial class GridSession
         // sweep every currently-known primitive once for any MOAP fetch that failed earlier.
         RetryPendingMediaFetches(e.Simulator);
 
+        // BUG-UI-29: Request current groups once EventQueue is running. The simulator's initial login
+        // push omits NewGroupData (ListInProfile flags), leaving them all false until AgentDataUpdateRequest
+        // is sent. Re-asking here populates the full membership data with true ListInProfile values.
+        RequestGroups();
+
         _ = Task.Run(async () =>
         {
             try

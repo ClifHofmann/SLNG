@@ -1835,6 +1835,7 @@ public partial class ChatWindow : SLNGWindow
         }
         if (selectedPage == _recentPanel) RefreshRecentPanel(); // previews are read when the page is shown
         if (selectedPage == _friendsPanel) _friendsPanel.RefreshIcons(); // pictures that arrived while it was hidden
+        if (selectedPage == _groupsPanel) _session?.RequestGroups();
     }
 
     /// <summary>FEAT-UI-43: which of the window's three pages the keyboard shortcuts address. The

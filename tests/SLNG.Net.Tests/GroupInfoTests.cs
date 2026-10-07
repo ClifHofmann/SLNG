@@ -148,6 +148,36 @@ public class GroupInfoTests
     }
 
     [Fact]
+    public void OnCurrentGroups_preserves_ListInProfile_flags()
+    {
+        using var session = new GridSession();
+        var a = UUID.Random();
+        var b = UUID.Random();
+        GroupsUpdatedEvent? raised = null;
+        session.GroupsUpdated += (s, e) => raised = e;
+
+        Invoke(session, "OnCurrentGroups", new CurrentGroupsEventArgs(new Dictionary<UUID, Group>
+        {
+            [a] = new Group { ID = a, Name = "Alpha", AcceptNotices = true, ListInProfile = true },
+            [b] = new Group { ID = b, Name = "Beta", AcceptNotices = false, ListInProfile = false },
+        }));
+
+        var groups = session.GetGroups();
+        Assert.Equal(2, groups.Count);
+        var alpha = groups.Single(g => g.Id == a.Guid);
+        Assert.True(alpha.AcceptNotices);
+        Assert.True(alpha.ListInProfile);
+        var beta = groups.Single(g => g.Id == b.Guid);
+        Assert.False(beta.AcceptNotices);
+        Assert.False(beta.ListInProfile);
+
+        Assert.NotNull(raised);
+        Assert.Equal(2, raised!.Groups.Count);
+        Assert.True(raised.Groups.Single(g => g.Id == a.Guid).ListInProfile);
+        Assert.False(raised.Groups.Single(g => g.Id == b.Guid).ListInProfile);
+    }
+
+    [Fact]
     public void ApplyLocalGroupFlags_updates_the_snapshot_and_raises_GroupsUpdated()
     {
         using var session = new GridSession();

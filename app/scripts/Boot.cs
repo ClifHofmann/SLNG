@@ -430,7 +430,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.92-alpha";
+    public const string AppVersion = "v0.26.94-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -4224,6 +4224,9 @@ public partial class Boot : Control
             // FEAT-UI-13: pull the account mute list once so a profile window's Mute/Unmute button
             // opens showing the right state.
             _session.RequestMuteList();
+
+            // BUG-UI-29: refresh group memberships after login handshake so ListInProfile and group flags are populated.
+            _session.RequestGroups();
 
             // The boot log goes with it. It is not inside %LoginScreen, so it used to survive the
             // login and sit in-world as a bottom-anchored, full-width, 150 px strip of [ENV]

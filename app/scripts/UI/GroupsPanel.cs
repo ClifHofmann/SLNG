@@ -97,6 +97,14 @@ public partial class GroupsPanel : Control
         hbox.AddChild(BuildActionPanel());
 
         GroupMuteSettings.MuteChanged += OnMuteChanged;
+
+        VisibilityChanged += () =>
+        {
+            if (IsVisibleInTree() && _session != null)
+            {
+                _session.RequestGroups();
+            }
+        };
     }
 
     public override void _ExitTree()
