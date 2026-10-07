@@ -430,7 +430,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.97-alpha";
+    public const string AppVersion = "v0.26.98-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3820,7 +3820,8 @@ public partial class Boot : Control
         _minimapOverlay.Initialize(_world, _session, _mapTileTextures);
         _worldMapWindow.Initialize(_session, _gpuCache, _assetService, _world);
         _landmarksWindow.Initialize(_session);
-        _topMenu.FavoritesBar.Initialize(_session.AgentId.ToString());
+        string gridSlug = GridIdentity.Slug(_sessionGridUri);
+        _topMenu.FavoritesBar.Initialize(gridSlug, _session.AgentId.ToString());
         var favIds = _topMenu.FavoritesBar.FavoritesList.Items
             .Select(i => i.ItemId != System.Guid.Empty ? i.ItemId : i.AssetId)
             .ToHashSet();
@@ -5557,6 +5558,7 @@ public partial class Boot : Control
             {
                 _topMenu.Visible = false;
                 _topMenu.ClearLocation();
+                _topMenu.FavoritesBar.Reset();
             }
 
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
@@ -5670,6 +5672,7 @@ public partial class Boot : Control
             {
                 _topMenu.Visible = false;
                 _topMenu.ClearLocation();
+                _topMenu.FavoritesBar.Reset();
             }
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;

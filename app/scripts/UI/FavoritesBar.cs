@@ -11,6 +11,7 @@ namespace SLNG.App.UI;
 /// </summary>
 public partial class FavoritesBar : PanelContainer
 {
+    private string? _gridSlug;
     private string? _agentId;
     private LandmarkFavoritesList _list = new();
 
@@ -158,29 +159,50 @@ public partial class FavoritesBar : PanelContainer
             }
         };
 
-        Initialize(null);
+        Reset();
     }
 
-    public void Initialize(string? agentId)
+    public void Initialize(string? gridSlug, string? agentId)
     {
+        _gridSlug = gridSlug;
         _agentId = agentId;
-        _list = LandmarkFavoritesStore.Load(agentId);
-        Visible = LandmarkFavoritesStore.LoadVisible(agentId);
+        if (!string.IsNullOrWhiteSpace(gridSlug) && !string.IsNullOrWhiteSpace(agentId))
+        {
+            _list = LandmarkFavoritesStore.Load(gridSlug, agentId);
+            Visible = LandmarkFavoritesStore.LoadVisible(gridSlug, agentId);
+        }
+        else
+        {
+            _list = new LandmarkFavoritesList();
+            Visible = false;
+        }
+        RebuildItems();
+    }
+
+    public void Reset()
+    {
+        _gridSlug = null;
+        _agentId = null;
+        _list = new LandmarkFavoritesList();
+        Visible = false;
         RebuildItems();
     }
 
     public void SetVisibleState(bool visible)
     {
         Visible = visible;
-        LandmarkFavoritesStore.SaveVisible(_agentId, visible);
+        LandmarkFavoritesStore.SaveVisible(_gridSlug, _agentId, visible);
     }
 
     public bool AddFavorite(Guid itemId, Guid assetId, string name)
     {
+        if (string.IsNullOrWhiteSpace(_gridSlug) || string.IsNullOrWhiteSpace(_agentId))
+            return false;
+
         var item = new LandmarkFavoriteItem(itemId, assetId, name);
         if (_list.Add(item))
         {
-            LandmarkFavoritesStore.Save(_agentId, _list);
+            LandmarkFavoritesStore.Save(_gridSlug, _agentId, _list);
             RebuildItems();
             return true;
         }
@@ -189,9 +211,12 @@ public partial class FavoritesBar : PanelContainer
 
     public bool RemoveFavorite(Guid id)
     {
+        if (string.IsNullOrWhiteSpace(_gridSlug) || string.IsNullOrWhiteSpace(_agentId))
+            return false;
+
         if (_list.Remove(id))
         {
-            LandmarkFavoritesStore.Save(_agentId, _list);
+            LandmarkFavoritesStore.Save(_gridSlug, _agentId, _list);
             RebuildItems();
             return true;
         }

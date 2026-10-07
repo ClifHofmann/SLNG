@@ -197,6 +197,7 @@ public static partial class SelfTest
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
         results.Add(CheckChatLogPaths());
+        results.Add(CheckLandmarkFavoritesStore());
         results.AddRange(CheckKeyBindings(tree)); // FEAT-UI-43
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
