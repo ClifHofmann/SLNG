@@ -607,6 +607,39 @@ public sealed partial class GridSession
     }
 
     /// <summary>
+    /// Returns all known landmark folders (the system Landmarks folder and any subfolders under it)
+    /// from the in-memory inventory store for moving and organizing landmarks (FEAT-UI-68).
+    /// </summary>
+    public IReadOnlyList<(Guid Id, string Path, string Name)> GetLandmarkFolders()
+    {
+        var store = _client.Inventory.Store;
+        if (store?.RootFolder == null || LandmarksFolderId is not { } rootLmId || rootLmId == Guid.Empty)
+            return Array.Empty<(Guid, string, string)>();
+
+        var list = new List<(Guid, string, string)>();
+        var rootUuid = new LibreMetaverse.UUID(rootLmId);
+        list.Add((rootLmId, "Landmarks", "Landmarks"));
+
+        void CollectSubfolders(LibreMetaverse.UUID parentUuid, string parentPath)
+        {
+            var node = store.GetNodeOrDefault(parentUuid);
+            if (node == null) return;
+            foreach (var child in node.Nodes.Values)
+            {
+                if (child.Data is LibreMetaverse.InventoryFolder f)
+                {
+                    string subPath = $"{parentPath}/{f.Name}";
+                    list.Add((f.UUID.Guid, subPath, f.Name));
+                    CollectSubfolders(f.UUID, subPath);
+                }
+            }
+        }
+
+        CollectSubfolders(rootUuid, "Landmarks");
+        return list;
+    }
+
+    /// <summary>
     /// Fetches one folder's direct children (subfolders + items) — the lazy per-folder expansion
     /// unit for an inventory UI. One CAPS request (FetchInventoryDescendents2 — supported by
     /// modern OpenSim; AIS3 is SL-only and mutation-only in LibreMetaverse anyway) per call, no

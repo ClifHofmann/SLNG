@@ -293,7 +293,13 @@
       "dedup_completed_toast": "{0} doppelte Landmarken in den Papierkorb verschoben.",
       "folder_landmarks": "Landmarken",
       "general_landmarks": "Allgemeine Landmarken",
-      "other_folders": "Weitere Ordner"
+      "other_folders": "Weitere Ordner",
+      "move_to_landmarks_btn": "In 'Landmarks' verschieben",
+      "move_to_landmarks_tooltip": "Ausgewählte Landmarke in den Hauptordner 'Landmarks' verschieben",
+      "move_to_landmarks_root": "In Hauptordner 'Landmarks' verschieben",
+      "move_to_other_copy_folder": "In Ordner des Duplikats verschieben (\"{0}\")",
+      "move_to_subfolder_menu": "In Unterordner verschieben",
+      "moved_to_folder_toast": "In \"{0}\" verschoben."
     },
     "favorites_bar": {
       "label": "Favoriten",

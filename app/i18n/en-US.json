@@ -293,7 +293,13 @@
       "dedup_completed_toast": "Moved {0} duplicate landmarks to Trash.",
       "folder_landmarks": "Landmarks",
       "general_landmarks": "General Landmarks",
-      "other_folders": "Other Folders"
+      "other_folders": "Other Folders",
+      "move_to_landmarks_btn": "Move to 'Landmarks'",
+      "move_to_landmarks_tooltip": "Move selected landmark to the primary Landmarks folder",
+      "move_to_landmarks_root": "Move to 'Landmarks' folder",
+      "move_to_other_copy_folder": "Move to duplicate's folder (\"{0}\")",
+      "move_to_subfolder_menu": "Move to subfolder",
+      "moved_to_folder_toast": "Moved to \"{0}\"."
     },
     "favorites_bar": {
       "label": "Favorites",
