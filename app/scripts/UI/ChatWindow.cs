@@ -414,6 +414,24 @@ public partial class ChatWindow : SLNGWindow
         if (tab != null) AppendMessageToTab(tab, sender, message, senderAgentId);
     }
 
+    /// <summary>FEAT-UI-69: Appends a friend online/offline notification to the Main (local chat) tab
+    /// when enabled in preferences. Avatar name is a clickable profile link.
+    /// Does not increment unread counter or write to chat history logs.</summary>
+    public void AppendFriendPresenceToMain(Guid friendId, string shownName, bool online)
+    {
+        var mainTab = _chatTabs.Find(t => t.Id == "main");
+        if (mainTab == null) return;
+
+        string safeName = BbEscape(shownName);
+        string name = friendId != Guid.Empty
+            ? $"[url=avatar:{friendId}][color=#A0B0C0]{safeName}[/color][/url]"
+            : $"[color=#A0B0C0]{safeName}[/color]";
+
+        string text = L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", name);
+        AppendLineToTab(mainTab, $"[color=#888888][lb]{DateTime.Now:HH:mm}][/color] [color=#888888][i]{text}[/i][/color]",
+            countUnread: false);
+    }
+
     /// <summary>Appends an incoming 1:1 IM, opening a new closeable tab keyed by the sender's
     /// agent id if this is the first message from them this session. Called by Boot on
     /// GridSession.InstantMessageReceived, marshalled to the main thread first.</summary>
