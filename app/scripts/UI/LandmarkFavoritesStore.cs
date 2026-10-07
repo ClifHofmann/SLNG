@@ -23,6 +23,10 @@ public static class LandmarkFavoritesStore
     {
         if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
             return null;
+
+        if (System.Guid.TryParse(agentId, out var guid) && guid == System.Guid.Empty)
+            return null;
+
         return $"{SectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
     }
 
@@ -33,6 +37,32 @@ public static class LandmarkFavoritesStore
 
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return new LandmarkFavoritesList();
+
+        // One-time cleanup of legacy/corrupted empty-guid sections from earlier sessions
+        bool dirty = false;
+        if (cfg.HasSection("favorites_bar"))
+        {
+            cfg.EraseSection("favorites_bar");
+            dirty = true;
+        }
+        if (cfg.HasSection("favorites_bar_00000000-0000-0000-0000-000000000000"))
+        {
+            cfg.EraseSection("favorites_bar_00000000-0000-0000-0000-000000000000");
+            dirty = true;
+        }
+        foreach (var s in cfg.GetSections())
+        {
+            if (s.StartsWith(SectionPrefix) && s.EndsWith("00000000-0000-0000-0000-000000000000"))
+            {
+                cfg.EraseSection(s);
+                dirty = true;
+            }
+        }
+        if (dirty && Persist)
+        {
+            cfg.Save(ConfigPath);
+        }
+
         return LoadFromConfig(cfg, section);
     }
 

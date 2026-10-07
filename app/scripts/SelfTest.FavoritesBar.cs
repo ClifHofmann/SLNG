@@ -25,6 +25,7 @@ public static partial class SelfTest
             if (LandmarkFavoritesStore.GetSection("agni", null) != null) failures.Add("null agent returned non-null section");
             if (LandmarkFavoritesStore.GetSection(null, "some-id") != null) failures.Add("null grid returned non-null section");
             if (LandmarkFavoritesStore.GetSection("   ", "some-id") != null) failures.Add("whitespace grid returned non-null section");
+            if (LandmarkFavoritesStore.GetSection("agni", Guid.Empty.ToString()) != null) failures.Add("Guid.Empty agent returned non-null section");
 
             string user1 = "11111111-1111-1111-1111-111111111111";
             string user2 = "22222222-2222-2222-2222-222222222222";
