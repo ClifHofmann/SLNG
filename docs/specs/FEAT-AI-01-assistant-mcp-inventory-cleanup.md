@@ -1,4 +1,4 @@
-# [FEAT-AI-01] In-Viewer AI Assistant & MCP Server for Inventory Cleanup
+# [FEAT-AI-01] In-Viewer AI Assistant & MCP Server (Inventory & Settings)
 
 - **Feature ID:** `FEAT-AI-01`
 - **Track:** `ui` / `core` / `net`
@@ -7,10 +7,9 @@
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
 ## Overview & Goal
-For Second Life and OpenSim residents with large, cluttered inventories (often tens of thousands of items accumulated over years), finding, categorizing, and cleaning up items manually is overwhelming.
-This feature introduces an **AI Help Bot / Assistant** directly into SLNG, combined with an optional **Model Context Protocol (MCP)** server:
-1. **Configurable AI Providers**: Users can configure their preferred AI provider (OpenAI, Anthropic Claude, Google Gemini, or local models via Ollama / LM Studio) with custom API keys and endpoints in Preferences.
-2. **In-Viewer Assistant Window (`AiAssistantWindow`)**: A floating chat floater providing conversational help, viewer guidance, and intelligent inventory assistance (e.g., duplicate analysis, auto-sorting suggestions, category reorganizations).
+For Second Life and OpenSim residents, managing massive inventories and finding specific viewer preferences can be overwhelming. This feature introduces an **AI Help Bot / Assistant** directly into SLNG, combined with an optional **Model Context Protocol (MCP)** server:
+1. **Configurable AI Providers (Cloud vs. Local)**: Users can configure their preferred provider (OpenAI, Anthropic, Gemini) via API keys to save local VRAM, or connect a local model via Ollama/LM Studio if their hardware permits.
+2. **In-Viewer Assistant Window (`AiAssistantWindow`)**: A floating chat floater providing conversational help, intelligent inventory assistance (duplicate analysis, auto-sorting), and **direct viewer settings control** (e.g., "enable PBR shadows").
 3. **Structured Tool Calling & Plan Execution**: The assistant uses structured tools to analyze inventory hierarchies, identify patterns, and propose concrete cleanup plans.
 4. **Human-in-the-Loop Confirmation**: Destructive or batch modifications (moving items, creating folders, moving duplicates to Trash) are NEVER executed automatically. The viewer presents a clear action preview dialog where the user reviews and confirms each change.
 5. **MCP Server Integration**: An optional local MCP server interface allowing external desktop agents (Claude Desktop, Cursor, Antigravity) to inspect the viewer's live inventory and propose actions using standardized MCP tools.
@@ -43,16 +42,16 @@ This feature introduces an **AI Help Bot / Assistant** directly into SLNG, combi
 - [ ] Conversational chat UI: message history, user input bar, streaming or token-buffered response display, status indicators (thinking / analyzing).
 - [ ] Quick-action suggestion pills:
   - "Doppelte Landmarken aufräumen" / "Clean duplicate landmarks"
-  - "Landmarken nach Region/Typ kategorisieren" / "Categorize landmarks"
   - "Leere oder unbenutzte Ordner finden" / "Find empty folders"
+  - "Hilfe zu Viewer-Einstellungen" / "Help with viewer settings"
   - "Inventar-Übersicht erstellen" / "Summarize inventory structure"
 - [ ] **Action Plan Card**:
   - When the AI generates batch operations, it emits a structured plan (e.g. `[ActionPlan] 12 items to move, 3 to trash`).
   - The UI renders an interactive confirmation card listing source, target, item names, and checkboxes.
   - Changes are applied ONLY when the user clicks "Änderungen anwenden" / "Apply Changes".
 
-### 3. Core AI & Inventory Tool Engine (`SLNG.Core.AI`)
-- [ ] Engine-agnostic tool definitions (`IAiTool`) for inventory querying and mutation:
+### 3. Core AI & Tool Engine (`SLNG.Core.AI`)
+- [ ] Engine-agnostic tool definitions (`IAiTool`) for querying and mutation:
   - `get_inventory_tree(folder_id, max_depth)`
   - `search_inventory(query, item_type)`
   - `find_duplicate_landmarks()`
@@ -60,6 +59,8 @@ This feature introduces an **AI Help Bot / Assistant** directly into SLNG, combi
   - `create_inventory_folder(name, parent_id)`
   - `move_inventory_items(item_ids[], target_folder_id)`
   - `move_items_to_trash(item_ids[])`
+  - `search_viewer_settings(query)` (e.g. searching for "shadows" or "PBR")
+  - `update_viewer_setting(key, value)` (requires confirmation card)
 - [ ] Provider adapters in `SLNG.Core.AI.Providers`:
   - `OpenAiCompatibleProvider` (OpenAI, Ollama, LM Studio, Groq)
   - `AnthropicProvider` (Claude API)
