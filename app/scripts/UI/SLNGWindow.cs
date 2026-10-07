@@ -59,9 +59,34 @@ public partial class SLNGWindow : MarginContainer
     /// <summary>Scene tree group every active floating window is registered in.</summary>
     public const string WindowGroupName = "slng_windows";
 
+    private static float _topInset = 28f;
+
     /// <summary>Vertical clearance reserved for the top menu bar and favorites bar so window headers
     /// never slide under the top menu or become unclickable.</summary>
-    public static float TopInset { get; set; } = 28f;
+    public static float TopInset
+    {
+        get => _topInset;
+        set
+        {
+            if (Mathf.IsEqualApprox(_topInset, value)) return;
+            _topInset = value;
+            OnTopInsetChanged();
+        }
+    }
+
+    private static void OnTopInsetChanged()
+    {
+        var tree = Engine.GetMainLoop() as SceneTree;
+        if (tree == null) return;
+        var nodes = tree.GetNodesInGroup(WindowGroupName);
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (nodes[i] is SLNGWindow win && GodotObject.IsInstanceValid(win) && win.IsInsideTree())
+            {
+                win.ClampToViewport();
+            }
+        }
+    }
 
     /// <summary>The standard content inset, horizontal and vertical. Applied to every window in
     /// <see cref="_Ready"/>.</summary>
@@ -315,32 +340,53 @@ public partial class SLNGWindow : MarginContainer
 
     private void RestorePersistedGeometry()
     {
-        if (string.IsNullOrEmpty(PersistId)) return;
-
-        var cfg = new ConfigFile();
-        if (cfg.Load(GeometryConfigPath) != Error.Ok) return;
-
-        if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_pos"))
+        bool restored = false;
+        if (!string.IsNullOrEmpty(PersistId))
         {
-            // Stored in PHYSICAL pixels. That is what it always was (a scaled window's Position was
-            // never divided by its Scale), so a position saved by the old per-window-Scale mechanism
-            // is still valid here with no migration; and because it does not depend on the scale,
-            // changing the scale never makes the saved value stale.
-            Position = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_pos") / UiScale.Current;
-            GeometryRestored = true;
-        }
-        if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_size"))
-        {
-            var savedSize = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_size");
-            var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? new Vector2(4096, 4096);
-            float maxW = Mathf.Max(CustomMinimumSize.X, vp.X);
-            float maxH = Mathf.Max(CustomMinimumSize.Y, vp.Y);
-            Size = new Vector2(
-                Mathf.Clamp(savedSize.X, CustomMinimumSize.X, maxW),
-                Mathf.Clamp(savedSize.Y, CustomMinimumSize.Y, maxH));
+            var cfg = new ConfigFile();
+            if (cfg.Load(GeometryConfigPath) == Error.Ok)
+            {
+                if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_pos"))
+                {
+                    // Stored in PHYSICAL pixels. That is what it always was (a scaled window's Position was
+                    // never divided by its Scale), so a position saved by the old per-window-Scale mechanism
+                    // is still valid here with no migration; and because it does not depend on the scale,
+                    // changing the scale never makes the saved value stale.
+                    Position = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_pos") / UiScale.Current;
+                    GeometryRestored = true;
+                    restored = true;
+                }
+                if (cfg.HasSectionKey(GeometrySection, $"{PersistId}_size"))
+                {
+                    var savedSize = (Vector2)cfg.GetValue(GeometrySection, $"{PersistId}_size");
+                    var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? new Vector2(4096, 4096);
+                    float maxW = Mathf.Max(CustomMinimumSize.X, vp.X);
+                    float maxH = Mathf.Max(CustomMinimumSize.Y, vp.Y);
+                    Size = new Vector2(
+                        Mathf.Clamp(savedSize.X, CustomMinimumSize.X, maxW),
+                        Mathf.Clamp(savedSize.Y, CustomMinimumSize.Y, maxH));
+                }
+            }
         }
 
-        // Restored from a possibly larger / different-resolution session -- keep it on screen.
+        // If no saved position was restored, and Position was left at default (0, 0),
+        // give the window a sane initial placement centered horizontally and below TopInset.
+        if (!restored && Position == Vector2.Zero)
+        {
+            var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? Vector2.Zero;
+            if (vp.X > 0f && vp.Y > 0f)
+            {
+                float posX = Mathf.Max(20f, (vp.X - Size.X) / 2f);
+                float posY = Mathf.Max(TopInset + 10f, (vp.Y - Size.Y) / 3f);
+                Position = new Vector2(posX, posY);
+            }
+            else
+            {
+                Position = new Vector2(40f, TopInset + 20f);
+            }
+        }
+
+        // Keep on screen and below TopInset for ALL windows unconditionally.
         ClampToViewport();
     }
 
@@ -469,13 +515,13 @@ public partial class SLNGWindow : MarginContainer
     /// screen on each axis and the top edge never goes above the viewport -- i.e. some of the
     /// (full-width) title bar is always visible and grab-able. Returns true if it had to move the
     /// window.</summary>
-    private bool ClampToViewport()
+    public bool ClampToViewport()
     {
         var vp = (_viewport ?? GetViewport())?.GetVisibleRect().Size ?? Vector2.Zero;
         if (vp.X <= 0f || vp.Y <= 0f) return false;
 
-        float w = Size.X;
-        float minY = TopInset;
+        float w = Size.X > 0f ? Size.X : (CustomMinimumSize.X > 0f ? CustomMinimumSize.X : 100f);
+        float minY = Mathf.Max(TopInset, 0f);
         var clamped = new Vector2(
             Mathf.Clamp(Position.X, -w + 40f, Mathf.Max(vp.X - 40f, 0f)),
             Mathf.Clamp(Position.Y, minY, Mathf.Max(vp.Y - 40f, minY)));
@@ -621,11 +667,17 @@ public partial class SLNGWindow : MarginContainer
         }
         if ((_resizingEdges & ResizeEdge.Top) != 0)
         {
+            float targetY = _resizeStartPos.Y + delta.Y;
+            if (targetY < TopInset)
+            {
+                delta = new Vector2(delta.X, TopInset - _resizeStartPos.Y);
+            }
             h = Mathf.Clamp(_resizeStartSize.Y - delta.Y, minH, maxH);
             y = _resizeStartPos.Y + (_resizeStartSize.Y - h);
         }
 
         Position = new Vector2(x, y);
         Size = new Vector2(w, h);
+        ClampToViewport();
     }
 }

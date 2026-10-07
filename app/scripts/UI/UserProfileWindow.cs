@@ -1075,8 +1075,11 @@ public partial class UserProfileWindow : SLNGWindow
     private void ApplyCascade()
     {
         var vp = GetViewportRect().Size;
-        var start = new Vector2(Mathf.Max(0f, (vp.X - Size.X) / 2f), Mathf.Max(0f, (vp.Y - Size.Y) / 3f));
+        var start = new Vector2(
+            Mathf.Max(0f, (vp.X - Size.X) / 2f),
+            Mathf.Max(TopInset + 10f, (vp.Y - Size.Y) / 3f));
         Position = start + new Vector2(CascadeIndex * 28, CascadeIndex * 28);
+        ClampToViewport();
     }
 
     /// <summary>Pins <paramref name="newId"/> in <see cref="GpuCache"/> and releases whatever this

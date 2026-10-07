@@ -284,7 +284,8 @@ public partial class RegionRestartWindow : SLNGWindow
         var viewportSize = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280, 720);
         Position = new Vector2(
             Mathf.Max(0, (viewportSize.X - Size.X) / 2),
-            Mathf.Max(0, (viewportSize.Y - Size.Y) / 4));
+            Mathf.Max(TopInset + 10f, (viewportSize.Y - Size.Y) / 4));
+        ClampToViewport();
     }
 
     /// <summary>Closes and frees the window. Also what the owner calls on a region change.</summary>

@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using SLNG.Core;
 using SLNG.Core.ECS;
 using SLNG.Core.Components;
@@ -901,8 +901,9 @@ namespace SLNG.App.UI
             var cascadeOffset = new Godot.Vector2(CascadeIndex * 28, CascadeIndex * 28);
             Position = new Godot.Vector2(
                 Mathf.Max(0, (viewportSize.X - windowSize.X) / 2),
-                Mathf.Max(0, (viewportSize.Y - windowSize.Y) / 2)
+                Mathf.Max(TopInset + 10f, (viewportSize.Y - windowSize.Y) / 2)
             ) + cascadeOffset;
+            ClampToViewport();
         }
 
         private void OnComponentUpdated(object? sender, ComponentEventArgs e)

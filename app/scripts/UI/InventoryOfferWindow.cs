@@ -119,7 +119,8 @@ public partial class InventoryOfferWindow : SLNGWindow
         var viewportSize = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280, 720);
         Position = new Vector2(
             Mathf.Max(0, (viewportSize.X - Size.X) / 2) + CascadeIndex * 28,
-            Mathf.Max(0, (viewportSize.Y - Size.Y) / 3) + CascadeIndex * 28);
+            Mathf.Max(TopInset + 10f, (viewportSize.Y - Size.Y) / 3) + CascadeIndex * 28);
+        ClampToViewport();
     }
 
     private void Close(bool respond, bool accept)

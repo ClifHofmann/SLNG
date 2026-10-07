@@ -135,7 +135,8 @@ public partial class TermsOfServiceWindow : SLNGWindow
         var viewportSize = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280, 720);
         Position = new Vector2(
             Mathf.Max(0, (viewportSize.X - Size.X) / 2),
-            Mathf.Max(0, (viewportSize.Y - Size.Y) / 2));
+            Mathf.Max(TopInset + 10f, (viewportSize.Y - Size.Y) / 2));
+        ClampToViewport();
     }
 
     private void Answer(bool accepted)

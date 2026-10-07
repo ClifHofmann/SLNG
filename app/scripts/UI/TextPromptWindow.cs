@@ -126,7 +126,8 @@ public partial class TextPromptWindow : SLNGWindow
 
         Position = new Vector2(
             Mathf.Max(0, (viewport.X - Size.X) / 2),
-            Mathf.Max(0, (viewport.Y - Size.Y) / 3));
+            Mathf.Max(TopInset + 10f, (viewport.Y - Size.Y) / 3));
+        ClampToViewport();
     }
 
     private void Close(bool confirm)

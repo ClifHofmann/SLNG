@@ -192,6 +192,7 @@ public static partial class SelfTest
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
+        results.Add(CheckWindowTopInsetClamping(tree));
         results.Add(CheckUiScale(tree));
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
@@ -1303,6 +1304,55 @@ public static partial class SelfTest
         return failures.Count == 0
             ? new Check("window insets", true, $"{windowCount} windows: 14/14/12/12 px from frame to content at 100 %, 125 % and 200 % (radar map excepted), none scales itself")
             : new Check("window insets", false, $"off the standard 14/14/12/12 by more than 2 px, or scaling itself: {string.Join("; ", failures)}");
+    }
+
+    /// <summary>
+    /// BUG-UI-31: all floating windows must respect SLNGWindow.TopInset (e.g. 56 px for menu bar + favorites bar),
+    /// never open at (0, 0) tucked under top menus, clamp to Y >= TopInset, and dynamically re-clamp
+    /// when TopInset changes.
+    /// </summary>
+    private static Check CheckWindowTopInsetClamping(SceneTree tree)
+    {
+        float originalTopInset = UI.SLNGWindow.TopInset;
+        var failures = new List<string>();
+        try
+        {
+            UI.SLNGWindow.TopInset = 56f;
+
+            // 1. ChatHistoryWindow (opened without explicit position, starts at Vector2.Zero)
+            var historyWin = new UI.ChatHistoryWindow();
+            tree.Root.AddChild(historyWin);
+            historyWin.Visible = true;
+            historyWin.ClampToViewport();
+            if (historyWin.Position.Y < 56f)
+                failures.Add($"ChatHistoryWindow opened at Y={historyWin.Position.Y:0.#} < 56 px TopInset");
+
+            // 2. Position manually set above TopInset must be clamped to TopInset
+            historyWin.Position = new Vector2(100f, 10f);
+            historyWin.ClampToViewport();
+            if (historyWin.Position.Y < 56f)
+                failures.Add($"ChatHistoryWindow manual Position (100, 10) clamped to Y={historyWin.Position.Y:0.#} < 56 px");
+
+            // 3. Dynamic TopInset change re-clamps all open windows
+            UI.SLNGWindow.TopInset = 70f;
+            if (historyWin.Position.Y < 70f)
+                failures.Add($"ChatHistoryWindow did not re-clamp to 70 px on dynamic TopInset increase (was Y={historyWin.Position.Y:0.#})");
+
+            tree.Root.RemoveChild(historyWin);
+            historyWin.QueueFree();
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            UI.SLNGWindow.TopInset = originalTopInset;
+        }
+
+        return failures.Count == 0
+            ? new Check("window top inset clamping", true, "windows clamp Y >= TopInset (56 px/70 px), re-clamp on dynamic change, never open under top menus")
+            : new Check("window top inset clamping", false, string.Join("; ", failures));
     }
 
     /// <summary>

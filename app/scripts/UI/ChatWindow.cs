@@ -697,6 +697,10 @@ public partial class ChatWindow : SLNGWindow
     {
         var win = new ChatHistoryWindow();
         GetParent().AddChild(win);
+        win.Position = new Vector2(
+            Mathf.Max(20f, Position.X + 30f),
+            Mathf.Max(SLNGWindow.TopInset + 10f, Position.Y + 30f));
+        win.EnsureOnScreen();
         win.Open(_logger, kind, name, name);
     }
 
@@ -1341,6 +1345,10 @@ public partial class ChatWindow : SLNGWindow
 
         var win = new ChatHistoryWindow();
         GetParent().AddChild(win);
+        win.Position = new Vector2(
+            Mathf.Max(20f, Position.X + 30f),
+            Mathf.Max(SLNGWindow.TopInset + 10f, Position.Y + 30f));
+        win.EnsureOnScreen();
         win.Open(_logger, _activeChatTab.LogKind, _activeChatTab.LogName, _activeChatTab.DisplayName);
     }
 

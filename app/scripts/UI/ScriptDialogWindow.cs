@@ -94,7 +94,8 @@ public partial class ScriptDialogWindow : SLNGWindow
         var cascadeOffset = new Vector2(CascadeIndex * 28, CascadeIndex * 28);
         Position = new Vector2(
             Mathf.Max(0, (viewportSize.X - Size.X) / 2) + cascadeOffset.X,
-            Mathf.Max(0, (viewportSize.Y - Size.Y) / 3) + cascadeOffset.Y);
+            Mathf.Max(TopInset + 10f, (viewportSize.Y - Size.Y) / 3) + cascadeOffset.Y);
+        ClampToViewport();
     }
 
     /// <summary>Lays out up to 12 buttons bottom-to-top/left-to-right (see class doc), then a

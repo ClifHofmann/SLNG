@@ -99,7 +99,7 @@ namespace SLNG.App.UI
         private FavoritesBar _favoritesBar = null!;
         public FavoritesBar FavoritesBar => _favoritesBar;
         private PanelContainer _panel = null!;
-        public float TotalHeight => Visible && _panel != null && _panel.Visible ? _panel.Size.Y : 0f;
+        public float TotalHeight => Visible && _panel != null && _panel.Visible ? Mathf.Max(_panel.Size.Y, _panel.GetCombinedMinimumSize().Y) : 0f;
 
         private int _lastFps = -1;
 
@@ -672,9 +672,18 @@ namespace SLNG.App.UI
         private void ApplyTopInsetDeferred()
         {
             if (!IsInstanceValid(this) || _panel == null || !IsInstanceValid(_panel)) return;
-            float h = Visible && _panel.Visible ? _panel.Size.Y : 0f;
+            float h = 0f;
+            if (Visible && _panel.Visible)
+            {
+                h = Mathf.Max(_panel.Size.Y, _panel.GetCombinedMinimumSize().Y);
+                if (_favoritesBar != null && _favoritesBar.Visible)
+                    h = Mathf.Max(h, 54f);
+                else
+                    h = Mathf.Max(h, 28f);
+            }
             SLNGWindow.TopInset = h;
-            SetFavoritesBarChecked(_favoritesBar.Visible);
+            if (_favoritesBar != null)
+                SetFavoritesBarChecked(_favoritesBar.Visible);
         }
 
         public void SetFavoritesBarChecked(bool show)
