@@ -307,7 +307,8 @@
       "create_folder_btn": "Create Folder",
       "move_to_landmarks_root": "Move to 'Landmarks' folder",
       "move_to_other_copy_folder": "Move to duplicate's folder (\"{0}\")",
-      "moved_to_folder_toast": "Moved to \"{0}\"."
+      "moved_to_folder_toast": "Moved to \"{0}\".",
+      "folder_created_toast": "Folder \"{0}\" created."
     },
     "favorites_bar": {
       "label": "Favorites",

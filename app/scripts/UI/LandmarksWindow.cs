@@ -24,6 +24,7 @@ public partial class LandmarksWindow : SLNGWindow
     private Button _cleanDuplicatesBtn = null!;
     private Button _refreshBtn = null!;
     private Button _createBtn = null!;
+    private Button _newFolderBtn = null!;
     private LandmarkTree _tree = null!;
     private Label _statusLabel = null!;
     private Button _addToFavoritesBtn = null!;
@@ -225,6 +226,15 @@ public partial class LandmarksWindow : SLNGWindow
         _createBtn.Pressed += () => OnCreateLandmarkRequested?.Invoke();
         searchRow.AddChild(_createBtn);
 
+        _newFolderBtn = new Button
+        {
+            Text = "📁+",
+            TooltipText = L10n.Tr("ui.landmarks.new_folder_tooltip"),
+            FocusMode = FocusModeEnum.None
+        };
+        _newFolderBtn.Pressed += OnNewFolderPressed;
+        searchRow.AddChild(_newFolderBtn);
+
         _tree = new LandmarkTree
         {
             SizeFlagsVertical = SizeFlags.ExpandFill,
@@ -378,6 +388,30 @@ public partial class LandmarksWindow : SLNGWindow
             };
             var otherRoot = new FolderNode(L10n.Tr("ui.landmarks.other_folders"), "");
 
+            // 1. Populate all known landmark folders from inventory into landmarksRoot
+            foreach (var kf in knownFolders)
+            {
+                if (kf.Id == landmarksRoot.FolderId) continue;
+                string subPath = kf.Path.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase)
+                    ? kf.Path.Substring("Landmarks/".Length)
+                    : kf.Path;
+
+                var segments = subPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                var curr = landmarksRoot;
+                string currPath = "Landmarks";
+                for (int i = 0; i < segments.Length; i++)
+                {
+                    currPath += "/" + segments[i];
+                    if (!curr.Subfolders.TryGetValue(segments[i], out var childNode))
+                    {
+                        var fId = (i == segments.Length - 1) ? kf.Id : (folderIdMap.TryGetValue(currPath, out var id) ? id : Guid.Empty);
+                        childNode = new FolderNode(segments[i], currPath) { FolderId = fId };
+                        curr.Subfolders[segments[i]] = childNode;
+                    }
+                    curr = childNode;
+                }
+            }
+
             foreach (var lm in matching)
             {
                 string path = lm.FolderPath?.Trim() ?? "";
@@ -433,22 +467,22 @@ public partial class LandmarksWindow : SLNGWindow
             }
 
             // Render main Landmarks root node
-            if (landmarksRoot.TotalLandmarksCount > 0)
+            if (landmarksRoot.TotalLandmarksCount > 0 || landmarksRoot.Subfolders.Count > 0 || string.IsNullOrEmpty(filter))
             {
                 var lmRootItem = _tree.CreateItem(root);
                 lmRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.folder_landmarks")} ({landmarksRoot.TotalLandmarksCount})");
-                lmRootItem.SetSelectable(0, false);
+                lmRootItem.SetSelectable(0, true);
                 lmRootItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
                 lmRootItem.Collapsed = false; // Expanded by default so categories are immediately visible
                 lmRootItem.SetCustomColor(0, new Color(0.85f, 0.93f, 1.0f, 0.95f));
 
                 // 1. "Allgemeine Landmarken" (Direct root-level landmarks in Landmarks folder)
                 // Clear, distinct visual separation from categorized subfolders
-                if (landmarksRoot.Landmarks.Count > 0)
+                if (landmarksRoot.Landmarks.Count > 0 || string.IsNullOrEmpty(filter))
                 {
                     var genItem = _tree.CreateItem(lmRootItem);
                     genItem.SetText(0, $"📂 {L10n.Tr("ui.landmarks.general_landmarks")} ({landmarksRoot.Landmarks.Count})");
-                    genItem.SetSelectable(0, false);
+                    genItem.SetSelectable(0, true);
                     genItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
                     genItem.SetCustomColor(0, new Color(1.0f, 0.85f, 0.55f, 0.95f));
                     genItem.Collapsed = string.IsNullOrEmpty(filter);
@@ -565,8 +599,30 @@ public partial class LandmarksWindow : SLNGWindow
             {
                 _tree.SetSelected(item, 0);
                 UpdateActionButtons();
-                if (GetSelectedLandmark() != null)
+
+                string meta = item.GetMetadata(0).AsString();
+                bool isFolder = meta.StartsWith("folder|");
+                var lm = GetSelectedLandmark();
+
+                if (isFolder || lm != null)
                 {
+                    _contextMenu.Clear();
+                    if (lm != null)
+                    {
+                        _contextMenu.AddItem(L10n.Tr("ui.landmarks.teleport"), 0);
+                        _contextMenu.AddItem(L10n.Tr("ui.landmarks.add_to_favorites_btn"), 1);
+                        _contextMenu.AddItem(L10n.Tr("ui.landmarks.copy_slurl"), 2);
+                        _contextMenu.AddSeparator();
+                        _contextMenu.AddItem(L10n.Tr("ui.landmarks.move_to_folder_action"), 4);
+                        _contextMenu.AddItem(L10n.Tr("ui.landmarks.new_folder_btn"), 10);
+                        _contextMenu.AddSeparator();
+                        _contextMenu.AddItem(L10n.Tr("ui.landmarks.delete_to_trash"), 3);
+                    }
+                    else
+                    {
+                        _contextMenu.AddItem(L10n.Tr("ui.landmarks.new_folder_btn"), 10);
+                    }
+
                     _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
                     _contextMenu.Popup();
                     _tree.AcceptEvent();
@@ -577,6 +633,12 @@ public partial class LandmarksWindow : SLNGWindow
 
     private void OnContextMenuIdPressed(long id)
     {
+        if (id == 10) // + Neuer Ordner / + New Folder
+        {
+            OnNewFolderPressed();
+            return;
+        }
+
         if (GetSelectedLandmark() is not { } lm) return;
 
         if (id == 0) // Teleport
@@ -615,6 +677,69 @@ public partial class LandmarksWindow : SLNGWindow
                     _ = RefreshLandmarksAsync();
                 });
         }
+    }
+
+    private (Guid FolderId, string FolderName)? GetSelectedFolder()
+    {
+        var selected = _tree.GetSelected();
+        if (selected == null) return null;
+        string meta = selected.GetMetadata(0).AsString();
+        if (string.IsNullOrEmpty(meta)) return null;
+
+        if (meta.StartsWith("folder|"))
+        {
+            var parts = meta.Split('|');
+            if (parts.Length >= 3 && Guid.TryParse(parts[1], out var fid) && fid != Guid.Empty)
+            {
+                string folderName = parts[2].Contains('/') ? parts[2].Split('/').Last() : parts[2];
+                return (fid, folderName);
+            }
+        }
+        else
+        {
+            var parts = meta.Split('|');
+            if (parts.Length >= 5 && Guid.TryParse(parts[3], out var fid) && fid != Guid.Empty)
+            {
+                string folderName = parts[4].Contains('/') ? parts[4].Split('/').Last() : parts[4];
+                return (fid, folderName);
+            }
+        }
+
+        return null;
+    }
+
+    private void OnNewFolderPressed()
+    {
+        if (_session == null) return;
+
+        Guid targetParentId = _session.LandmarksFolderId ?? Guid.Empty;
+        string parentFolderName = L10n.Tr("ui.landmarks.folder_landmarks");
+
+        if (GetSelectedFolder() is { } sel)
+        {
+            targetParentId = sel.FolderId;
+            parentFolderName = sel.FolderName;
+        }
+
+        if (targetParentId == Guid.Empty) return;
+
+        var prompt = new TextPromptWindow();
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                   ?? (Node?)GetParent() ?? this;
+        host.AddChild(prompt);
+        prompt.Initialize(
+            title: L10n.Tr("ui.landmarks.new_folder_title"),
+            prompt: L10n.TrFormat("ui.landmarks.new_folder_prompt", parentFolderName),
+            initialText: "",
+            confirmLabel: L10n.Tr("ui.landmarks.create_folder_btn"));
+
+        prompt.Confirmed += newFolderName =>
+        {
+            if (string.IsNullOrWhiteSpace(newFolderName)) return;
+            _session.CreateInventoryFolder(targetParentId, newFolderName.Trim());
+            OnToast?.Invoke(L10n.TrFormat("ui.landmarks.folder_created_toast", newFolderName.Trim()));
+            _ = RefreshLandmarksAsync();
+        };
     }
 
     private void ConfirmDeleteSingleLandmark(Guid itemId, string name)
@@ -672,9 +797,12 @@ public partial class LandmarksWindow : SLNGWindow
 
     private void RenderSubfolderTree(TreeItem parentItem, FolderNode node, string filter)
     {
+        if (!string.IsNullOrEmpty(filter) && node.TotalLandmarksCount == 0 && !node.Name.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            return;
+
         var folderItem = _tree.CreateItem(parentItem);
         folderItem.SetText(0, $"📁 {node.Name} ({node.TotalLandmarksCount})");
-        folderItem.SetSelectable(0, false);
+        folderItem.SetSelectable(0, true);
         folderItem.SetMetadata(0, $"folder|{node.FolderId}|{node.FullPath}");
         folderItem.SetCustomColor(0, new Color(0.85f, 0.92f, 1.0f, 0.95f));
 

@@ -307,7 +307,8 @@
       "create_folder_btn": "Ordner erstellen",
       "move_to_landmarks_root": "In Hauptordner 'Landmarks' verschieben",
       "move_to_other_copy_folder": "In Ordner des Duplikats verschieben (\"{0}\")",
-      "moved_to_folder_toast": "In \"{0}\" verschoben."
+      "moved_to_folder_toast": "In \"{0}\" verschoben.",
+      "folder_created_toast": "Ordner \"{0}\" erstellt."
     },
     "favorites_bar": {
       "label": "Favoriten",
