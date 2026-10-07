@@ -25,12 +25,20 @@ This feature introduces a **100% native, offline, zero-install** translation lay
 - [ ] Implement `ITranslationService` wrapping an ONNX inference session.
 - [ ] Provide an asset downloader that fetches the required `*.onnx` model weights (e.g., `opus-mt-en-de`) on-demand from a trusted source (or bundles the most common pairs) to keep the initial viewer download small.
 
-### 2. UI Integration (`ChatConsole` & `PreferencesWindow`)
-- [ ] **Preferences -> Translation**: New tab to enable/disable local translation, select source/target languages, and manage downloaded language packs.
-- [ ] **Chat UI**: Incoming messages in foreign languages display a small `[A->A]` icon or inline translated text.
-- [ ] **Chat Bar**: Optional toggle to auto-translate outgoing messages before sending them to the grid.
+### 2. UI & Scope (`ChatConsole` & `PreferencesWindow`)
+- [ ] **Master Toggle (Global)**: A main "Enable Local Translation" toggle in Preferences (or a quick-toggle in the Toolbar/Menu) that instantly activates/deactivates the entire translation engine.
+- [ ] **Preferences (Per-Channel)**: Specific toggles to enable/disable translation for Nearby Chat and Group Chat.
+- [ ] **IM Tabs (Per-Session)**: Direct messages (IMs) have a local dropdown in the tab header to set the target language specifically for that chat partner.
+- [ ] **Incoming (Display)**: Translated text is shown directly in the chat. The original text is accessible via a hover-tooltip over an `[A->A]` icon to keep the UI clean.
+- [ ] **Outgoing (Auto-Translate)**: A toggle next to the chat input bar. When active, typing in native language translates the message *before* it is sent to the grid.
+- [ ] **Language Detection**: Automatic source-language detection (built into the model) to prevent translating text that is already in the target language.
 
-### 3. Localization & Self-Test
+### 3. Chat Logging (`FileLogger`)
+- [ ] **Gold Standard Logging**: Logs written to disk (e.g. `chat.txt`) must ALWAYS contain both the translation and the original text to prevent context loss.
+  - *Incoming Example:* `[10:15] Avatar: Translated text. (Original: Original text)`
+  - *Outgoing Example:* `[10:16] You: Translated text sent. (Original: Native text typed)`
+
+### 4. Localization & Self-Test
 - [ ] UI labels localized in `en-US.json` and `de-DE.json`.
 - [ ] `--selftest` covers ONNX model loading and a dummy translation inference.
 - [ ] `AppVersion` bumped upon implementation.
