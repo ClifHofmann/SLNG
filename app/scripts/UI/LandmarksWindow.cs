@@ -38,20 +38,123 @@ public partial class LandmarksWindow : SLNGWindow
 
     private sealed partial class LandmarkTree : Tree
     {
+        public GridSession? Session { get; set; }
+        public Action<Guid, string, Guid, string>? OnDropLandmark;
+
         public override Variant _GetDragData(Vector2 atPosition)
         {
             var item = GetItemAtPosition(atPosition) ?? GetSelected();
             if (item == null) return default;
             var meta = item.GetMetadata(0).AsString();
-            if (string.IsNullOrEmpty(meta)) return default;
+            if (string.IsNullOrEmpty(meta) || meta.StartsWith("folder|")) return default;
 
             var parts = meta.Split('|');
             if (parts.Length < 3) return default;
 
             string name = parts[2];
+            string parentId = parts.Length > 3 ? parts[3] : "";
+            string folderPath = parts.Length > 4 ? parts[4] : "";
+
             var preview = new Label { Text = $"📍 {name}" };
             SetDragPreview(preview);
-            return $"slng_landmark|{parts[0]}|{parts[1]}|{name}";
+            return $"slng_landmark|{parts[0]}|{parts[1]}|{name}|{parentId}|{folderPath}";
+        }
+
+        public override bool _CanDropData(Vector2 atPosition, Variant data)
+        {
+            return TryReadDrop(atPosition, data, out _, out _, out _, out _);
+        }
+
+        public override void _DropData(Vector2 atPosition, Variant data)
+        {
+            if (TryReadDrop(atPosition, data, out var itemId, out var name, out var targetFolderId, out var targetPath))
+            {
+                OnDropLandmark?.Invoke(itemId, name, targetFolderId, targetPath);
+            }
+        }
+
+        private bool TryReadDrop(Vector2 atPosition, Variant data, out Guid itemId, out string name, out Guid targetFolderId, out string targetPath)
+        {
+            itemId = Guid.Empty;
+            name = "";
+            targetFolderId = Guid.Empty;
+            targetPath = "";
+
+            if (data.VariantType != Variant.Type.String) return false;
+            string payload = data.AsString();
+
+            Guid sourceParentId = Guid.Empty;
+
+            if (payload.StartsWith("slng_landmark|"))
+            {
+                var parts = payload.Split('|');
+                if (parts.Length < 4) return false;
+                if (!Guid.TryParse(parts[1], out itemId)) return false;
+                name = parts[3];
+                if (parts.Length >= 5 && Guid.TryParse(parts[4], out var spId))
+                {
+                    sourceParentId = spId;
+                }
+            }
+            else if (payload.StartsWith("slng_item|"))
+            {
+                var parts = payload.Split('|');
+                if (parts.Length < 6) return false;
+                if (!Guid.TryParse(parts[1], out itemId)) return false;
+                name = parts[2];
+                if (bool.TryParse(parts[4], out bool isFolder) && isFolder) return false;
+                if (int.TryParse(parts[5], out int assetType) && assetType != 3) return false;
+                if (parts.Length >= 7 && Guid.TryParse(parts[6], out var spId))
+                {
+                    sourceParentId = spId;
+                }
+            }
+            else
+            {
+                return false;
+            }
+
+            var hoverItem = GetItemAtPosition(atPosition);
+            if (hoverItem == null)
+            {
+                // Blank space in tree drops to Landmarks root
+                if (Session?.LandmarksFolderId is { } lmRootId && lmRootId != Guid.Empty)
+                {
+                    targetFolderId = lmRootId;
+                    targetPath = "Landmarks";
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                var meta = hoverItem.GetMetadata(0).AsString();
+                if (string.IsNullOrEmpty(meta)) return false;
+
+                if (meta.StartsWith("folder|"))
+                {
+                    var fParts = meta.Split('|');
+                    if (fParts.Length < 3) return false;
+                    if (!Guid.TryParse(fParts[1], out targetFolderId) || targetFolderId == Guid.Empty) return false;
+                    targetPath = fParts[2];
+                }
+                else
+                {
+                    var itemParts = meta.Split('|');
+                    if (itemParts.Length < 5) return false;
+                    if (!Guid.TryParse(itemParts[3], out targetFolderId) || targetFolderId == Guid.Empty) return false;
+                    targetPath = itemParts[4];
+                }
+            }
+
+            if (sourceParentId != Guid.Empty && targetFolderId == sourceParentId)
+            {
+                return false;
+            }
+
+            return true;
         }
     }
 
@@ -127,7 +230,13 @@ public partial class LandmarksWindow : SLNGWindow
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HideRoot = true,
             AllowRmbSelect = true,
-            SelectMode = Tree.SelectModeEnum.Row
+            SelectMode = Tree.SelectModeEnum.Row,
+            DropModeFlags = (int)Tree.DropModeFlagsEnum.OnItem
+        };
+        _tree.Session = _session;
+        _tree.OnDropLandmark = (itemId, name, targetFolderId, targetPath) =>
+        {
+            _ = MoveLandmarkToFolderAsync(itemId, name, targetFolderId, targetPath);
         };
         _tree.ItemActivated += OnItemActivated;
         _tree.ItemSelected += OnItemSelected;
@@ -196,6 +305,7 @@ public partial class LandmarksWindow : SLNGWindow
     public void Initialize(GridSession? session)
     {
         _session = session;
+        if (_tree != null) _tree.Session = session;
         _landmarks.Clear();
         UpdateTree();
     }
@@ -259,7 +369,13 @@ public partial class LandmarksWindow : SLNGWindow
 
         if (_folderViewMode)
         {
-            var landmarksRoot = new FolderNode(L10n.Tr("ui.landmarks.folder_landmarks"), "Landmarks");
+            var knownFolders = _session?.GetLandmarkFolders() ?? Array.Empty<(Guid Id, string Path, string Name)>();
+            var folderIdMap = knownFolders.ToDictionary(f => f.Path, f => f.Id, StringComparer.OrdinalIgnoreCase);
+
+            var landmarksRoot = new FolderNode(L10n.Tr("ui.landmarks.folder_landmarks"), "Landmarks")
+            {
+                FolderId = _session?.LandmarksFolderId ?? Guid.Empty
+            };
             var otherRoot = new FolderNode(L10n.Tr("ui.landmarks.other_folders"), "");
 
             foreach (var lm in matching)
@@ -286,11 +402,13 @@ public partial class LandmarksWindow : SLNGWindow
                             currPath += "/" + seg;
                             if (!curr.Subfolders.TryGetValue(seg, out var childNode))
                             {
-                                childNode = new FolderNode(seg, currPath);
+                                var fId = folderIdMap.TryGetValue(currPath, out var id) ? id : Guid.Empty;
+                                childNode = new FolderNode(seg, currPath) { FolderId = fId };
                                 curr.Subfolders[seg] = childNode;
                             }
                             curr = childNode;
                         }
+                        if (curr.FolderId == Guid.Empty) curr.FolderId = lm.ParentId;
                         curr.Landmarks.Add(lm);
                     }
                 }
@@ -309,6 +427,7 @@ public partial class LandmarksWindow : SLNGWindow
                         }
                         curr = childNode;
                     }
+                    if (curr.FolderId == Guid.Empty) curr.FolderId = lm.ParentId;
                     curr.Landmarks.Add(lm);
                 }
             }
@@ -319,6 +438,7 @@ public partial class LandmarksWindow : SLNGWindow
                 var lmRootItem = _tree.CreateItem(root);
                 lmRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.folder_landmarks")} ({landmarksRoot.TotalLandmarksCount})");
                 lmRootItem.SetSelectable(0, false);
+                lmRootItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
                 lmRootItem.Collapsed = false; // Expanded by default so categories are immediately visible
                 lmRootItem.SetCustomColor(0, new Color(0.85f, 0.93f, 1.0f, 0.95f));
 
@@ -329,6 +449,7 @@ public partial class LandmarksWindow : SLNGWindow
                     var genItem = _tree.CreateItem(lmRootItem);
                     genItem.SetText(0, $"📂 {L10n.Tr("ui.landmarks.general_landmarks")} ({landmarksRoot.Landmarks.Count})");
                     genItem.SetSelectable(0, false);
+                    genItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
                     genItem.SetCustomColor(0, new Color(1.0f, 0.85f, 0.55f, 0.95f));
                     genItem.Collapsed = string.IsNullOrEmpty(filter);
 
@@ -336,7 +457,7 @@ public partial class LandmarksWindow : SLNGWindow
                     {
                         var itemNode = _tree.CreateItem(genItem);
                         itemNode.SetText(0, $"📍 {lm.Name}");
-                        itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+                        itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
                     }
                 }
 
@@ -368,7 +489,7 @@ public partial class LandmarksWindow : SLNGWindow
             {
                 var item = _tree.CreateItem(root);
                 item.SetText(0, $"📍 {lm.Name} ({lm.FolderName})");
-                item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+                item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
             }
         }
 
@@ -530,11 +651,31 @@ public partial class LandmarksWindow : SLNGWindow
         };
     }
 
+    private async Task MoveLandmarkToFolderAsync(Guid itemId, string itemName, Guid targetFolderId, string targetPath)
+    {
+        if (_session == null || itemId == Guid.Empty || targetFolderId == Guid.Empty) return;
+
+        try
+        {
+            await _session.MoveInventoryAsync(itemId, targetFolderId, isFolder: false, targetPath).ConfigureAwait(false);
+            Callable.From(() =>
+            {
+                OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", targetPath));
+                _ = RefreshLandmarksAsync();
+            }).CallDeferred();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[LandmarksWindow] MoveLandmarkToFolderAsync failed: {ex.Message}");
+        }
+    }
+
     private void RenderSubfolderTree(TreeItem parentItem, FolderNode node, string filter)
     {
         var folderItem = _tree.CreateItem(parentItem);
         folderItem.SetText(0, $"📁 {node.Name} ({node.TotalLandmarksCount})");
         folderItem.SetSelectable(0, false);
+        folderItem.SetMetadata(0, $"folder|{node.FolderId}|{node.FullPath}");
         folderItem.SetCustomColor(0, new Color(0.85f, 0.92f, 1.0f, 0.95f));
 
         // Auto-expand if a filter is active
@@ -551,7 +692,7 @@ public partial class LandmarksWindow : SLNGWindow
         {
             var itemNode = _tree.CreateItem(folderItem);
             itemNode.SetText(0, $"📍 {lm.Name}");
-            itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+            itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
         }
     }
 
@@ -559,6 +700,7 @@ public partial class LandmarksWindow : SLNGWindow
     {
         public string Name { get; }
         public string FullPath { get; }
+        public Guid FolderId { get; set; } = Guid.Empty;
         public Dictionary<string, FolderNode> Subfolders { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<LandmarkInventoryItem> Landmarks { get; } = new();
 
