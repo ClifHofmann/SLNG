@@ -48,9 +48,8 @@ public partial class MoveLandmarkWindow : SLNGWindow
     {
         base._Ready();
 
-        PersistId = "move_landmark";
         Title = L10n.Tr("ui.landmarks.move_dialog_title");
-        CustomMinimumSize = new Vector2(440, 420);
+        CustomMinimumSize = new Vector2(350, 180);
         Size = CustomMinimumSize;
         OnCloseRequested = () => QueueFree();
 
@@ -95,6 +94,7 @@ public partial class MoveLandmarkWindow : SLNGWindow
 
         _folderTree = new Tree
         {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HideRoot = true,
             SelectMode = Tree.SelectModeEnum.Row
@@ -125,17 +125,20 @@ public partial class MoveLandmarkWindow : SLNGWindow
         };
         _moveBtn.Pressed += OnConfirmMove;
         bottomRow.AddChild(_moveBtn);
-
-        CallDeferred(MethodName.CenterInViewport);
     }
 
-    private void CenterInViewport()
+    private void FitAndCenter()
     {
-        if (GeometryRestored) return;
-        var vpSize = GetViewportRect().Size;
+        if (!IsInstanceValid(this)) return;
+
+        var vp = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280, 720);
+        float width = Mathf.Min(350f, Mathf.Max(260f, vp.X - 40f));
+        float height = Mathf.Min(GetCombinedMinimumSize().Y, vp.Y - 60f);
+
+        Size = new Vector2(width, height);
         Position = new Vector2(
-            Mathf.Max(20f, (vpSize.X - Size.X) * 0.5f),
-            Mathf.Max(TopInset + 20f, (vpSize.Y - Size.Y) * 0.5f));
+            Mathf.Max(20f, (vp.X - Size.X) * 0.5f),
+            Mathf.Max(TopInset + 20f, (vp.Y - Size.Y) * 0.35f));
     }
 
     public void Initialize(
@@ -155,6 +158,7 @@ public partial class MoveLandmarkWindow : SLNGWindow
         _infoLabel.Text = $"📍 {itemName}\n📂 {L10n.Tr("ui.landmarks.current_folder")}: {currentFolderPath}";
 
         RebuildFolderTree(suggestedTargetFolderId);
+        CallDeferred(nameof(FitAndCenter));
     }
 
     private void RebuildFolderTree(Guid? selectFolderId = null)
@@ -198,9 +202,11 @@ public partial class MoveLandmarkWindow : SLNGWindow
 
         TreeItem? itemToSelect = null;
         Guid targetToSelect = selectFolderId ?? rootLmId;
+        int renderedCount = 0;
 
         void RenderNode(TreeItem parentTreeItem, FolderItemNode node)
         {
+            renderedCount++;
             var treeItem = _folderTree.CreateItem(parentTreeItem);
             treeItem.SetText(0, $"📁 {node.Name}");
             treeItem.SetMetadata(0, $"{node.Id}|{node.Path}|{node.Name}");
@@ -217,6 +223,10 @@ public partial class MoveLandmarkWindow : SLNGWindow
         }
 
         RenderNode(root, rootNode);
+
+        // Adjust tree height to number of items, bounded within [90, 210] px
+        float desiredTreeHeight = Mathf.Clamp(renderedCount * 24f + 8f, 90f, 210f);
+        _folderTree.CustomMinimumSize = new Vector2(0, desiredTreeHeight);
 
         if (itemToSelect != null)
         {
@@ -307,6 +317,7 @@ public partial class MoveLandmarkWindow : SLNGWindow
             if (parentId == Guid.Empty) return;
             var newFolderId = _session.CreateInventoryFolder(parentId, newFolderName.Trim());
             RebuildFolderTree(newFolderId);
+            CallDeferred(nameof(FitAndCenter));
         };
     }
 }
