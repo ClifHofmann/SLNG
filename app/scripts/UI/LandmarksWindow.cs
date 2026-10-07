@@ -243,9 +243,10 @@ public partial class LandmarksWindow : SLNGWindow
         {
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HideRoot = true,
+            FocusMode = FocusModeEnum.None,
             AllowRmbSelect = true,
             SelectMode = Tree.SelectModeEnum.Row,
-            DropModeFlags = (int)Tree.DropModeFlagsEnum.OnItem
+            EnableDragUnfolding = false
         };
         _tree.Session = _session;
         _tree.OnDropLandmark = (itemId, name, targetFolderId, targetPath) =>
@@ -695,6 +696,17 @@ public partial class LandmarksWindow : SLNGWindow
 
     private void OnItemActivated()
     {
+        var item = _tree?.GetSelected();
+        if (item != null)
+        {
+            string meta = item.GetMetadata(0).AsString();
+            if (meta.StartsWith("folder|"))
+            {
+                item.Collapsed = !item.Collapsed;
+                OnTreeItemCollapsed(item);
+                return;
+            }
+        }
         OnTeleportPressed();
     }
 

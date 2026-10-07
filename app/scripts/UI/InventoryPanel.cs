@@ -240,7 +240,8 @@ public partial class InventoryPanel : SLNGWindow
             SizeFlagsVertical = SizeFlags.ExpandFill, 
             HideRoot = true, 
             FocusMode = FocusModeEnum.None,
-            AllowRmbSelect = true 
+            AllowRmbSelect = true,
+            EnableDragUnfolding = false
         };
         _tree.AddChild(_contextMenu);
         _tree.AddChild(_folderMenu);
@@ -288,7 +289,8 @@ public partial class InventoryPanel : SLNGWindow
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HideRoot = true,
             FocusMode = FocusModeEnum.None,
-            AllowRmbSelect = true
+            AllowRmbSelect = true,
+            EnableDragUnfolding = false
         };
         _wornTree.AddChild(_wornMenu);
         _wornTree.ItemActivated += OnWornItemActivated;
@@ -359,7 +361,8 @@ public partial class InventoryPanel : SLNGWindow
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HideRoot = true,
             FocusMode = FocusModeEnum.None,
-            AllowRmbSelect = true
+            AllowRmbSelect = true,
+            EnableDragUnfolding = false
         };
         _outfitsTree.AddChild(_outfitsMenu);
         _outfitsTree.AddChild(_outfitItemMenu);

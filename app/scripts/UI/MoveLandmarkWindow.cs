@@ -97,7 +97,9 @@ public partial class MoveLandmarkWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HideRoot = true,
-            SelectMode = Tree.SelectModeEnum.Row
+            FocusMode = FocusModeEnum.None,
+            SelectMode = Tree.SelectModeEnum.Row,
+            EnableDragUnfolding = false
         };
         _folderTree.ItemSelected += OnFolderSelected;
         _folderTree.ItemActivated += OnFolderActivated;

@@ -80,8 +80,10 @@ public partial class LandmarkDedupWindow : SLNGWindow
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HideRoot = true,
             Columns = 1,
+            FocusMode = FocusModeEnum.None,
             AllowRmbSelect = true,
-            SelectMode = Tree.SelectModeEnum.Row
+            SelectMode = Tree.SelectModeEnum.Row,
+            EnableDragUnfolding = false
         };
         _tree.ItemEdited += OnTreeItemEdited;
         _tree.GuiInput += OnTreeGuiInput;
