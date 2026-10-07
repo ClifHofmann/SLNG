@@ -42,4 +42,5 @@ public sealed record RadarRow(
     float? VoiceLevel,
     TimeSpan SeenFor,
     AvatarBriefProfile? Profile,
-    bool WithinDrawDistance);
+    bool WithinDrawDistance,
+    string? Username = null);

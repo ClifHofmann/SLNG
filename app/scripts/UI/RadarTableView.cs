@@ -308,6 +308,14 @@ internal sealed partial class RadarTableView : Control
             {
                 case RadarColumn.Name:
                     item.SetText(i, row.Name);
+                    if (!string.IsNullOrEmpty(row.Username) && !string.Equals(row.Username, row.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        item.SetTooltipText(i, $"{row.Name} ({row.Username})");
+                    }
+                    else
+                    {
+                        item.SetTooltipText(i, row.Name);
+                    }
                     item.SetIcon(i, RadarIcons.Dot);
                     item.SetIconModulate(i, RadarIcons.RelationColor(row.Relation));
                     if (row.Relation == RadarRelation.Muted) item.SetCustomColor(i, RadarIcons.Muted);

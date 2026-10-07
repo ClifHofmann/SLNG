@@ -196,7 +196,7 @@ public partial class MinimapOverlay : SLNGWindow
     /// entry (outside draw distance) has no orientation in the packet at all, hence nullable.</summary>
     private readonly record struct RosterEntry(
         Guid AgentId, System.Numerics.Vector3 Position, string Name,
-        System.Numerics.Quaternion? Rotation, bool InWorld, bool IsSitting);
+        System.Numerics.Quaternion? Rotation, bool InWorld, bool IsSitting, string Username = "");
 
     // Rebuilt every frame in _Process; feeds the map and, twice a second, the table.
     private readonly List<RosterEntry> _roster = new();
@@ -751,8 +751,9 @@ public partial class MinimapOverlay : SLNGWindow
             if (avatar == null || t == null) continue;
 
             // World's live data wins over the coarse one.
+            var (name, username) = AvatarDisplayNameAndUsername(avatar);
             _byAgent[avatar.AgentId] = new RosterEntry(
-                avatar.AgentId, t.Position, AvatarDisplayName(avatar), t.Rotation, true, avatar.SittingOnLocalId != 0);
+                avatar.AgentId, t.Position, name, t.Rotation, true, avatar.SittingOnLocalId != 0, username);
             if (avatar.IsLocalAgent)
             {
                 ownPos = t.Position;
@@ -763,7 +764,17 @@ public partial class MinimapOverlay : SLNGWindow
         if (ownAgentId != Guid.Empty) _byAgent.Remove(ownAgentId);
 
         foreach (var entry in _byAgent.Values)
-            _roster.Add(entry.Name.Length == 0 ? entry with { Name = ResolveName(entry.AgentId) } : entry);
+        {
+            if (entry.Name.Length == 0)
+            {
+                var (resolvedName, resolvedUsername) = ResolveNameAndUsername(entry.AgentId);
+                _roster.Add(entry with { Name = resolvedName, Username = resolvedUsername });
+            }
+            else
+            {
+                _roster.Add(entry);
+            }
+        }
     }
 
     // The avatars of the world, found by a linear scan over EVERY entity (World.Query), which on a built-up region
@@ -792,31 +803,56 @@ public partial class MinimapOverlay : SLNGWindow
     private readonly Dictionary<Guid, long> _nameAskedAtMsec = new();
     private const long NameRequestIntervalMsec = 5000;
 
-    private static string AvatarDisplayName(AvatarComponent avatar)
+    private (string Name, string Username) AvatarDisplayNameAndUsername(AvatarComponent avatar)
     {
-        // "Oz", not "Oz Resident": the default last name is left off, as in the reference viewers.
-        var name = AvatarNames.ForList(avatar.DisplayName, avatar.FirstName, avatar.LastName);
-        return name.Length == 0 ? avatar.AgentId.ToString() : name;
+        string legacy = AvatarNames.ForList("", avatar.FirstName, avatar.LastName);
+        string username = !string.IsNullOrWhiteSpace(legacy) ? legacy : avatar.AgentId.ToString();
+        string displayName = "";
+
+        if (_session != null)
+        {
+            displayName = NameDisplay.For(_session, avatar.AgentId, legacy);
+        }
+        if (string.IsNullOrWhiteSpace(displayName) || displayName == avatar.AgentId.ToString())
+        {
+            displayName = AvatarNames.ForList(avatar.DisplayName, avatar.FirstName, avatar.LastName);
+        }
+
+        string finalName = !string.IsNullOrWhiteSpace(displayName) ? displayName : username;
+        return (finalName, username);
     }
 
     /// <summary>A CoarseLocationUpdate-only avatar (outside draw distance, no World entity yet)
-    /// has no name attached to the packet at all -- fall back to the shared name cache, kicking
-    /// off a resolve if it's not there yet (picked up by the NameResolved handler above).</summary>
-    private string ResolveName(Guid agentId)
+    /// has no name attached to the packet at all -- fall back to the shared name cache and display
+    /// name cache, kicking off resolves if not cached yet.</summary>
+    private (string Name, string Username) ResolveNameAndUsername(Guid agentId)
     {
-        if (_session == null) return agentId.ToString();
-        if (_session.TryGetCachedName(agentId, out var name) && !string.IsNullOrWhiteSpace(name))
-            return AvatarNames.WithoutDefaultLastName(name);
+        if (_session == null) return (agentId.ToString(), agentId.ToString());
 
-        // Asked for at most every few seconds per avatar: the roster is rebuilt every frame, and a name that does
-        // not come (or not at once) would otherwise be a request packet per frame per avatar.
-        long now = System.Environment.TickCount64;
-        if (!_nameAskedAtMsec.TryGetValue(agentId, out long askedAt) || now - askedAt >= NameRequestIntervalMsec)
+        string legacyName = "";
+        if (_session.TryGetCachedName(agentId, out var name) && !string.IsNullOrWhiteSpace(name) && name != agentId.ToString())
         {
-            _nameAskedAtMsec[agentId] = now;
-            _session.RequestAvatarName(agentId);
+            legacyName = AvatarNames.WithoutDefaultLastName(name);
         }
-        return agentId.ToString();
+        else
+        {
+            // Asked for at most every few seconds per avatar: the roster is rebuilt frequently, and a name that does
+            // not come (or not at once) would otherwise be a request packet per frame per avatar.
+            long now = System.Environment.TickCount64;
+            if (!_nameAskedAtMsec.TryGetValue(agentId, out long askedAt) || now - askedAt >= NameRequestIntervalMsec)
+            {
+                _nameAskedAtMsec[agentId] = now;
+                _session.RequestAvatarName(agentId);
+            }
+        }
+
+        string username = !string.IsNullOrWhiteSpace(legacyName) ? legacyName : agentId.ToString();
+        string shown = NameDisplay.For(_session, agentId, legacyName);
+        string finalName = !string.IsNullOrWhiteSpace(shown) && shown != agentId.ToString()
+            ? AvatarNames.WithoutDefaultLastName(shown)
+            : username;
+
+        return (finalName, username);
     }
 
     /// <summary>SL's forward vector is +X at zero rotation; heading is measured counter-clockwise
@@ -891,7 +927,8 @@ public partial class MinimapOverlay : SLNGWindow
             VoiceLevelSource?.Invoke(entry.AgentId),
             _firstSeen.TryGetValue(entry.AgentId, out var first) ? now - first : TimeSpan.Zero,
             profile,
-            WithinDrawDistance: entry.InWorld);
+            WithinDrawDistance: entry.InWorld,
+            Username: entry.Username);
     }
 
     /// <summary>Filters, sorts and shows the rows. Split from <see cref="RefreshTable"/> because this

@@ -43,7 +43,8 @@ public static class NameDisplay
                     legacyName = friend.Name;
             }
         }
-        return PersonNameDisplay.Choose(legacyName ?? "", display, UseDisplayNames());
+        string cleanLegacy = AvatarNames.WithoutDefaultLastName(legacyName ?? "");
+        return PersonNameDisplay.Choose(cleanLegacy, display, UseDisplayNames());
     }
 
     /// <summary>The legacy name for something a caller handed over as "a name". Callers pass whatever they

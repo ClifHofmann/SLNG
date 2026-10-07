@@ -19,7 +19,8 @@ public static class RadarTable
     {
         ArgumentNullException.ThrowIfNull(rows);
         if (string.IsNullOrWhiteSpace(text)) return rows.ToList();
-        return rows.Where(r => r.Name.Contains(text, StringComparison.OrdinalIgnoreCase)).ToList();
+        return rows.Where(r => r.Name.Contains(text, StringComparison.OrdinalIgnoreCase)
+                            || (r.Username != null && r.Username.Contains(text, StringComparison.OrdinalIgnoreCase))).ToList();
     }
 
     /// <summary>

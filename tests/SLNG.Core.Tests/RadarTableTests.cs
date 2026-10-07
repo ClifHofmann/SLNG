@@ -24,7 +24,8 @@ public class RadarTableTests
         bool typing = false,
         float? voice = null,
         TimeSpan? seen = null,
-        AvatarBriefProfile? profile = null) =>
+        AvatarBriefProfile? profile = null,
+        string? username = null) =>
         new(
             Id(id == 0 ? name.GetHashCode(StringComparison.Ordinal) | 1 : id),
             name,
@@ -38,7 +39,8 @@ public class RadarTableTests
             voice,
             seen ?? TimeSpan.Zero,
             profile,
-            WithinDrawDistance: true);
+            WithinDrawDistance: true,
+            Username: username);
 
     private static AvatarBriefProfile Profile(
         string? notes = null, PaymentInfo payment = PaymentInfo.Unknown, int? ageDays = null, bool ageHidden = false) =>
@@ -95,6 +97,25 @@ public class RadarTableTests
 
         Assert.Equal("Zed,Zoe", Names(kept));
         Assert.Equal(3, rows.Count);
+    }
+
+    [Fact]
+    public void Filtering_matches_either_display_name_or_username()
+    {
+        var rows = new[]
+        {
+            Row("Kimi die Hummel", username: "kim197539"),
+            Row("Katja OdinsdottiR", username: "katja.odinsdottir")
+        };
+
+        // Matches display name
+        Assert.Equal("Kimi die Hummel", Names(RadarTable.Filter(rows, "hummel")));
+
+        // Matches username
+        Assert.Equal("Kimi die Hummel", Names(RadarTable.Filter(rows, "kim1975")));
+
+        // Case-insensitive
+        Assert.Equal("Kimi die Hummel", Names(RadarTable.Filter(rows, "KIM197539")));
     }
 
     // ---- FormatRange -----------------------------------------------------------------------
