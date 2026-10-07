@@ -18,6 +18,10 @@ public partial class LandmarksWindow : SLNGWindow
     private GridSession? _session;
     private readonly List<LandmarkInventoryItem> _landmarks = new();
     private bool _folderViewMode = true;
+    private readonly HashSet<string> _expandedFolderKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _collapsedFolderKeys = new(StringComparer.OrdinalIgnoreCase);
+    private Guid? _selectItemIdAfterRefresh;
+    private bool _isClearingOrUpdating;
 
     private LineEdit _searchEdit = null!;
     private Button _viewModeBtn = null!;
@@ -251,6 +255,7 @@ public partial class LandmarksWindow : SLNGWindow
         _tree.ItemActivated += OnItemActivated;
         _tree.ItemSelected += OnItemSelected;
         _tree.GuiInput += OnTreeGuiInput;
+        _tree.ItemCollapsed += OnTreeItemCollapsed;
         vbox.AddChild(_tree);
 
         var bottomRow = new HBoxContainer();
@@ -365,79 +370,197 @@ public partial class LandmarksWindow : SLNGWindow
         UpdateTree();
     }
 
-    private void UpdateTree()
+    private void SaveExpandedStates()
     {
-        _tree.Clear();
-        var root = _tree.CreateItem();
-        string filter = _searchEdit?.Text?.Trim() ?? "";
+        if (_tree == null) return;
+        // Do not overwrite user's manual folder state preferences while an active search filter is applied
+        if (!string.IsNullOrEmpty(_searchEdit?.Text?.Trim())) return;
 
-        var matching = string.IsNullOrEmpty(filter)
-            ? _landmarks
-            : _landmarks.Where(l =>
-                l.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
-                l.FolderPath.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+        var root = _tree.GetRoot();
+        if (root == null) return;
 
-        if (_folderViewMode)
+        void Traverse(TreeItem item)
         {
-            var knownFolders = _session?.GetLandmarkFolders() ?? Array.Empty<(Guid Id, string Path, string Name)>();
-            var folderIdMap = knownFolders.ToDictionary(f => f.Path, f => f.Id, StringComparer.OrdinalIgnoreCase);
-
-            var landmarksRoot = new FolderNode(L10n.Tr("ui.landmarks.folder_landmarks"), "Landmarks")
+            string meta = item.GetMetadata(0).AsString();
+            if (!string.IsNullOrEmpty(meta) && meta.StartsWith("folder|"))
             {
-                FolderId = _session?.LandmarksFolderId ?? Guid.Empty
-            };
-            var otherRoot = new FolderNode(L10n.Tr("ui.landmarks.other_folders"), "");
-
-            // 1. Populate all known landmark folders from inventory into landmarksRoot
-            foreach (var kf in knownFolders)
-            {
-                if (kf.Id == landmarksRoot.FolderId) continue;
-                string subPath = kf.Path.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase)
-                    ? kf.Path.Substring("Landmarks/".Length)
-                    : kf.Path;
-
-                var segments = subPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                var curr = landmarksRoot;
-                string currPath = "Landmarks";
-                for (int i = 0; i < segments.Length; i++)
+                var parts = meta.Split('|');
+                string folderKey = parts.Length >= 3 ? parts[2] : meta;
+                if (!string.IsNullOrEmpty(folderKey))
                 {
-                    currPath += "/" + segments[i];
-                    if (!curr.Subfolders.TryGetValue(segments[i], out var childNode))
+                    if (item.Collapsed)
                     {
-                        var fId = (i == segments.Length - 1) ? kf.Id : (folderIdMap.TryGetValue(currPath, out var id) ? id : Guid.Empty);
-                        childNode = new FolderNode(segments[i], currPath) { FolderId = fId };
-                        curr.Subfolders[segments[i]] = childNode;
-                    }
-                    curr = childNode;
-                }
-            }
-
-            foreach (var lm in matching)
-            {
-                string path = lm.FolderPath?.Trim() ?? "";
-                bool isLandmarksHierarchy = string.IsNullOrEmpty(path) ||
-                    string.Equals(path, "Landmarks", StringComparison.OrdinalIgnoreCase) ||
-                    path.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase);
-
-                if (isLandmarksHierarchy)
-                {
-                    if (string.IsNullOrEmpty(path) || string.Equals(path, "Landmarks", StringComparison.OrdinalIgnoreCase))
-                    {
-                        landmarksRoot.Landmarks.Add(lm);
+                        _expandedFolderKeys.Remove(folderKey);
+                        _collapsedFolderKeys.Add(folderKey);
                     }
                     else
                     {
-                        string subPath = path.Substring("Landmarks/".Length);
-                        var segments = subPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                        var curr = landmarksRoot;
-                        string currPath = "Landmarks";
+                        _expandedFolderKeys.Add(folderKey);
+                        _collapsedFolderKeys.Remove(folderKey);
+                    }
+                }
+            }
+
+            for (var child = item.GetFirstChild(); child != null; child = child.GetNext())
+            {
+                Traverse(child);
+            }
+        }
+
+        for (var child = root.GetFirstChild(); child != null; child = child.GetNext())
+        {
+            Traverse(child);
+        }
+    }
+
+    private bool IsFolderExpanded(string folderKey, bool defaultExpanded)
+    {
+        if (_expandedFolderKeys.Contains(folderKey))
+            return true;
+        if (_collapsedFolderKeys.Contains(folderKey))
+            return false;
+        return defaultExpanded;
+    }
+
+    private void ExpandFolderPath(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string current = "";
+        foreach (var seg in segments)
+        {
+            current = string.IsNullOrEmpty(current) ? seg : current + "/" + seg;
+            _expandedFolderKeys.Add(current);
+            _collapsedFolderKeys.Remove(current);
+        }
+        if (path.Equals("Landmarks", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith("/__general__", StringComparison.OrdinalIgnoreCase))
+        {
+            _expandedFolderKeys.Add("Landmarks");
+            _expandedFolderKeys.Add("Landmarks/__general__");
+            _collapsedFolderKeys.Remove("Landmarks");
+            _collapsedFolderKeys.Remove("Landmarks/__general__");
+        }
+    }
+
+    private void OnTreeItemCollapsed(TreeItem item)
+    {
+        if (_isClearingOrUpdating || item == null) return;
+        string meta = item.GetMetadata(0).AsString();
+        if (string.IsNullOrEmpty(meta) || !meta.StartsWith("folder|")) return;
+
+        var parts = meta.Split('|');
+        string folderKey = parts.Length >= 3 ? parts[2] : meta;
+        if (string.IsNullOrEmpty(folderKey)) return;
+
+        if (item.Collapsed)
+        {
+            _expandedFolderKeys.Remove(folderKey);
+            _collapsedFolderKeys.Add(folderKey);
+        }
+        else
+        {
+            _expandedFolderKeys.Add(folderKey);
+            _collapsedFolderKeys.Remove(folderKey);
+        }
+    }
+
+    private void UpdateTree()
+    {
+        SaveExpandedStates();
+        _isClearingOrUpdating = true;
+        try
+        {
+            _tree.Clear();
+            var root = _tree.CreateItem();
+            string filter = _searchEdit?.Text?.Trim() ?? "";
+
+            var matching = string.IsNullOrEmpty(filter)
+                ? _landmarks
+                : _landmarks.Where(l =>
+                    l.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
+                    l.FolderPath.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+
+            if (_folderViewMode)
+            {
+                var knownFolders = _session?.GetLandmarkFolders() ?? Array.Empty<(Guid Id, string Path, string Name)>();
+                var folderIdMap = knownFolders.ToDictionary(f => f.Path, f => f.Id, StringComparer.OrdinalIgnoreCase);
+
+                var landmarksRoot = new FolderNode(L10n.Tr("ui.landmarks.folder_landmarks"), "Landmarks")
+                {
+                    FolderId = _session?.LandmarksFolderId ?? Guid.Empty
+                };
+                var otherRoot = new FolderNode(L10n.Tr("ui.landmarks.other_folders"), "");
+
+                // 1. Populate all known landmark folders from inventory into landmarksRoot
+                foreach (var kf in knownFolders)
+                {
+                    if (kf.Id == landmarksRoot.FolderId) continue;
+                    string subPath = kf.Path.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase)
+                        ? kf.Path.Substring("Landmarks/".Length)
+                        : kf.Path;
+
+                    var segments = subPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                    var curr = landmarksRoot;
+                    string currPath = "Landmarks";
+                    for (int i = 0; i < segments.Length; i++)
+                    {
+                        currPath += "/" + segments[i];
+                        if (!curr.Subfolders.TryGetValue(segments[i], out var childNode))
+                        {
+                            var fId = (i == segments.Length - 1) ? kf.Id : (folderIdMap.TryGetValue(currPath, out var id) ? id : Guid.Empty);
+                            childNode = new FolderNode(segments[i], currPath) { FolderId = fId };
+                            curr.Subfolders[segments[i]] = childNode;
+                        }
+                        curr = childNode;
+                    }
+                }
+
+                foreach (var lm in matching)
+                {
+                    string path = lm.FolderPath?.Trim() ?? "";
+                    bool isLandmarksHierarchy = string.IsNullOrEmpty(path) ||
+                        string.Equals(path, "Landmarks", StringComparison.OrdinalIgnoreCase) ||
+                        path.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase);
+
+                    if (isLandmarksHierarchy)
+                    {
+                        if (string.IsNullOrEmpty(path) || string.Equals(path, "Landmarks", StringComparison.OrdinalIgnoreCase))
+                        {
+                            landmarksRoot.Landmarks.Add(lm);
+                        }
+                        else
+                        {
+                            string subPath = path.Substring("Landmarks/".Length);
+                            var segments = subPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                            var curr = landmarksRoot;
+                            string currPath = "Landmarks";
+                            foreach (var seg in segments)
+                            {
+                                currPath += "/" + seg;
+                                if (!curr.Subfolders.TryGetValue(seg, out var childNode))
+                                {
+                                    var fId = folderIdMap.TryGetValue(currPath, out var id) ? id : Guid.Empty;
+                                    childNode = new FolderNode(seg, currPath) { FolderId = fId };
+                                    curr.Subfolders[seg] = childNode;
+                                }
+                                curr = childNode;
+                            }
+                            if (curr.FolderId == Guid.Empty) curr.FolderId = lm.ParentId;
+                            curr.Landmarks.Add(lm);
+                        }
+                    }
+                    else
+                    {
+                        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                        var curr = otherRoot;
+                        string currPath = "";
                         foreach (var seg in segments)
                         {
-                            currPath += "/" + seg;
+                            currPath = string.IsNullOrEmpty(currPath) ? seg : currPath + "/" + seg;
                             if (!curr.Subfolders.TryGetValue(seg, out var childNode))
                             {
-                                var fId = folderIdMap.TryGetValue(currPath, out var id) ? id : Guid.Empty;
-                                childNode = new FolderNode(seg, currPath) { FolderId = fId };
+                                childNode = new FolderNode(seg, currPath);
                                 curr.Subfolders[seg] = childNode;
                             }
                             curr = childNode;
@@ -446,97 +569,98 @@ public partial class LandmarksWindow : SLNGWindow
                         curr.Landmarks.Add(lm);
                     }
                 }
-                else
+
+                // Render main Landmarks root node
+                if (landmarksRoot.TotalLandmarksCount > 0 || landmarksRoot.Subfolders.Count > 0 || string.IsNullOrEmpty(filter))
                 {
-                    var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                    var curr = otherRoot;
-                    string currPath = "";
-                    foreach (var seg in segments)
+                    var lmRootItem = _tree.CreateItem(root);
+                    lmRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.folder_landmarks")} ({landmarksRoot.TotalLandmarksCount})");
+                    lmRootItem.SetSelectable(0, true);
+                    lmRootItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
+                    lmRootItem.SetCustomColor(0, new Color(0.85f, 0.93f, 1.0f, 0.95f));
+                    lmRootItem.Collapsed = !IsFolderExpanded("Landmarks", defaultExpanded: true);
+
+                    // 1. "Allgemeine Landmarken" (Direct root-level landmarks in Landmarks folder)
+                    // Clear, distinct visual separation from categorized subfolders
+                    if (landmarksRoot.Landmarks.Count > 0 || string.IsNullOrEmpty(filter))
                     {
-                        currPath = string.IsNullOrEmpty(currPath) ? seg : currPath + "/" + seg;
-                        if (!curr.Subfolders.TryGetValue(seg, out var childNode))
+                        var genItem = _tree.CreateItem(lmRootItem);
+                        genItem.SetText(0, $"📂 {L10n.Tr("ui.landmarks.general_landmarks")} ({landmarksRoot.Landmarks.Count})");
+                        genItem.SetSelectable(0, true);
+                        genItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks/__general__");
+                        genItem.SetCustomColor(0, new Color(1.0f, 0.85f, 0.55f, 0.95f));
+                        bool genDefault = !string.IsNullOrEmpty(filter);
+                        genItem.Collapsed = !IsFolderExpanded("Landmarks/__general__", defaultExpanded: genDefault);
+
+                        foreach (var lm in landmarksRoot.Landmarks.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
                         {
-                            childNode = new FolderNode(seg, currPath);
-                            curr.Subfolders[seg] = childNode;
+                            var itemNode = _tree.CreateItem(genItem);
+                            itemNode.SetText(0, $"📍 {lm.Name}");
+                            itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
+                            if (_selectItemIdAfterRefresh.HasValue && lm.Id == _selectItemIdAfterRefresh.Value)
+                            {
+                                _tree.SetSelected(itemNode, 0);
+                                _tree.ScrollToItem(itemNode);
+                                _selectItemIdAfterRefresh = null;
+                            }
                         }
-                        curr = childNode;
                     }
-                    if (curr.FolderId == Guid.Empty) curr.FolderId = lm.ParentId;
-                    curr.Landmarks.Add(lm);
-                }
-            }
 
-            // Render main Landmarks root node
-            if (landmarksRoot.TotalLandmarksCount > 0 || landmarksRoot.Subfolders.Count > 0 || string.IsNullOrEmpty(filter))
-            {
-                var lmRootItem = _tree.CreateItem(root);
-                lmRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.folder_landmarks")} ({landmarksRoot.TotalLandmarksCount})");
-                lmRootItem.SetSelectable(0, true);
-                lmRootItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
-                lmRootItem.Collapsed = false; // Expanded by default so categories are immediately visible
-                lmRootItem.SetCustomColor(0, new Color(0.85f, 0.93f, 1.0f, 0.95f));
-
-                // 1. "Allgemeine Landmarken" (Direct root-level landmarks in Landmarks folder)
-                // Clear, distinct visual separation from categorized subfolders
-                if (landmarksRoot.Landmarks.Count > 0 || string.IsNullOrEmpty(filter))
-                {
-                    var genItem = _tree.CreateItem(lmRootItem);
-                    genItem.SetText(0, $"📂 {L10n.Tr("ui.landmarks.general_landmarks")} ({landmarksRoot.Landmarks.Count})");
-                    genItem.SetSelectable(0, true);
-                    genItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
-                    genItem.SetCustomColor(0, new Color(1.0f, 0.85f, 0.55f, 0.95f));
-                    genItem.Collapsed = string.IsNullOrEmpty(filter);
-
-                    foreach (var lm in landmarksRoot.Landmarks.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+                    // 2. Subfolders inside Landmarks in alphabetical tree order
+                    foreach (var sub in landmarksRoot.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
                     {
-                        var itemNode = _tree.CreateItem(genItem);
-                        itemNode.SetText(0, $"📍 {lm.Name}");
-                        itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
+                        RenderSubfolderTree(lmRootItem, sub, filter);
                     }
                 }
 
-                // 2. Subfolders inside Landmarks in alphabetical tree order
-                foreach (var sub in landmarksRoot.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
+                // Render other folders outside Landmarks (e.g. Received Items, Objects)
+                if (otherRoot.TotalLandmarksCount > 0)
                 {
-                    RenderSubfolderTree(lmRootItem, sub, filter);
+                    var otherRootItem = _tree.CreateItem(root);
+                    otherRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.other_folders")} ({otherRoot.TotalLandmarksCount})");
+                    otherRootItem.SetSelectable(0, false);
+                    otherRootItem.SetMetadata(0, "folder||Other");
+                    otherRootItem.SetCustomColor(0, new Color(0.8f, 0.8f, 0.85f, 0.9f));
+                    bool otherDefault = !string.IsNullOrEmpty(filter);
+                    otherRootItem.Collapsed = !IsFolderExpanded("Other", defaultExpanded: otherDefault);
+
+                    foreach (var sub in otherRoot.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
+                    {
+                        RenderSubfolderTree(otherRootItem, sub, filter);
+                    }
+                }
+            }
+            else
+            {
+                foreach (var lm in matching.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    var item = _tree.CreateItem(root);
+                    item.SetText(0, $"📍 {lm.Name} ({lm.FolderName})");
+                    item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
+                    if (_selectItemIdAfterRefresh.HasValue && lm.Id == _selectItemIdAfterRefresh.Value)
+                    {
+                        _tree.SetSelected(item, 0);
+                        _tree.ScrollToItem(item);
+                        _selectItemIdAfterRefresh = null;
+                    }
                 }
             }
 
-            // Render other folders outside Landmarks (e.g. Received Items, Objects)
-            if (otherRoot.TotalLandmarksCount > 0)
+            if (_landmarks.Count == 0)
             {
-                var otherRootItem = _tree.CreateItem(root);
-                otherRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.other_folders")} ({otherRoot.TotalLandmarksCount})");
-                otherRootItem.SetSelectable(0, false);
-                otherRootItem.SetCustomColor(0, new Color(0.8f, 0.8f, 0.85f, 0.9f));
-                otherRootItem.Collapsed = string.IsNullOrEmpty(filter);
-
-                foreach (var sub in otherRoot.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
-                {
-                    RenderSubfolderTree(otherRootItem, sub, filter);
-                }
+                _statusLabel.Text = L10n.Tr("ui.landmarks.none_found");
             }
-        }
-        else
-        {
-            foreach (var lm in matching.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+            else
             {
-                var item = _tree.CreateItem(root);
-                item.SetText(0, $"📍 {lm.Name} ({lm.FolderName})");
-                item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
+                _statusLabel.Text = L10n.TrFormat("ui.landmarks.count", matching.Count);
             }
-        }
 
-        if (_landmarks.Count == 0)
-        {
-            _statusLabel.Text = L10n.Tr("ui.landmarks.none_found");
+            UpdateActionButtons();
         }
-        else
+        finally
         {
-            _statusLabel.Text = L10n.TrFormat("ui.landmarks.count", matching.Count);
+            _isClearingOrUpdating = false;
         }
-
-        UpdateActionButtons();
     }
 
     private void OnItemSelected()
@@ -673,13 +797,18 @@ public partial class LandmarksWindow : SLNGWindow
                 _session?.LandmarksFolderId,
                 (targetFolderId, targetPath) =>
                 {
-                    OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", targetPath));
+                    ExpandFolderPath(targetPath);
+                    _selectItemIdAfterRefresh = lm.ItemId;
+                    string toastPath = (targetPath.EndsWith("/__general__", StringComparison.OrdinalIgnoreCase) || targetPath.Equals("__general__", StringComparison.OrdinalIgnoreCase))
+                        ? L10n.Tr("ui.landmarks.folder_landmarks")
+                        : targetPath;
+                    OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", toastPath));
                     _ = RefreshLandmarksAsync();
                 });
         }
     }
 
-    private (Guid FolderId, string FolderName)? GetSelectedFolder()
+    private (Guid FolderId, string FolderName, string FullPath)? GetSelectedFolder()
     {
         var selected = _tree.GetSelected();
         if (selected == null) return null;
@@ -691,8 +820,13 @@ public partial class LandmarksWindow : SLNGWindow
             var parts = meta.Split('|');
             if (parts.Length >= 3 && Guid.TryParse(parts[1], out var fid) && fid != Guid.Empty)
             {
-                string folderName = parts[2].Contains('/') ? parts[2].Split('/').Last() : parts[2];
-                return (fid, folderName);
+                string fullPath = parts[2];
+                if (fullPath.EndsWith("/__general__", StringComparison.OrdinalIgnoreCase))
+                {
+                    fullPath = "Landmarks";
+                }
+                string folderName = fullPath.Contains('/') ? fullPath.Split('/').Last() : fullPath;
+                return (fid, folderName, fullPath);
             }
         }
         else
@@ -700,8 +834,9 @@ public partial class LandmarksWindow : SLNGWindow
             var parts = meta.Split('|');
             if (parts.Length >= 5 && Guid.TryParse(parts[3], out var fid) && fid != Guid.Empty)
             {
-                string folderName = parts[4].Contains('/') ? parts[4].Split('/').Last() : parts[4];
-                return (fid, folderName);
+                string fullPath = parts[4];
+                string folderName = fullPath.Contains('/') ? fullPath.Split('/').Last() : fullPath;
+                return (fid, folderName, fullPath);
             }
         }
 
@@ -714,11 +849,13 @@ public partial class LandmarksWindow : SLNGWindow
 
         Guid targetParentId = _session.LandmarksFolderId ?? Guid.Empty;
         string parentFolderName = L10n.Tr("ui.landmarks.folder_landmarks");
+        string parentPath = "Landmarks";
 
         if (GetSelectedFolder() is { } sel)
         {
             targetParentId = sel.FolderId;
             parentFolderName = sel.FolderName;
+            parentPath = sel.FullPath;
         }
 
         if (targetParentId == Guid.Empty) return;
@@ -736,8 +873,13 @@ public partial class LandmarksWindow : SLNGWindow
         prompt.Confirmed += newFolderName =>
         {
             if (string.IsNullOrWhiteSpace(newFolderName)) return;
-            _session.CreateInventoryFolder(targetParentId, newFolderName.Trim());
-            OnToast?.Invoke(L10n.TrFormat("ui.landmarks.folder_created_toast", newFolderName.Trim()));
+            string trimmed = newFolderName.Trim();
+            _session.CreateInventoryFolder(targetParentId, trimmed);
+            ExpandFolderPath(parentPath);
+            string newFolderPath = $"{parentPath}/{trimmed}";
+            _expandedFolderKeys.Add(newFolderPath);
+            _collapsedFolderKeys.Remove(newFolderPath);
+            OnToast?.Invoke(L10n.TrFormat("ui.landmarks.folder_created_toast", trimmed));
             _ = RefreshLandmarksAsync();
         };
     }
@@ -782,10 +924,19 @@ public partial class LandmarksWindow : SLNGWindow
 
         try
         {
-            await _session.MoveInventoryAsync(itemId, targetFolderId, isFolder: false, targetPath).ConfigureAwait(false);
+            string label = (targetPath.EndsWith("/__general__", StringComparison.OrdinalIgnoreCase) || targetPath.Equals("__general__", StringComparison.OrdinalIgnoreCase))
+                ? "Landmarks"
+                : targetPath;
+
+            await _session.MoveInventoryAsync(itemId, targetFolderId, isFolder: false, label).ConfigureAwait(false);
             Callable.From(() =>
             {
-                OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", targetPath));
+                ExpandFolderPath(targetPath);
+                _selectItemIdAfterRefresh = itemId;
+                string toastPath = (targetPath.EndsWith("/__general__", StringComparison.OrdinalIgnoreCase) || targetPath.Equals("__general__", StringComparison.OrdinalIgnoreCase))
+                    ? L10n.Tr("ui.landmarks.folder_landmarks")
+                    : targetPath;
+                OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", toastPath));
                 _ = RefreshLandmarksAsync();
             }).CallDeferred();
         }
@@ -806,8 +957,8 @@ public partial class LandmarksWindow : SLNGWindow
         folderItem.SetMetadata(0, $"folder|{node.FolderId}|{node.FullPath}");
         folderItem.SetCustomColor(0, new Color(0.85f, 0.92f, 1.0f, 0.95f));
 
-        // Auto-expand if a filter is active
-        folderItem.Collapsed = string.IsNullOrEmpty(filter);
+        bool defaultExpanded = !string.IsNullOrEmpty(filter);
+        folderItem.Collapsed = !IsFolderExpanded(node.FullPath, defaultExpanded);
 
         // 1. Subfolders first:
         foreach (var sub in node.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
@@ -821,6 +972,12 @@ public partial class LandmarksWindow : SLNGWindow
             var itemNode = _tree.CreateItem(folderItem);
             itemNode.SetText(0, $"📍 {lm.Name}");
             itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}|{lm.ParentId}|{lm.FolderPath}");
+            if (_selectItemIdAfterRefresh.HasValue && lm.Id == _selectItemIdAfterRefresh.Value)
+            {
+                _tree.SetSelected(itemNode, 0);
+                _tree.ScrollToItem(itemNode);
+                _selectItemIdAfterRefresh = null;
+            }
         }
     }
 
