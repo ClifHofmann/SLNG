@@ -430,7 +430,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.102-alpha";
+    public const string AppVersion = "v0.26.104-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1243,6 +1243,8 @@ public partial class Boot : Control
         _notificationWindow = new SLNG.App.UI.NotificationWindow { Name = "NotificationWindow" };
         hudLayer.AddChild(_notificationWindow);
         _notificationWindow.OnOpenProfileRequested = (id, n) => OpenUserProfileWindow(hudLayer, id, n);
+        _notificationWindow.OnOpenGroupInfoRequested = (id, n) => OpenGroupInfoWindow(hudLayer, id, n);
+        _notificationWindow.OnTeleportRequested = (region, pos) => _ = TeleportToRegionAsync(region, pos);
         // BUG-UI-12: the way back to a decision the user closed without answering. The window
         // hands back only the opaque key, so it never learns what kind of prompt it re-opens.
         _notificationWindow.ActionRequested += key =>
@@ -1372,6 +1374,7 @@ public partial class Boot : Control
         _chatWindow.OnPayRequested = (agentId, name) => ShowPayAvatarWindow(agentId, name);
         // FEAT-UI-54: the Groups tab's "Profile" button.
         _chatWindow.OnOpenGroupInfoRequested = (groupId, name) => OpenGroupInfoWindow(hudLayer, groupId, name);
+        _chatWindow.OnTeleportRequested = (region, pos) => _ = TeleportToRegionAsync(region, pos);
 
         // FEAT-UI-18: modal teleport loading overlay. Its own CanvasLayer (Layer 100), added to
         // Boot rather than hudLayer so it covers the HUD and every window and stays up even if
@@ -1818,6 +1821,34 @@ public partial class Boot : Control
             if (!result.Success && !string.IsNullOrEmpty(result.Message))
             {
                 ShowToast(SLNG.App.UI.L10n.TrFormat("ui.landmarks.teleport_failed", result.Message));
+            }
+            else if (result.Success)
+            {
+                GetViewport().GuiReleaseFocus();
+            }
+        }).CallDeferred();
+    }
+
+    private async System.Threading.Tasks.Task TeleportToRegionAsync(string regionName, System.Numerics.Vector3 pos)
+    {
+        if (_session == null)
+        {
+            ShowToast("Not connected.");
+            return;
+        }
+        ShowToast($"Teleporting to {regionName}…");
+        var info = await _session.ResolveRegionByNameAsync(regionName).ConfigureAwait(false);
+        if (info == null)
+        {
+            Callable.From(() => ShowToast($"Could not find region '{regionName}'.")).CallDeferred();
+            return;
+        }
+        var result = await _session.TeleportToAsync(info.RegionHandle, pos).ConfigureAwait(false);
+        Callable.From(() =>
+        {
+            if (!result.Success && !string.IsNullOrEmpty(result.Message))
+            {
+                ShowToast($"Teleport failed: {result.Message}");
             }
             else if (result.Success)
             {

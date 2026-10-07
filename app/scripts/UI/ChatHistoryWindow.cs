@@ -1,4 +1,6 @@
+using System;
 using Godot;
+using SLNG.Core;
 using SLNG.Core.Services;
 
 namespace SLNG.App.UI;
@@ -43,6 +45,7 @@ public partial class ChatHistoryWindow : SLNGWindow
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
         _log.AddThemeFontSizeOverride("normal_font_size", ChatWindow.BodyFontSize);
+        _log.MetaClicked += OnLogMetaClicked;
         vbox.AddChild(_log);
 
         var nav = new HBoxContainer();
@@ -67,6 +70,9 @@ public partial class ChatHistoryWindow : SLNGWindow
         _nextButton.Pressed += () => GoToPage(_pageIndex + 1);
         nav.AddChild(_nextButton);
     }
+
+    public Action<Guid, string>? OnOpenProfileRequested { get; set; }
+    public Action<string, System.Numerics.Vector3>? OnTeleportRequested { get; set; }
 
     /// <summary>Loads and shows the most recent page for one conversation's on-disk log.</summary>
     public void Open(ChatLogger logger, ChatLogKind kind, string conversationName, string title)
@@ -95,7 +101,7 @@ public partial class ChatHistoryWindow : SLNGWindow
         else
         {
             foreach (var line in lines)
-                _log.AppendText($"{BbEscape(line)}\n");
+                _log.AppendText($"{ChatTextParser.FormatMessageToBbCode(line)}\n");
         }
 
         _pageLabel.Text = $"Page {_pageIndex + 1} / {_totalPages}";
@@ -103,5 +109,45 @@ public partial class ChatHistoryWindow : SLNGWindow
         _nextButton.Disabled = _pageIndex >= _totalPages - 1;
     }
 
-    private static string BbEscape(string s) => s.Replace("[", "[lb]");
+    private void OnLogMetaClicked(Variant meta)
+    {
+        var s = meta.AsString();
+        const string prefix = "avatar:";
+        if (s.StartsWith(prefix, StringComparison.Ordinal)
+            && Guid.TryParse(s.AsSpan(prefix.Length), out var id))
+        {
+            OnOpenProfileRequested?.Invoke(id, "");
+            return;
+        }
+
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            OS.ShellOpen(s);
+            return;
+        }
+
+        const string slPrefix = "secondlife:///app/";
+        if (s.StartsWith(slPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string rest = s[slPrefix.Length..];
+            string[] parts = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && string.Equals(parts[0], "agent", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(parts[1], out var agentId))
+            {
+                OnOpenProfileRequested?.Invoke(agentId, "");
+                return;
+            }
+            if (parts.Length >= 5 && string.Equals(parts[0], "teleport", StringComparison.OrdinalIgnoreCase))
+            {
+                string region = Uri.UnescapeDataString(parts[1]);
+                if (float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x)
+                    && float.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y)
+                    && float.TryParse(parts[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+                {
+                    OnTeleportRequested?.Invoke(region, new System.Numerics.Vector3(x, y, z));
+                }
+                return;
+            }
+        }
+    }
 }

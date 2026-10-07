@@ -923,7 +923,17 @@
       "friend_offline": "{0} is offline.",
       "resize_list_tip": "Drag to resize the name list",
       "conference": "Conference",
-      "contacts": "CONTACTS"
+      "contacts": "CONTACTS",
+      "emoji": "Emoji",
+      "emoji_search": "Search emojis...",
+      "emoji_cat_smileys": "Smileys",
+      "emoji_cat_gestures": "Gestures",
+      "emoji_cat_symbols": "Symbols",
+      "emoji_cat_food": "Food & Drink",
+      "emoji_cat_nature": "Animals & Nature",
+      "emoji_cat_objects": "Objects",
+      "mention": "Mention resident (@)",
+      "send": "Send"
     },
     "common": {
       "cancel": "Cancel"

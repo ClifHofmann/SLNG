@@ -42,6 +42,8 @@ public partial class NotificationWindow : SLNGWindow
     /// <summary>Asked to open a resident's profile, when their name in an entry is clicked.
     /// Boot owns the profile windows, same as everywhere else.</summary>
     public Action<Guid, string>? OnOpenProfileRequested;
+    public Action<Guid, string>? OnOpenGroupInfoRequested;
+    public Action<string, System.Numerics.Vector3>? OnTeleportRequested;
 
     public override void _Ready()
     {
@@ -237,14 +239,19 @@ public partial class NotificationWindow : SLNGWindow
 
         if (!string.IsNullOrWhiteSpace(entry.Detail) && _expanded.Contains(entry.Id))
         {
-            var detail = new Label
+            var detailText = ChatTextParser.FormatMessageToBbCode(entry.Detail);
+            var detail = new RichTextLabel
             {
-                Text = entry.Detail,
+                BbcodeEnabled = true,
+                FitContent = true,
+                ScrollActive = false,
+                Text = detailText,
                 AutowrapMode = TextServer.AutowrapMode.WordSmart,
                 SizeFlagsHorizontal = SizeFlags.ExpandFill,
             };
-            detail.AddThemeFontSizeOverride("font_size", 11);
-            detail.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
+            detail.AddThemeFontSizeOverride("normal_font_size", 11);
+            detail.AddThemeColorOverride("default_color", UiTheme.SecondaryText);
+            detail.MetaClicked += OnLogMetaClicked;
             textColumn.AddChild(detail);
         }
 
@@ -298,14 +305,9 @@ public partial class NotificationWindow : SLNGWindow
     }
 
     /// <summary>
-    /// The entry's line, with the sender's name as a link to their profile where there is one.
+    /// The entry's line, with the sender's name as a link to their profile where there is one,
+    /// and any URLs/SLurls rendered as clickable links.
     /// </summary>
-    /// <remarks>
-    /// Same idiom the chat log already uses — <c>[url=avatar:&lt;guid&gt;]</c> in a
-    /// RichTextLabel — so a name behaves the same wherever it appears. A plain Label is used when
-    /// there is nothing to link to, rather than a RichTextLabel with the markup left out: the
-    /// escaping and the BBCode parser are pure cost for a line that is only ever text.
-    /// </remarks>
     private Control BuildText(NotificationEntry entry)
     {
         bool linkable = entry.SenderId != Guid.Empty
@@ -313,7 +315,11 @@ public partial class NotificationWindow : SLNGWindow
             && !string.IsNullOrEmpty(entry.SenderName)
             && entry.Text.Contains(entry.SenderName, StringComparison.Ordinal);
 
-        if (!linkable)
+        bool hasUrls = entry.Text.Contains("http://", StringComparison.OrdinalIgnoreCase)
+            || entry.Text.Contains("https://", StringComparison.OrdinalIgnoreCase)
+            || entry.Text.Contains("secondlife://", StringComparison.OrdinalIgnoreCase);
+
+        if (!linkable && !hasUrls)
         {
             var plain = new Label
             {
@@ -325,10 +331,19 @@ public partial class NotificationWindow : SLNGWindow
             return plain;
         }
 
-        int at = entry.Text.IndexOf(entry.SenderName, StringComparison.Ordinal);
-        string before = ChatWindow.BbEscape(entry.Text[..at]);
-        string after = ChatWindow.BbEscape(entry.Text[(at + entry.SenderName.Length)..]);
-        string linked = $"[url=avatar:{entry.SenderId}][color=#7ec0ee]{ChatWindow.BbEscape(entry.SenderName)}[/color][/url]";
+        string formatted;
+        if (linkable)
+        {
+            int at = entry.Text.IndexOf(entry.SenderName, StringComparison.Ordinal);
+            string before = ChatTextParser.FormatMessageToBbCode(entry.Text[..at]);
+            string after = ChatTextParser.FormatMessageToBbCode(entry.Text[(at + entry.SenderName.Length)..]);
+            string linked = $"[url=avatar:{entry.SenderId}][color=#7ec0ee]{ChatWindow.BbEscape(entry.SenderName)}[/color][/url]";
+            formatted = before + linked + after;
+        }
+        else
+        {
+            formatted = ChatTextParser.FormatMessageToBbCode(entry.Text);
+        }
 
         var rich = new RichTextLabel
         {
@@ -337,20 +352,58 @@ public partial class NotificationWindow : SLNGWindow
             ScrollActive = false,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            Text = before + linked + after,
+            Text = formatted,
         };
         rich.AddThemeFontSizeOverride("normal_font_size", 12);
-        rich.MetaClicked += meta =>
-        {
-            var m = meta.AsString();
-            const string prefix = "avatar:";
-            if (m.StartsWith(prefix, StringComparison.Ordinal)
-                && Guid.TryParse(m.AsSpan(prefix.Length), out var id))
-            {
-                OnOpenProfileRequested?.Invoke(id, entry.SenderName);
-            }
-        };
+        rich.MetaClicked += OnLogMetaClicked;
         return rich;
+    }
+
+    private void OnLogMetaClicked(Variant meta)
+    {
+        var s = meta.AsString();
+        const string prefix = "avatar:";
+        if (s.StartsWith(prefix, StringComparison.Ordinal)
+            && Guid.TryParse(s.AsSpan(prefix.Length), out var id))
+        {
+            OnOpenProfileRequested?.Invoke(id, "");
+            return;
+        }
+
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            OS.ShellOpen(s);
+            return;
+        }
+
+        const string slPrefix = "secondlife:///app/";
+        if (s.StartsWith(slPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string rest = s[slPrefix.Length..];
+            string[] parts = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && string.Equals(parts[0], "agent", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(parts[1], out var agentId))
+            {
+                OnOpenProfileRequested?.Invoke(agentId, "");
+                return;
+            }
+            if (parts.Length >= 2 && string.Equals(parts[0], "group", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(parts[1], out var groupId))
+            {
+                OnOpenGroupInfoRequested?.Invoke(groupId, "");
+                return;
+            }
+            if (parts.Length >= 5 && string.Equals(parts[0], "teleport", StringComparison.OrdinalIgnoreCase))
+            {
+                string region = Uri.UnescapeDataString(parts[1]);
+                if (float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x)
+                    && float.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y)
+                    && float.TryParse(parts[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+                {
+                    OnTeleportRequested?.Invoke(region, new System.Numerics.Vector3(x, y, z));
+                }
+                return;
+            }
+        }
     }
 
     public override void _ExitTree()
