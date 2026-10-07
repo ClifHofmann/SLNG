@@ -430,7 +430,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.92-alpha";
+    public const string AppVersion = "v0.26.93-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -5059,7 +5059,7 @@ public partial class Boot : Control
     private void OnFriendStatusForToast(object? sender, SLNG.Core.FriendStatusEvent e)
     {
         if (!_friendPresence.Update(e.FriendId, e.IsOnline)) return;
-        if (!_uiSettings.ShowFriendPresenceToasts) return;
+        if (!_uiSettings.ShowFriendPresenceToasts && !_uiSettings.ShowFriendPresenceInLocalChat) return;
         CallDeferred(MethodName.ShowFriendPresenceToast, e.FriendId.ToString(), e.IsOnline);
     }
 
@@ -5103,7 +5103,6 @@ public partial class Boot : Control
     /// and then shows the Display Name when there is one. Nothing known missing = no wait at all.</para></summary>
     private void ShowFriendPresenceToast(string friendIdText, bool online)
     {
-        if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
         if (_session == null || !System.Guid.TryParse(friendIdText, out var friendId)) return;
 
         if (_pendingPresenceToasts.TryGetValue(friendId, out var waiting))
@@ -5141,17 +5140,22 @@ public partial class Boot : Control
 
     private void ShowPresenceToastNow(System.Guid friendId, bool online, string shownName)
     {
-        if (!_uiSettings.ShowFriendPresenceToasts) return;
-        if (_notificationToasts == null || !Godot.GodotObject.IsInstanceValid(_notificationToasts)) return;
-
-        string text = SLNG.App.UI.L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", shownName);
-        // The IM tab and its log are named after the login name, never the Display Name -- looked up when clicked, so
-        // a toast that fell back to "Someone" still opens the right conversation.
-        _notificationToasts.ShowPresence(text, online, () =>
+        if (_uiSettings.ShowFriendPresenceToasts && _notificationToasts != null && Godot.GodotObject.IsInstanceValid(_notificationToasts))
         {
-            string legacy = KnownFriendName(friendId);
-            _chatWindow.OpenOrFocusImTab(friendId, string.IsNullOrWhiteSpace(legacy) ? friendId.ToString() : legacy);
-        });
+            string text = SLNG.App.UI.L10n.TrFormat(online ? "ui.chat.friend_online" : "ui.chat.friend_offline", shownName);
+            // The IM tab and its log are named after the login name, never the Display Name -- looked up when clicked, so
+            // a toast that fell back to "Someone" still opens the right conversation.
+            _notificationToasts.ShowPresence(text, online, () =>
+            {
+                string legacy = KnownFriendName(friendId);
+                _chatWindow.OpenOrFocusImTab(friendId, string.IsNullOrWhiteSpace(legacy) ? friendId.ToString() : legacy);
+            });
+        }
+
+        if (_uiSettings.ShowFriendPresenceInLocalChat && _chatWindow != null && Godot.GodotObject.IsInstanceValid(_chatWindow))
+        {
+            _chatWindow.AppendFriendPresenceToMain(friendId, shownName, online);
+        }
     }
 
     /// <summary>Main-thread half of a notification toast. Takes the pieces rather than the entry

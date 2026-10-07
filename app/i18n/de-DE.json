@@ -630,6 +630,8 @@
       "conference_as_im_tip": "Ein Chat mit mehreren Personen (keine Gruppe) bekommt normalerweise eine eigene Unterhaltung, in der die Zeilen aller erscheinen und deine Antwort an alle geht. An: Die Zeilen jeder sprechenden Person erscheinen stattdessen in einer normalen IM-Unterhaltung mit ihr, und deine Antwort geht nur an diese Person. Zeilen vom Grid selbst und deine eigenen Zeilen in der Konferenz werden dann nicht gezeigt.",
       "friend_presence_toasts": "Hinweis zeigen, wenn Freunde sich an- oder abmelden",
       "friend_presence_toasts_tip": "Ein kleiner Hinweis oben rechts, wenn einer deiner Freunde online oder offline geht. Ein Klick darauf öffnet einen IM mit ihm. Die Zeile im IM-Reiter bleibt in beiden Fällen.",
+      "friend_presence_in_local_chat": "Freunde-An- und Abmeldungen im Haupt-Chat anzeigen",
+      "friend_presence_in_local_chat_tip": "Gibt eine Hinweiszeile im Haupt-Chat aus, wenn ein Freund online oder offline geht.",
       "show_display_names_tip": "Aus zeigt überall den Benutzernamen. Die Klammerzeile darunter entfällt dann, weil es nichts mehr zu unterscheiden gibt.",
       "show_legacy_names": "Benutzernamen unter dem Anzeigenamen zeigen",
       "show_legacy_names_tip": "Zeigt den unveränderlichen Kontonamen in Klammern unter dem Anzeigenamen. Avatare ohne Anzeigenamen bleiben unverändert.",

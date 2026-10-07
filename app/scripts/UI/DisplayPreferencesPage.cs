@@ -114,6 +114,16 @@ public partial class DisplayPreferencesPage : VBoxContainer
         friendToastCheck.Toggled += on => _settings.SetShowFriendPresenceToasts(on);
         AddChild(friendToastCheck);
 
+        var friendChatCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.friend_presence_in_local_chat"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            ButtonPressed = _settings.ShowFriendPresenceInLocalChat,
+            TooltipText = L10n.Tr("ui.preferences.friend_presence_in_local_chat_tip"),
+        };
+        friendChatCheck.Toggled += on => _settings.SetShowFriendPresenceInLocalChat(on);
+        AddChild(friendChatCheck);
+
         
         // FEAT-UI-04: the build grid's granularity, the way a paint program exposes its grid.
         // The listed steps are the ones SL builders actually use; finer than 1 cm is below what

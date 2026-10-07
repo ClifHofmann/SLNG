@@ -70,6 +70,10 @@ public sealed class UiSettings
     /// tab is not affected, only the pop-up.</summary>
     public bool ShowFriendPresenceToasts { get; private set; } = true;
 
+    /// <summary>FEAT-UI-69: Show a notice in the Main (local chat) tab when a friend logs in or out.
+    /// Default off (matches Firestorm optional setting).</summary>
+    public bool ShowFriendPresenceInLocalChat { get; private set; }
+
     /// <summary>FEAT-UI-04: the build grid's cell size in metres — the spacing of the move
     /// gizmo's plane grid and of its single-axis ruler's ticks, and therefore what a snapped
     /// drag lands on. Default 1 m, SL's own build grid.</summary>
@@ -99,6 +103,7 @@ public sealed class UiSettings
             HideOwnGroupTitle = (bool)cfg.GetValue(Section, "hide_own_group_title", false);
             ConferenceChatsAsIm = (bool)cfg.GetValue(Section, "conference_chats_as_im", false);
             ShowFriendPresenceToasts = (bool)cfg.GetValue(Section, "friend_presence_toasts", true);
+            ShowFriendPresenceInLocalChat = (bool)cfg.GetValue(Section, "friend_presence_in_local_chat", false);
             BuildGridSpacing = Mathf.Clamp((float)cfg.GetValue(Section, "build_grid_spacing", 1.0), 0.01f, 64f);
             BuildRotationSnapDegrees = Mathf.Clamp((float)cfg.GetValue(Section, "build_rotation_snap_degrees", 15.0), 0.1f, 90f);
         }
@@ -227,6 +232,16 @@ public sealed class UiSettings
         var cfg = new ConfigFile();
         cfg.Load(ConfigPath);
         cfg.SetValue(Section, "friend_presence_toasts", ShowFriendPresenceToasts);
+        cfg.Save(ConfigPath);
+    }
+
+    public void SetShowFriendPresenceInLocalChat(bool show)
+    {
+        ShowFriendPresenceInLocalChat = show;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "friend_presence_in_local_chat", ShowFriendPresenceInLocalChat);
         cfg.Save(ConfigPath);
     }
 
