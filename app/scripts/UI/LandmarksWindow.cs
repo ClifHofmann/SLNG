@@ -171,7 +171,7 @@ public partial class LandmarksWindow : SLNGWindow
         _contextMenu.AddItem(L10n.Tr("ui.landmarks.add_to_favorites_btn"), 1);
         _contextMenu.AddItem(L10n.Tr("ui.landmarks.copy_slurl"), 2);
         _contextMenu.AddSeparator();
-        _contextMenu.AddItem(L10n.Tr("ui.landmarks.move_to_landmarks_root"), 4);
+        _contextMenu.AddItem(L10n.Tr("ui.landmarks.move_to_folder_action"), 4);
         _contextMenu.AddItem(L10n.Tr("ui.landmarks.delete_to_trash"), 3);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         AddChild(_contextMenu);
@@ -476,27 +476,23 @@ public partial class LandmarksWindow : SLNGWindow
         {
             ConfirmDeleteSingleLandmark(lm.ItemId, lm.Name);
         }
-        else if (id == 4) // Move to Landmarks root
+        else if (id == 4) // Move landmark to folder...
         {
-            if (_session?.LandmarksFolderId is { } lmFolder)
-            {
-                _ = Task.Run(async () =>
+            var win = new MoveLandmarkWindow();
+            var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                       ?? (Node?)GetParent() ?? this;
+            host.AddChild(win);
+            win.Initialize(
+                _session,
+                lm.ItemId,
+                lm.Name,
+                "",
+                _session?.LandmarksFolderId,
+                (targetFolderId, targetPath) =>
                 {
-                    try
-                    {
-                        await _session.MoveInventoryAsync(lm.ItemId, lmFolder, isFolder: false, "Landmarks").ConfigureAwait(false);
-                        Callable.From(() =>
-                        {
-                            OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", "Landmarks"));
-                            _ = RefreshLandmarksAsync();
-                        }).CallDeferred();
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.Error.WriteLine($"[LandmarksWindow] Move to Landmarks failed: {ex.Message}");
-                    }
+                    OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", targetPath));
+                    _ = RefreshLandmarksAsync();
                 });
-            }
         }
     }
 

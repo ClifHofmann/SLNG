@@ -25,14 +25,11 @@ public partial class LandmarkDedupWindow : SLNGWindow
     private Tree _tree = null!;
     private Button _selectAllBtn = null!;
     private Button _resetBtn = null!;
-    private Button _moveToLandmarksBtn = null!;
     private Button _cleanBtn = null!;
     private Button _refreshBtn = null!;
     private PopupMenu _contextMenu = null!;
-    private PopupMenu _subfoldersMenu = null!;
     private LandmarkInventoryItem? _contextLandmark;
     private LandmarkDuplicateGroup? _contextGroup;
-    private List<(Guid Id, string Path, string Name)> _landmarkSubfolders = new();
 
     public Action? OnDuplicatesRemoved;
     public Action<string>? OnToast;
@@ -87,7 +84,6 @@ public partial class LandmarkDedupWindow : SLNGWindow
             SelectMode = Tree.SelectModeEnum.Row
         };
         _tree.ItemEdited += OnTreeItemEdited;
-        _tree.ItemSelected += OnTreeItemSelected;
         _tree.GuiInput += OnTreeGuiInput;
         vbox.AddChild(_tree);
 
@@ -111,16 +107,6 @@ public partial class LandmarkDedupWindow : SLNGWindow
         _resetBtn.Pressed += OnResetPressed;
         bottomRow.AddChild(_resetBtn);
 
-        _moveToLandmarksBtn = new Button
-        {
-            Text = L10n.Tr("ui.landmarks.move_to_landmarks_btn"),
-            TooltipText = L10n.Tr("ui.landmarks.move_to_landmarks_tooltip"),
-            Disabled = true,
-            FocusMode = FocusModeEnum.None
-        };
-        _moveToLandmarksBtn.Pressed += OnMoveToLandmarksPressed;
-        bottomRow.AddChild(_moveToLandmarksBtn);
-
         var spacer = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         bottomRow.AddChild(spacer);
 
@@ -135,10 +121,7 @@ public partial class LandmarkDedupWindow : SLNGWindow
         bottomRow.AddChild(_cleanBtn);
 
         _contextMenu = new PopupMenu();
-        _subfoldersMenu = new PopupMenu { Name = "SubfoldersMenu" };
-        _contextMenu.AddChild(_subfoldersMenu);
         _contextMenu.IdPressed += OnContextMenuIdPressed;
-        _subfoldersMenu.IdPressed += OnSubfolderMenuIdPressed;
         AddChild(_contextMenu);
 
         CallDeferred(MethodName.ApplyFirstOpenDefaultIfNeeded);
@@ -218,7 +201,6 @@ public partial class LandmarkDedupWindow : SLNGWindow
             _cleanBtn.Disabled = true;
             _selectAllBtn.Disabled = true;
             _resetBtn.Disabled = true;
-            _moveToLandmarksBtn.Disabled = true;
             return;
         }
 
@@ -267,7 +249,6 @@ public partial class LandmarkDedupWindow : SLNGWindow
         }
 
         UpdateCleanButtonState();
-        UpdateSelectedButtonState();
     }
 
     private void OnTreeItemEdited()
@@ -366,33 +347,6 @@ public partial class LandmarkDedupWindow : SLNGWindow
         }).CallDeferred();
     }
 
-    private void OnTreeItemSelected()
-    {
-        UpdateSelectedButtonState();
-    }
-
-    private void UpdateSelectedButtonState()
-    {
-        var selected = _tree.GetSelected();
-        if (selected == null)
-        {
-            _moveToLandmarksBtn.Disabled = true;
-            return;
-        }
-
-        string meta = selected.GetMetadata(0).AsString();
-        if (Guid.TryParse(meta, out var itemId))
-        {
-            var item = _rawLandmarks.FirstOrDefault(l => l.Id == itemId);
-            bool notInRootLandmarks = item != null && !string.Equals(item.FolderPath, "Landmarks", StringComparison.OrdinalIgnoreCase);
-            _moveToLandmarksBtn.Disabled = !notInRootLandmarks;
-        }
-        else
-        {
-            _moveToLandmarksBtn.Disabled = true;
-        }
-    }
-
     private void OnTreeGuiInput(InputEvent @event)
     {
         if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Right)
@@ -401,7 +355,6 @@ public partial class LandmarkDedupWindow : SLNGWindow
             if (item != null)
             {
                 _tree.SetSelected(item, 0);
-                UpdateSelectedButtonState();
                 ShowContextMenuForSelected();
                 _tree.AcceptEvent();
             }
@@ -423,12 +376,10 @@ public partial class LandmarkDedupWindow : SLNGWindow
 
         _contextMenu.Clear();
 
-        // 1. Move to primary Landmarks folder
-        bool notInRoot = !string.Equals(_contextLandmark.FolderPath, "Landmarks", StringComparison.OrdinalIgnoreCase);
-        _contextMenu.AddItem(L10n.Tr("ui.landmarks.move_to_landmarks_root"), 0);
-        _contextMenu.SetItemDisabled(0, !notInRoot);
+        // Option 0: Open MoveLandmarkWindow (choose destination folder in Landmarks)
+        _contextMenu.AddItem(L10n.Tr("ui.landmarks.move_to_folder_action"), 0);
 
-        // 2. If another duplicate in the group is in a different folder:
+        // Option 1: Quick shortcut: move to the folder where the other duplicate is located
         if (_contextGroup != null)
         {
             var otherItem = _contextGroup.Items.FirstOrDefault(i =>
@@ -443,23 +394,11 @@ public partial class LandmarkDedupWindow : SLNGWindow
             }
         }
 
-        // 3. Submenu for any landmark subfolders
-        _subfoldersMenu.Clear();
-        _landmarkSubfolders = _session.GetLandmarkFolders()
-            .Where(f => f.Id != _session.LandmarksFolderId && f.Id != _contextLandmark.ParentId)
-            .ToList();
-
-        if (_landmarkSubfolders.Count > 0)
+        // Option 2: Quick shortcut: move to main 'Landmarks' folder
+        bool notInRoot = !string.Equals(_contextLandmark.FolderPath, "Landmarks", StringComparison.OrdinalIgnoreCase);
+        if (notInRoot)
         {
-            _contextMenu.AddSeparator();
-            for (int i = 0; i < _landmarkSubfolders.Count; i++)
-            {
-                string displayPath = _landmarkSubfolders[i].Path.StartsWith("Landmarks/")
-                    ? _landmarkSubfolders[i].Path.Substring("Landmarks/".Length)
-                    : _landmarkSubfolders[i].Path;
-                _subfoldersMenu.AddItem(displayPath, i);
-            }
-            _contextMenu.AddSubmenuNodeItem(L10n.Tr("ui.landmarks.move_to_subfolder_menu"), _subfoldersMenu, 2);
+            _contextMenu.AddItem(L10n.Tr("ui.landmarks.move_to_landmarks_root"), 2);
         }
 
         _contextMenu.Position = (Vector2I)GetGlobalMousePosition();
@@ -470,14 +409,35 @@ public partial class LandmarkDedupWindow : SLNGWindow
     {
         if (_contextLandmark == null || _session == null) return;
 
-        if (id == 0) // Move to Landmarks root
+        if (id == 0) // Open MoveLandmarkWindow dialog
         {
-            if (_session.LandmarksFolderId is { } lmFolderId)
+            var win = new MoveLandmarkWindow();
+            var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer")
+                       ?? (Node?)GetParent() ?? this;
+            host.AddChild(win);
+
+            Guid? suggestedFolder = null;
+            if (_contextGroup != null)
             {
-                _ = MoveItemToFolderAsync(_contextLandmark.Id, lmFolderId, "Landmarks");
+                var otherItem = _contextGroup.Items.FirstOrDefault(i =>
+                    i.Id != _contextLandmark.Id &&
+                    i.ParentId != _contextLandmark.ParentId &&
+                    i.ParentId != Guid.Empty);
+                if (otherItem != null) suggestedFolder = otherItem.ParentId;
             }
+
+            win.Initialize(
+                _session,
+                _contextLandmark.Id,
+                _contextLandmark.Name,
+                _contextLandmark.FolderPath,
+                suggestedFolder,
+                (targetFolderId, targetPath) =>
+                {
+                    OnItemMovedLocally(_contextLandmark.Id, targetFolderId, targetPath);
+                });
         }
-        else if (id == 1) // Move to other copy's folder
+        else if (id == 1) // Quick move to other copy's folder
         {
             if (_contextGroup != null)
             {
@@ -488,72 +448,55 @@ public partial class LandmarkDedupWindow : SLNGWindow
 
                 if (otherItem != null)
                 {
-                    _ = MoveItemToFolderAsync(_contextLandmark.Id, otherItem.ParentId, otherItem.FolderPath);
+                    _ = MoveItemToFolderDirectlyAsync(_contextLandmark.Id, otherItem.ParentId, otherItem.FolderPath);
                 }
+            }
+        }
+        else if (id == 2) // Quick move to Landmarks root
+        {
+            if (_session.LandmarksFolderId is { } lmFolderId)
+            {
+                _ = MoveItemToFolderDirectlyAsync(_contextLandmark.Id, lmFolderId, "Landmarks");
             }
         }
     }
 
-    private void OnSubfolderMenuIdPressed(long id)
-    {
-        if (_contextLandmark == null || _session == null) return;
-        if (id >= 0 && id < _landmarkSubfolders.Count)
-        {
-            var target = _landmarkSubfolders[(int)id];
-            _ = MoveItemToFolderAsync(_contextLandmark.Id, target.Id, target.Path);
-        }
-    }
-
-    private void OnMoveToLandmarksPressed()
-    {
-        var selected = _tree.GetSelected();
-        if (selected == null || _session?.LandmarksFolderId is not { } lmFolderId) return;
-
-        string meta = selected.GetMetadata(0).AsString();
-        if (Guid.TryParse(meta, out var itemId))
-        {
-            _ = MoveItemToFolderAsync(itemId, lmFolderId, "Landmarks");
-        }
-    }
-
-    private async Task MoveItemToFolderAsync(Guid itemId, Guid targetFolderId, string targetPath)
+    private async Task MoveItemToFolderDirectlyAsync(Guid itemId, Guid targetFolderId, string targetPath)
     {
         if (_session == null || itemId == Guid.Empty || targetFolderId == Guid.Empty) return;
 
         try
         {
             await _session.MoveInventoryAsync(itemId, targetFolderId, isFolder: false, targetPath).ConfigureAwait(false);
-
-            Callable.From(() =>
-            {
-                if (!IsInstanceValid(this)) return;
-
-                // Update in-memory item in _rawLandmarks
-                var rawIdx = _rawLandmarks.FindIndex(l => l.Id == itemId);
-                if (rawIdx >= 0)
-                {
-                    var old = _rawLandmarks[rawIdx];
-                    string newFolderName = targetPath.Contains('/') ? targetPath.Split('/').Last() : targetPath;
-                    _rawLandmarks[rawIdx] = old with
-                    {
-                        ParentId = targetFolderId,
-                        FolderName = newFolderName,
-                        FolderPath = targetPath
-                    };
-                }
-
-                // Re-evaluate groups with updated folders
-                _groups = LandmarkDuplicateDetector.FindDuplicates(_rawLandmarks, _favoriteIds);
-                RebuildTree();
-                UpdateSelectedButtonState();
-
-                OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", targetPath));
-                OnDuplicatesRemoved?.Invoke(); // Refresh LandmarksWindow
-            }).CallDeferred();
+            Callable.From(() => OnItemMovedLocally(itemId, targetFolderId, targetPath)).CallDeferred();
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[Dedup] Move failed: {ex.Message}");
         }
+    }
+
+    private void OnItemMovedLocally(Guid itemId, Guid targetFolderId, string targetPath)
+    {
+        if (!IsInstanceValid(this)) return;
+
+        var rawIdx = _rawLandmarks.FindIndex(l => l.Id == itemId);
+        if (rawIdx >= 0)
+        {
+            var old = _rawLandmarks[rawIdx];
+            string newFolderName = targetPath.Contains('/') ? targetPath.Split('/').Last() : targetPath;
+            _rawLandmarks[rawIdx] = old with
+            {
+                ParentId = targetFolderId,
+                FolderName = newFolderName,
+                FolderPath = targetPath
+            };
+        }
+
+        _groups = LandmarkDuplicateDetector.FindDuplicates(_rawLandmarks, _favoriteIds);
+        RebuildTree();
+
+        OnToast?.Invoke(L10n.TrFormat("ui.landmarks.moved_to_folder_toast", targetPath));
+        OnDuplicatesRemoved?.Invoke();
     }
 }
