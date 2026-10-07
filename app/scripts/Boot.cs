@@ -430,7 +430,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.94-alpha";
+    public const string AppVersion = "v0.26.95-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1647,10 +1647,26 @@ public partial class Boot : Control
     {
         if (_session == null || agentId == System.Guid.Empty) return;
 
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            if (_session.TryGetDisplayName(agentId, out var dn) && !string.IsNullOrWhiteSpace(dn))
+                name = dn;
+            else if (_session.TryGetCachedName(agentId, out var cn) && !string.IsNullOrWhiteSpace(cn) && cn != agentId.ToString())
+                name = cn;
+            else
+            {
+                var friend = _session.GetFriends().FirstOrDefault(f => f.Id == agentId);
+                if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                    name = friend.Name;
+            }
+        }
+
         if (_userProfileWindows.TryGetValue(agentId, out var existing))
         {
             existing.Visible = true;
             existing.MoveToFront();
+            if (!string.IsNullOrWhiteSpace(name))
+                existing.OnNameResolved(agentId, name);
             return;
         }
 

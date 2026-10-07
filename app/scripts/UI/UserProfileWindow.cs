@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Godot;
 using SLNG.Core;
@@ -198,6 +199,20 @@ public partial class UserProfileWindow : SLNGWindow
         _assetService = assetService;
         _isSelf = session != null && Guid.TryParse(session.AgentId, out var me) && me == agentId;
 
+        if (string.IsNullOrWhiteSpace(_agentName) && _session != null)
+        {
+            if (_session.TryGetDisplayName(agentId, out var dn) && !string.IsNullOrWhiteSpace(dn))
+                _agentName = dn;
+            else if (_session.TryGetCachedName(agentId, out var cn) && !string.IsNullOrWhiteSpace(cn) && cn != agentId.ToString())
+                _agentName = cn;
+            else
+            {
+                var friend = _session.GetFriends().FirstOrDefault(f => f.Id == agentId);
+                if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                    _agentName = friend.Name;
+            }
+        }
+
         BuildTabs();
         BuildActions();
         if (!_isSelf && _session != null) _session.FriendListChanged += OnFriendListChanged;
@@ -209,6 +224,7 @@ public partial class UserProfileWindow : SLNGWindow
 
         _session?.RequestAvatarProfile(agentId);
         _session?.RequestAvatarName(agentId);
+        _session?.RequestDisplayName(agentId);
     }
 
     // ---- GridSession event sinks (Boot marshals to the main thread first) --------------------
@@ -424,9 +440,25 @@ public partial class UserProfileWindow : SLNGWindow
 
     private void UpdateNameHeader()
     {
-        _nameLabel.Text = string.IsNullOrWhiteSpace(_agentName) ? Tr("unknown_avatar") : _agentName;
-        if (!string.IsNullOrWhiteSpace(_agentName))
-            Title = _agentName.ToUpperInvariant();
+        string shown = !string.IsNullOrWhiteSpace(_agentName)
+            ? NameDisplay.For(_session, _agentId, _agentName)
+            : "";
+        if (string.IsNullOrWhiteSpace(shown) && _session != null)
+        {
+            if (_session.TryGetDisplayName(_agentId, out var dn) && !string.IsNullOrWhiteSpace(dn))
+                shown = dn;
+            else if (_session.TryGetCachedName(_agentId, out var cn) && !string.IsNullOrWhiteSpace(cn) && cn != _agentId.ToString())
+                shown = cn;
+            else
+            {
+                var friend = _session.GetFriends().FirstOrDefault(f => f.Id == _agentId);
+                if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                    shown = friend.Name;
+            }
+        }
+        _nameLabel.Text = string.IsNullOrWhiteSpace(shown) ? Tr("unknown_avatar") : shown;
+        if (!string.IsNullOrWhiteSpace(shown))
+            Title = shown.ToUpperInvariant();
     }
 
     // ---- Tabs ------------------------------------------------------------------------------
@@ -838,11 +870,43 @@ public partial class UserProfileWindow : SLNGWindow
     // Raised on a network thread; Node.CallDeferred is the safe way back.
     private void OnFriendListChanged(object? sender, EventArgs e) => CallDeferred(nameof(RefreshActionButtons));
 
-    private void OnImPressed() =>
-        OnOpenImRequested?.Invoke(_agentId, string.IsNullOrWhiteSpace(_agentName) ? "" : _agentName);
+    private void OnImPressed()
+    {
+        string name = _agentName;
+        if (string.IsNullOrWhiteSpace(name) && _session != null)
+        {
+            if (_session.TryGetCachedName(_agentId, out var cn) && !string.IsNullOrWhiteSpace(cn) && cn != _agentId.ToString())
+                name = cn;
+            else if (_session.TryGetDisplayName(_agentId, out var dn) && !string.IsNullOrWhiteSpace(dn))
+                name = dn;
+            else
+            {
+                var friend = _session.GetFriends().FirstOrDefault(f => f.Id == _agentId);
+                if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                    name = friend.Name;
+            }
+        }
+        OnOpenImRequested?.Invoke(_agentId, name ?? "");
+    }
 
-    private void OnPayPressed() =>
-        OnPayRequested?.Invoke(_agentId, string.IsNullOrWhiteSpace(_agentName) ? "" : _agentName);
+    private void OnPayPressed()
+    {
+        string name = _agentName;
+        if (string.IsNullOrWhiteSpace(name) && _session != null)
+        {
+            if (_session.TryGetDisplayName(_agentId, out var dn) && !string.IsNullOrWhiteSpace(dn))
+                name = dn;
+            else if (_session.TryGetCachedName(_agentId, out var cn) && !string.IsNullOrWhiteSpace(cn) && cn != _agentId.ToString())
+                name = cn;
+            else
+            {
+                var friend = _session.GetFriends().FirstOrDefault(f => f.Id == _agentId);
+                if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                    name = friend.Name;
+            }
+        }
+        OnPayRequested?.Invoke(_agentId, name ?? "");
+    }
 
     private void OnOfferTeleportPressed()
     {

@@ -438,14 +438,30 @@ public partial class ChatWindow : SLNGWindow
         var existing = _chatTabs.Find(t => t.Id == agentId.ToString());
         if (existing != null)
         {
-            // A tab opened by a typing indicator before the name was known is titled with the id; a message
-            // that carries the name must not leave it that way (the name request may never be answered).
-            if (existing.DisplayName == existing.Id && !string.IsNullOrWhiteSpace(displayName) && displayName != existing.Id)
+            string legacy = NameDisplay.LegacyFor(_session, agentId, displayName);
+            bool repairedLog = false;
+            if (string.IsNullOrWhiteSpace(existing.LogName) || existing.LogName == existing.Id)
             {
-                string legacy = NameDisplay.LegacyFor(_session, agentId, displayName);
-                existing.LogName = legacy;
+                if (!string.IsNullOrWhiteSpace(legacy) && legacy != existing.Id)
+                {
+                    existing.LogName = legacy;
+                    repairedLog = true;
+                }
+            }
+            if ((existing.DisplayName == existing.Id || string.IsNullOrWhiteSpace(existing.DisplayName))
+                && !string.IsNullOrWhiteSpace(displayName) && displayName != existing.Id)
+            {
                 existing.DisplayName = NameDisplay.For(_session, agentId, legacy);
                 existing.Label.Text = existing.DisplayName;
+            }
+            if (repairedLog && existing.Lines.Count == 0)
+            {
+                PreloadRecentHistory(existing);
+                if (existing == _activeChatTab)
+                {
+                    RebuildLogContent(existing);
+                    ScrollLogToBottom();
+                }
             }
             return existing;
         }
@@ -711,16 +727,40 @@ public partial class ChatWindow : SLNGWindow
         {
             // A tab opened before its name was known is titled with the raw id; now that the name may have
             // arrived, name the conversation properly (this also fixes where its log goes from now on).
-            if (tab.Closeable && tab.DisplayName == tab.Id && _session != null)
+            if (tab.Closeable && _session != null)
             {
                 string? resolved = null;
                 if (tab.TargetGroupId is { } gid && _session.TryGetGroupName(gid, out var groupName)) resolved = groupName;
-                else if (tab.TargetAgentId is { } aid && _session.TryGetCachedName(aid, out var agentName)) resolved = agentName;
+                else if (tab.TargetAgentId is { } aid)
+                {
+                    if (_session.TryGetCachedName(aid, out var agentName) && !string.IsNullOrWhiteSpace(agentName) && agentName != aid.ToString())
+                        resolved = agentName;
+                    else
+                    {
+                        var friend = _session.GetFriends().FirstOrDefault(f => f.Id == aid);
+                        if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                            resolved = friend.Name;
+                    }
+                }
+
                 if (!string.IsNullOrWhiteSpace(resolved))
                 {
-                    tab.LogName = resolved;
-                    tab.DisplayName = resolved;
-                    tab.Label.Text = resolved;
+                    bool hadEmptyLog = string.IsNullOrWhiteSpace(tab.LogName) || tab.LogName == tab.Id;
+                    if (hadEmptyLog) tab.LogName = resolved;
+                    if (tab.DisplayName == tab.Id)
+                    {
+                        tab.DisplayName = resolved;
+                        tab.Label.Text = resolved;
+                    }
+                    if (hadEmptyLog && tab.Lines.Count == 0)
+                    {
+                        PreloadRecentHistory(tab);
+                        if (tab == _activeChatTab)
+                        {
+                            RebuildLogContent(tab);
+                            ScrollLogToBottom();
+                        }
+                    }
                 }
             }
 
@@ -794,7 +834,21 @@ public partial class ChatWindow : SLNGWindow
         if (s.StartsWith(prefix, StringComparison.Ordinal)
             && Guid.TryParse(s.AsSpan(prefix.Length), out var id))
         {
-            OnOpenProfileRequested?.Invoke(id, "");
+            string name = "";
+            if (_session != null)
+            {
+                if (_session.TryGetDisplayName(id, out var dn) && !string.IsNullOrWhiteSpace(dn))
+                    name = dn;
+                else if (_session.TryGetCachedName(id, out var cn) && !string.IsNullOrWhiteSpace(cn) && cn != id.ToString())
+                    name = cn;
+                else
+                {
+                    var friend = _session.GetFriends().FirstOrDefault(f => f.Id == id);
+                    if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                        name = friend.Name;
+                }
+            }
+            OnOpenProfileRequested?.Invoke(id, name);
         }
     }
 

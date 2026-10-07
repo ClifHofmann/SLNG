@@ -400,10 +400,21 @@ public sealed partial class GridSession
     /// <see cref="NameResolved"/> in that case.</summary>
     public bool TryGetCachedName(Guid id, out string name)
     {
-        if (_nameCache.TryGetValue(id, out var cached))
+        if (_nameCache.TryGetValue(id, out var cached) && GroupChatSessionLogic.IsRealName(cached))
         {
             name = cached;
             return true;
+        }
+        if (_client.Friends.FriendList.TryGetValue(new UUID(id), out var friend) && GroupChatSessionLogic.IsRealName(friend.Name))
+        {
+            _nameCache[id] = friend.Name;
+            name = friend.Name;
+            return true;
+        }
+        if (_nameCache.TryGetValue(id, out var placeholder))
+        {
+            name = placeholder;
+            return false;
         }
         name = id.ToString();
         return false;
@@ -486,7 +497,17 @@ public sealed partial class GridSession
     /// <summary>True when the shared name cache holds a NAME for this id; an entry with an empty name, or the
     /// "(unknown group)" placeholder a blank name reply leaves behind, is not one (BUG-UI-23: it used to be, and
     /// kept a group with no known name from ever being asked for again).</summary>
-    private bool HasCachedName(Guid id) => _nameCache.TryGetValue(id, out var cached) && GroupChatSessionLogic.IsRealName(cached);
+    private bool HasCachedName(Guid id)
+    {
+        if (_nameCache.TryGetValue(id, out var cached) && GroupChatSessionLogic.IsRealName(cached))
+            return true;
+        if (_client.Friends.FriendList.TryGetValue(new UUID(id), out var friend) && GroupChatSessionLogic.IsRealName(friend.Name))
+        {
+            _nameCache[id] = friend.Name;
+            return true;
+        }
+        return false;
+    }
 
     /// <summary>Remembers a group's name learnt from somewhere other than a name reply, unless a real one is known
     /// already, and tells the listeners (<see cref="NameResolved"/>) so a tab titled with the id is renamed.</summary>
@@ -530,13 +551,27 @@ public sealed partial class GridSession
 
     public void RequestAvatarName(Guid agentId)
     {
-        if (agentId == Guid.Empty || HasCachedName(agentId) || !_client.Network.Connected) return;
+        if (agentId == Guid.Empty) return;
+        if (HasCachedName(agentId))
+        {
+            if (TryGetCachedName(agentId, out var cached))
+                NameResolved?.Invoke(this, new NameResolvedEvent(agentId, cached));
+            return;
+        }
+        if (!_client.Network.Connected) return;
         _client.Avatars.RequestAvatarName(new UUID(agentId));
     }
 
     public void RequestGroupName(Guid groupId)
     {
-        if (groupId == Guid.Empty || HasCachedName(groupId) || !_client.Network.Connected) return;
+        if (groupId == Guid.Empty) return;
+        if (HasCachedName(groupId))
+        {
+            if (TryGetCachedName(groupId, out var cached))
+                NameResolved?.Invoke(this, new NameResolvedEvent(groupId, cached));
+            return;
+        }
+        if (!_client.Network.Connected) return;
         _client.Groups.RequestGroupName(new UUID(groupId));
     }
 
@@ -562,6 +597,10 @@ public sealed partial class GridSession
             {
                 name = "";
                 RequestAvatarName(id);
+            }
+            else if (!string.IsNullOrEmpty(name))
+            {
+                _nameCache[id] = name;
             }
             // LibreMetaverse names the rights by who HOLDS them: TheirFriendRights is what the friend may do with
             // us (what we granted), MyFriendRights what we may do with them (what they granted). Checked against

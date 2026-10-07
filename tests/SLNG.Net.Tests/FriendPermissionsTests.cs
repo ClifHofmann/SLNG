@@ -311,4 +311,30 @@ public class FriendPermissionsTests
 
         Assert.Equal(1, changed);
     }
+
+    [Fact]
+    public void TryGetCachedName_ResolvesNameFromFriendsList()
+    {
+        using var session = new GridSession();
+        AddFriend(session, Denise, FriendRights.None, FriendRights.None);
+
+        Assert.True(session.TryGetCachedName(Denise.Guid, out var name));
+        Assert.Equal("Denise Resident", name);
+    }
+
+    [Fact]
+    public void RequestAvatarName_RaisesNameResolvedWhenAlreadyInFriendsList()
+    {
+        using var session = new GridSession();
+        AddFriend(session, Denise, FriendRights.None, FriendRights.None);
+
+        NameResolvedEvent? resolved = null;
+        session.NameResolved += (_, e) => resolved = e;
+
+        session.RequestAvatarName(Denise.Guid);
+
+        Assert.NotNull(resolved);
+        Assert.Equal(Denise.Guid, resolved!.Id);
+        Assert.Equal("Denise Resident", resolved.Name);
+    }
 }

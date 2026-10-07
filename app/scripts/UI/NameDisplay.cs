@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using SLNG.Core;
 using SLNG.Net;
 
@@ -27,11 +28,22 @@ public static class NameDisplay
     /// <c>DisplayNameResolved</c> and the caller refreshes then.</summary>
     public static string For(GridSession? session, Guid id, string legacyName)
     {
-        if (session == null || id == Guid.Empty) return legacyName;
+        if (session == null || id == Guid.Empty) return legacyName ?? "";
 
         session.RequestDisplayName(id);
         string? display = session.TryGetDisplayName(id, out var name) ? name : null;
-        return PersonNameDisplay.Choose(legacyName, display, UseDisplayNames());
+        if (string.IsNullOrWhiteSpace(legacyName))
+        {
+            if (session.TryGetCachedName(id, out var cn) && !string.IsNullOrWhiteSpace(cn) && cn != id.ToString())
+                legacyName = cn;
+            else
+            {
+                var friend = session.GetFriends().FirstOrDefault(f => f.Id == id);
+                if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+                    legacyName = friend.Name;
+            }
+        }
+        return PersonNameDisplay.Choose(legacyName ?? "", display, UseDisplayNames());
     }
 
     /// <summary>The legacy name for something a caller handed over as "a name". Callers pass whatever they
@@ -40,9 +52,40 @@ public static class NameDisplay
     /// So a name that is the agent's known Display Name is swapped for the cached legacy name.</summary>
     public static string LegacyFor(GridSession? session, Guid id, string passedName)
     {
-        if (session == null || id == Guid.Empty) return passedName;
-        if (!session.TryGetDisplayName(id, out var display)) return passedName;
-        if (!string.Equals(display, passedName?.Trim(), StringComparison.OrdinalIgnoreCase)) return passedName ?? "";
-        return session.TryGetCachedName(id, out var legacy) ? legacy : passedName ?? "";
+        if (session == null || id == Guid.Empty) return passedName ?? "";
+
+        // 1. If we have a cached legacy name for this agent, check whether passedName is empty or equals the Display Name
+        if (session.TryGetCachedName(id, out var cachedLegacy) && !string.IsNullOrWhiteSpace(cachedLegacy) && cachedLegacy != id.ToString())
+        {
+            if (string.IsNullOrWhiteSpace(passedName)) return cachedLegacy;
+            if (session.TryGetDisplayName(id, out var display) && string.Equals(display, passedName.Trim(), StringComparison.OrdinalIgnoreCase))
+                return cachedLegacy;
+            if (string.Equals(cachedLegacy, passedName.Trim(), StringComparison.OrdinalIgnoreCase))
+                return cachedLegacy;
+        }
+
+        // 2. Check friends list for this agent (friends carry their legacy username in FriendEntry.Name)
+        var friend = session.GetFriends().FirstOrDefault(f => f.Id == id);
+        if (friend != null && !string.IsNullOrWhiteSpace(friend.Name))
+        {
+            if (string.IsNullOrWhiteSpace(passedName)) return friend.Name;
+            if (session.TryGetDisplayName(id, out var display) && string.Equals(display, passedName.Trim(), StringComparison.OrdinalIgnoreCase))
+                return friend.Name;
+            if (string.Equals(friend.Name, passedName.Trim(), StringComparison.OrdinalIgnoreCase))
+                return friend.Name;
+        }
+
+        // 3. If passedName is non-empty, check if it was actually a display name
+        if (!string.IsNullOrWhiteSpace(passedName))
+        {
+            if (session.TryGetDisplayName(id, out var disp) && string.Equals(disp, passedName.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                if (session.TryGetCachedName(id, out var leg) && !string.IsNullOrWhiteSpace(leg) && leg != id.ToString())
+                    return leg;
+            }
+            return passedName.Trim();
+        }
+
+        return id.ToString();
     }
 }
