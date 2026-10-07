@@ -258,33 +258,106 @@ public partial class LandmarksWindow : SLNGWindow
 
         if (_folderViewMode)
         {
-            var folderGroups = matching
-                .GroupBy(l => string.IsNullOrWhiteSpace(l.FolderPath) ? "Landmarks" : l.FolderPath)
-                .OrderBy(g =>
-                {
-                    if (string.Equals(g.Key, "Landmarks", StringComparison.OrdinalIgnoreCase)) return 0;
-                    if (g.Key.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase)) return 1;
-                    return 2;
-                })
-                .ThenBy(g => g.Key, StringComparer.CurrentCultureIgnoreCase);
+            var landmarksRoot = new FolderNode(L10n.Tr("ui.landmarks.folder_landmarks"), "Landmarks");
+            var otherRoot = new FolderNode(L10n.Tr("ui.landmarks.other_folders"), "");
 
-            foreach (var group in folderGroups)
+            foreach (var lm in matching)
             {
-                var folderItem = _tree.CreateItem(root);
-                folderItem.SetText(0, $"📁 {group.Key} ({group.Count()})");
-                folderItem.SetSelectable(0, false);
+                string path = lm.FolderPath?.Trim() ?? "";
+                bool isLandmarksHierarchy = string.IsNullOrEmpty(path) ||
+                    string.Equals(path, "Landmarks", StringComparison.OrdinalIgnoreCase) ||
+                    path.StartsWith("Landmarks/", StringComparison.OrdinalIgnoreCase);
 
-                // Auto-expand folders when filter is typed so hits are visible immediately
-                if (!string.IsNullOrEmpty(filter))
+                if (isLandmarksHierarchy)
                 {
-                    folderItem.Collapsed = false;
+                    if (string.IsNullOrEmpty(path) || string.Equals(path, "Landmarks", StringComparison.OrdinalIgnoreCase))
+                    {
+                        landmarksRoot.Landmarks.Add(lm);
+                    }
+                    else
+                    {
+                        string subPath = path.Substring("Landmarks/".Length);
+                        var segments = subPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                        var curr = landmarksRoot;
+                        string currPath = "Landmarks";
+                        foreach (var seg in segments)
+                        {
+                            currPath += "/" + seg;
+                            if (!curr.Subfolders.TryGetValue(seg, out var childNode))
+                            {
+                                childNode = new FolderNode(seg, currPath);
+                                curr.Subfolders[seg] = childNode;
+                            }
+                            curr = childNode;
+                        }
+                        curr.Landmarks.Add(lm);
+                    }
+                }
+                else
+                {
+                    var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                    var curr = otherRoot;
+                    string currPath = "";
+                    foreach (var seg in segments)
+                    {
+                        currPath = string.IsNullOrEmpty(currPath) ? seg : currPath + "/" + seg;
+                        if (!curr.Subfolders.TryGetValue(seg, out var childNode))
+                        {
+                            childNode = new FolderNode(seg, currPath);
+                            curr.Subfolders[seg] = childNode;
+                        }
+                        curr = childNode;
+                    }
+                    curr.Landmarks.Add(lm);
+                }
+            }
+
+            // Render main Landmarks root node
+            if (landmarksRoot.TotalLandmarksCount > 0)
+            {
+                var lmRootItem = _tree.CreateItem(root);
+                lmRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.folder_landmarks")} ({landmarksRoot.TotalLandmarksCount})");
+                lmRootItem.SetSelectable(0, false);
+                lmRootItem.Collapsed = false; // Expanded by default so categories are immediately visible
+                lmRootItem.SetCustomColor(0, new Color(0.85f, 0.93f, 1.0f, 0.95f));
+
+                // 1. "Allgemeine Landmarken" (Direct root-level landmarks in Landmarks folder)
+                // Clear, distinct visual separation from categorized subfolders
+                if (landmarksRoot.Landmarks.Count > 0)
+                {
+                    var genItem = _tree.CreateItem(lmRootItem);
+                    genItem.SetText(0, $"📂 {L10n.Tr("ui.landmarks.general_landmarks")} ({landmarksRoot.Landmarks.Count})");
+                    genItem.SetSelectable(0, false);
+                    genItem.SetCustomColor(0, new Color(1.0f, 0.85f, 0.55f, 0.95f));
+                    genItem.Collapsed = string.IsNullOrEmpty(filter);
+
+                    foreach (var lm in landmarksRoot.Landmarks.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+                    {
+                        var itemNode = _tree.CreateItem(genItem);
+                        itemNode.SetText(0, $"📍 {lm.Name}");
+                        itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+                    }
                 }
 
-                foreach (var lm in group.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+                // 2. Subfolders inside Landmarks in alphabetical tree order
+                foreach (var sub in landmarksRoot.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
                 {
-                    var item = _tree.CreateItem(folderItem);
-                    item.SetText(0, $"📍 {lm.Name}");
-                    item.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+                    RenderSubfolderTree(lmRootItem, sub, filter);
+                }
+            }
+
+            // Render other folders outside Landmarks (e.g. Received Items, Objects)
+            if (otherRoot.TotalLandmarksCount > 0)
+            {
+                var otherRootItem = _tree.CreateItem(root);
+                otherRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.other_folders")} ({otherRoot.TotalLandmarksCount})");
+                otherRootItem.SetSelectable(0, false);
+                otherRootItem.SetCustomColor(0, new Color(0.8f, 0.8f, 0.85f, 0.9f));
+                otherRootItem.Collapsed = string.IsNullOrEmpty(filter);
+
+                foreach (var sub in otherRoot.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    RenderSubfolderTree(otherRootItem, sub, filter);
                 }
             }
         }
@@ -436,5 +509,47 @@ public partial class LandmarksWindow : SLNGWindow
                 }
             });
         };
+    }
+
+    private void RenderSubfolderTree(TreeItem parentItem, FolderNode node, string filter)
+    {
+        var folderItem = _tree.CreateItem(parentItem);
+        folderItem.SetText(0, $"📁 {node.Name} ({node.TotalLandmarksCount})");
+        folderItem.SetSelectable(0, false);
+        folderItem.SetCustomColor(0, new Color(0.85f, 0.92f, 1.0f, 0.95f));
+
+        // Auto-expand if a filter is active
+        folderItem.Collapsed = string.IsNullOrEmpty(filter);
+
+        // 1. Subfolders first:
+        foreach (var sub in node.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            RenderSubfolderTree(folderItem, sub, filter);
+        }
+
+        // 2. Direct landmarks in this subfolder:
+        foreach (var lm in node.Landmarks.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            var itemNode = _tree.CreateItem(folderItem);
+            itemNode.SetText(0, $"📍 {lm.Name}");
+            itemNode.SetMetadata(0, $"{lm.Id}|{lm.AssetId}|{lm.Name}");
+        }
+    }
+
+    private sealed class FolderNode
+    {
+        public string Name { get; }
+        public string FullPath { get; }
+        public Dictionary<string, FolderNode> Subfolders { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<LandmarkInventoryItem> Landmarks { get; } = new();
+
+        public FolderNode(string name, string fullPath)
+        {
+            Name = name;
+            FullPath = fullPath;
+        }
+
+        public int TotalLandmarksCount =>
+            Landmarks.Count + Subfolders.Values.Sum(s => s.TotalLandmarksCount);
     }
 }

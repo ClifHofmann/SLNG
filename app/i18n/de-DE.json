@@ -290,7 +290,10 @@
       "clean_confirm_question": "Möchtest du wirklich {0} doppelte Landmarken in den Papierkorb verschieben? Sie können bei Bedarf aus dem Papierkorb wiederhergestellt werden.",
       "clean_confirm_btn": "In Papierkorb verschieben",
       "cleaning_in_progress": "Verschiebe Duplikate in den Papierkorb...",
-      "dedup_completed_toast": "{0} doppelte Landmarken in den Papierkorb verschoben."
+      "dedup_completed_toast": "{0} doppelte Landmarken in den Papierkorb verschoben.",
+      "folder_landmarks": "Landmarken",
+      "general_landmarks": "Allgemeine Landmarken",
+      "other_folders": "Weitere Ordner"
     },
     "favorites_bar": {
       "label": "Favoriten",

@@ -290,7 +290,10 @@
       "clean_confirm_question": "Are you sure you want to move {0} duplicate landmarks to the Trash folder? They can be restored from Trash if needed.",
       "clean_confirm_btn": "Move to Trash",
       "cleaning_in_progress": "Moving duplicates to Trash...",
-      "dedup_completed_toast": "Moved {0} duplicate landmarks to Trash."
+      "dedup_completed_toast": "Moved {0} duplicate landmarks to Trash.",
+      "folder_landmarks": "Landmarks",
+      "general_landmarks": "General Landmarks",
+      "other_folders": "Other Folders"
     },
     "favorites_bar": {
       "label": "Favorites",
