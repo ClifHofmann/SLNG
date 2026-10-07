@@ -115,6 +115,7 @@ SLNG-only defaults are listed under "SLNG extras".
 | `window.groups` | Windows | Always | press | Ctrl+Shift+G | `menu:My Groups` |
 | `window.world_map` | Windows | Always | press | Ctrl+M | `menu:World Map` |
 | `window.mini_map` | Windows | Always | press | Ctrl+Shift+M | `menu:Mini-Map` |
+| `window.landmarks` | Windows | Always | press | Ctrl+L | `menu:Places` |
 | `window.snapshot` | Windows | Always | press | Ctrl+Shift+S | `menu:Take Snapshot` |
 | `window.camera_controls` | Windows | Always | press | Ctrl+K | `menu:Camera Controls` |
 | `window.notifications` | Windows | Always | press | Alt+Shift+N | `menu:Notifications` |
@@ -193,8 +194,7 @@ Left out on purpose: the Linden-only Admin menu (never to be built), and `Ctrl+A
 | `Ctrl+Alt+Q` | Develop menu | SLNG's Developer menu is always visible; the viewer hides its Develop menu behind this chord. Its debug consoles (Ctrl+Shift+3 / 4 / 5) are not built either. | FEAT-UI-53 |
 | `Ctrl+Shift+2` | Scene load statistics | No such window. | FEAT-PERF-10 |
 | `` Ctrl+` `` | Snapshot to disk | The Snapshot window saves one fixed PNG path; a one-key save needs the destination options. | FEAT-UI-17 |
-| `Ctrl+L` | Link | Linking exists, as a button in the Edit window (FEAT-UI-05), but has no shortcut yet. | FEAT-UI-44 |
-| `Ctrl+Shift+L` | Unlink | Same. | FEAT-UI-44 |
+| `Ctrl+Shift+L` | Unlink | Linking exists, as a button in the Edit window (FEAT-UI-05), but has no shortcut yet. | FEAT-UI-44 |
 | `Ctrl+B` | Build | The Edit window opens from an object's context menu; there is no build mode to toggle. | FEAT-UI-51 |
 | `Ctrl+1` | Focus tool | No build tool modes (Focus, Move, Edit, Create on Ctrl+1 .. Ctrl+4). | FEAT-UI-51 |
 | `Ctrl+5` | Land tool | No land editing yet. | MVP4-2 |

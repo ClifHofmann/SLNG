@@ -57,8 +57,7 @@ public static class SlShortcutGaps
         new("Ctrl+`", "Snapshot to disk", "The Snapshot window saves one fixed PNG path; a one-key save needs the destination options.", "FEAT-UI-17"),
 
         // ---- building
-        new("Ctrl+L", "Link", "Linking exists, as a button in the Edit window (FEAT-UI-05), but has no shortcut yet.", "FEAT-UI-44"),
-        new("Ctrl+Shift+L", "Unlink", "Same.", "FEAT-UI-44"),
+        new("Ctrl+Shift+L", "Unlink", "Linking exists, as a button in the Edit window (FEAT-UI-05), but has no shortcut yet.", "FEAT-UI-44"),
         new("Ctrl+B", "Build", "The Edit window opens from an object's context menu; there is no build mode to toggle.", "FEAT-UI-51"),
         new("Ctrl+1", "Focus tool", "No build tool modes (Focus, Move, Edit, Create on Ctrl+1 .. Ctrl+4).", "FEAT-UI-51"),
         new("Ctrl+5", "Land tool", "No land editing yet.", "MVP4-2"),

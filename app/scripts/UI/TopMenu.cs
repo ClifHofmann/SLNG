@@ -524,7 +524,7 @@ namespace SLNG.App.UI
             var worldMenu = new PopupMenu();
             worldMenu.Name = L10n.Tr("ui.menu.world");
             worldMenu.AddItem(L10n.Tr("ui.menu.create_landmark"), 0);
-            worldMenu.AddItem(L10n.Tr("ui.menu.landmarks"), 7);
+            AddHinted(worldMenu, "ui.menu.landmarks", 7, KeyActionIds.WindowLandmarks);
             worldMenu.AddItem(L10n.Tr("ui.menu.about_land"), 6);
             worldMenu.AddItem(L10n.Tr("ui.menu.environment"), 3);
             AddHinted(worldMenu, "ui.menu.world_map", 4, KeyActionIds.WindowWorldMap);

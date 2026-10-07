@@ -39,6 +39,7 @@ public static class KeyActionIds
     public const string WindowGroups = "window.groups";
     public const string WindowWorldMap = "window.world_map";
     public const string WindowMiniMap = "window.mini_map";
+    public const string WindowLandmarks = "window.landmarks";
     public const string WindowSnapshot = "window.snapshot";
     public const string WindowCameraControls = "window.camera_controls";
     public const string WindowNotifications = "window.notifications";

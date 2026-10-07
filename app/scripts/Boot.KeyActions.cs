@@ -65,6 +65,7 @@ public partial class Boot
         keys.Register(this, WindowGroups, () => InWorld && ToggleChatPage(SLNG.App.UI.ChatWindow.Page.Groups));
         keys.Register(this, WindowWorldMap, () => Launch("worldmap"));
         keys.Register(this, WindowMiniMap, () => Launch("minimap"));
+        keys.Register(this, WindowLandmarks, () => Launch("landmarks"));
         keys.Register(this, WindowSnapshot, () => Launch("snapshot"));
         keys.Register(this, WindowCameraControls, () => Launch("camera"));
         keys.Register(this, WindowNotifications, () => Launch("notifications"));

@@ -1332,6 +1332,7 @@
         "window_groups": "Groups",
         "window_world_map": "World map",
         "window_mini_map": "Mini-map",
+        "window_landmarks": "Landmarks",
         "window_snapshot": "Snapshot",
         "window_camera_controls": "Camera controls",
         "window_notifications": "Notifications",

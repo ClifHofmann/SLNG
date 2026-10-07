@@ -154,6 +154,7 @@ public class KeyBindingsViewerParityTests
     [InlineData(KeyActionIds.WindowNearbyChat, "Ctrl+H")]
     [InlineData(KeyActionIds.WindowWorldMap, "Ctrl+M")]
     [InlineData(KeyActionIds.WindowMiniMap, "Ctrl+Shift+M")]
+    [InlineData(KeyActionIds.WindowLandmarks, "Ctrl+L")]
     [InlineData(KeyActionIds.WindowSnapshot, "Ctrl+Shift+S")]
     [InlineData(KeyActionIds.AvatarAlwaysRun, "Ctrl+R")]
     [InlineData(KeyActionIds.AvatarRebake, "Ctrl+Alt+R")]

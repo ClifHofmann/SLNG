@@ -86,6 +86,7 @@ public static class KeyActions
             new(WindowGroups, KeyCategory.Windows, always, press, Chords(Ch("G", C | S)), "menu:My Groups"),
             new(WindowWorldMap, KeyCategory.Windows, always, press, Chords(Ch("M", C)), "menu:World Map"),
             new(WindowMiniMap, KeyCategory.Windows, always, press, Chords(Ch("M", C | S)), "menu:Mini-Map"),
+            new(WindowLandmarks, KeyCategory.Windows, always, press, Chords(Ch("L", C)), "menu:Places"),
             new(WindowSnapshot, KeyCategory.Windows, always, press, Chords(Ch("S", C | S)), "menu:Take Snapshot"),
             new(WindowCameraControls, KeyCategory.Windows, always, press, Chords(Ch("K", C)), "menu:Camera Controls"),
             new(WindowNotifications, KeyCategory.Windows, always, press, Chords(Ch("N", A | S)), "menu:Notifications"),
