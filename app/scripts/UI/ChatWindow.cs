@@ -122,6 +122,12 @@ public partial class ChatWindow : SLNGWindow
     private ChatLogger _logger = null!;
     private GridSession? _session;
 
+    private ChatMentionPicker? _mentionPicker;
+    private EmojiPickerWindow? _emojiPicker;
+    private int _mentionQueryStartIndex = -1;
+    private readonly HashSet<string> _recentSpeakers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<Guid> _nearbyAgentIds = new();
+
     private partial class ChatLineEdit : LineEdit
     {
         public ChatWindow? OwnerWindow;
@@ -132,6 +138,39 @@ public partial class ChatWindow : SLNGWindow
         // keypress that merely left the chat bar.
         public override void _GuiInput(InputEvent @event)
         {
+            if (OwnerWindow?._mentionPicker is { IsActive: true } picker)
+            {
+                if (@event is InputEventKey { Pressed: true, Echo: false } keyEvent)
+                {
+                    if (keyEvent.Keycode == Key.Up)
+                    {
+                        picker.SelectPrevious();
+                        AcceptEvent();
+                        return;
+                    }
+                    if (keyEvent.Keycode == Key.Down)
+                    {
+                        picker.SelectNext();
+                        AcceptEvent();
+                        return;
+                    }
+                    if (keyEvent.Keycode == Key.Enter || keyEvent.Keycode == Key.KpEnter || keyEvent.Keycode == Key.Tab)
+                    {
+                        if (picker.ConfirmSelected())
+                        {
+                            AcceptEvent();
+                            return;
+                        }
+                    }
+                    if (keyEvent.Keycode == Key.Escape)
+                    {
+                        picker.HidePicker();
+                        AcceptEvent();
+                        return;
+                    }
+                }
+            }
+
             if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape })
             {
                 ReleaseFocus();
@@ -223,6 +262,9 @@ public partial class ChatWindow : SLNGWindow
     /// window.</summary>
     public Action<Guid, string>? OnPayRequested;
 
+    /// <summary>Invoked when a teleport link or SLurl in chat is clicked.</summary>
+    public Action<string, System.Numerics.Vector3>? OnTeleportRequested;
+
     public void Initialize(ChatLogger logger)
     {
         _logger = logger;
@@ -287,6 +329,7 @@ public partial class ChatWindow : SLNGWindow
             _session.GroupsUpdated -= OnGroupsUpdatedForNames;
             _session.FriendStatusChanged -= OnFriendStatusChanged;
             _session.InstantMessageTyping -= OnPeerTypingEvent;
+            _session.NearbyAvatarsUpdated -= OnNearbyAvatarsUpdated;
         }
         _session = session;
         BindIcons(session);
@@ -295,6 +338,7 @@ public partial class ChatWindow : SLNGWindow
         _session.GroupsUpdated += OnGroupsUpdatedForNames; // ...or before the membership list, which carries group names, arrived
         _session.FriendStatusChanged += OnFriendStatusChanged;
         _session.InstantMessageTyping += OnPeerTypingEvent;
+        _session.NearbyAvatarsUpdated += OnNearbyAvatarsUpdated;
         if (Guid.TryParse(session.AgentId, out var ownId)) session.RequestDisplayName(ownId); // own lines show it too
         _friendsPanel.Initialize(session);
         _groupsPanel.Initialize(session);
@@ -316,6 +360,7 @@ public partial class ChatWindow : SLNGWindow
             _session.GroupsUpdated -= OnGroupsUpdatedForNames;
             _session.FriendStatusChanged -= OnFriendStatusChanged;
             _session.InstantMessageTyping -= OnPeerTypingEvent;
+            _session.NearbyAvatarsUpdated -= OnNearbyAvatarsUpdated;
         }
         GroupMuteSettings.MuteChanged -= OnGroupMuteChanged;
         base._ExitTree();
@@ -335,7 +380,11 @@ public partial class ChatWindow : SLNGWindow
         CustomMinimumSize = new Vector2(400, 340);
         Size = new Vector2(480, 430);
         Position = new Vector2(16, 220);
-        OnCloseRequested = Hide;
+        OnCloseRequested = () =>
+        {
+            _mentionPicker?.HidePicker();
+            Hide();
+        };
 
         var vbox = new VBoxContainer();
         vbox.AddThemeConstantOverride("separation", 0);
@@ -657,6 +706,10 @@ public partial class ChatWindow : SLNGWindow
     private void AppendMessageToTab(ChatTab tab, string sender, string message, Guid senderAgentId = default)
     {
         if (message == GridNotOnlineMessage || message == GridNotOnlineInventory) tab.OfflineNoticeShown = true;
+        if (!string.IsNullOrWhiteSpace(sender) && sender != "You" && sender != _session?.AgentName)
+        {
+            _recentSpeakers.Add(sender);
+        }
         var now = DateTime.Now;
         AppendLineToTab(tab, FormatChatLine(now, sender, message, senderAgentId));
         _ = _logger.AppendAsync(tab.LogKind, tab.LogName, sender, message, now);
@@ -714,6 +767,8 @@ public partial class ChatWindow : SLNGWindow
     private void OpenHistoryFor(ChatLogKind kind, string name)
     {
         var win = new ChatHistoryWindow();
+        win.OnOpenProfileRequested = (id, n) => OnOpenProfileRequested?.Invoke(id, n);
+        win.OnTeleportRequested = (region, pos) => OnTeleportRequested?.Invoke(region, pos);
         GetParent().AddChild(win);
         win.Position = new Vector2(
             Mathf.Max(20f, Position.X + 30f),
@@ -847,8 +902,8 @@ public partial class ChatWindow : SLNGWindow
     internal IReadOnlyList<RecentConversation> RecentForSelfTest => _recent.Items;
     internal RecentPanel RecentPanelForSelfTest => _recentPanel;
 
-    /// <summary>FEAT-UI-13: a resident's name in the log is a [url=avatar:&lt;guid&gt;] link;
-    /// clicking it opens their profile.</summary>
+    /// <summary>FEAT-UI-13: a resident's name in the log is a [url=avatar:<guid>] link;
+    /// clicking it opens their profile. Also handles Web URLs and SLurls.</summary>
     private void OnLogMetaClicked(Variant meta)
     {
         var s = meta.AsString();
@@ -871,6 +926,49 @@ public partial class ChatWindow : SLNGWindow
                 }
             }
             OnOpenProfileRequested?.Invoke(id, name);
+            return;
+        }
+
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            OS.ShellOpen(s);
+            return;
+        }
+
+        const string slPrefix = "secondlife:///app/";
+        if (s.StartsWith(slPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string rest = s[slPrefix.Length..];
+            string[] parts = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && string.Equals(parts[0], "agent", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(parts[1], out var agentId))
+            {
+                if (parts.Length >= 3 && string.Equals(parts[2], "im", StringComparison.OrdinalIgnoreCase))
+                {
+                    OpenOrFocusImTab(agentId, agentId.ToString());
+                }
+                else
+                {
+                    OnOpenProfileRequested?.Invoke(agentId, "");
+                }
+                return;
+            }
+            if (parts.Length >= 2 && string.Equals(parts[0], "group", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(parts[1], out var groupId))
+            {
+                OnOpenGroupInfoRequested?.Invoke(groupId, "");
+                return;
+            }
+            if (parts.Length >= 5 && string.Equals(parts[0], "teleport", StringComparison.OrdinalIgnoreCase))
+            {
+                string region = Uri.UnescapeDataString(parts[1]);
+                if (float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x)
+                    && float.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y)
+                    && float.TryParse(parts[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+                {
+                    OnTeleportRequested?.Invoke(region, new System.Numerics.Vector3(x, y, z));
+                }
+                return;
+            }
         }
     }
 
@@ -917,6 +1015,34 @@ public partial class ChatWindow : SLNGWindow
         if (senderAgentId != Guid.Empty)
             name = $"[url=avatar:{senderAgentId}]{name}[/url]";
 
+        string myName = _session?.AgentName ?? string.Empty;
+        string myDisplay = "";
+        if (Guid.TryParse(_session?.AgentId, out var myGuid))
+            myDisplay = NameDisplay.For(_session, myGuid, myName);
+
+        Func<string, (Guid? AvatarId, string DisplayName)?>? resolveMention = null;
+        if (_session != null)
+        {
+            resolveMention = mention =>
+            {
+                var friend = _session.GetFriends().FirstOrDefault(f =>
+                    f.Name.Equals(mention, StringComparison.OrdinalIgnoreCase) ||
+                    f.Name.Replace(" ", "").Equals(mention, StringComparison.OrdinalIgnoreCase));
+                if (friend != null)
+                {
+                    string disp = NameDisplay.For(_session, friend.Id, friend.Name);
+                    return (friend.Id, disp);
+                }
+                return null;
+            };
+        }
+
+        string body = ChatTextParser.FormatMessageToBbCode(
+            IsEmote(message) ? message[3..] : message,
+            currentUserName: myName,
+            currentDisplayName: myDisplay,
+            resolveMention: resolveMention);
+
         // Emotes were being rendered like any other line, i.e. "Clif: /me waves" -- the literal
         // command text, with the colon still there. The sim doesn't transform "/me": it broadcasts
         // the message verbatim and every viewer formats it locally. Matching llchathistory.cpp
@@ -925,19 +1051,18 @@ public partial class ChatWindow : SLNGWindow
         // -- not 4 -- so the space in "/me waves" survives as the separator and "/me's hat"
         // renders as "Clif's hat".
         if (IsEmote(message))
-            return $"{stamp} {name}[i]{BbEscape(message[3..])}[/i]";
+            return $"{stamp} {name}[i]{body}[/i]";
 
         // [lb] escapes the literal "[" so Godot's BBCode parser doesn't try to read "[15:28]" as
         // a tag -- matches the bracketed timestamp style of preloaded lines from the log file.
-        return $"{stamp} {name}: {BbEscape(message)}";
+        return $"{stamp} {name}: {body}";
     }
 
     private static bool IsEmote(string message) => ChatEmote.IsEmote(message);
 
     /// <summary>Neutralises BBCode in text that came from the network or from a translation.
-    /// Internal because the notification window renders the same kind of text through the same
-    /// kind of RichTextLabel, and two copies of this would be one copy too many.</summary>
-    internal static string BbEscape(string s) => s.Replace("[", "[lb]");
+    /// Uses domain-level ChatTextParser.EscapeBbCode.</summary>
+    internal static string BbEscape(string s) => ChatTextParser.EscapeBbCode(s);
 
     // ---- Chat page: vertical conversation list (left) + message log/input (right) ----------
 
@@ -1162,12 +1287,65 @@ public partial class ChatWindow : SLNGWindow
         _inputEdit.TextSubmitted += (_) => OnSendPressed();
         inputRow.AddChild(_inputEdit);
 
-        inputRow.AddChild(BuildIconButton("mood", "Emoji (not implemented)", null));
+        Button? moodBtn = null;
+        moodBtn = BuildIconButton("mood", L10n.Tr("ui.chat.emoji"), () => ToggleEmojiPicker(moodBtn!));
+        inputRow.AddChild(moodBtn);
 
-        _sendButton = BuildIconButton("send", "Send", OnSendPressed);
+        Button? mentionBtn = null;
+        mentionBtn = BuildIconButton("alternate_email", L10n.Tr("ui.chat.mention"), () =>
+        {
+            var candidates = GetMentionCandidates("");
+            if (candidates.Count > 0)
+            {
+                _mentionQueryStartIndex = _inputEdit.CaretColumn;
+                var editPos = _inputEdit.GetGlobalPosition();
+                _mentionPicker?.ShowCandidates(new Vector2(editPos.X, editPos.Y), candidates);
+            }
+        });
+        inputRow.AddChild(mentionBtn);
+
+        _sendButton = BuildIconButton("send", L10n.Tr("ui.chat.send"), OnSendPressed);
         inputRow.AddChild(_sendButton);
 
+        _mentionPicker = new ChatMentionPicker();
+        _mentionPicker.OnMentionSelected = OnMentionCandidateSelected;
+        AddChild(_mentionPicker);
+
         return hbox;
+    }
+
+    private void ToggleEmojiPicker(Button anchorButton)
+    {
+        if (_emojiPicker == null)
+        {
+            _emojiPicker = new EmojiPickerWindow();
+            _emojiPicker.OnEmojiSelected = InsertEmoji;
+            AddChild(_emojiPicker);
+        }
+
+        var globalPos = anchorButton.GetGlobalPosition();
+        var targetPos = new Vector2(
+            Mathf.Max(20f, globalPos.X - 260f),
+            Mathf.Max(SLNGWindow.TopInset, globalPos.Y - 340f)
+        );
+        _emojiPicker.Toggle(targetPos);
+    }
+
+    private void InsertEmoji(string emoji)
+    {
+        int col = _inputEdit.CaretColumn;
+        string text = _inputEdit.Text;
+        if (col >= 0 && col <= text.Length)
+        {
+            _inputEdit.Text = text.Insert(col, emoji);
+            _inputEdit.CaretColumn = col + emoji.Length;
+        }
+        else
+        {
+            _inputEdit.Text += emoji;
+            _inputEdit.CaretColumn = _inputEdit.Text.Length;
+        }
+        _inputEdit.GrabFocus();
     }
 
     /// <summary>Per-conversation action icons above the message log. Only History is wired up
@@ -1362,6 +1540,8 @@ public partial class ChatWindow : SLNGWindow
         if (_activeChatTab == null) return;
 
         var win = new ChatHistoryWindow();
+        win.OnOpenProfileRequested = (id, n) => OnOpenProfileRequested?.Invoke(id, n);
+        win.OnTeleportRequested = (region, pos) => OnTeleportRequested?.Invoke(region, pos);
         GetParent().AddChild(win);
         win.Position = new Vector2(
             Mathf.Max(20f, Position.X + 30f),
@@ -1416,6 +1596,24 @@ public partial class ChatWindow : SLNGWindow
         _chatTabs.Remove(dragged);
         _chatTabs.Insert(Math.Min(tabIndex, _chatTabs.Count), dragged);
         _conversationList.MoveChild(dragged.RowPanel, rowIndex);
+    }
+
+    private void OnNearbyAvatarsUpdated(object? sender, NearbyAvatarsEvent e)
+    {
+        lock (_nearbyAgentIds)
+        {
+            _nearbyAgentIds.Clear();
+            if (e.Avatars != null)
+            {
+                foreach (var av in e.Avatars)
+                {
+                    if (av.AgentId != Guid.Empty)
+                    {
+                        _nearbyAgentIds.Add(av.AgentId);
+                    }
+                }
+            }
+        }
     }
 
     // ---- the other side is typing ----------------------------------------------------------------------
@@ -1907,6 +2105,7 @@ public partial class ChatWindow : SLNGWindow
             tab.Selected = selected;
             ApplyOuterTabStyle(tab);
         }
+        if (selectedPage != _chatPageControl) _mentionPicker?.HidePicker();
         // Back on the Chat page: what came in for the selected conversation meanwhile is on screen now.
         if (selectedPage == _chatPageControl && _activeChatTab is { UnreadCount: > 0 } active)
         {
@@ -1993,6 +2192,149 @@ public partial class ChatWindow : SLNGWindow
                 StopTyping();
             }
         }
+
+        UpdateMentionAutocomplete(newText);
+    }
+
+    private void UpdateMentionAutocomplete(string newText)
+    {
+        if (string.IsNullOrEmpty(newText) || _inputEdit.CaretColumn <= 0)
+        {
+            _mentionPicker?.HidePicker();
+            _mentionQueryStartIndex = -1;
+            return;
+        }
+
+        int caret = _inputEdit.CaretColumn;
+        int atIndex = -1;
+        for (int i = caret - 1; i >= 0; i--)
+        {
+            char c = newText[i];
+            if (c == '@')
+            {
+                if (i == 0 || char.IsWhiteSpace(newText[i - 1]))
+                {
+                    atIndex = i;
+                }
+                break;
+            }
+            if (char.IsWhiteSpace(c))
+            {
+                break;
+            }
+        }
+
+        if (atIndex < 0)
+        {
+            _mentionPicker?.HidePicker();
+            _mentionQueryStartIndex = -1;
+            return;
+        }
+
+        _mentionQueryStartIndex = atIndex;
+        string query = newText.Substring(atIndex + 1, caret - (atIndex + 1));
+
+        var candidates = GetMentionCandidates(query);
+        if (candidates.Count > 0)
+        {
+            var editPos = _inputEdit.GetGlobalPosition();
+            var pickerPos = new Vector2(editPos.X + Mathf.Max(0, atIndex * 7), editPos.Y);
+            _mentionPicker?.ShowCandidates(pickerPos, candidates);
+        }
+        else
+        {
+            _mentionPicker?.HidePicker();
+        }
+    }
+
+    private List<string> GetMentionCandidates(string query)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        List<Guid> nearbyCopy;
+        lock (_nearbyAgentIds)
+        {
+            nearbyCopy = new List<Guid>(_nearbyAgentIds);
+        }
+
+        foreach (var agentId in nearbyCopy)
+        {
+            if (agentId == Guid.Empty) continue;
+            string name = NameDisplay.For(_session, agentId, "");
+            if (string.IsNullOrWhiteSpace(name) && _session != null && _session.TryGetCachedName(agentId, out var cached))
+            {
+                name = cached;
+            }
+            if (!string.IsNullOrWhiteSpace(name) && seen.Add(name))
+            {
+                if (string.IsNullOrEmpty(query) || name.Contains(query, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(name);
+                }
+            }
+        }
+
+        foreach (var speaker in _recentSpeakers)
+        {
+            if (!string.IsNullOrWhiteSpace(speaker) && seen.Add(speaker))
+            {
+                if (string.IsNullOrEmpty(query) || speaker.Contains(query, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(speaker);
+                }
+            }
+        }
+
+        if (_session != null)
+        {
+            foreach (var friend in _session.GetFriends())
+            {
+                string name = NameDisplay.For(_session, friend.Id, friend.Name);
+                if (!string.IsNullOrWhiteSpace(name) && seen.Add(name))
+                {
+                    if (string.IsNullOrEmpty(query) || name.Contains(query, StringComparison.OrdinalIgnoreCase))
+                    {
+                        result.Add(name);
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private void OnMentionCandidateSelected(string name)
+    {
+        int col = _inputEdit.CaretColumn;
+        string text = _inputEdit.Text;
+        string insertName = name.Contains(' ') ? name.Replace(" ", ".") : name;
+        string mention = $"@{insertName} ";
+
+        if (_mentionQueryStartIndex >= 0 && _mentionQueryStartIndex <= col && _mentionQueryStartIndex <= text.Length)
+        {
+            string before = text[.._mentionQueryStartIndex];
+            string after = col <= text.Length ? text[col..] : "";
+            _inputEdit.Text = before + mention + after;
+            _inputEdit.CaretColumn = before.Length + mention.Length;
+        }
+        else
+        {
+            if (col >= 0 && col <= text.Length)
+            {
+                _inputEdit.Text = text.Insert(col, mention);
+                _inputEdit.CaretColumn = col + mention.Length;
+            }
+            else
+            {
+                _inputEdit.Text += mention;
+                _inputEdit.CaretColumn = _inputEdit.Text.Length;
+            }
+        }
+
+        _mentionQueryStartIndex = -1;
+        _mentionPicker?.HidePicker();
+        _inputEdit.GrabFocus();
     }
 
     public void StopTyping()
