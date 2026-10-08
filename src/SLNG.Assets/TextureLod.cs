@@ -60,6 +60,17 @@ public static class TextureLod
     /// </remarks>
     public static int ResolutionStepsFor(int discardLevel) => System.Math.Max(0, discardLevel);
 
+    /// <summary>The smallest a side is ever reduced to by the renderer's local downsample.</summary>
+    public const int MinReducedDimension = 8;
+
+    /// <summary>BUG-PERF-09: the size one side of an image ends up at after <paramref name="discard"/>
+    /// halvings of the local downsample -- never below <see cref="MinReducedDimension"/>, and never
+    /// larger than the image already is. The renderer resizes with exactly this rule, and the
+    /// admission arithmetic (<see cref="TextureAdmission"/>) sizes a candidate with it, so the bytes
+    /// it reserves are the bytes the upload turns out to have.</summary>
+    public static int DimensionAfterDiscard(int dimension, int discard)
+        => System.Math.Min(dimension, System.Math.Max(MinReducedDimension, dimension >> System.Math.Max(0, discard)));
+
     /// <summary>The dimension a given number of halvings produces, so a caller can tell a
     /// correctly reduced decode from a truncated one.</summary>
     public static int ReducedDimension(int dimension, int steps)
