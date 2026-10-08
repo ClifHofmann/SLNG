@@ -48,6 +48,12 @@ public partial class ObjectRenderer
     /// <paramref name="HasPrim"/> false means there were none (the plan then merges nothing).</summary>
     private readonly record struct SurfacePlanInputs(bool HasPrim, FaceTexture[]? Faces, FaceTexture DefaultFace, int AnimatedFace);
 
+    /// <summary>Bounds concurrent preparation, as <c>GpuCache._imagePrepGate</c> bounds image work: an
+    /// unbounded Task.Run per object turns a region load into thread-pool queueing (BUG-NET-11).
+    /// Half the cores, like the rig workers -- the main thread still needs one of its own.</summary>
+    private static readonly System.Threading.SemaphoreSlim _meshPrepGate =
+        new(Math.Max(2, System.Environment.ProcessorCount / 2));
+
     /// <summary>Preparations in flight, so a burst of objects sharing one asset (a field of identical
     /// rocks) prepares it once. An entry lives only while its task runs.</summary>
     private readonly ConcurrentDictionary<(MeshData Data, bool FlipV, ulong Pattern), Lazy<Task<PreparedStaticMesh?>>> _preparing = new();
@@ -119,9 +125,14 @@ public partial class ObjectRenderer
 
         // Lazy, because GetOrAdd may run its factory twice under contention; only the Lazy that
         // won is ever started.
-        var entry = _preparing.GetOrAdd(key, k => new Lazy<Task<PreparedStaticMesh?>>(() => Task.Run(() =>
+        var entry = _preparing.GetOrAdd(key, k => new Lazy<Task<PreparedStaticMesh?>>(() => Task.Run(async () =>
             {
-                if (!EngineWorkerGate.TryEnter()) return null;
+                await _meshPrepGate.WaitAsync().ConfigureAwait(false);
+                if (!EngineWorkerGate.TryEnter())
+                {
+                    _meshPrepGate.Release();
+                    return null;
+                }
                 try
                 {
                     var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -147,6 +158,7 @@ public partial class ObjectRenderer
                 finally
                 {
                     EngineWorkerGate.Exit();
+                    _meshPrepGate.Release();
                 }
             })));
 
