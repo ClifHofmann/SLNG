@@ -56,6 +56,13 @@ public partial class ChatWindow : SLNGWindow
     private Control _outerPageHost = null!;
 
     private Control _chatPageControl = null!;
+    private Button _participantsButton = null!;
+    private PanelContainer _participantsPanel = null!;
+    private Label _participantsHeader = null!;
+    private ItemList _participantsList = null!;
+    private PopupMenu _participantsMenu = null!;
+    private readonly List<Guid> _participantIds = new();
+    private int _participantMenuIndex = -1;
     private VBoxContainer _conversationList = null!;
     private RichTextLabel _logView = null!;
     private Button _jumpToLatestButton = null!;
@@ -114,6 +121,8 @@ public partial class ChatWindow : SLNGWindow
         public Guid? TargetConferenceId;
         // Own lines the grid has sent back through a conference session -- see OnSendPressed's fallback.
         public int OwnConferenceEchoes;
+        // Whether the conference's member list is open beside the log (a per-tab switch, off until asked for).
+        public bool ParticipantsShown;
         // Shown once per tab per session -- see WarnIfTargetOffline.
         public bool OfflineNoticeShown;
     }
@@ -802,6 +811,7 @@ public partial class ChatWindow : SLNGWindow
     private void RefreshNames()
     {
         System.Threading.Volatile.Write(ref _namesRefreshQueued, 0);
+        RefreshParticipants(); // member names too
 
         foreach (var tab in _chatTabs)
         {
@@ -1235,7 +1245,11 @@ public partial class ChatWindow : SLNGWindow
         _logView.AddThemeFontSizeOverride("bold_italics_font_size", BodyFontSize);
         // FEAT-UI-13: resident names are emitted as [url=avatar:<guid>] links -- open the profile.
         _logView.MetaClicked += OnLogMetaClicked;
-        rightVBox.AddChild(_logView);
+        var logRow = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        logRow.AddThemeConstantOverride("separation", 6);
+        logRow.AddChild(_logView);
+        logRow.AddChild(BuildParticipantsPanel());
+        rightVBox.AddChild(logRow);
 
         _jumpToLatestButton = new Button
         {
@@ -1354,6 +1368,108 @@ public partial class ChatWindow : SLNGWindow
         _inputEdit.GrabFocus();
     }
 
+    /// <summary>The conference member list beside the log: a header with the count, the names, and a right-click menu per
+    /// member (profile, IM). Hidden until the people button of a conference tab is pressed.</summary>
+    private Control BuildParticipantsPanel()
+    {
+        _participantsPanel = new PanelContainer
+        {
+            Visible = false,
+            CustomMinimumSize = new Vector2(150, 0),
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        var box = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        box.AddThemeConstantOverride("separation", 4);
+        _participantsPanel.AddChild(box);
+
+        _participantsHeader = new Label();
+        _participantsHeader.AddThemeFontSizeOverride("font_size", MetaFontSize);
+        _participantsHeader.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
+        box.AddChild(_participantsHeader);
+
+        _participantsList = new ItemList
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SelectMode = ItemList.SelectModeEnum.Single,
+        };
+        _participantsList.AddThemeFontSizeOverride("font_size", BodyFontSize);
+        _participantsList.ItemClicked += OnParticipantClicked;
+        box.AddChild(_participantsList);
+
+        _participantsMenu = new PopupMenu();
+        _participantsMenu.AddItem(L10n.Tr("ui.chat.participant_profile"), 0);
+        _participantsMenu.AddItem(L10n.Tr("ui.chat.participant_im"), 1);
+        _participantsMenu.IdPressed += OnParticipantMenuPressed;
+        _participantsPanel.AddChild(_participantsMenu);
+        return _participantsPanel;
+    }
+
+    private void ToggleParticipants()
+    {
+        if (_activeChatTab?.TargetConferenceId == null) return;
+        _activeChatTab.ParticipantsShown = !_activeChatTab.ParticipantsShown;
+        RefreshParticipants();
+    }
+
+    /// <summary>Shows or hides the people button and the member list for the selected tab and fills the list. Called when
+    /// the tab changes, when the member list changes and when a name arrives.</summary>
+    private void RefreshParticipants()
+    {
+        var tab = _activeChatTab;
+        var conferenceId = tab?.TargetConferenceId;
+        _participantsButton.Visible = conferenceId != null;
+        bool show = conferenceId != null && tab!.ParticipantsShown;
+        _participantsPanel.Visible = show;
+        if (!show || _session == null) return;
+
+        string self = _session.AgentId ?? "";
+        var entries = _session.GetConferenceMembers(conferenceId!.Value)
+            .Select(id => (Id: id, Name: NameDisplay.For(_session, id, "")))
+            .Select(e => (e.Id, Name: string.IsNullOrWhiteSpace(e.Name) ? e.Id.ToString()[..8] : e.Name))
+            .OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        _participantsHeader.Text = string.Format(L10n.Tr("ui.chat.participants"), entries.Count);
+        _participantsList.Clear();
+        _participantIds.Clear();
+        foreach (var (id, name) in entries)
+        {
+            // An id we know no legacy name for yet is asked for; the answer re-runs this through RefreshNames.
+            if (!_session.TryGetCachedName(id, out _)) _session.RequestAvatarName(id);
+            _participantsList.AddItem(id.ToString() == self ? $"{name} ({L10n.Tr("ui.chat.participant_you")})" : name);
+            _participantIds.Add(id);
+        }
+    }
+
+    private void OnParticipantClicked(long index, Vector2 atPosition, long mouseButtonIndex)
+    {
+        if (mouseButtonIndex != (long)MouseButton.Right || index < 0 || index >= _participantIds.Count) return;
+
+        _participantMenuIndex = (int)index;
+        bool isSelf = _participantIds[(int)index].ToString() == _session?.AgentId;
+        _participantsMenu.SetItemDisabled(1, isSelf); // an IM to ourselves makes no sense
+        _participantsMenu.Position = (Vector2I)(_participantsList.GetScreenPosition() + atPosition);
+        _participantsMenu.Popup();
+    }
+
+    private void OnParticipantMenuPressed(long menuId)
+    {
+        if (_participantMenuIndex < 0 || _participantMenuIndex >= _participantIds.Count || _session == null) return;
+
+        Guid id = _participantIds[_participantMenuIndex];
+        string name = NameDisplay.For(_session, id, "");
+        if (menuId == 0) OnOpenProfileRequested?.Invoke(id, name);
+        else if (menuId == 1) OpenOrFocusImTab(id, NameDisplay.LegacyFor(_session, id, name));
+    }
+
+    /// <summary>The member list of a conference changed (somebody joined, left or spoke for the first time). Called by Boot
+    /// on GridSession.ConferenceMembersChanged, marshalled to the main thread first.</summary>
+    public void OnConferenceMembersChanged(Guid sessionId)
+    {
+        if (_activeChatTab?.TargetConferenceId == sessionId) RefreshParticipants();
+    }
+
     /// <summary>Per-conversation action icons above the message log. Only History is wired up
     /// today; Give Item / Voice Call / Search are placeholders captured from the M5-3 UX
     /// proposal §9 (Gemini Canvas mockup review) -- shown now with a "(not implemented)" tooltip
@@ -1363,6 +1479,10 @@ public partial class ChatWindow : SLNGWindow
         var row = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End, SizeFlagsHorizontal = SizeFlags.ExpandFill };
         row.AddThemeConstantOverride("separation", 2);
 
+        // Conference tabs only (see RefreshParticipants): who is in this conversation.
+        _participantsButton = BuildIconButton("group", L10n.Tr("ui.chat.participants_toggle"), ToggleParticipants);
+        _participantsButton.Visible = false;
+        row.AddChild(_participantsButton);
         row.AddChild(BuildIconButton("history", "History", OnHistoryPressed));
         row.AddChild(BuildIconButton("card_giftcard", "Give Item", OnGiveItemIconPressed));
         row.AddChild(BuildIconButton("call", "Voice Call (not implemented)", null));
@@ -1937,6 +2057,7 @@ public partial class ChatWindow : SLNGWindow
         ScrollLogToBottom();
         ShowJumpToLatest(false);
         UpdatePeerTypingLabel();
+        RefreshParticipants();
     }
 
     private void AppendLineToTab(ChatTab tab, string bbcodeLine, bool countUnread = true)

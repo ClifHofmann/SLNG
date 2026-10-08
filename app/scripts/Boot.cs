@@ -430,7 +430,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.105-alpha";
+    public const string AppVersion = "v0.26.106-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3857,6 +3857,7 @@ public partial class Boot : Control
         // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
         _session.ConferenceChatMessageReceived += OnConferenceChatMessageReceived;
+        _session.ConferenceMembersChanged += OnConferenceMembersChanged;
         // A friend logging in or out: network thread, so it is judged here and shown from the main thread.
         _session.FriendStatusChanged += OnFriendStatusForToast;
         _session.GroupChatJoined += OnGroupChatJoinedResult;
@@ -4392,6 +4393,12 @@ public partial class Boot : Control
             System.Guid.TryParse(fromAgentId, out var from) ? from : System.Guid.Empty,
             fromAgentName, message);
     }
+
+    private void OnConferenceMembersChanged(object? sender, SLNG.Core.ConferenceMembersChangedEvent e)
+        => CallDeferred(nameof(ApplyConferenceMembersChanged), e.SessionId.ToString());
+
+    private void ApplyConferenceMembersChanged(string sessionId)
+        => _chatWindow.OnConferenceMembersChanged(System.Guid.Parse(sessionId));
 
     private void OnGroupChatJoinedResult(object? sender, SLNG.Core.GroupChatJoinedEvent e)
         => CallDeferred(nameof(ApplyGroupChatJoined), e.GroupId.ToString(), e.Success);

@@ -500,15 +500,20 @@ public sealed partial class GridSession
     /// same) finds a ghost membership it cannot accept -- BUG-NET-32: accept answers 500 and our lines are dropped.</summary>
     public bool LeaveConference(Guid sessionId)
     {
-        if (sessionId == Guid.Empty || !_client.Network.Connected) return false;
+        if (sessionId == Guid.Empty) return false;
 
-        Guid to = _conferencePeers.TryGetValue(sessionId, out var peer) ? peer : sessionId;
-        if (Diag.Verbose) Console.Error.WriteLine($"[Conference] leave session={sessionId} to={to}");
-        SendSessionPacket(to, sessionId, string.Empty, InstantMessageDialog.SessionDrop);
+        bool sent = _client.Network.Connected;
+        if (sent)
+        {
+            Guid to = _conferencePeers.TryGetValue(sessionId, out var peer) ? peer : sessionId;
+            if (Diag.Verbose) Console.Error.WriteLine($"[Conference] leave session={sessionId} to={to}");
+            SendSessionPacket(to, sessionId, string.Empty, InstantMessageDialog.SessionDrop);
+        }
         _client.Self.GroupChatSessions.TryRemove(new UUID(sessionId), out _);
         _conferencePeers.TryRemove(sessionId, out _);
         _conferenceSessions.TryRemove(sessionId, out _);
-        return true;
+        _conferenceSpeakers.TryRemove(sessionId, out _);
+        return sent;
     }
 
     /// <summary>A group's name: from the membership list first (it already carries it, and is there before
@@ -889,6 +894,8 @@ public sealed partial class GridSession
             // which for an invited session is whoever invited us (llimview.cpp addMessage -> target_id).
             _conferenceSessions.TryAdd(sessionId, 0);
             if (from != Guid.Empty && from != imSelf) _conferencePeers.TryAdd(sessionId, from);
+            if (from != Guid.Empty && _conferenceSpeakers.GetOrAdd(sessionId, _ => new()).TryAdd(from, 0))
+                ConferenceMembersChanged?.Invoke(this, new ConferenceMembersChangedEvent(sessionId));
 
             ConferenceChatMessageReceived?.Invoke(this, new ConferenceChatMessageEvent(
                 sessionId, DecodeSessionName(e.IM.BinaryBucket), from, e.IM.FromAgentName, e.IM.Message));
@@ -902,6 +909,43 @@ public sealed partial class GridSession
     }
 
     private readonly ConcurrentDictionary<Guid, byte> _conferenceSessions = new();
+
+    // Who has spoken in each conference. LibreMetaverse's own member list (GroupChatSessions) fills only from the
+    // session's agent-list updates, which a conference we are invited into may never send for the people already
+    // in it; everybody who spoke is certainly a member, so the list is the union of the two.
+    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> _conferenceSpeakers = new();
+
+    /// <summary>The members of an ad-hoc conference as far as we know: what LibreMetaverse's session table holds, everybody
+    /// who spoke, and ourselves. Order is unspecified -- the caller sorts by the name it shows.</summary>
+    public IReadOnlyList<Guid> GetConferenceMembers(Guid sessionId)
+    {
+        var members = new HashSet<Guid>();
+        if (_client.Self.GroupChatSessions.TryGetValue(new UUID(sessionId), out var tracked))
+        {
+            lock (tracked)
+                foreach (var m in tracked)
+                    if (m.AvatarKey != UUID.Zero) members.Add(m.AvatarKey.Guid);
+        }
+        if (_conferenceSpeakers.TryGetValue(sessionId, out var speakers))
+            foreach (var id in speakers.Keys) members.Add(id);
+        if (_conferenceSessions.ContainsKey(sessionId) && _client.Self.AgentID != UUID.Zero)
+            members.Add(_client.Self.AgentID.Guid);
+        return members.ToList();
+    }
+
+    private void OnChatSessionMemberAdded(object? sender, ChatSessionMemberAddedEventArgs e)
+    {
+        if (_conferenceSessions.ContainsKey(e.SessionID.Guid))
+            ConferenceMembersChanged?.Invoke(this, new ConferenceMembersChangedEvent(e.SessionID.Guid));
+    }
+
+    private void OnChatSessionMemberLeft(object? sender, ChatSessionMemberLeftEventArgs e)
+    {
+        Guid session = e.SessionID.Guid;
+        if (!_conferenceSessions.ContainsKey(session)) return;
+        if (_conferenceSpeakers.TryGetValue(session, out var speakers)) speakers.TryRemove(e.AgentID.Guid, out _);
+        ConferenceMembersChanged?.Invoke(this, new ConferenceMembersChangedEvent(session));
+    }
 
     /// <summary>Sends a 1:1 instant message.</summary>
     public void SendInstantMessage(Guid targetAgentId, string message)

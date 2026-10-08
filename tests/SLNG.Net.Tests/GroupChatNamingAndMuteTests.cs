@@ -389,6 +389,56 @@ public class GroupChatNamingAndMuteTests
         Assert.Empty(c.Conferences);
     }
 
+    // ---- FEAT-UI-71: the member list of a conference --------------------------------------------------
+
+    [Fact]
+    public void Everybody_who_speaks_in_a_conference_is_listed_and_the_change_is_announced_once()
+    {
+        using var session = new GridSession();
+        Listen(session);
+        SetMembership(session, UUID.Random(), "Some Group");
+        var conference = UUID.Random();
+        var changes = new List<Guid>();
+        session.ConferenceMembersChanged += (_, e) => changes.Add(e.SessionId);
+
+        var first = Im(InstantMessageDialog.SessionSend, conference, "hello");
+        var second = Im(InstantMessageDialog.SessionSend, conference, "me too");
+        Invoke(session, "OnInstantMessage", first);
+        Invoke(session, "OnInstantMessage", second);
+        // The same speaker again is no change.
+        Invoke(session, "OnInstantMessage", new InstantMessageEventArgs(new InstantMessage
+        {
+            Dialog = InstantMessageDialog.SessionSend,
+            IMSessionID = conference,
+            FromAgentID = first.IM.FromAgentID,
+            FromAgentName = "Some Resident",
+            Message = "and again",
+            BinaryBucket = Array.Empty<byte>(),
+        }, null));
+
+        var members = session.GetConferenceMembers(conference.Guid);
+        Assert.Contains(first.IM.FromAgentID.Guid, members);
+        Assert.Contains(second.IM.FromAgentID.Guid, members);
+        Assert.Equal(2, changes.Count);
+        Assert.All(changes, id => Assert.Equal(conference.Guid, id));
+    }
+
+    [Fact]
+    public void Leaving_a_conference_forgets_its_members()
+    {
+        using var session = new GridSession();
+        Listen(session);
+        SetMembership(session, UUID.Random(), "Some Group");
+        var conference = UUID.Random();
+        Invoke(session, "OnInstantMessage", Im(InstantMessageDialog.SessionSend, conference, "hello"));
+        Assert.NotEmpty(session.GetConferenceMembers(conference.Guid));
+
+        // Not connected, so nothing is sent -- the local bookkeeping is what is under test.
+        session.LeaveConference(conference.Guid);
+
+        Assert.Empty(session.GetConferenceMembers(conference.Guid));
+    }
+
     [Fact]
     public void A_group_nobody_can_name_is_reported_unnamed_so_the_app_asks_and_re_titles()
     {

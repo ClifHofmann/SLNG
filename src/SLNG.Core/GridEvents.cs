@@ -152,6 +152,10 @@ public record InstantMessageTypingEvent(Guid FromAgentId, string FromAgentName, 
 /// <param name="FromAgentId">Speaker's agent id; <see cref="Guid.Empty"/> for a system line.</param>
 public record ConferenceChatMessageEvent(Guid SessionId, string SessionName, Guid FromAgentId, string FromAgentName, string Message);
 
+/// <summary>The member list of an ad-hoc conference changed (somebody joined, left or spoke for the first time).
+/// Raised on a network thread; the list itself is read with <c>GridSession.GetConferenceMembers</c>.</summary>
+public record ConferenceMembersChangedEvent(Guid SessionId);
+
 /// <summary>Result of joining a group's chat session. A join must succeed before
 /// <c>GridSession.SendGroupMessage</c> can deliver anything to that group.</summary>
 public record GroupChatJoinedEvent(Guid GroupId, string SessionName, bool Success);
