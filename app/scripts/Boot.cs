@@ -346,6 +346,7 @@ public partial class Boot : Control
     private SLNG.App.UI.ToolbarSettings _toolbarSettings = null!;
     private SLNG.App.UI.UiSettings _uiSettings = null!;
     private SLNG.App.UI.CameraSettings _cameraSettings = null!;
+    private SLNG.App.UI.NetworkSettings _networkSettings = null!; // FEAT-NET-05
 
     // FEAT-RENDER-07: depth-of-field. The settings holder exists from startup; the controller is
     // built with the camera after login (see the AvatarController block).
@@ -430,7 +431,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.106-alpha";
+    public const string AppVersion = "v0.26.107-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2000,10 +2001,14 @@ public partial class Boot : Control
         _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings, _dofSettings,
                                  () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0);
 
+        _networkSettings = new SLNG.App.UI.NetworkSettings();
+        _networkSettings.Load();
         var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
         networkPage.Initialize(
             ProjectSettings.GlobalizePath("user://cache/assets"),
+            _networkSettings,
+            kbps => { if (_session != null) _session.MaxBandwidthKbps = kbps; }, // FEAT-NET-05: resends the throttle to every simulator
             GridData.AllObjectCacheDirectories, // BUG-GRID-01: one object cache per grid, plus the old shared one
             () => _session?.ClearObjectCache()); // FEAT-NET-04: one button clears both caches
 
@@ -3777,6 +3782,8 @@ public partial class Boot : Control
         _environmentDriver.SetCycle(SLNG.Core.DayCycle.Default, SLNG.Core.EnvironmentSource.Default);
         _world = new SLNG.Core.ECS.World();
         _session = new GridSession();
+        // FEAT-NET-05: before the first connect -- OnSimConnected sends it to every simulator.
+        _session.MaxBandwidthKbps = _networkSettings.MaxBandwidthKbps;
         // BUG-AVATAR-07 A/B switch — see Diagnostics.NoReattach.
         _session.ReattachMissingAttachments = !Diagnostics.NoReattach;
         _session.HeadFollowsCamera = _animationSettings.HeadFollowsCamera;

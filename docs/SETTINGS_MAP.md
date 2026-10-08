@@ -36,7 +36,7 @@ Dieses Dokument listet alle geplanten und bereits vorhandenen Viewer-Einstellung
 | | Farben | Chat-Farben (Owner, System, Fehler) | ⏸️ Pending | |
 | **Netzwerk & Cache**| Cache | Cache-Pfad | ✅ Done | In `Netzwerk` |
 | | | Cache-Größe & Leeren | ✅ Done | In `Netzwerk`: ein Knopf für Asset- **und** Objekt-Cache (FEAT-NET-04), Größe getrennt angezeigt |
-| | Bandbreite | Max. Bandbreite (UDP/HTTP) | ⏸️ Pending | |
+| | Bandbreite | Max. Bandbreite (UDP/HTTP) | ✅ Done | In `Netzwerk`, 500–10000 kbps, Standard 3000 wie der SL-Viewer (FEAT-NET-05); wirkt auf die UDP-Kategorien, nicht auf HTTP-Abrufe |
 
 ## Architektur & Platzersparnis (UI-Konzept)
 

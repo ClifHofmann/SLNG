@@ -581,6 +581,8 @@
       "network_heading": "Netzwerk- und Cache-Einstellungen:",
       "clear_cache": "Asset- und Objekt-Cache leeren",
       "cache_size": "{0} Assets, {1} Objekte",
+      "max_bandwidth": "Max. Bandbreite",
+      "max_bandwidth_hint": "Wie viel der Simulator Ihnen höchstens pro Sekunde schicken darf. Mehr lädt eine neue Region schneller; bei einer langsamen oder wackligen Leitung hilft weniger. Der Standard 3000 kbps entspricht dem Second-Life-Viewer.",
       "tab_chat_logs": "Chat-Protokolle",
       "chat_logs_heading": "Chat-Protokolle",
       "chat_logs_intro": "Protokolle werden im Firestorm-Format geschrieben, damit Firestorm und SLNG den Verlauf des jeweils anderen lesen können: gleiche Ordnerstruktur, gleiche Dateinamen, gleiche Zeilen. Um einen Verlauf zu teilen, wähle für ein Konto den Ordner, den Firestorm dafür benutzt.",
