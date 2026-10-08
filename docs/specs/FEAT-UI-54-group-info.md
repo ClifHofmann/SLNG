@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-54`
 - **Track:** `ui` / `net`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
