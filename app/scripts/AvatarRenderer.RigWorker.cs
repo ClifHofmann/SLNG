@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -52,7 +53,7 @@ public partial class AvatarRenderer
         /// thread has to agree with it.</summary>
         public required int[] SlotForJoint { get; init; }
 
-        /// <summary>The click colliders' per-bone chunks (AddRiggedPickBody), when they were asked
+        /// <summary>The click colliders' per-bone chunks (QueueRiggedPickBodies), when they were asked
         /// for; cut from the same arrays, so no read-back from the RenderingServer is needed.</summary>
         public PickChunk[]? PickChunks { get; init; }
 
@@ -140,6 +141,105 @@ public partial class AvatarRenderer
         finally
         {
             _rigPrepGate.Release();
+        }
+    }
+
+    /// <summary>Self test (BUG-PERF-08): a worn rig's click colliders are built one chunk per queue
+    /// item, and not at all for an item that was taken off, replaced or re-rigged meanwhile. Needs no
+    /// grid: a world with one entity, a bare skeleton and a skin that binds a bone per slot.</summary>
+    internal (bool Passed, string Detail) SelfTestRiggedPickBodies()
+    {
+        var problems = new System.Collections.Generic.List<string>();
+        var world = new SLNG.Core.ECS.World();
+        var previousWorld = _world;
+        _world = world;
+        var visual = new AvatarVisual { IsSelf = true };
+        AddChild(visual.Root);
+        var skeleton = new Skeleton3D();
+        for (int bone = 0; bone < 4; bone++) skeleton.AddBone($"mTestBone{bone}");
+        visual.Root.AddChild(skeleton);
+        var id = world.GetOrCreateEntity(1UL, 7001).Id;
+
+        MeshInstance3D NewItem()
+        {
+            var skin = new Skin();
+            for (int slot = 0; slot < 4; slot++) skin.AddBind(slot, Transform3D.Identity);
+            var mi = new MeshInstance3D { Skin = skin };
+            skeleton.AddChild(mi);
+            return mi;
+        }
+
+        var chunks = new PickChunk[4];
+        for (int slot = 0; slot < chunks.Length; slot++)
+            chunks[slot] = new PickChunk(slot, new[] { Godot.Vector3.Zero, Godot.Vector3.Right, Godot.Vector3.Up });
+
+        int Built() => _riggedPickBodies.TryGetValue(id, out var list) ? list.Count(IsInstanceValid) : 0;
+
+        // Pumps one item at a time (a budget of nothing still runs one per lane) and reports the
+        // most colliders any single pump added.
+        int Drain(out int pumps)
+        {
+            int most = 0;
+            pumps = 0;
+            while (MainThreadWorkQueue.Depth > 0 && pumps < 500)
+            {
+                int before = Built();
+                MainThreadWorkQueue.Pump(0);
+                most = Math.Max(most, Built() - before);
+                pumps++;
+            }
+            return most;
+        }
+
+        try
+        {
+            var item = NewItem();
+            _riggedAttachments[id] = item;
+            QueueRiggedPickBodies(item, visual, skeleton, id, chunks);
+            if (Built() != 0) problems.Add("a collider was built inside the rig item");
+            int most = Drain(out int pumps);
+            if (Built() != chunks.Length) problems.Add($"{Built()} colliders built, expected {chunks.Length}");
+            if (most != 1) problems.Add($"{most} colliders in one queue item, expected 1");
+            if (_pendingRiggedPicks.ContainsKey(id)) problems.Add("the debt was kept after the last chunk");
+
+            // Taken off (RemoveVisual / UpdateAttachment): the colliders go and nothing more is built.
+            var removed = NewItem();
+            _riggedAttachments[id] = removed;
+            QueueRiggedPickBodies(removed, visual, skeleton, id, chunks);
+            ClearRiggedPickBodies(id);
+            Drain(out _);
+            if (Built() != 0) problems.Add($"{Built()} colliders built for an item that was taken off");
+
+            // Replaced by a newer rig before its turn: only the newer one's chunks are built.
+            var stale = NewItem();
+            _riggedAttachments[id] = stale;
+            QueueRiggedPickBodies(stale, visual, skeleton, id, chunks);
+            var fresh = NewItem();
+            _riggedAttachments[id] = fresh;
+            QueueRiggedPickBodies(fresh, visual, skeleton, id, chunks.AsSpan(0, 2).ToArray());
+            Drain(out _);
+            if (Built() != 2) problems.Add($"{Built()} colliders after a re-rig, expected the new rig's 2");
+
+            // Replaced without the debt being cleared (the item the entity points at moved on): dropped.
+            var moved = NewItem();
+            _riggedAttachments[id] = moved;
+            QueueRiggedPickBodies(moved, visual, skeleton, id, chunks);
+            ClearRiggedPickBodies(id);
+            QueueRiggedPickBodies(moved, visual, skeleton, id, chunks);
+            _riggedAttachments[id] = NewItem();
+            Drain(out _);
+            if (Built() != 0) problems.Add($"{Built()} colliders built for an item that is no longer the rigged one");
+
+            return problems.Count == 0
+                ? (true, $"{chunks.Length} chunks took {pumps} queue items of at most one collider each; a removed, re-rigged or replaced item builds nothing stale")
+                : (false, string.Join("; ", problems));
+        }
+        finally
+        {
+            ClearRiggedPickBodies(id);
+            _riggedAttachments.Remove(id);
+            _world = previousWorld;
+            if (IsInstanceValid(visual.Root)) visual.Root.QueueFree();
         }
     }
 
