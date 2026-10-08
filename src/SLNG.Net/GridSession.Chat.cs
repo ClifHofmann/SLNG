@@ -660,6 +660,8 @@ public sealed partial class GridSession
     // dedicated flows later rather than being half-handled here.
     private void OnInstantMessage(object? sender, InstantMessageEventArgs e)
     {
+        Console.WriteLine($"[Chat-Packet] Dialog={(int)e.IM.Dialog} ({e.IM.Dialog}), From={e.IM.FromAgentID} ({e.IM.FromAgentName}), Session={e.IM.IMSessionID}, Group={e.IM.GroupIM}, Text='{e.IM.Message}'");
+
         // A group invitation is its own dialog (3) and would otherwise fall through both branches
         // below and vanish -- which is exactly what "die Gruppeneinladung kam nicht an" was.
         //
