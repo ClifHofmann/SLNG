@@ -590,6 +590,15 @@ public partial class ChatWindow : SLNGWindow
     /// <summary>True when a chat tab for this group exists. For the selftest.</summary>
     public bool HasGroupTab(Guid groupId) => _chatTabs.Exists(t => t.TargetGroupId == groupId);
 
+    /// <summary>True when an IM chat tab for this avatar exists. For the selftest.</summary>
+    public bool HasImTab(Guid agentId) => _chatTabs.Exists(t => t.TargetAgentId == agentId);
+
+    internal void DrainPeerTypingForSelfTest(Guid agentId, string name, bool typing)
+    {
+        _peerTypingQueue.Enqueue(new InstantMessageTypingEvent(agentId, name, typing));
+        DrainPeerTyping();
+    }
+
     /// <summary>Appends an incoming group-chat line, opening the group's tab if this is the first
     /// message from it this session. Called by Boot on GridSession.GroupChatMessageReceived,
     /// marshalled to the main thread first.</summary>

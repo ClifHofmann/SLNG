@@ -203,6 +203,7 @@ public static partial class SelfTest
         results.Add(CheckWindowInsets(tree));
         results.Add(CheckWindowTopInsetClamping(tree));
         results.Add(CheckChatWindowLogLayout(tree)); // BUG-UI-35
+        results.Add(CheckChatWindowTypingIndicatorOpensTab(tree)); // BUG-UI-36
         results.Add(CheckUiScale(tree));
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
@@ -1407,6 +1408,43 @@ public static partial class SelfTest
         }
         finally
         {
+            if (GodotObject.IsInstanceValid(chat))
+            {
+                chat.GetParent()?.RemoveChild(chat);
+                chat.QueueFree();
+            }
+        }
+    }
+
+    /// <summary>
+    /// BUG-UI-36: a typing indicator from somebody without an open tab opens their tab in the conversation list,
+    /// titled with their name.
+    /// </summary>
+    private static Check CheckChatWindowTypingIndicatorOpensTab(SceneTree tree)
+    {
+        const string Name = "chat window typing opens IM tab";
+        bool prevPersist = UI.ChatWindow.PersistRecent;
+        UI.ChatWindow.PersistRecent = false;
+        var chat = new UI.ChatWindow();
+        try
+        {
+            var log = new SLNG.Core.Services.ChatLogger(System.IO.Path.Combine(Godot.ProjectSettings.GlobalizePath("user://"), "selftest-chat-logs"));
+            chat.Initialize(log);
+            tree.Root.AddChild(chat);
+            var friendId = Guid.NewGuid();
+            chat.DrainPeerTypingForSelfTest(friendId, "Tester Resident", true);
+            bool hasTab = chat.HasImTab(friendId);
+            return new Check(Name, hasTab, hasTab
+                ? "typing indicator opened tab titled with name"
+                : "typing indicator failed to open tab");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            UI.ChatWindow.PersistRecent = prevPersist;
             if (GodotObject.IsInstanceValid(chat))
             {
                 chat.GetParent()?.RemoveChild(chat);
