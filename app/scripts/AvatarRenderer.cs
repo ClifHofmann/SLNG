@@ -4441,14 +4441,20 @@ public partial class AvatarRenderer : Node3D
         {
             if (locked > 0)
             {
-                if (_avatarSkeleton != null)
+                // BUG-PERF-08: the five parts of the refresh are labelled apart (avatar.jointpos.*, nested
+                // inside avatar.rig.jointpos) because the rig item's jointpos peaked at 32 ms in-world
+                // (Amrum, v0.26.116) without saying which of them it was.
+                MainThreadWorkQueue.Measure("avatar.jointpos.shape", () =>
                 {
-                    ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
-                }
-                skeleton.ResetBonePoses();
-                RebuildRiggedAttachmentSkins(visual);
-                RefreshBodyPartSkins(visual);
-                RefreshStaticAttachmentOffsets(visual);
+                    if (_avatarSkeleton != null)
+                    {
+                        ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
+                    }
+                    skeleton.ResetBonePoses();
+                });
+                MainThreadWorkQueue.Measure("avatar.jointpos.reskin", () => RebuildRiggedAttachmentSkins(visual));
+                MainThreadWorkQueue.Measure("avatar.jointpos.bodyparts", () => RefreshBodyPartSkins(visual));
+                MainThreadWorkQueue.Measure("avatar.jointpos.static", () => RefreshStaticAttachmentOffsets(visual));
 
                 if (!visual.IsControlAvatar || Diagnostics.Enabled)
                     GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
@@ -4456,8 +4462,11 @@ public partial class AvatarRenderer : Node3D
                              $"(lock_scale: {skinData.LockScaleIfJointPosition}) — " +
                              $"total scale-locked joints: {visual.JointScaleLocks.Count}");
 
-                RecomputeFootOffset(visual, visual.LastDistortions);
-                LogAvatarHeight(visual, "scale lock");
+                MainThreadWorkQueue.Measure("avatar.jointpos.foot", () =>
+                {
+                    RecomputeFootOffset(visual, visual.LastDistortions);
+                    LogAvatarHeight(visual, "scale lock");
+                });
             }
             return;
         }
@@ -4600,11 +4609,15 @@ public partial class AvatarRenderer : Node3D
 
         if (skeletonChanged)
         {
-            if (_avatarSkeleton != null)
+            // BUG-PERF-08: labelled apart, see the scale-lock branch above.
+            MainThreadWorkQueue.Measure("avatar.jointpos.shape", () =>
             {
-                ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
-            }
-            skeleton.ResetBonePoses();
+                if (_avatarSkeleton != null)
+                {
+                    ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
+                }
+                skeleton.ResetBonePoses();
+            });
 
             // ApplyShape just rewrote every bone's rest AND visual.BoneOwnScale — and a skinning
             // bind BAKES that scale in (see InjectOwnScale). Every mesh already bound therefore
@@ -4617,9 +4630,9 @@ public partial class AvatarRenderer : Node3D
             // as often as not, and it is the body's flag that frees the head's mHead scale
             // (BUG-AVATAR-07). The mesh being bound by THIS call isn't in RiggedAttachments yet,
             // so it picks the new values up on its own, a few lines later.
-            RebuildRiggedAttachmentSkins(visual);
-            RefreshBodyPartSkins(visual);
-            RefreshStaticAttachmentOffsets(visual);
+            MainThreadWorkQueue.Measure("avatar.jointpos.reskin", () => RebuildRiggedAttachmentSkins(visual));
+            MainThreadWorkQueue.Measure("avatar.jointpos.bodyparts", () => RefreshBodyPartSkins(visual));
+            MainThreadWorkQueue.Measure("avatar.jointpos.static", () => RefreshStaticAttachmentOffsets(visual));
 
             // Ungated, unlike the per-mesh detail below: this fires at most a couple of times per
             // login (only a mesh that declares the flag AND contributes NEW locks reaches it) and
@@ -4635,8 +4648,11 @@ public partial class AvatarRenderer : Node3D
             // A fitted mesh can override leg/spine joints (e.g. an alternate-bind mesh body/legs)
             // that move mFootLeft — refresh the measured foot offset now rather than waiting for
             // the next shape change. See RecomputeFootOffset's doc comment.
-            RecomputeFootOffset(visual, visual.LastDistortions);
-            LogAvatarHeight(visual, "joint override");
+            MainThreadWorkQueue.Measure("avatar.jointpos.foot", () =>
+            {
+                RecomputeFootOffset(visual, visual.LastDistortions);
+                LogAvatarHeight(visual, "joint override");
+            });
         }
         // Viewer parity: LLAvatarAppearance::addPelvisFixup (indra/llappearance/
         // llavatarappearance.cpp) — this offset does NOT move the mPelvis joint's local
@@ -4851,13 +4867,7 @@ public partial class AvatarRenderer : Node3D
     /// <summary>Builds a rigged mesh's instance in one go on the calling (main) thread: the skin
     /// binds, then the geometry, then the engine mesh. The worn path runs the same three steps
     /// split across a worker and the main thread (BUG-PERF-06, AvatarRenderer.RigWorker.cs); the
-    /// control avatar and the shape-change re-skin still come through here.</summary>
-    /// <param name="skinOnly">Build the bind matrices and stop — no geometry, no ArrayMesh.
-    /// <see cref="RebuildRiggedAttachmentSkins"/> wants nothing else, and building the rest for it
-    /// was BUG-PERF-01's largest single waste: measured in-world at <b>0.15 ms</b> for the binds
-    /// against <b>7.5 ms</b> for the whole method, on a path that runs once per worn mesh on every
-    /// shape change. The log showed 830 calls to this method behind only 109 rig queue items —
-    /// seven out of every eight builds existed to be discarded.</param>
+    /// control avatar still comes through here.</summary>
     /// <param name="extentSink">FEAT-ANIMESH-01: when given, the rest-pose skinned extent is
     /// measured into it -- in the skeleton's own space and in world axes through its
     /// <see cref="RiggedExtent.Frame"/> -- whether or not this is the self avatar. A control
@@ -4865,20 +4875,11 @@ public partial class AvatarRenderer : Node3D
     /// The self avatar's <c>[RenderExtent]</c> report is untouched by it.</param>
     private MeshInstance3D? BuildRiggedMeshInstance(MeshData meshData, Skeleton3D skeleton, Guid meshId,
         AvatarVisual visual, FaceTexture[]? faces, FaceTexture defaultFace, out int[] faceIndices,
-        bool skinOnly = false, RiggedExtent? extentSink = null)
+        RiggedExtent? extentSink = null)
     {
         faceIndices = System.Array.Empty<int>();
         var skin = BindRiggedSkin(meshData.Skin!, skeleton, visual, out var slotForJoint);
         if (skin == null) return null;
-        if (skinOnly)
-        {
-            // Everything above is what a shape change actually needs; everything below is
-            // geometry it discards. The node carries the Skin and nothing else, so freeing it
-            // releases an instance RID rather than the mesh and buffer RIDs BUG-RENDER-13 was
-            // about — those are no longer created at all.
-            return new MeshInstance3D { Skin = skin };
-        }
-
         var prepared = PrepareRiggedMesh(meshData, slotForJoint, faces, defaultFace);
         MainThreadWorkQueue.RecordExternal("avatar.rig.verts", prepared.VertsMs);
         MainThreadWorkQueue.RecordExternal("avatar.rig.tangents", prepared.TangentsMs);
@@ -5355,35 +5356,32 @@ public partial class AvatarRenderer : Node3D
     /// Called right after ApplyShape, alongside RebuildBodyMorphs, whenever shape changes — see
     /// <see cref="AvatarVisual.RiggedAttachments"/>'s doc comment for why this is needed: a mesh
     /// that loaded before shape/VisualParams first arrived was bound with no scale injected at
-    /// all (an empty BoneOwnScale at that moment), and nothing else ever revisits it afterward.</summary>
+    /// all (an empty BoneOwnScale at that moment), and nothing else ever revisits it afterward.
+    ///
+    /// <para>Only the Skin is taken, so it is bound directly (<see cref="BindRiggedSkin"/>) and no
+    /// geometry is built: the face records -- and therefore BUG-RENDER-12's surface merging -- are
+    /// irrelevant here. BUG-PERF-01: the geometry used to be built anyway and then thrown away, once
+    /// per worn mesh per shape change -- measured in-world at <b>0.15 ms</b> for the binds against
+    /// <b>7.5 ms</b> for the whole method, with 830 builds behind only 109 rig queue items. It then
+    /// went through a skin-only <c>BuildRiggedMeshInstance</c>, which still made a throwaway
+    /// <c>MeshInstance3D</c> to carry the Skin out, and had to QueueFree it (BUG-RENDER-13: a Node that
+    /// is never added to the tree keeps its RIDs until the process exits, which showed up as leaked
+    /// MeshStorage RIDs at exit). BUG-PERF-08 drops that node altogether: the Skin is a Resource, and
+    /// <c>mi</c> holds it.</para>
+    /// </summary>
     private void RebuildRiggedAttachmentSkins(AvatarVisual visual)
     {
         if (visual.Skeleton == null) return;
-        foreach (var (mi, meshData, meshId) in visual.RiggedAttachments)
+        foreach (var (mi, meshData, _) in visual.RiggedAttachments)
         {
             if (!IsInstanceValid(mi) || meshData.Skin == null) continue;
-            // Only the Skin is taken from the rebuild, so the face records -- and therefore
-            // BUG-RENDER-12's surface merging -- are irrelevant here. BUG-PERF-01: the geometry
-            // used to be built anyway and then thrown away, once per worn mesh per shape change.
-            // It is not built at all now (skinOnly), which is a ~50x saving on this path.
-            var rebuilt = BuildRiggedMeshInstance(meshData, visual.Skeleton, meshId, visual, null, default, out _,
-                                                  skinOnly: true);
-            if (rebuilt == null) continue;
-            mi.Skin = rebuilt.Skin;
+            var skin = BindRiggedSkin(meshData.Skin, visual.Skeleton, visual, out _);
+            if (skin == null) continue;
+            mi.Skin = skin;
             // BUG-RENDER-38: surfaces split onto their own instances are bound by the same skin.
             foreach (var child in mi.GetChildren())
                 if (child is MeshInstance3D split && split.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
-                    split.Skin = rebuilt.Skin;
-
-            // BUG-RENDER-13: and the discarded node has to be FREED, not just dropped. A Godot Node
-            // is not reference-counted -- one that was never added to the tree keeps its RIDs (a
-            // RendererSceneCull::Instance, and through its ArrayMesh a MeshStorage::Mesh plus the
-            // index/vertex buffers) until the process exits. Letting the local go out of scope
-            // leaked one set per rigged attachment per shape change, which is what produced
-            // `ERROR: N RID allocations of type 'N10RendererRD11MeshStorage4MeshE' were leaked at
-            // exit` with N tracking how busy the session had been (34 in a teleport-heavy one, 20
-            // in a quiet one). The Skin survives: it is a Resource, and `mi` now holds it.
-            rebuilt.QueueFree();
+                    split.Skin = skin;
         }
     }
 
