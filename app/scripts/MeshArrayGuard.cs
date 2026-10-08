@@ -254,6 +254,21 @@ internal static class MeshArrayGuard
         }
     }
 
+    /// <summary>Names a mesh once when a builder that ran off the engine -- SLNG.Assets'
+    /// RiggedMeshBuilder, BUG-PERF-06 -- had to repair values. The counts are the ones
+    /// <see cref="VertexGuard"/> would have kept. Returns whether anything was repaired.</summary>
+    public static bool ReportRepairs(SLNG.Assets.RiggedMeshGeometry geo, Func<string> label)
+    {
+        if (geo.BadPositions + geo.BadNormals + geo.BadUvs == 0) return false;
+        var found = new List<Finding>(3);
+        if (geo.BadPositions > 0) found.Add(new Finding("vertex", geo.BadPositions, geo.FirstBadPosition));
+        if (geo.BadNormals > 0) found.Add(new Finding("normal", geo.BadNormals, geo.FirstBadNormal));
+        if (geo.BadUvs > 0) found.Add(new Finding("uv", geo.BadUvs, geo.FirstBadUv));
+        Interlocked.Increment(ref _badMeshes);
+        LogOnce(label, found);
+        return true;
+    }
+
     // ---------------------------------------------------------------- logging
 
     private readonly record struct Finding(string Kind, int Count, int FirstIndex);

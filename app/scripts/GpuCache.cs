@@ -596,6 +596,8 @@ public class GpuCache
         var clock = System.Diagnostics.Stopwatch.StartNew();
         while (Volatile.Read(ref _imagePrepsRunning) > 0 && clock.ElapsedMilliseconds < maxWaitMs)
             Thread.Sleep(5);
+        // BUG-PERF-06: the mesh workers call into Godot as well.
+        EngineWorkerGate.Close(maxWaitMs);
     }
 
     private static async Task<PreparedImage> PrepareImageAsync(

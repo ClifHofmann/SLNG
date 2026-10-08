@@ -2821,6 +2821,10 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(VisualState state, Guid meshId, MeshDetailLevel lod)
     {
         if (_assetService == null) return;
+        // BUG-PERF-06: taken here, on the main thread, for the worker preparation below.
+        var planInputs = CapturePlanInputs(state);
+        var geometryKey = KeyForMesh(meshId, lod);
+        var entityId = state.EntityId;
 
         var mesh = await _assetService.GetMeshAsync(meshId, lod);
         if (mesh == null || mesh.Submeshes.Count == 0)
@@ -2835,6 +2839,8 @@ public partial class ObjectRenderer : Node3D
             return;
         }
 
+        var prepared = await PrepareArrivedMeshAsync(mesh, flipV: true, planInputs, geometryKey, entityId);
+
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(state.MeshInstance)) return;
@@ -2844,12 +2850,13 @@ public partial class ObjectRenderer : Node3D
             // LoadAndApplyPrimMeshAsync uses for BUG-RENDER-19.
             if (state.LoadedMeshDetailLevel != lod) return;
 
-            ApplyArrivedMesh(state, meshId, lod, mesh);
+            ApplyArrivedMesh(state, meshId, lod, mesh, prepared);
         }, label: "mesh.apply");
     }
 
     /// <summary>Where a decoded mesh asset lands once the staleness checks have passed.</summary>
-    private void ApplyArrivedMesh(VisualState state, Guid meshId, MeshDetailLevel lod, MeshData mesh)
+    private void ApplyArrivedMesh(VisualState state, Guid meshId, MeshDetailLevel lod, MeshData mesh,
+        PreparedStaticMesh? prepared = null)
     {
         // FEAT-ANIMESH-01: a rigged mesh of an animated-mesh object is skinned by that object's
         // control avatar. Not built here at all -- the unskinned geometry, its materials and its
@@ -2857,7 +2864,7 @@ public partial class ObjectRenderer : Node3D
         var geometryKey = KeyForMesh(meshId, lod);
         if (TryHandOverToControlAvatar(state, geometryKey, meshId, mesh)) return;
 
-        AssignSharedMesh(state, geometryKey, mesh, flipV: true);
+        AssignSharedMesh(state, geometryKey, mesh, flipV: true, prepared);
     }
 
     // ---- FEAT-ANIMESH-01: an animated mesh is skinned by a control avatar -------------------------
@@ -3054,8 +3061,12 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
     {
         if (_assetService == null) return;
+        var planInputs = CapturePlanInputs(state); // BUG-PERF-06, main thread
+        var geometryKey = KeyForSculpt(sculptId, sculptType);
+        var entityId = state.EntityId;
 
         var mesh = await _assetService.GetSculptMeshAsync(sculptId, sculptType);
+        var prepared = await PrepareArrivedMeshAsync(mesh, flipV: false, planInputs, geometryKey, entityId);
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
@@ -3091,7 +3102,7 @@ public partial class ObjectRenderer : Node3D
                 // bottom-origin against Godot's top-origin, which would demand 1 - tt. Measurement
                 // says otherwise, twice. Whatever reconciles the two lives elsewhere in the chain
                 // and is what the remaining offset is pointing at.
-                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: false);
+                AssignSharedMesh(state, KeyForSculpt(sculptId, sculptType), mesh, flipV: false, prepared);
             }
             else
             {
@@ -3215,8 +3226,12 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve, MeshDetailLevel lod)
     {
         if (_assetService == null) return;
+        var planInputs = CapturePlanInputs(state); // BUG-PERF-06, main thread
+        var geometryKey = KeyForShape(shape, lod);
+        var entityId = state.EntityId;
 
         var mesh = await _assetService.GetPrimMeshAsync(shape, lod);
+        var prepared = await PrepareArrivedMeshAsync(mesh, flipV: true, planInputs, geometryKey, entityId);
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
@@ -3235,7 +3250,7 @@ public partial class ObjectRenderer : Node3D
                 // invisible on tiled/symmetric textures, but upside-down on anything oriented
                 // (a HUD's logo/text). This is the SAME flip mesh assets already use; prims were
                 // wrongly exempted on the assumption MeshFoundry's internal flip cancelled out.
-                AssignSharedMesh(state, KeyForShape(shape, lod), mesh, flipV: true);
+                AssignSharedMesh(state, KeyForShape(shape, lod), mesh, flipV: true, prepared);
             }
             else
             {
@@ -4438,39 +4453,14 @@ public partial class ObjectRenderer : Node3D
     private (bool[] RunStart, int Surfaces, int SubmeshCount, ulong Pattern) PlanSurfaceMerge(
         VisualState state, MeshData data)
     {
-        var committable = new List<int>(data.Submeshes.Count);
-        foreach (var sub in data.Submeshes)
-        {
-            if (sub.Indices.Length == 0) continue;
-            committable.Add(sub.FaceIndex);
-        }
-
-        var runStart = new bool[committable.Count];
-        var prim = committable.Count == 0
-            ? null
-            : _world?.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
-
-        if (prim == null)
-        {
-            // Nothing to commit, or no face records to reason about: merge nothing, which
-            // reproduces the pre-merge behaviour exactly (and keeps the cache key equal to the
-            // geometry key). The barrier is still recorded, so the re-plan check in UpdateVisual
-            // does not see a permanent mismatch and fire on every ObjectUpdate.
-            state.LoadedAnimBarrierFace = SLNG.Core.FaceSurfaceMerge.NoAnimatedFace;
-            for (int i = 0; i < runStart.Length; i++) runStart[i] = true;
-            return (runStart, runStart.Length, runStart.Length, 0UL);
-        }
-
-        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId,
-            prim.ColorTint, prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation,
-            prim.TexGen, prim.Fullbright);
-
-        int animatedFace = AnimBarrierFace(prim);
-        state.LoadedAnimBarrierFace = animatedFace;
-
-        var indices = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(committable);
-        int surfaces = SLNG.Core.FaceSurfaceMerge.Plan(
-            indices, prim.Faces, defaultFace, animatedFace, runStart);
+        // BUG-PERF-06: the same planner the worker preparation uses (PlanRunStart), so a prepared
+        // mesh and this plan can only disagree when the face records themselves changed.
+        var inputs = CapturePlanInputs(state);
+        var (runStart, surfaces) = PlanRunStart(data, inputs);
+        // The barrier is recorded even when nothing merges, so the re-plan check in UpdateVisual
+        // does not see a permanent mismatch and fire on every ObjectUpdate. A mesh with nothing
+        // to commit never read the face records at all, and records none.
+        state.LoadedAnimBarrierFace = runStart.Length == 0 ? SLNG.Core.FaceSurfaceMerge.NoAnimatedFace : inputs.AnimatedFace;
 
         ulong pattern = SLNG.Core.FaceSurfaceMerge.IsIdentity(runStart, runStart.Length)
             ? 0UL
@@ -4713,7 +4703,11 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
-    private void AssignSharedMesh(VisualState state, Guid geometryKey, MeshData data, bool flipV)
+    /// <param name="prepared">BUG-PERF-06: what a worker already made of <paramref name="data"/>, if
+    /// anything. Used only when it was made for exactly the mesh, flip and grouping decided here;
+    /// otherwise the mesh is built here as before.</param>
+    private void AssignSharedMesh(VisualState state, Guid geometryKey, MeshData data, bool flipV,
+        PreparedStaticMesh? prepared = null)
     {
         // FEAT-ANIMESH-01: every static mesh goes through here, and a prim being given one is by
         // definition not drawn by a control avatar any more (its geometry source changed under it).
@@ -4743,12 +4737,28 @@ public partial class ObjectRenderer : Node3D
             // responsible decides the fix, and they need very different ones.
             ArrayMesh? built = null;
             int[]? faceIndices = null;
-            MainThreadWorkQueue.Measure("mesh.build", () =>
+            // BUG-PERF-06: mesh.build is now only the engine half -- the worker's arrays handed to
+            // AddSurfaceFromArrays -- and mesh.prepare is the worker's time for them. A build that
+            // had no fitting preparation (a re-plan, a restore, face records that changed while the
+            // asset was on its way) still happens here, under mesh.build.sync.
+            if (prepared != null && prepared.IsFor(data, flipV, plan.RunStart))
             {
-                built = BuildArrayMesh(data, flipV, plan.RunStart, out var fi,
-                    () => $"prim entity={state.EntityId:N} mesh={key:N} geometry={geometryKey:N}");
-                faceIndices = fi;
-            });
+                MainThreadWorkQueue.RecordExternal("mesh.prepare", prepared.PrepareMs);
+                MainThreadWorkQueue.Measure("mesh.build", () =>
+                {
+                    built = CommitSurfaceArrays(prepared.Surfaces);
+                    faceIndices = prepared.FaceIndices;
+                });
+            }
+            else
+            {
+                MainThreadWorkQueue.Measure("mesh.build.sync", () =>
+                {
+                    built = BuildArrayMesh(data, flipV, plan.RunStart, out var fi,
+                        () => $"prim entity={state.EntityId:N} mesh={key:N} geometry={geometryKey:N}");
+                    faceIndices = fi;
+                });
+            }
             mesh = built;
             _meshFaceIndices[key] = faceIndices!;
             if (mesh != null) _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
@@ -4813,7 +4823,8 @@ public partial class ObjectRenderer : Node3D
             // into surfaces without changing a single triangle, so all merge variants of one
             // geometry share the one trimesh shape -- which matters, since building it was
             // measured at 6.12 ms and 94% of all mesh work.
-            EnsureCollisionShape(state, geometryKey, data);
+            EnsureCollisionShape(state, geometryKey, data,
+                prepared != null && ReferenceEquals(prepared.Data, data) ? prepared.TrimeshFaces : null);
         }
         else
         {
@@ -5270,7 +5281,9 @@ public partial class ObjectRenderer : Node3D
     /// VISIBLE -- only to walk into it or click it -- so blocking its appearance on it would get the
     /// priority backwards.
     /// </summary>
-    private void EnsureCollisionShape(VisualState state, Guid key, MeshData data)
+    /// <param name="preparedFaces">BUG-PERF-06: <see cref="BuildTrimeshFaces"/> for
+    /// <paramref name="data"/>, already made on a worker -- then only the shape itself is made here.</param>
+    private void EnsureCollisionShape(VisualState state, Guid key, MeshData data, Godot.Vector3[]? preparedFaces = null)
     {
         if (_meshCollisionShapes.TryGetValue(key, out var cached))
         {
@@ -5294,7 +5307,7 @@ public partial class ObjectRenderer : Node3D
         {
             MainThreadWorkQueue.Measure("collision.urgent", () =>
             {
-                var urgent = new ConcavePolygonShape3D { Data = BuildTrimeshFaces(data) };
+                var urgent = new ConcavePolygonShape3D { Data = preparedFaces ?? BuildTrimeshFaces(data) };
                 _meshCollisionShapes[key] = urgent;
                 state.CollisionShape.Shape = urgent;
             });
@@ -5308,6 +5321,12 @@ public partial class ObjectRenderer : Node3D
             return;
         }
         _collisionWaiters[key] = new List<VisualState> { state };
+
+        if (preparedFaces != null)
+        {
+            EnqueueCollisionShape(key, preparedFaces);
+            return;
+        }
 
         _ = System.Threading.Tasks.Task.Run(() =>
         {
@@ -5323,154 +5342,52 @@ public partial class ObjectRenderer : Node3D
                 // would sit in _collisionWaiters forever and never become solid.
                 faces = Array.Empty<Godot.Vector3>();
             }
-
-            // Visual lane, not Refine. Refine is drained only after Visual is exhausted or the budget
-            // is spent, so under a backlog it receives exactly the one item per frame the pump
-            // guarantees against starvation -- with thousands of items queued that is minutes of
-            // delay, and the user experiences it as collision simply not working. Now that the GPU
-            // readback is gone the shape costs ~2.6 ms, which the Visual lane can carry; being late
-            // is worse than being slightly expensive when the consequence is falling through the
-            // world.
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-            {
-                if (!_meshCollisionShapes.TryGetValue(key, out var shape))
-                {
-                    shape = new ConcavePolygonShape3D { Data = faces };
-                    _meshCollisionShapes[key] = shape;
-                }
-
-                if (_collisionWaiters.Remove(key, out var pending))
-                {
-                    foreach (var w in pending)
-                    {
-                        // Skip anything that was freed, re-shaped, or released out of range while the
-                        // build was in flight.
-                        if (!IsInstanceValid(w.CollisionShape)) continue;
-                        // Compared against the GEOMETRY key, which is what this shape is
-                        // cached under (BUG-RENDER-16) -- LoadedMeshKey also encodes the
-                        // surface-merge pattern, which collision does not care about.
-                        if (w.LoadedGeometryKey != key) continue;
-                        w.CollisionShape.Shape = shape;
-                    }
-                }
-            }, label: "collision.shape");
+            EnqueueCollisionShape(key, faces);
         });
     }
 
-    /// <summary>Builds the shared ArrayMesh. <paramref name="runStart"/> (BUG-RENDER-16) is
-    /// indexed by COMMITTABLE submesh — the same submeshes this method commits, empty ones already
-    /// filtered out by <see cref="PlanSurfaceMerge"/> — and marks where a new Godot surface
-    /// begins. Consecutive submeshes inside one run are appended into a single
-    /// <see cref="SurfaceTool"/> with their indices shifted past the vertices already in it, so
-    /// the run becomes one surface whose triangles are drawn in authored index order and are never
-    /// sorted against each other. With every entry true this emits exactly one surface per
-    /// submesh, i.e. the pre-merge behaviour.</summary>
+    /// <summary>Makes the shape for <paramref name="key"/> from <paramref name="faces"/> on the main
+    /// thread and hands it to every object waiting on that geometry.</summary>
+    private void EnqueueCollisionShape(Guid key, Godot.Vector3[] faces)
+    {
+        // Visual lane, not Refine. Refine is drained only after Visual is exhausted or the budget
+        // is spent, so under a backlog it receives exactly the one item per frame the pump
+        // guarantees against starvation -- with thousands of items queued that is minutes of
+        // delay, and the user experiences it as collision simply not working. Now that the GPU
+        // readback is gone the shape costs ~2.6 ms, which the Visual lane can carry; being late
+        // is worse than being slightly expensive when the consequence is falling through the
+        // world.
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+        {
+            if (!_meshCollisionShapes.TryGetValue(key, out var shape))
+            {
+                shape = new ConcavePolygonShape3D { Data = faces };
+                _meshCollisionShapes[key] = shape;
+            }
+
+            if (_collisionWaiters.Remove(key, out var pending))
+            {
+                foreach (var w in pending)
+                {
+                    // Skip anything that was freed, re-shaped, or released out of range while the
+                    // build was in flight.
+                    if (!IsInstanceValid(w.CollisionShape)) continue;
+                    // Compared against the GEOMETRY key, which is what this shape is
+                    // cached under (BUG-RENDER-16) -- LoadedMeshKey also encodes the
+                    // surface-merge pattern, which collision does not care about.
+                    if (w.LoadedGeometryKey != key) continue;
+                    w.CollisionShape.Shape = shape;
+                }
+            }
+        }, label: "collision.shape");
+    }
+
+    /// <summary>Builds the shared ArrayMesh on the calling thread: <see cref="BuildSurfaceArrays"/>
+    /// then <see cref="CommitSurfaceArrays"/>. What AssignSharedMesh falls back to when no worker
+    /// preparation fits (BUG-PERF-06).</summary>
     private static ArrayMesh BuildArrayMesh(MeshData mesh, bool flipV, bool[] runStart, out int[] faceIndices,
         Func<string>? label = null)
-    {
-        var arrayMesh = new ArrayMesh();
-        var indices = new List<int>(mesh.Submeshes.Count);
-        // BUG-RENDER-40: a non-finite vertex value is repaired on its way into the SurfaceTool and the
-        // mesh is named once, instead of Godot printing anonymous normalize warnings later.
-        var guard = new MeshArrayGuard.VertexGuard();
-
-        SurfaceTool? st = null;
-        int runVertexBase = 0;
-        int committable = -1;
-
-        void FlushRun()
-        {
-            if (st == null) return;
-            st.Commit(arrayMesh);
-            st = null;
-        }
-
-        foreach (var sub in mesh.Submeshes)
-        {
-            if (sub.Indices.Length == 0) continue;
-
-            committable++;
-            // Defensive: a plan shorter than the committable submeshes would silently merge the
-            // tail into whatever run preceded it, so treat a missing entry as "starts a surface".
-            // Written as one condition rather than via a bool so the compiler's null analysis can
-            // still see that st is non-null below.
-            if (st == null || committable >= runStart.Length || runStart[committable])
-            {
-                FlushRun();
-                st = new SurfaceTool();
-                st.Begin(Mesh.PrimitiveType.Triangles);
-                runVertexBase = 0;
-                indices.Add(sub.FaceIndex);
-            }
-
-            // Tangents, computed in GODOT space and from the FINAL UVs -- both matter. The
-            // positions below are swizzled from SL's Z-up and the V is conditionally flipped, and
-            // a tangent basis derived from the pre-swizzle values would be rotated relative to the
-            // vertices it is attached to.
-            //
-            // Godot cannot apply a normal map without these. SurfaceTool.GenerateTangents() used
-            // to do the job and had to be turned off: it produced NaNs on the degenerate triangles
-            // SL content is full of, and those reached the Vulkan driver. SLNG.Assets.MeshTangents
-            // guarantees finite output instead of dividing by a zero-area UV triangle -- see its
-            // tests for the exact family of inputs that crashed.
-            var tangentPositions = new System.Numerics.Vector3[sub.Positions.Length];
-            var tangentNormals = new System.Numerics.Vector3[sub.Positions.Length];
-            var tangentUvs = new System.Numerics.Vector2[sub.Positions.Length];
-            for (int i = 0; i < sub.Positions.Length; i++)
-            {
-                var sp = sub.Positions[i];
-                var sn = sub.Normals[i];
-                var suv = sub.UVs[i];
-                tangentPositions[i] = new System.Numerics.Vector3(sp.X, sp.Z, -sp.Y);
-                tangentNormals[i] = new System.Numerics.Vector3(sn.X, sn.Z, -sn.Y);
-                tangentUvs[i] = new System.Numerics.Vector2(suv.X, flipV ? 1.0f - suv.Y : suv.Y);
-            }
-            // The winding is reversed below, so the tangent maths gets the same order the GPU
-            // will see rather than the source order.
-            var tangentIndices = new int[sub.Indices.Length];
-            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
-            {
-                tangentIndices[t] = sub.Indices[t];
-                tangentIndices[t + 1] = sub.Indices[t + 2];
-                tangentIndices[t + 2] = sub.Indices[t + 1];
-            }
-            var tangents = SLNG.Assets.MeshTangents.Compute(
-                tangentPositions, tangentNormals, tangentUvs, tangentIndices);
-
-            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front.
-            // Reverse each triangle's winding by swapping its last two indices.
-            // We supply the vertices once, then supply the reversed indices.
-            for (int i = 0; i < sub.Positions.Length; i++)
-            {
-                var p = sub.Positions[i];
-                var n = sub.Normals[i];
-                var uv = sub.UVs[i];
-
-                st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), i));
-                var tg = tangents[i];
-                st.SetTangent(new Godot.Plane(tg.X, tg.Y, tg.Z, tg.W));
-                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y), i));
-                st.AddVertex(guard.Position(new Godot.Vector3(p.X, p.Z, -p.Y), i));
-            }
-
-            // Shifted past whatever this run already holds. Zero unless a previous submesh was
-            // merged into this same surface, so the un-merged path is unchanged arithmetic.
-            int indexBase = runVertexBase;
-            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
-            {
-                st.AddIndex(indexBase + sub.Indices[t]);
-                st.AddIndex(indexBase + sub.Indices[t + 2]);
-                st.AddIndex(indexBase + sub.Indices[t + 1]);
-            }
-
-            runVertexBase += sub.Positions.Length;
-        }
-        FlushRun();
-
-        guard.Report(label ?? (() => "prim mesh (unlabelled)"));
-        faceIndices = indices.ToArray();
-        return arrayMesh;
-    }
+        => CommitSurfaceArrays(BuildSurfaceArrays(mesh, flipV, runStart, out faceIndices, label));
 
     public override void _ExitTree()
     {
