@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-NET-06`
 - **Track:** `net/core`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 

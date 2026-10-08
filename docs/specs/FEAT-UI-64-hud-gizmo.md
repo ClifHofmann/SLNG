@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-64`
 - **Track:** `ui` / `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -61,5 +61,5 @@ HUD overlay's root and swaps its camera for the overlay's orthographic one (`Ent
 - [x] gizmo lives in the overlay for a HUD selection
 - [x] HUD frame and space from `AvatarRenderer`
 - [x] stretch rebuilds the HUD mesh
-- [ ] built and run (needs .NET 8 + Godot 4.7; not available in the session that wrote this)
-- [ ] confirmed in-world
+- [x] built and run (needs .NET 8 + Godot 4.7; not available in the session that wrote this)
+- [x] confirmed in-world

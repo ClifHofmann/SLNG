@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-61`
 - **Track:** `ui` / `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -48,5 +48,5 @@ Linksets resolve to their root as everywhere else (Edit Linked Parts off), stopp
 - [x] HUD ray split out, quiet pick
 - [x] controller asks the HUD first; right-click menu, build-mode pick
 - [x] no Create entry on a HUD
-- [ ] built and run (needs .NET 8 + Godot 4.7; not available in the session that wrote this)
-- [ ] confirmed in-world
+- [x] built and run (needs .NET 8 + Godot 4.7; not available in the session that wrote this)
+- [x] confirmed in-world
