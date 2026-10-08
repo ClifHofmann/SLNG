@@ -431,4 +431,256 @@ public partial class ObjectRenderer
         return (ok, ok ? "reads the bound textures back and predicts a matte floor"
                        : "dump line was: " + line);
     }
+
+    /// <summary>
+    /// BUG-PERF-06: a static object's mesh is now usually prepared on a worker (surface arrays and
+    /// trimesh faces) and only committed by AssignSharedMesh. Two objects with the same face records
+    /// get the same mesh asset under different ids: one through a worker preparation, one built on
+    /// the main thread the old way. Both must equal the build as it was before (kept below verbatim)
+    /// -- surface by surface, read back out of the engine -- with the same face list, the same merged
+    /// grouping (faces 0 and 1 share a record), and a collision shape of exactly the trimesh faces.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestPreparedStaticMesh(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        var stone = default(FaceTexture) with { TextureId = Guid.Parse("5e1f7e57-0000-0000-0000-000000000001") };
+        var moss = default(FaceTexture) with { TextureId = Guid.Parse("5e1f7e57-0000-0000-0000-000000000002") };
+        var faceRecords = new[] { stone, stone, moss };
+        var data = SelfTestStaticMesh();
+
+        var made = new List<Entity>();
+        Entity Add(uint localId)
+        {
+            var e = SelfTestAddPrim(world, localId, 0, animated: false);
+            made.Add(e);
+            var prim = e.GetComponent<PrimitiveComponent>()!;
+            prim.Faces = faceRecords;
+            world.NotifyComponentUpdated(e, prim);
+            Settle();
+            return e;
+        }
+
+        try
+        {
+            var a = Add(901);
+            var b = Add(902);
+            var stateA = _visuals[a.Id];
+            var stateB = _visuals[b.Id];
+            var meshIdA = a.GetComponent<PrimitiveComponent>()!.MeshId;
+
+            var prepared = PrepareArrivedMeshAsync(data, flipV: true, CapturePlanInputs(stateA),
+                KeyForMesh(meshIdA, MeshDetailLevel.Highest), a.Id).GetAwaiter().GetResult();
+            Expect(prepared != null, "nothing was prepared");
+            stateA.LoadedMeshId = meshIdA;
+            stateA.LoadedMeshDetailLevel = MeshDetailLevel.Highest;
+            ApplyArrivedMesh(stateA, meshIdA, MeshDetailLevel.Highest, data, prepared);
+            Settle();
+            SelfTestArrive(b, data);   // no preparation: the main-thread build
+            // Without a preparation the faces for a distant object are made by a background task;
+            // its shape lands with a later queue item.
+            var waitClock = System.Diagnostics.Stopwatch.StartNew();
+            while (_collisionWaiters.Count > 0 && waitClock.ElapsedMilliseconds < 5000)
+            {
+                System.Threading.Thread.Sleep(5);
+                Settle();
+            }
+
+            var runStart = new[] { true, false, true };
+            Expect(prepared == null || prepared.RunStart.AsSpan().SequenceEqual(runStart),
+                $"the worker planned [{(prepared == null ? "" : string.Join(",", prepared.RunStart))}], expected [{string.Join(",", runStart)}]");
+            var legacy = LegacyBuildArrayMesh(data, flipV: true, runStart, out var legacyFaces);
+
+            foreach (var (name, state) in new[] { ("prepared", stateA), ("main-thread", stateB) })
+            {
+                if (state.MeshInstance.Mesh is not ArrayMesh mesh)
+                {
+                    failures.Add($"{name}: no mesh");
+                    continue;
+                }
+                if (mesh.GetSurfaceCount() != legacy.GetSurfaceCount())
+                    failures.Add($"{name}: {mesh.GetSurfaceCount()} surfaces, the old build made {legacy.GetSurfaceCount()}");
+                for (int s = 0; s < Math.Min(mesh.GetSurfaceCount(), legacy.GetSurfaceCount()); s++)
+                {
+                    var x = mesh.SurfaceGetArrays(s);
+                    var y = legacy.SurfaceGetArrays(s);
+                    foreach (var slot in new[] { Mesh.ArrayType.Vertex, Mesh.ArrayType.Normal, Mesh.ArrayType.Tangent,
+                                                 Mesh.ArrayType.TexUV, Mesh.ArrayType.Index })
+                    {
+                        bool same = slot switch
+                        {
+                            Mesh.ArrayType.Vertex or Mesh.ArrayType.Normal => x[(int)slot].AsVector3Array().AsSpan().SequenceEqual(y[(int)slot].AsVector3Array()),
+                            Mesh.ArrayType.Tangent => x[(int)slot].AsFloat32Array().AsSpan().SequenceEqual(y[(int)slot].AsFloat32Array()),
+                            Mesh.ArrayType.TexUV => x[(int)slot].AsVector2Array().AsSpan().SequenceEqual(y[(int)slot].AsVector2Array()),
+                            _ => x[(int)slot].AsInt32Array().AsSpan().SequenceEqual(y[(int)slot].AsInt32Array()),
+                        };
+                        if (!same) failures.Add($"{name}: surface {s} {slot} differs from the old build");
+                    }
+                    if (mesh.SurfaceGetFormat(s) != legacy.SurfaceGetFormat(s))
+                        failures.Add($"{name}: surface {s} format {mesh.SurfaceGetFormat(s)} vs {legacy.SurfaceGetFormat(s)}");
+                }
+                if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceList) || !faceList.AsSpan().SequenceEqual(legacyFaces))
+                    failures.Add($"{name}: face list differs from the old build");
+                if (state.CollisionShape.Shape is not ConcavePolygonShape3D shape
+                    || !shape.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(data)))
+                    failures.Add($"{name}: collision shape missing or not the trimesh faces");
+            }
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id.ToString());
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "worker-prepared and main-thread builds both equal the old build (2 merged surfaces, faces, collision)")
+            : (false, string.Join("; ", failures));
+    }
+
+    /// <summary>Four submeshes: faces 0 and 1 (same record, so merged), an empty one, face 2.</summary>
+    private static MeshData SelfTestStaticMesh()
+    {
+        MeshSubmesh Quad(int face, float z, int[] indices) => new(
+            new[]
+            {
+                new System.Numerics.Vector3(-0.5f, -0.5f, z), new System.Numerics.Vector3(0.5f, -0.5f, z + 0.1f),
+                new System.Numerics.Vector3(0.5f, 0.5f, z), new System.Numerics.Vector3(-0.5f, 0.5f, z + 0.05f),
+            },
+            new[]
+            {
+                System.Numerics.Vector3.UnitZ, System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(0.1f, 0f, 1f)),
+                System.Numerics.Vector3.UnitZ, System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(0f, 0.2f, 1f)),
+            },
+            new[]
+            {
+                new System.Numerics.Vector2(0f, 0f), new System.Numerics.Vector2(1f, 0.1f),
+                new System.Numerics.Vector2(0.9f, 1f), new System.Numerics.Vector2(0.1f, 0.8f),
+            },
+            indices,
+            face);
+
+        return new MeshData(new[]
+        {
+            Quad(0, 0f, new[] { 0, 1, 2, 0, 2, 3 }),
+            Quad(1, 0.3f, new[] { 0, 1, 2, 0, 2, 3 }),
+            Quad(1, 0.4f, Array.Empty<int>()),
+            Quad(2, 0.6f, new[] { 3, 2, 1, 3, 1, 0 }),
+        });
+    }
+
+    /// <summary>ObjectRenderer.BuildArrayMesh as it was before BUG-PERF-06, kept unchanged as the
+    /// oracle for the prepared and the main-thread build.</summary>
+    private static ArrayMesh LegacyBuildArrayMesh(MeshData mesh, bool flipV, bool[] runStart, out int[] faceIndices,
+        Func<string>? label = null)
+    {
+        var arrayMesh = new ArrayMesh();
+        var indices = new List<int>(mesh.Submeshes.Count);
+        // BUG-RENDER-40: a non-finite vertex value is repaired on its way into the SurfaceTool and the
+        // mesh is named once, instead of Godot printing anonymous normalize warnings later.
+        var guard = new MeshArrayGuard.VertexGuard();
+
+        SurfaceTool? st = null;
+        int runVertexBase = 0;
+        int committable = -1;
+
+        void FlushRun()
+        {
+            if (st == null) return;
+            st.Commit(arrayMesh);
+            st = null;
+        }
+
+        foreach (var sub in mesh.Submeshes)
+        {
+            if (sub.Indices.Length == 0) continue;
+
+            committable++;
+            // Defensive: a plan shorter than the committable submeshes would silently merge the
+            // tail into whatever run preceded it, so treat a missing entry as "starts a surface".
+            // Written as one condition rather than via a bool so the compiler's null analysis can
+            // still see that st is non-null below.
+            if (st == null || committable >= runStart.Length || runStart[committable])
+            {
+                FlushRun();
+                st = new SurfaceTool();
+                st.Begin(Mesh.PrimitiveType.Triangles);
+                runVertexBase = 0;
+                indices.Add(sub.FaceIndex);
+            }
+
+            // Tangents, computed in GODOT space and from the FINAL UVs -- both matter. The
+            // positions below are swizzled from SL's Z-up and the V is conditionally flipped, and
+            // a tangent basis derived from the pre-swizzle values would be rotated relative to the
+            // vertices it is attached to.
+            //
+            // Godot cannot apply a normal map without these. SurfaceTool.GenerateTangents() used
+            // to do the job and had to be turned off: it produced NaNs on the degenerate triangles
+            // SL content is full of, and those reached the Vulkan driver. SLNG.Assets.MeshTangents
+            // guarantees finite output instead of dividing by a zero-area UV triangle -- see its
+            // tests for the exact family of inputs that crashed.
+            var tangentPositions = new System.Numerics.Vector3[sub.Positions.Length];
+            var tangentNormals = new System.Numerics.Vector3[sub.Positions.Length];
+            var tangentUvs = new System.Numerics.Vector2[sub.Positions.Length];
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                var sp = sub.Positions[i];
+                var sn = sub.Normals[i];
+                var suv = sub.UVs[i];
+                tangentPositions[i] = new System.Numerics.Vector3(sp.X, sp.Z, -sp.Y);
+                tangentNormals[i] = new System.Numerics.Vector3(sn.X, sn.Z, -sn.Y);
+                tangentUvs[i] = new System.Numerics.Vector2(suv.X, flipV ? 1.0f - suv.Y : suv.Y);
+            }
+            // The winding is reversed below, so the tangent maths gets the same order the GPU
+            // will see rather than the source order.
+            var tangentIndices = new int[sub.Indices.Length];
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                tangentIndices[t] = sub.Indices[t];
+                tangentIndices[t + 1] = sub.Indices[t + 2];
+                tangentIndices[t + 2] = sub.Indices[t + 1];
+            }
+            var tangents = SLNG.Assets.MeshTangents.Compute(
+                tangentPositions, tangentNormals, tangentUvs, tangentIndices);
+
+            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front.
+            // Reverse each triangle's winding by swapping its last two indices.
+            // We supply the vertices once, then supply the reversed indices.
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                var p = sub.Positions[i];
+                var n = sub.Normals[i];
+                var uv = sub.UVs[i];
+
+                st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), i));
+                var tg = tangents[i];
+                st.SetTangent(new Godot.Plane(tg.X, tg.Y, tg.Z, tg.W));
+                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y), i));
+                st.AddVertex(guard.Position(new Godot.Vector3(p.X, p.Z, -p.Y), i));
+            }
+
+            // Shifted past whatever this run already holds. Zero unless a previous submesh was
+            // merged into this same surface, so the un-merged path is unchanged arithmetic.
+            int indexBase = runVertexBase;
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                st.AddIndex(indexBase + sub.Indices[t]);
+                st.AddIndex(indexBase + sub.Indices[t + 2]);
+                st.AddIndex(indexBase + sub.Indices[t + 1]);
+            }
+
+            runVertexBase += sub.Positions.Length;
+        }
+        FlushRun();
+
+        guard.Report(label ?? (() => "prim mesh (unlabelled)"));
+        faceIndices = indices.ToArray();
+        return arrayMesh;
+    }
 }
