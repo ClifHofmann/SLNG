@@ -216,6 +216,29 @@ public static partial class SelfTest
         return arrayMesh;
     }
 
+    /// <summary>BUG-PERF-06: see <see cref="ObjectRenderer.SelfTestPreparedStaticMesh"/>.</summary>
+    private static Check CheckStaticMeshPrepared(SceneTree tree)
+    {
+        const string Name = "static mesh prepared off the main thread";
+        var objects = new ObjectRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            var world = new SLNG.Core.ECS.World();
+            objects.Initialize(world, null!, null!);
+            var (passed, detail) = objects.SelfTestPreparedStaticMesh(world);
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
     private static void Compare<T>(List<string> problems, int surface, string what, T[] actual, T[] expected)
         where T : IEquatable<T>
     {
