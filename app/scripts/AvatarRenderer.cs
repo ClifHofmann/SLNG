@@ -245,7 +245,7 @@ public partial class AvatarRenderer : Node3D
 
     /// <param name="Definition">The skeleton definition the node was built from: what the worker
     /// resolves the mesh's joint names against, since it must not touch the node itself.</param>
-    /// <param name="WantPick">The item gets click colliders (AddRiggedPickBody), so the worker cuts
+    /// <param name="WantPick">The item gets click colliders (QueueRiggedPickBodies), so the worker cuts
     /// their per-bone chunks too.</param>
     private sealed record PendingRig(
         MeshData MeshData, AvatarVisual Visual, Skeleton3D Skeleton, Guid MeshId,
@@ -2404,13 +2404,14 @@ public partial class AvatarRenderer : Node3D
     /// authored against our rest (BuildRiggedMeshInstance takes every bind from the asset's own
     /// inverse-bind matrix, with the joint's own scale injected), so the collider sat somewhere
     /// the item was not, and a click on a worn item landed on whatever stood behind it.
+    ///
+    /// <para>BUG-PERF-08: only the control-avatar path comes through here now. It cuts the chunks from the
+    /// mesh -- which reads every surface back out of the RenderingServer, a GPU buffer download per
+    /// surface, on the main thread -- and builds all of them at once. A worn rig does neither: its
+    /// worker cuts the chunks (<see cref="ChunkByDominantSlot"/>, BUG-PERF-06) and
+    /// <see cref="QueueRiggedPickBodies"/> builds them one per queue item.</para>
     /// </remarks>
-    /// <param name="chunks">BUG-PERF-06: the per-bone chunks, already cut on the rig worker from
-    /// the arrays it built (<see cref="ChunkByDominantSlot"/>). Without them they are cut here from
-    /// the mesh -- which reads every surface back out of the RenderingServer, a GPU buffer download
-    /// per surface, on the main thread. Only the control-avatar path still does that.</param>
-    private void AddRiggedPickBody(MeshInstance3D mi, AvatarVisual avatarVisual, Skeleton3D skeleton, Guid entityId,
-        PickChunk[]? chunks = null)
+    private void AddRiggedPickBody(MeshInstance3D mi, AvatarVisual avatarVisual, Skeleton3D skeleton, Guid entityId)
     {
         // A control avatar's mesh is the only thing there is to click on for an animesh -- its
         // prim node carries no collision shape, since the unskinned geometry would sit in the
@@ -2421,56 +2422,135 @@ public partial class AvatarRenderer : Node3D
         var entity = _world.GetEntity(entityId);
         if (entity == null) return;
 
-        if (chunks == null)
+        if (mi.Mesh is not ArrayMesh mesh) return;
+        var surfaces = new List<(Godot.Vector3[] Verts, int[] Bones, float[] Weights, int[] Indices)>();
+        for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
         {
-            if (mi.Mesh is not ArrayMesh mesh) return;
-            var surfaces = new List<(Godot.Vector3[] Verts, int[] Bones, float[] Weights, int[] Indices)>();
-            for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
-            {
-                var arrays = mesh.SurfaceGetArrays(surface);
-                surfaces.Add((arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array(),
-                              arrays[(int)Mesh.ArrayType.Bones].AsInt32Array(),
-                              arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array(),
-                              arrays[(int)Mesh.ArrayType.Index].AsInt32Array()));
-            }
-            chunks = ChunkByDominantSlot(surfaces, skin.GetBindCount());
+            var arrays = mesh.SurfaceGetArrays(surface);
+            surfaces.Add((arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array(),
+                          arrays[(int)Mesh.ArrayType.Bones].AsInt32Array(),
+                          arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array(),
+                          arrays[(int)Mesh.ArrayType.Index].AsInt32Array()));
         }
 
         var bodies = new List<Node3D>();
-        foreach (var (slot, faces) in chunks)
+        foreach (var chunk in ChunkByDominantSlot(surfaces, skin.GetBindCount()))
         {
-            int bone = skin.GetBindBone(slot);
-            if (bone < 0 || bone >= skeleton.GetBoneCount() || faces.Length < 3) continue;
-
-            var attach = new BoneAttachment3D
-            {
-                Name = $"WornPick_{entityId:N}_{slot}",
-                BoneName = skeleton.GetBoneName(bone),
-                BoneIdx = bone,
-            };
-            skeleton.AddChild(attach);
-
-            var holder = new Node3D { Name = "BindSpace", Transform = skin.GetBindPose(slot) };
-            attach.AddChild(holder);
-
-            var body = new StaticBody3D
-            {
-                Name = "AttachCollision",
-                // Phantom rather than Objects: a worn item is something to look at and click,
-                // never something the avatar should bump into.
-                CollisionLayer = PhysicsLayers.Phantom,
-                CollisionMask = 0,
-            };
-            // The same two metas ObjectRenderer writes, so the selection path resolves this hit
-            // back to an entity with no special case.
-            body.SetMeta("EntityId", entityId.ToString());
-            body.SetMeta("LocalId", entity.LocalId.ToString());
-            body.AddChild(new CollisionShape3D { Shape = new ConcavePolygonShape3D { Data = faces } });
-            holder.AddChild(body);
-            bodies.Add(attach);
+            if (BuildPickChunk(skin, skeleton, entityId, entity, chunk) is { } attach) bodies.Add(attach);
         }
 
         if (bodies.Count > 0) _riggedPickBodies[entityId] = bodies;
+    }
+
+    /// <summary>One bone's collider of a rigged worn item: a <c>BoneAttachment3D</c> on the skeleton,
+    /// a holder carrying the bind pose, and a static body with the chunk's concave shape. Null when
+    /// the chunk's bind slot names no bone of the skeleton, or holds less than a triangle.</summary>
+    /// <remarks>The shape is the expensive part (the physics server builds its BVH from the faces),
+    /// which is why a worn rig builds one chunk per queue item instead of all of them together.</remarks>
+    private Node3D? BuildPickChunk(Skin skin, Skeleton3D skeleton, Guid entityId, SLNG.Core.ECS.Entity entity, PickChunk chunk)
+    {
+        var (slot, faces) = chunk;
+        int bone = skin.GetBindBone(slot);
+        if (bone < 0 || bone >= skeleton.GetBoneCount() || faces.Length < 3) return null;
+
+        var attach = new BoneAttachment3D
+        {
+            Name = $"WornPick_{entityId:N}_{slot}",
+            BoneName = skeleton.GetBoneName(bone),
+            BoneIdx = bone,
+        };
+        skeleton.AddChild(attach);
+
+        var holder = new Node3D { Name = "BindSpace", Transform = skin.GetBindPose(slot) };
+        attach.AddChild(holder);
+
+        var body = new StaticBody3D
+        {
+            Name = "AttachCollision",
+            // Phantom rather than Objects: a worn item is something to look at and click,
+            // never something the avatar should bump into.
+            CollisionLayer = PhysicsLayers.Phantom,
+            CollisionMask = 0,
+        };
+        // The same two metas ObjectRenderer writes, so the selection path resolves this
+        // hit back to an entity with no special case.
+        body.SetMeta("EntityId", entityId.ToString());
+        body.SetMeta("LocalId", entity.LocalId.ToString());
+        body.AddChild(new CollisionShape3D { Shape = new ConcavePolygonShape3D { Data = faces } });
+        holder.AddChild(body);
+        return attach;
+    }
+
+    /// <summary>The click colliders a rigged worn item is still owed: the item they hang on, the skin
+    /// they were cut against, and the chunks not built yet. Main thread only.</summary>
+    private sealed class PendingRiggedPick
+    {
+        public required MeshInstance3D Mi { get; init; }
+        public required Skeleton3D Skeleton { get; init; }
+        public required Skin Skin { get; init; }
+        public required Queue<PickChunk> Chunks { get; init; }
+    }
+
+    private readonly Dictionary<Guid, PendingRiggedPick> _pendingRiggedPicks = new();
+
+    /// <summary>BUG-PERF-08: gives a freshly rigged worn item its click colliders, one chunk per queue
+    /// item rather than inside the rig item. Measured in-world 2026-10-08 (Amrum, v0.26.116):
+    /// <c>avatar.rig.pick</c> max 57 ms, 1.1 s in total -- creating up to
+    /// <see cref="MaxWornPickChunks"/> bone attachments and concave shapes in one go, where one big
+    /// chunk's shape build alone can cost tens of milliseconds. Each chunk is its own item, so the
+    /// pump spreads them over frames; an item that is not the last re-queues the rest.</summary>
+    /// <param name="chunks">The per-bone chunks the rig worker cut from the arrays it built.</param>
+    private void QueueRiggedPickBodies(MeshInstance3D mi, AvatarVisual avatarVisual, Skeleton3D skeleton, Guid entityId,
+        PickChunk[]? chunks)
+    {
+        if ((!avatarVisual.IsSelf && !avatarVisual.IsControlAvatar) || _world == null) return;
+        if (chunks == null || chunks.Length == 0 || mi.Skin is not Skin skin) return;
+
+        // Whatever an earlier item of this entity left behind goes first: the chunks below are
+        // added to the list one at a time, not assigned over it.
+        ClearRiggedPickBodies(entityId);
+        _pendingRiggedPicks[entityId] = new PendingRiggedPick
+        {
+            Mi = mi,
+            Skeleton = skeleton,
+            Skin = skin,
+            Chunks = new Queue<PickChunk>(chunks),
+        };
+        EnqueueNextRiggedPick(entityId);
+    }
+
+    private void EnqueueNextRiggedPick(Guid entityId) =>
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => BuildNextRiggedPick(entityId),
+            coalesceKey: $"avatar.rig.pick:{entityId}", label: "avatar.rig.pick");
+
+    /// <summary>Builds the next owed collider of <paramref name="entityId"/> and re-queues the rest.
+    /// Reads the current state when it runs: a newer rig, a detach or a move to a HUD point may have
+    /// replaced the item since it was queued -- those paths clear the colliders and the debt
+    /// (<see cref="ClearRiggedPickBodies"/>), and a debt for an item that is no longer the rigged one
+    /// is dropped here as well.</summary>
+    private void BuildNextRiggedPick(Guid entityId)
+    {
+        if (!_pendingRiggedPicks.TryGetValue(entityId, out var pending)) return;
+
+        var entity = _world?.GetEntity(entityId);
+        if (entity == null
+            || !_riggedAttachments.TryGetValue(entityId, out var current) || current != pending.Mi
+            || !IsInstanceValid(pending.Mi) || !IsInstanceValid(pending.Skeleton)
+            || pending.Chunks.Count == 0)
+        {
+            _pendingRiggedPicks.Remove(entityId);
+            return;
+        }
+
+        if (BuildPickChunk(pending.Skin, pending.Skeleton, entityId, entity, pending.Chunks.Dequeue()) is { } attach)
+        {
+            if (!_riggedPickBodies.TryGetValue(entityId, out var bodies))
+                _riggedPickBodies[entityId] = bodies = new List<Node3D>();
+            bodies.Add(attach);
+        }
+
+        if (pending.Chunks.Count > 0) EnqueueNextRiggedPick(entityId);
+        else _pendingRiggedPicks.Remove(entityId);
     }
 
     /// <summary>How many per-bone colliders one worn item may keep, largest first.</summary>
@@ -2588,6 +2668,8 @@ public partial class AvatarRenderer : Node3D
 
     private void ClearRiggedPickBodies(Guid entityId)
     {
+        // BUG-PERF-08: colliders still owed to the item that is going away are not built for it.
+        _pendingRiggedPicks.Remove(entityId);
         if (!_riggedPickBodies.TryGetValue(entityId, out var bodies)) return;
         foreach (var body in bodies)
         {
@@ -2775,8 +2857,9 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.RecordExternal("avatar.rig.tangents", ready.Mesh.TangentsMs);
         MainThreadWorkQueue.RecordExternal("avatar.rig.pickcut", ready.Mesh.PickMs);
         // The labels below are the main-thread parts of this item and add up to avatar.rig:
-        // discard, jointpos, bind, commit, scene, pick, bom, materials. The ones above are worker
-        // time, filed here because only the main thread may write the cost table.
+        // discard, jointpos, bind, commit, scene, bom, materials. The ones above are worker
+        // time, filed here because only the main thread may write the cost table. The click
+        // colliders (avatar.rig.pick) are queue items of their own since BUG-PERF-08.
 
         // Anything already rigged for this entity is replaced, not joined. Without this,
         // several updates arriving before the queue drains each ADD a rigged MeshInstance
@@ -2804,7 +2887,7 @@ public partial class AvatarRenderer : Node3D
             // the node built from it, so the two agree. Should they ever not, the weights
             // would point at the wrong binds -- the geometry is built again, here.
             GD.PushWarning($"[RiggedMesh] mesh {req.MeshId:N}: joint slots differ between worker and skeleton -- rebuilt on the main thread");
-            prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace);
+            prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace, req.WantPick);
         }
 
         MeshInstance3D? built = null;
@@ -2840,8 +2923,8 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.RecordExternal("avatar.rig.scene", sceneClock.Elapsed.TotalMilliseconds);
 
         // BUG-PERF-06: the chunks were cut on the worker, so no surface is read back from the GPU.
-        MainThreadWorkQueue.Measure("avatar.rig.pick",
-            () => AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId, prepared.PickChunks));
+        // BUG-PERF-08: and they are built one per queue item (label avatar.rig.pick), after this item.
+        QueueRiggedPickBodies(mi, req.Visual, req.Skeleton, entityId, prepared.PickChunks);
         MainThreadWorkQueue.Measure("avatar.rig.bom",
             () => RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId));
         // Only the part before its first unfinished await runs here.

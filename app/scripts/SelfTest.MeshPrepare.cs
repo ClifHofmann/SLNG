@@ -490,6 +490,27 @@ public static partial class SelfTest
         }
     }
 
+    /// <summary>BUG-PERF-08: see <see cref="AvatarRenderer.SelfTestRiggedPickBodies"/>.</summary>
+    private static Check CheckRiggedPickBodiesPerItem(SceneTree tree)
+    {
+        const string Name = "worn rig click colliders built one per queue item";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestRiggedPickBodies();
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
     private static void Compare<T>(List<string> problems, int surface, string what, T[] actual, T[] expected)
         where T : IEquatable<T>
     {

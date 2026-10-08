@@ -180,6 +180,7 @@ public static partial class SelfTest
         results.Add(CheckStaticMeshPrepared(tree));
         results.Add(CheckAttachMeshPreparedOffMainThread()); // BUG-PERF-08
         results.Add(CheckAttachSupersede(tree));
+        results.Add(CheckRiggedPickBodiesPerItem(tree)); // BUG-PERF-08
         results.Add(CheckAlphaStatsWithoutReadBack()); // BUG-PERF-07
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
