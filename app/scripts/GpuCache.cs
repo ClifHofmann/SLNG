@@ -475,6 +475,47 @@ public class GpuCache
     /// cleared on eviction.</para></summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _alphaMaskable = new();
 
+    /// <summary>BUG-PERF-07: the three numbers <c>AvatarRenderer.ClassifyAlpha</c> decides an avatar or
+    /// HUD face's transparency on, measured over mip 0 of the uploaded image ON THE WORKER, next to
+    /// <see cref="_alphaModes"/> and for the same reason.
+    ///
+    /// <para>ClassifyAlpha used to get them by <c>ImageTexture.GetImage()</c> -- a full read-back from
+    /// VRAM -- plus a copy and a scan of every pixel, per textured face, on the main thread. While
+    /// the texture await was genuinely asynchronous that ran on a pool thread and nobody saw it; once
+    /// FEAT-PERF-11 made textures ready at once, the material build completed inline inside the rig
+    /// queue item, and on a teleport to Amrum it was <c>avatar.rig.materials</c> = 24.7 s of 28.5 s,
+    /// about 8 ms per rig. Same lifetime rules as <see cref="_alphaModes"/>, plus: a texture whose
+    /// pixels are replaced in place (sharpened, shrunk) gets its numbers replaced too.</para></summary>
+    public readonly record struct AlphaStats(int MinAlpha, float FracMid, float FracClear);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, AlphaStats> _alphaStats = new();
+
+    /// <summary>BUG-PERF-07: see <see cref="AlphaStats"/>. False when this id has not been uploaded
+    /// through this cache yet.</summary>
+    public static bool TryGetAlphaStats(Guid textureId, out AlphaStats stats)
+        => _alphaStats.TryGetValue(textureId, out stats);
+
+    /// <summary>The minimum alpha, and the fractions of texels with mid-range alpha (16 &lt; a &lt; 239)
+    /// and with clear alpha (a &lt;= 16), over mip 0 of tightly packed RGBA8 -- exactly the scan
+    /// ClassifyAlpha ran on the read-back image.</summary>
+    internal static AlphaStats MeasureAlphaStats(byte[] rgba, int w, int h)
+    {
+        int mip0Bytes = Math.Min(rgba.Length, w * h * 4);
+        int pixelCount = mip0Bytes / 4;
+
+        int min = 255, midCount = 0, clearCount = 0;
+        for (int i = 3; i < mip0Bytes; i += 4)
+        {
+            byte a = rgba[i];
+            if (a < min) min = a;
+            if (a > 16 && a < 239) midCount++;
+            if (a <= 16) clearCount++;
+        }
+        return new AlphaStats(min,
+            pixelCount > 0 ? (float)midCount / pixelCount : 0f,
+            pixelCount > 0 ? (float)clearCount / pixelCount : 0f);
+    }
+
     /// <summary>The alpha mode of an already-uploaded texture, without touching the GPU.
     /// False when this id has not been uploaded through this cache yet.</summary>
     public static bool TryGetAlphaMode(Guid textureId, out Image.AlphaMode mode)
@@ -621,6 +662,7 @@ public class GpuCache
 
                 Image? image = null;
                 float uploadedFor = 0f;
+                bool resized = false;
                 try
                 {
                     image = Image.CreateFromData(textureData.Width, textureData.Height, false,
@@ -659,6 +701,7 @@ public class GpuCache
                             if (targetW < image.GetWidth() || targetH < image.GetHeight())
                             {
                                 image.Resize(targetW, targetH, Image.Interpolation.Lanczos);
+                                resized = true;
                             }
                             uploadedFor = screenPixelArea;
                         }
@@ -674,6 +717,13 @@ public class GpuCache
                         // already-decoded pixels. Only meaningful when there IS an alpha channel.
                         _alphaMaskable[textureId] = _alphaModes[textureId] != Image.AlphaMode.None
                             && AnalyzeAlphaMaskable(image.GetData(), image.GetWidth(), image.GetHeight());
+                        // BUG-PERF-07: the decoded buffer IS mip 0 of the upload unless it was
+                        // resized -- FixAlphaEdges rewrites the colour of near-clear texels and
+                        // never their alpha (core/io/image.cpp, 4.7-stable) -- so no copy is
+                        // needed for the common case.
+                        _alphaStats[textureId] = resized
+                            ? MeasureAlphaStats(image.GetData(), image.GetWidth(), image.GetHeight())
+                            : MeasureAlphaStats(textureData.Rgba, textureData.Width, textureData.Height);
                     }
 
                     if (generateMipmaps && image != null) image.GenerateMipmaps();
@@ -928,6 +978,8 @@ public class GpuCache
             bool mips = img.HasMipmaps();
             if (mips) img.ClearMipmaps();
             img.Resize(nw, nh, Image.Interpolation.Lanczos);
+            // BUG-PERF-07: the texture's pixels change here, so its alpha numbers do too.
+            _alphaStats[entry.Id] = MeasureAlphaStats(img.GetData(), nw, nh);
             if (mips) img.GenerateMipmaps();
             tex.SetImage(img);
             img.Dispose();

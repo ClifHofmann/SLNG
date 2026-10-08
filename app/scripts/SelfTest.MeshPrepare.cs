@@ -216,6 +216,49 @@ public static partial class SelfTest
         return arrayMesh;
     }
 
+    /// <summary>
+    /// BUG-PERF-07: an avatar face's alpha verdict is now decided on numbers the texture worker measured
+    /// on the DECODED buffer (GpuCache.AlphaStats), not on the image read back from VRAM. That is only
+    /// the same thing if FixAlphaEdges leaves alpha alone and the upload's mip 0 is the decoded
+    /// buffer. This uploads a texture with clear, mid-range, near-opaque and opaque texels the way
+    /// GpuCache does (FixAlphaEdges, mipmaps, ImageTexture), reads it back, and requires the same
+    /// three numbers from both.
+    /// </summary>
+    private static Check CheckAlphaStatsWithoutReadBack()
+    {
+        const string Name = "avatar alpha numbers without a read-back";
+        try
+        {
+            const int W = 64, H = 32;
+            var rgba = new byte[W * H * 4];
+            for (int i = 0; i < W * H; i++)
+            {
+                rgba[i * 4] = (byte)(i * 7);
+                rgba[i * 4 + 1] = (byte)(i * 3);
+                rgba[i * 4 + 2] = (byte)(i * 5);
+                rgba[i * 4 + 3] = (i % 9) switch { 0 => 0, 1 => 10, 2 => 17, 3 => 128, 4 => 238, 5 => 239, 6 => 254, _ => 255 };
+            }
+
+            var fromDecode = GpuCache.MeasureAlphaStats(rgba, W, H);
+
+            using var image = Image.CreateFromData(W, H, false, Image.Format.Rgba8, rgba);
+            image.FixAlphaEdges();
+            image.GenerateMipmaps();
+            using var tex = ImageTexture.CreateFromImage(image);
+            using var back = tex.GetImage();
+            if (back == null) return new Check(Name, false, "the texture could not be read back");
+            var fromReadBack = GpuCache.MeasureAlphaStats(back.GetData(), back.GetWidth(), back.GetHeight());
+
+            return fromDecode == fromReadBack
+                ? new Check(Name, true, $"min={fromDecode.MinAlpha} fracMid={fromDecode.FracMid:0.###} fracClear={fromDecode.FracClear:0.###} from both")
+                : new Check(Name, false, $"decoded {fromDecode} vs read back {fromReadBack}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     /// <summary>BUG-PERF-06: see <see cref="ObjectRenderer.SelfTestPreparedStaticMesh"/>.</summary>
     private static Check CheckStaticMeshPrepared(SceneTree tree)
     {
