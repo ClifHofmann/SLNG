@@ -112,6 +112,8 @@ public partial class ChatWindow : SLNGWindow
         public Guid? TargetGroupId;
         // Set for CONFERENCE tabs only (several people, no group): the session lines go to and come from.
         public Guid? TargetConferenceId;
+        // Own lines the grid has sent back through a conference session -- see OnSendPressed's fallback.
+        public int OwnConferenceEchoes;
         // Shown once per tab per session -- see WarnIfTargetOffline.
         public bool OfflineNoticeShown;
     }
@@ -594,6 +596,7 @@ public partial class ChatWindow : SLNGWindow
         }
 
         var tab = GetOrCreateConferenceTab(sessionId, sessionName, fromAgentId == Guid.Empty ? "" : fromAgentName);
+        if (Guid.TryParse(_session?.AgentId, out var selfId) && fromAgentId == selfId) tab.OwnConferenceEchoes++;
         AppendMessageToTab(tab, fromAgentName, message, fromAgentId);
     }
 
@@ -981,6 +984,9 @@ public partial class ChatWindow : SLNGWindow
     /// since their online status isn't known at all in that case.</summary>
     /// <summary>How long to give the grid to send its own offline notice before ours is shown.</summary>
     private const double OfflineNoticeGraceSeconds = 2.5;
+
+    /// <summary>How long a conference line waits for the grid's echo before the tab shows it itself.</summary>
+    private const double ConferenceEchoGraceSeconds = 2.0;
 
     private void WarnIfTargetOffline(ChatTab tab, Guid targetId)
     {
@@ -1508,8 +1514,24 @@ public partial class ChatWindow : SLNGWindow
         else if (_activeChatTab.TargetConferenceId is { } conferenceId)
         {
             // Like group chat, the line comes back through the session and is shown then (the viewer echoes
-            // locally only for a 1:1 IM), so nothing is appended here.
-            _session?.SendConferenceMessage(conferenceId, text);
+            // locally only for a 1:1 IM), so nothing is appended here -- unless the grid stays silent
+            // (BUG-NET-32: "I see the others but my own lines never show"): then ours is the fallback, and a
+            // line that did not leave at all says so instead of vanishing.
+            var confTab = _activeChatTab;
+            if (_session?.SendConferenceMessage(conferenceId, text) != true)
+            {
+                AppendSystemNotice("[System] Nachricht nicht gesendet (keine Verbindung).");
+            }
+            else
+            {
+                int echoesBefore = confTab.OwnConferenceEchoes;
+                GetTree().CreateTimer(ConferenceEchoGraceSeconds).Timeout += () =>
+                {
+                    if (!IsInstanceValid(this) || !_chatTabs.Contains(confTab) || confTab.OwnConferenceEchoes != echoesBefore) return;
+                    AppendMessageToTab(confTab, _session?.AgentName ?? "You", text,
+                        Guid.TryParse(_session?.AgentId, out var me) ? me : default);
+                };
+            }
         }
         else if (_activeChatTab.TargetGroupId is { } groupId)
         {
@@ -1873,6 +1895,8 @@ public partial class ChatWindow : SLNGWindow
         // viewer's own behaviour, and without it a "closed" group would keep re-opening its tab
         // on the next message.
         if (leaveSession && tab.TargetGroupId is { } groupId) _session?.LeaveGroupChat(groupId);
+        // Same for a conference (BUG-NET-32): a tab closed without leaving leaves a ghost membership on the grid.
+        if (leaveSession && tab.TargetConferenceId is { } conferenceId) _session?.LeaveConference(conferenceId);
 
         bool wasActive = tab == _activeChatTab;
         _chatTabs.Remove(tab);

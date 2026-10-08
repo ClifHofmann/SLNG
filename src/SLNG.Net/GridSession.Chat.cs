@@ -464,16 +464,50 @@ public sealed partial class GridSession
         if (sessionId == Guid.Empty || string.IsNullOrEmpty(message) || !_client.Network.Connected) return false;
 
         Guid to = _conferencePeers.TryGetValue(sessionId, out var peer) ? peer : sessionId;
+        if (Diag.Verbose)
+            Console.Error.WriteLine($"[Conference] send session={sessionId} to={to} len={message.Length}");
+        SendSessionPacket(to, sessionId, message, InstantMessageDialog.SessionSend);
+        return true;
+    }
+
+    /// <summary>One line or leave of an ad-hoc session, packed as the viewer packs it (<c>pack_instant_message</c>): the
+    /// region id of the region we stand in and the one-byte empty binary bucket. Without those two the grid accepted the
+    /// packet and relayed it to nobody (BUG-NET-32: others saw nothing, and no echo came back); with them it goes through.</summary>
+    private void SendSessionPacket(Guid to, Guid sessionId, string message, InstantMessageDialog dialog)
+    {
         _client.Self.InstantMessage(
             _client.Self.Name,
             new UUID(to),
             message,
             new UUID(sessionId),
-            InstantMessageDialog.SessionSend,
+            dialog,
             InstantMessageOnline.Online,
             _client.Self.SimPosition,
-            UUID.Zero,
-            Array.Empty<byte>());
+            _client.Network.CurrentSim?.ID ?? UUID.Zero,
+            new byte[] { 0 });
+    }
+
+    /// <summary>Leaves every conference we are in. Called before logging out: the grid keeps a conference's members past
+    /// their logout, and the next login then meets a session it half-remembers (BUG-NET-32).</summary>
+    public void LeaveAllConferences()
+    {
+        foreach (var id in _conferenceSessions.Keys.ToArray()) LeaveConference(id);
+    }
+
+    /// <summary>Leaves an ad-hoc conference: <c>SessionDrop</c> (IM_SESSION_LEAVE) with the session id, addressed to the
+    /// session's other participant like a line is (<c>LLIMModel::sendLeaveSession</c>, llimview.cpp:1910). Without it the
+    /// grid keeps us a member of the session for good, and a later invitation to the same people (the session id is the
+    /// same) finds a ghost membership it cannot accept -- BUG-NET-32: accept answers 500 and our lines are dropped.</summary>
+    public bool LeaveConference(Guid sessionId)
+    {
+        if (sessionId == Guid.Empty || !_client.Network.Connected) return false;
+
+        Guid to = _conferencePeers.TryGetValue(sessionId, out var peer) ? peer : sessionId;
+        if (Diag.Verbose) Console.Error.WriteLine($"[Conference] leave session={sessionId} to={to}");
+        SendSessionPacket(to, sessionId, string.Empty, InstantMessageDialog.SessionDrop);
+        _client.Self.GroupChatSessions.TryRemove(new UUID(sessionId), out _);
+        _conferencePeers.TryRemove(sessionId, out _);
+        _conferenceSessions.TryRemove(sessionId, out _);
         return true;
     }
 
@@ -836,14 +870,25 @@ public sealed partial class GridSession
         }
 
         // An ad-hoc conference: several people, no group. Its own session, answered in the same session.
-        if (e.IM.Dialog == InstantMessageDialog.SessionSend)
+        // The invitation itself ("X was invited") is a session line too, whatever dialog it carries: the viewer files it
+        // into the conference (llimview.cpp:4274, addMessage with the session id), it does not make it a 1:1 IM. LibreMetaverse
+        // has just registered the session for it (GroupChatSessions) and accepted it, which is what tells it from a plain IM.
+        // The viewer drops an invitation from ourselves (llimview.cpp:4270).
+        Guid imFrom = e.IM.FromAgentID.Guid, imSelf = _client.Self.AgentID.Guid;
+        bool lmvKnowsSession = _client.Self.GroupChatSessions.ContainsKey(e.IM.IMSessionID);
+        bool invitationLine = e.IM.Dialog == InstantMessageDialog.MessageFromAgent && imFrom != Guid.Empty
+            && !SessionIds.IsPeerToPeer(sessionId, imSelf, imFrom) && lmvKnowsSession;
+        if (invitationLine && imFrom == imSelf) return;
+
+        if (e.IM.Dialog == InstantMessageDialog.SessionSend || invitationLine)
         {
             if (string.IsNullOrEmpty(e.IM.Message) || IsDuplicateSessionLine(e.IM)) return;
 
-            Guid from = e.IM.FromAgentID.Guid;
+            Guid from = imFrom;
             // Who to address replies to: the viewer sends a session line to the session's "other participant",
             // which for an invited session is whoever invited us (llimview.cpp addMessage -> target_id).
-            if (from != Guid.Empty && from != _client.Self.AgentID.Guid) _conferencePeers.TryAdd(sessionId, from);
+            _conferenceSessions.TryAdd(sessionId, 0);
+            if (from != Guid.Empty && from != imSelf) _conferencePeers.TryAdd(sessionId, from);
 
             ConferenceChatMessageReceived?.Invoke(this, new ConferenceChatMessageEvent(
                 sessionId, DecodeSessionName(e.IM.BinaryBucket), from, e.IM.FromAgentName, e.IM.Message));
@@ -855,6 +900,8 @@ public sealed partial class GridSession
         InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
             e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, e.IM.IMSessionID.Guid));
     }
+
+    private readonly ConcurrentDictionary<Guid, byte> _conferenceSessions = new();
 
     /// <summary>Sends a 1:1 instant message.</summary>
     public void SendInstantMessage(Guid targetAgentId, string message)
