@@ -74,9 +74,26 @@ public static partial class SelfTest
             // A sharpen into a full cache: admission cuts it to the cap, which is not larger than
             // the 256 px texture it would replace, so nothing is uploaded and nothing stays reserved.
             long resident256 = TextureAdmission.TextureBytes(S / 2, S / 2, true);
-            var reUpload = cache.SelfTestPrepareReUpload(Guid.NewGuid(), data, area, resident256);
-            if (reUpload != null) problems.Add($"a re-upload with no room produced a {reUpload.Value.Width} px image");
+            var noRoom = cache.SelfTestPrepareReUpload(Guid.NewGuid(), data, area, resident256);
+            if (noRoom.HasImage) problems.Add($"a re-upload with no room produced a {noRoom.Width} px image");
+            if (noRoom.NothingSharper) problems.Add("a re-upload with no room was reported as 'nothing sharper exists'");
             if (cache.SelfTestReservedBytes != 0) problems.Add($"{cache.SelfTestReservedBytes} bytes still reserved after the re-upload");
+
+            // A sharpen whose area is below the level floor asks for nothing larger than is there,
+            // however much room there is. That must be told apart from "no room": the first stands
+            // (the area has to grow 4x), the second is retried later. Mixing them up re-decoded the same
+            // 1,700 textures 42,000 times in the first in-world run.
+            var roomy = new GpuCache(1L << 30);
+            try
+            {
+                long resident16 = TextureAdmission.TextureBytes(16, 16, true); // 512 px at the 5-level floor
+                var atFloor = roomy.SelfTestPrepareReUpload(Guid.NewGuid(), data, 11f, resident16);
+                if (atFloor.HasImage) problems.Add($"a floor-level re-upload produced a {atFloor.Width} px image");
+                if (!atFloor.NothingSharper) problems.Add("a re-upload at the level floor was not reported as 'nothing sharper exists'");
+                var sharper = roomy.SelfTestPrepareReUpload(Guid.NewGuid(), data, area, resident16);
+                if (!sharper.HasImage || sharper.Width != S) problems.Add($"a re-upload into a roomy cache gave {sharper.Width} px (has image: {sharper.HasImage})");
+            }
+            finally { roomy.DisposeAll(); }
 
             return problems.Count == 0
                 ? new Check(Name, true, $"{widths.Count} textures: {string.Join(",", widths.GetRange(0, Math.Min(widths.Count, 12)))}... resident {cache.CurrentSizeBytes >> 10} KB of a {Budget >> 10} KB budget")

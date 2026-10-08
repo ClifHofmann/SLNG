@@ -93,6 +93,12 @@ public class GpuCache
     // into shrinks of the least recently used textures, so near textures can sharpen in a full cache.
     private long _roomWanted;
 
+    // A sharpen that ended without uploading anything (no room after all, or it failed) is not retried
+    // until this time (ms on _biasClock). Without it such a texture was re-decoded at every 4 Hz
+    // re-offer: 42,000 sharpen decodes in 6 minutes for 1,700 textures (BUG-PERF-09 in-world run).
+    private readonly ConcurrentDictionary<Guid, long> _sharpenRetryAtMs = new();
+    private const long SharpenRetryCooldownMs = 5000;
+
     // The one AssetService every renderer shares. A shrink needs it to find the texture's decoded
     // pixels; it is remembered from the upload calls rather than passed to Tick.
     private SLNG.Assets.AssetService? _assets;
@@ -450,23 +456,29 @@ public class GpuCache
         // check -- not the built-for area -- is what keeps a full cache from re-decoding the same
         // texture four times a second just to throw the result away. Lock-free first: the common
         // answer while the cache is full is "no room at all".
+        if (_sharpenRetryAtMs.TryGetValue(textureId, out long retryAt) && _biasClock.ElapsedMilliseconds < retryAt) return;
+
         long budget = Interlocked.Read(ref _maxSize);
         long projected = Interlocked.Read(ref _currentSize) + ReservedBytesSnapshot();
+        // Two reasons a texture can be eligible. The camera came closer than the area it was
+        // requested for: that is someone looking at it, and the least recently used textures give up
+        // bytes for it (Tick). Or it was only cut at upload and the request has not changed: that
+        // waits for the cache to fall back below the low-water mark and asks for nothing -- thousands
+        // of those, all asking, would keep the shrink pass running for ever, and a sharpen that fills
+        // the cache to the brim would only be shrunk again.
+        bool cutAtUpload = _admissionRequestedArea.TryGetValue(textureId, out float requestedFor)
+                           && screenPixelArea < requestedFor * 4f;
+        long limit = cutAtUpload ? (long)(budget * LowWater) : budget;
+        if (cutAtUpload && projected >= limit) return; // the common blocked case, answered without a lock
+
         long replaced;
         lock (_cache) replaced = _cache.TryGetValue(textureId, out var resident) ? resident.Size : 0;
         if (replaced <= 0) return;
         // One level up is 4x the bytes. If not even that fits, the decode would be thrown away; if it
         // fits, admission in PrepareImage cuts a bigger jump down to whatever does.
-        long shortBy = projected + replaced * 3 - budget;
+        long shortBy = projected + replaced * 3 - limit;
         if (shortBy > 0)
         {
-            // Two reasons a texture can be eligible. The camera came closer than the area it was
-            // requested for: that is someone looking at it, and the least recently used textures
-            // give up bytes for it (Tick). Or it was only cut at upload and the request has not
-            // changed: that waits for room to appear on its own and asks for nothing -- thousands of
-            // those, all asking, would keep the shrink pass running for ever.
-            bool cutAtUpload = _admissionRequestedArea.TryGetValue(textureId, out float requestedFor)
-                               && screenPixelArea < requestedFor * 4f;
             if (!cutAtUpload) NoteRoomWanted(shortBy);
             return;
         }
@@ -494,9 +506,16 @@ public class GpuCache
                     .ConfigureAwait(false);
                 if (prepared.Image == null)
                 {
-                    // Nothing was uploaded (admission left it where it is, or the build failed): the
-                    // texture is still as small as it was, so it must stay a sharpen candidate.
-                    _uploadedForPixelArea.TryUpdate(textureId, builtFor, screenPixelArea);
+                    if (!prepared.NothingSharper)
+                    {
+                        // Nothing was uploaded because admission found no room (or the build failed):
+                        // the texture is still as small as it was, so it stays a sharpen candidate --
+                        // but not one to try again at the next re-offer.
+                        _uploadedForPixelArea.TryUpdate(textureId, builtFor, screenPixelArea);
+                        _sharpenRetryAtMs[textureId] = _biasClock.ElapsedMilliseconds + SharpenRetryCooldownMs;
+                    }
+                    // else: nothing sharper exists for this area, so the claim stands; the area has to
+                    // grow another 4x before this is looked at again.
                     return;
                 }
 
@@ -528,6 +547,7 @@ public class GpuCache
                         else _uploadedForPixelArea[textureId] = prepared.UploadedForPixelArea;
                         if (prepared.ExtraDiscard > 0) _admissionRequestedArea[textureId] = screenPixelArea;
                         else _admissionRequestedArea.TryRemove(textureId, out _);
+                        _sharpenRetryAtMs.TryRemove(textureId, out _);
                         Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} now uploaded={finalW}x{finalH}");
                     }
                     catch (Exception ex)
@@ -545,6 +565,7 @@ public class GpuCache
             {
                 // The claim above stands only for a sharpen that happened.
                 _uploadedForPixelArea.TryUpdate(textureId, builtFor, screenPixelArea);
+                _sharpenRetryAtMs[textureId] = _biasClock.ElapsedMilliseconds + SharpenRetryCooldownMs;
                 GD.PrintErr($"[GpuCache] texture {textureId} sharpen failed: {ex.Message}");
             }
         });
@@ -723,7 +744,10 @@ public class GpuCache
     /// <see cref="ReleaseReservation"/> once the image is resident or discarded.</param>
     /// <param name="ExtraDiscard">...and how many levels smaller than the screen asked for admission
     /// made the image (0: none).</param>
-    private readonly record struct PreparedImage(Image? Image, float UploadedForPixelArea, long ReservedBytes, int ExtraDiscard = 0);
+    /// <param name="NothingSharper">...and, for a re-upload that returned no image, that this is
+    /// because the level the area asks for is no larger than the texture already is (the area is below
+    /// the 5-level floor, or the asset is small) -- as opposed to admission finding no room.</param>
+    private readonly record struct PreparedImage(Image? Image, float UploadedForPixelArea, long ReservedBytes, int ExtraDiscard = 0, bool NothingSharper = false);
 
     /// <summary>Bounds the concurrent CPU image work the same way AssetService bounds J2K decode.
     /// An unbounded <c>Task.Run</c> per texture is what made the decode path's measured "91 ms"
@@ -846,6 +870,16 @@ public class GpuCache
                 // texture, against resident + already-admitted bytes -- not against the global bias,
                 // which a burst outruns by thousands of textures. Avatar / bake / terrain / UI
                 // textures (no screen area, or exempt) are counted but never reduced.
+                if (replacedBytes > 0 && SLNG.Assets.TextureAdmission.TextureBytes(
+                        SLNG.Assets.TextureLod.DimensionAfterDiscard(w, discard),
+                        SLNG.Assets.TextureLod.DimensionAfterDiscard(h, discard), generateMipmaps) <= replacedBytes)
+                {
+                    // A sharpen whose target is no larger than what is resident, whatever the budget:
+                    // the area is below the level floor, or the asset itself is that small.
+                    image.Dispose();
+                    return new PreparedImage(null, 0f, 0, 0, NothingSharper: true);
+                }
+
                 bool admit = screenPixelArea > 0f && !_noShrink.ContainsKey(textureId);
                 int maxExtra = admit ? Math.Min(MaxLodBias, SLNG.Assets.TextureLod.MaxDiscardLevel - discard) : 0;
                 extra = AdmitAndReserve(
@@ -1025,14 +1059,15 @@ public class GpuCache
         return (tex, prepared.UploadedForPixelArea, prepared.ExtraDiscard);
     }
 
-    /// <summary>Self test seam: prepare a re-upload of a resident texture, as a sharpen would.
-    /// Returns null when admission left it where it is.</summary>
-    internal (int Width, int Height, long Reserved)? SelfTestPrepareReUpload(
+    /// <summary>Self test seam: prepare a re-upload of a resident texture, as a sharpen would. No image
+    /// means admission left it where it is (<c>NothingSharper</c> false) or the area asks for nothing
+    /// larger than what is there (true).</summary>
+    internal (bool HasImage, bool NothingSharper, int Width, int Height) SelfTestPrepareReUpload(
         Guid textureId, SLNG.Assets.TextureData data, float screenPixelArea, long replacedBytes)
     {
         var prepared = PrepareImage(textureId, data, true, screenPixelArea, replacedBytes);
-        if (prepared.Image == null) return null;
-        var result = (prepared.Image.GetWidth(), prepared.Image.GetHeight(), prepared.ReservedBytes);
+        if (prepared.Image == null) return (false, prepared.NothingSharper, 0, 0);
+        var result = (true, false, prepared.Image.GetWidth(), prepared.Image.GetHeight());
         prepared.Image.Dispose();
         ReleaseReservation(prepared.ReservedBytes);
         return result;
