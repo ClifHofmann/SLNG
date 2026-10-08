@@ -748,7 +748,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // inner try and ends it for good (NetworkManager.cs:1086-1125; 3.1.3 through 3.1.6 and
         // master). The swap buys nothing here: SLNG never changes Client.Throttle, so every Update
         // rebuilt identical buckets. So the library's send is off, and OnSimConnected sends the
-        // same packet without the swap; the outgoing buckets keep the rates of the first connect.
+        // packet itself without the swap; the outgoing buckets keep the rates of the first connect.
+        // FEAT-NET-05: what that packet asks for is the reference viewer's split, not Client.Throttle.
         _client.Settings.Agent.SendThrottle = false;
         // BUG-INV-12: the inventory and Display Name caches open while the login response is
         // processed. Registered after GridClient's constructor has registered its own managers, so

@@ -593,17 +593,57 @@ public sealed partial class GridSession
         _mapServerUrl = url.Length == 0 || url.EndsWith('/') ? url : url + "/";
     }
 
+    /// <summary>FEAT-NET-05: the setting and the rates it gives, swapped as one reference so a
+    /// network thread sending a throttle never pairs one setting with another's rates.</summary>
+    private sealed record ThrottleChoice(float Kbps, ThrottleRates Rates);
+
+    private volatile ThrottleChoice _throttle = new(
+        ViewerThrottlePresets.DefaultBandwidthKbps,
+        ViewerThrottlePresets.ForMaxBandwidth(ViewerThrottlePresets.DefaultBandwidthKbps));
+
+    /// <summary>FEAT-NET-05: the reference viewer's "Maximum bandwidth" in kbps (default 3000,
+    /// clamped 100-10000) -- how much each simulator may send us, split over the seven categories as
+    /// the viewer splits it (<see cref="ViewerThrottlePresets"/>). Set it before the login: every
+    /// simulator connect sends it. Changing it while logged in sends it to every connected simulator
+    /// at once, as the viewer's preference does (<c>setMaxBandwidth</c> -> <c>sendToSim</c>).</summary>
+    public float MaxBandwidthKbps
+    {
+        get => _throttle.Kbps;
+        set
+        {
+            float kbps = ViewerThrottlePresets.ClampBandwidth(value);
+            if (kbps == _throttle.Kbps) return;
+            _throttle = new ThrottleChoice(kbps, ViewerThrottlePresets.ForMaxBandwidth(kbps));
+            if (!_client.Network.Connected) return;
+            foreach (var sim in SnapshotSimulators())
+            {
+                if (sim.Connected) SendAgentThrottle(sim);
+            }
+        }
+    }
+
+    /// <summary>What <see cref="SendAgentThrottle"/> sends now. For the tests.</summary>
+    internal ThrottleRates ThrottleRates => _throttle.Rates;
+
     /// <summary>BUG-NET-23: tells a simulator how much bandwidth to use towards us -- the packet
     /// LibreMetaverse's <c>AgentThrottle.Set</c> sends, without the <c>UdpThrottle.Update</c> that
-    /// follows it there. Without it a grid would fall back to its default rates for this agent.</summary>
+    /// follows it there. Without it a grid would fall back to its default rates for this agent.
+    /// FEAT-NET-05: the rates are the reference viewer's, not <c>_client.Throttle</c>'s -- that one is
+    /// LibreMetaverse's 1.5 Mbit/s default, and its setters cap six of the seven categories below
+    /// what the viewer asks for. <c>_client.Throttle</c> is left alone: it also sizes the library's
+    /// OUTGOING rate limiters at the first connect.</summary>
     private void SendAgentThrottle(Simulator sim)
     {
+        var throttle = _throttle;
         try
         {
             _client.Network.SendPacket(
                 BuildAgentThrottlePacket(
-                    _client.Self.AgentID, _client.Self.SessionID, _client.Network.CircuitCode, _client.Throttle),
+                    _client.Self.AgentID, _client.Self.SessionID, _client.Network.CircuitCode, throttle.Rates),
                 sim);
+            var r = throttle.Rates;
+            Console.WriteLine(FormattableString.Invariant(
+                $"[Throttle] {sim.Name}: {throttle.Kbps:0} kbps -> task={r.Task / 1024f:0} texture={r.Texture / 1024f:0} land={r.Land / 1024f:0} kbps (total {r.Total / 1024f:0} with the viewer's {ViewerThrottlePresets.Headroom}x headroom)"));
         }
         catch (Exception ex)
         {
@@ -611,15 +651,14 @@ public sealed partial class GridSession
         }
     }
 
-    /// <summary>The AgentThrottle packet exactly as LibreMetaverse builds it
-    /// (<c>AgentThrottle.Set</c>, AgentThrottle.cs:189-212): the seven rates as little-endian
-    /// floats, generation counter 0.</summary>
+    /// <summary>The AgentThrottle packet as LibreMetaverse builds it (<c>AgentThrottle.Set</c>,
+    /// AgentThrottle.cs:189-212): the seven rates as little-endian floats, generation counter 0.</summary>
     internal static AgentThrottlePacket BuildAgentThrottlePacket(
-        UUID agentId, UUID sessionId, uint circuitCode, AgentThrottle throttle)
+        UUID agentId, UUID sessionId, uint circuitCode, ThrottleRates rates)
         => new()
         {
             AgentData = { AgentID = agentId, SessionID = sessionId, CircuitCode = circuitCode },
-            Throttle = { GenCounter = 0, Throttles = throttle.ToBytes() },
+            Throttle = { GenCounter = 0, Throttles = rates.ToBytes() },
         };
 
     /// <summary>Whether LibreMetaverse sends AgentThrottle by itself. Must stay false -- see

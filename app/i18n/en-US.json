@@ -581,6 +581,8 @@
       "network_heading": "Network & Cache Settings:",
       "clear_cache": "Clear Asset & Object Cache",
       "cache_size": "{0} assets, {1} objects",
+      "max_bandwidth": "Maximum bandwidth",
+      "max_bandwidth_hint": "The most the simulator may send you per second. Higher loads a new region faster; on a slow or unstable connection, lower helps. The default of 3000 kbps matches the Second Life viewer.",
       "tab_chat_logs": "Chat logs",
       "chat_logs_heading": "Chat logs",
       "chat_logs_intro": "Logs are written in Firestorm's format, so Firestorm and SLNG can read each other's history: same folder layout, same file names, same lines. To share a history, choose for an account the folder Firestorm uses for it.",
