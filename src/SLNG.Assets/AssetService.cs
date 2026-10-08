@@ -54,7 +54,9 @@ public class AssetService
     // pipeline actually spends its work. Dumped every 200 requests as [TexPipe]. diskCacheHit vs
     // httpFetch tells "familiar scene should pop" from "genuinely new textures"; the avg J2K
     // decode time tells whether a cache hit is even cheap.
+    // FEAT-PERF-11: decCacheHit tracks decoded-texture disk cache hits that skipped J2K decode entirely.
     private int _texPipeReq, _texPipeCacheHit, _texPipeHttp;
+    private int _texPipeDecodedCacheHit;
     private int _texPipeReduced, _texPipeReduceRetry;
     private long _texPipeCacheDecodeTicks;
     private readonly ConcurrentDictionary<Guid, byte> _texPipeDistinct = new();
@@ -64,13 +66,14 @@ public class AssetService
         _texPipeDistinct.TryAdd(id, 0);
         int n = _texPipeReq;
         if (n % 200 != 0) return;
-        int hit = _texPipeCacheHit, http = _texPipeHttp;
-        double avgMs = hit > 0
-            ? (double)_texPipeCacheDecodeTicks / hit / System.Diagnostics.Stopwatch.Frequency * 1000.0
+        int hit = _texPipeCacheHit, http = _texPipeHttp, decHit = _texPipeDecodedCacheHit;
+        int j2kHits = hit - decHit;
+        double avgMs = j2kHits > 0
+            ? (double)_texPipeCacheDecodeTicks / j2kHits / System.Diagnostics.Stopwatch.Frequency * 1000.0
             : 0;
         // distinct << req  => the same textures are being re-decoded (a cache upstream isn't
         // sticking); distinct ~ req => the scene genuinely has that many textures.
-        Console.Error.WriteLine($"[TexPipe] req={n} distinct={_texPipeDistinct.Count} diskCacheHit={hit} " +
+        Console.Error.WriteLine($"[TexPipe] req={n} distinct={_texPipeDistinct.Count} decCacheHit={decHit} diskCacheHit={hit} " +
             $"(avg {avgMs:0}ms J2K decode) httpFetch={http} reduced={_texPipeReduced} " +
             $"reduceRetry={_texPipeReduceRetry} inflight={_inflightTextures.Count}");
     }
@@ -177,7 +180,10 @@ public class AssetService
     // the matching GPU-side key.
     private readonly ConcurrentDictionary<(Guid Id, byte Type), Task<MeshData?>> _inflightSculptMeshes = new();
 
-    public AssetService(GridSession session, string cacheDirectory)
+    /// <summary>Persistent disk cache of decoded textures (FEAT-PERF-11).</summary>
+    public DecodedTextureCache DecodedCache { get; }
+
+    public AssetService(GridSession session, string cacheDirectory, long decodedCacheSizeMb = 4096)
     {
         _session = session;
         _cacheDir = cacheDirectory;
@@ -185,6 +191,9 @@ public class AssetService
         {
             Directory.CreateDirectory(_cacheDir);
         }
+
+        string decBaseDir = string.IsNullOrEmpty(_cacheDir) ? System.IO.Path.GetTempPath() : _cacheDir;
+        DecodedCache = new DecodedTextureCache(decBaseDir, decodedCacheSizeMb * 1024L * 1024L);
 
         var opts = new MemoryCacheOptions
         {
@@ -821,6 +830,23 @@ public class AssetService
                 // only the header knows it before the work is done.
                 int reduce = ReduceFactorFromHeader(cached, isSculpt, screenPixelArea);
 
+                // FEAT-PERF-11: check decoded-texture disk cache first. If a decoded form exists
+                // for this reduce level (or higher resolution), return it directly and skip J2K decode.
+                TextureData? decodedFromDecCache = isSculpt
+                    ? await DecodedCache.TryGetSculptAsync(textureId, cacheFile).ConfigureAwait(false)
+                    : await DecodedCache.TryGetAsync(textureId, reduce, cacheFile).ConfigureAwait(false);
+
+                if (decodedFromDecCache != null)
+                {
+                    System.Threading.Interlocked.Increment(ref _texPipeDecodedCacheHit);
+                    System.Threading.Interlocked.Increment(ref _texPipeCacheHit);
+                    if (reduce > 0)
+                    {
+                        System.Threading.Interlocked.Increment(ref _texPipeReduced);
+                    }
+                    return decodedFromDecCache;
+                }
+
                 TextureData? decodedFromCache;
                 await _textureDecodeThrottle.WaitAsync(priority).ConfigureAwait(false);
                 var _texSw = System.Diagnostics.Stopwatch.StartNew();
@@ -867,15 +893,25 @@ public class AssetService
                 if (decodedFromCache != null && decodedFromCache.IsDegraded)
                 {
                     Console.Error.WriteLine($"[TextureCache] {textureId}: cached bytes now decode DEGRADED — discarding the cache entry and refetching");
+                    DecodedCache.Invalidate(textureId);
                     try { File.Delete(cacheFile); } catch { }
                 }
                 else if (decodedFromCache != null)
                 {
                     System.Threading.Interlocked.Increment(ref _texPipeCacheHit);
+                    // FEAT-PERF-11: store freshly decoded clean texture into decoded disk cache
+                    if (!decodedFromCache.IsDegraded)
+                    {
+                        if (isSculpt)
+                            _ = Task.Run(() => DecodedCache.PutSculptAsync(textureId, decodedFromCache));
+                        else
+                            _ = Task.Run(() => DecodedCache.PutAsync(textureId, reduce, decodedFromCache));
+                    }
                     return decodedFromCache;
                 }
                 else
                 {
+                    DecodedCache.Invalidate(textureId);
                     try { File.Delete(cacheFile); } catch { }
                 }
             }
@@ -966,6 +1002,7 @@ public class AssetService
                 if (result == null || result.IsDegraded)
                 {
                     httpUndecodable = true;
+                    DecodedCache.Invalidate(textureId);
                 }
 
                 // Extended from "decode returned null" to "decode was not clean". A degraded decode
@@ -994,6 +1031,11 @@ public class AssetService
                     if (desiredDiscard == 0 && cacheFile != null && !result.IsDegraded)
                     {
                         try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                        // FEAT-PERF-11: store freshly fetched and decoded clean texture into decoded disk cache
+                        if (isSculpt)
+                            _ = Task.Run(() => DecodedCache.PutSculptAsync(textureId, result));
+                        else
+                            _ = Task.Run(() => DecodedCache.PutAsync(textureId, httpReduce, result));
                     }
 
                     // A "degraded" decode almost always means the J2C bytes we got over the wire

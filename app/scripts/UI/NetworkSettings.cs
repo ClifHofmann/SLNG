@@ -28,11 +28,19 @@ public sealed class NetworkSettings
     /// <summary>Maximum downstream bandwidth in kbps -- see <see cref="DefaultBandwidthKbps"/>.</summary>
     public float MaxBandwidthKbps { get; private set; } = DefaultBandwidthKbps;
 
+    /// <summary>FEAT-PERF-11: whether decoded textures are cached to disk to skip J2K decodes on revisits.</summary>
+    public bool DecodedCacheEnabled { get; private set; } = true;
+
+    /// <summary>FEAT-PERF-11: maximum decoded texture disk cache budget in megabytes (default 4 GB).</summary>
+    public int DecodedCacheSizeMb { get; private set; } = 4096;
+
     public void Load()
     {
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return;
         MaxBandwidthKbps = Sanitize((float)cfg.GetValue(Section, "max_bandwidth_kbps", DefaultBandwidthKbps));
+        DecodedCacheEnabled = (bool)cfg.GetValue(Section, "decoded_cache_enabled", true);
+        DecodedCacheSizeMb = Mathf.Max(256, (int)cfg.GetValue(Section, "decoded_cache_size_mb", 4096));
     }
 
     public void SetMaxBandwidthKbps(float value)
@@ -43,6 +51,16 @@ public sealed class NetworkSettings
         var cfg = new ConfigFile();
         cfg.Load(ConfigPath); // preserve sections owned by other features (UiSettings, CameraSettings, ...)
         cfg.SetValue(Section, "max_bandwidth_kbps", clamped);
+        cfg.Save(ConfigPath);
+    }
+
+    public void SetDecodedCacheEnabled(bool enabled)
+    {
+        DecodedCacheEnabled = enabled;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "decoded_cache_enabled", enabled);
         cfg.Save(ConfigPath);
     }
 

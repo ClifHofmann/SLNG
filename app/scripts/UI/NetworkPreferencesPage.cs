@@ -12,6 +12,8 @@ public partial class NetworkPreferencesPage : VBoxContainer
     private Label _sizeLabel = null!;
     private NetworkSettings _networkSettings = null!;
     private System.Action<float>? _onMaxBandwidthChanged;
+    private System.Action<bool>? _onDecodedCacheToggled;
+    private System.Action? _clearDecodedCache;
     private bool _dragging;
 
     public override void _Ready()
@@ -29,14 +31,20 @@ public partial class NetworkPreferencesPage : VBoxContainer
     /// <param name="onMaxBandwidthChanged">Applies a new maximum bandwidth to the running session (there
     /// may be none yet). Every call makes the viewer resend its throttle to every simulator, so the
     /// slider only calls it once a drag is over, not on each tick.</param>
+    /// <param name="onDecodedCacheToggled">FEAT-PERF-11: toggles decoded-texture disk caching.</param>
+    /// <param name="clearDecodedCache">FEAT-PERF-11: clears in-memory decoded-texture state and stats.</param>
     public void Initialize(string cacheDir, NetworkSettings networkSettings,
         System.Action<float>? onMaxBandwidthChanged = null,
         System.Func<IReadOnlyList<string>>? objectCacheDirs = null,
-        System.Action? clearObjectCache = null)
+        System.Action? clearObjectCache = null,
+        System.Action<bool>? onDecodedCacheToggled = null,
+        System.Action? clearDecodedCache = null)
     {
         _cacheDir = cacheDir;
         _networkSettings = networkSettings;
         _onMaxBandwidthChanged = onMaxBandwidthChanged;
+        _onDecodedCacheToggled = onDecodedCacheToggled;
+        _clearDecodedCache = clearDecodedCache;
         if (objectCacheDirs != null) _objectCacheDirs = objectCacheDirs;
         _clearObjectCache = clearObjectCache;
 
@@ -54,6 +62,18 @@ public partial class NetworkPreferencesPage : VBoxContainer
 
         _sizeLabel = new Label { Text = GetCacheSizeText() };
         row.AddChild(_sizeLabel);
+
+        var decodedCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.decoded_cache_enabled"),
+            ButtonPressed = _networkSettings.DecodedCacheEnabled,
+        };
+        decodedCheck.Toggled += toggled =>
+        {
+            _networkSettings.SetDecodedCacheEnabled(toggled);
+            _onDecodedCacheToggled?.Invoke(toggled);
+        };
+        AddChild(decodedCheck);
 
         AddMaxBandwidthRow();
     }
@@ -126,6 +146,12 @@ public partial class NetworkPreferencesPage : VBoxContainer
         try
         {
             DeleteFiles(_cacheDir, "*");
+            string decodedDir = Path.Combine(_cacheDir, "decoded");
+            DeleteFiles(decodedDir, "*.dec");
+            DeleteFiles(decodedDir, "*.tmp*");
+
+            // FEAT-PERF-11: clear decoded texture cache
+            _clearDecodedCache?.Invoke();
 
             // FEAT-NET-04: the object cache goes with it. The running session first, so it does not
             // write back what it still holds in memory; then whatever is on disk.
@@ -152,9 +178,12 @@ public partial class NetworkPreferencesPage : VBoxContainer
     }
 
     private string GetCacheSizeText()
-        => L10n.TrFormat("ui.preferences.cache_size",
-            FormatSize(DirectorySize(_cacheDir, "*")),
+    {
+        long assetCacheSize = DirectorySize(_cacheDir, "*") + DirectorySize(Path.Combine(_cacheDir, "decoded"), "*.dec");
+        return L10n.TrFormat("ui.preferences.cache_size",
+            FormatSize(assetCacheSize),
             FormatSize(ObjectCacheSize()));
+    }
 
     private long ObjectCacheSize()
     {
