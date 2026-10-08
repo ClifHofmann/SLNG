@@ -176,6 +176,7 @@ public static partial class SelfTest
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckMeshArrayGuard());
         results.Add(CheckRiggedMeshPreparedOffMainThread()); // BUG-PERF-06
+        results.Add(CheckHudMeshPreparedOffMainThread());
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
         results.Add(CheckLoginScreenCoversTheWorld());

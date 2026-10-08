@@ -3796,7 +3796,7 @@ public partial class AvatarRenderer : Node3D
     // HUD entity id → its Node3D in the overlay, its (point, SL-local offset) placement (kept
     // for aspect-ratio repositioning on window resize), and a content signature mirroring
     // _attachmentMeshIds' duplicate-load guard (see that field's doc comment).
-    private readonly struct HudTriangle
+    internal readonly struct HudTriangle
     {
         public readonly int FaceIndex;
         public readonly Godot.Vector3 P0;
@@ -3819,7 +3819,7 @@ public partial class AvatarRenderer : Node3D
 
     private readonly Dictionary<Guid, Node3D> _hudNodes = new();
     private readonly Dictionary<Guid, (byte Point, System.Numerics.Vector3 SlOffset)> _hudPlacements = new();
-    // Scale is part of the signature because it is baked into the vertices (BuildHudArrayMesh): a HUD that was
+    // Scale is part of the signature because it is baked into the vertices (PrepareHudMesh): a HUD that was
     // stretched with the build tools has the same shape and textures and still needs its mesh rebuilt.
     private readonly Dictionary<Guid, (object ShapeKey, FaceTexture[]? Faces, FaceTexture DefaultFace, System.Numerics.Vector3 Scale)> _hudContent = new();
     private readonly Dictionary<Guid, HudTriangle[]> _hudTriangles = new();
@@ -4069,6 +4069,20 @@ public partial class AvatarRenderer : Node3D
             return;
         }
 
+        // BUG-PERF-06: the vertex arrays and the collision faces are built on a worker; only the
+        // engine objects are made on the main thread. An unconditional hop: a cached mesh completes
+        // the await above synchronously, on whatever thread asked.
+        // flipV:true for BOTH mesh assets and prims — MeshFoundry's prim UVs are vertically
+        // inverted vs the real viewer (see ObjectRenderer's prim path for the llvolume.cpp
+        // verification); mesh assets need the flip too (SL bottom-left origin → Godot top-left).
+        var prepared = await System.Threading.Tasks.Task.Run(() =>
+        {
+            if (!EngineWorkerGate.TryEnter()) return null;
+            try { return PrepareHudMesh(meshData, flipV: true, scale); }
+            finally { EngineWorkerGate.Exit(); }
+        }).ConfigureAwait(false);
+        if (prepared == null) return;
+
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
             if (!IsInstanceValid(hudNode)) return;
@@ -4076,6 +4090,7 @@ public partial class AvatarRenderer : Node3D
             // newer size has been asked for since, this one is already out of date -- and building it now
             // would leave it on screen for good, because the signature on file says the newest is current.
             if (_hudContent.TryGetValue(entityId, out var latest) && latest.Scale != scale) return;
+            MainThreadWorkQueue.RecordExternal("avatar.hud_mesh.prepare", prepared.PrepareMs);
             // FEAT-UI-64: the materials the mesh being replaced is wearing. A stretch rebuilds the mesh on
             // every update and the new one gets its materials asynchronously, so without this the HUD would
             // show untextured geometry for a moment on every step of the drag.
@@ -4096,13 +4111,13 @@ public partial class AvatarRenderer : Node3D
                 child.QueueFree();
             }
 
-            // flipV:true for BOTH mesh assets and prims — MeshFoundry's prim UVs are vertically
-            // inverted vs the real viewer (see ObjectRenderer's prim path for the llvolume.cpp
-            // verification); mesh assets need the flip too (SL bottom-left origin → Godot top-left).
-            var arrayMesh = BuildHudArrayMesh(meshData, flipV: true, scale, out var faceIndices, out var triangles);
+            var arrayMesh = new ArrayMesh();
+            foreach (var arrays in prepared.SurfaceArrays)
+                arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
             if (arrayMesh.GetSurfaceCount() == 0) return;
+            var faceIndices = prepared.FaceIndices;
 
-            _hudTriangles[entityId] = triangles;
+            _hudTriangles[entityId] = prepared.Triangles;
 
             var mi = new MeshInstance3D { Name = "HudMesh", Mesh = arrayMesh };
             hudNode.AddChild(mi);
@@ -4116,51 +4131,81 @@ public partial class AvatarRenderer : Node3D
 
             // Click detection: one combined trimesh collision shape per HUD prim. Tagged
             // with the owning entity id so TryClickHud can resolve a raycast hit back to a LocalId.
+            // The faces are the ones CreateTrimeshShape would have read back out of the mesh
+            // (PrepareHudMesh); only the shape itself is made here.
             var body = new StaticBody3D { Name = "HudCollision" };
             body.SetMeta("EntityId", entityId.ToString());
-            var shape = new CollisionShape3D { Shape = arrayMesh.CreateTrimeshShape() };
+            var shape = new CollisionShape3D
+            {
+                Shape = prepared.CollisionFaces.Length > 0 ? new ConcavePolygonShape3D { Data = prepared.CollisionFaces } : null,
+            };
             body.AddChild(shape);
             hudNode.AddChild(body);
             RestoreWornHighlight(entityId);
         }, label: "avatar.hud_mesh");
     }
 
-    /// <summary>Static (unskinned, unlit) ArrayMesh for HUD content, prim scale baked into the
-    /// vertices. UV V-flip only for LLMesh ASSETS (bottom-left origin, like the worn-mesh path);
-    /// PrimMesher output already matches Godot's convention (world prims render correctly
-    /// without a flip in ObjectRenderer.BuildArrayMesh). No normals/tangents — HUD materials are
-    /// forced Unshaded (the overlay's World3D has no lights). Winding is still reversed like
-    /// every other SL-mesh builder (see BuildPartMesh) for consistency, though it is visually
-    /// moot without lighting.</summary>
-    private static ArrayMesh BuildHudArrayMesh(
-        MeshData meshData, bool flipV, System.Numerics.Vector3 slScale,
-        out int[] faceIndices, out HudTriangle[] triangles)
+    /// <summary>A HUD prim's mesh, ready for the main thread (BUG-PERF-06).</summary>
+    internal sealed class PreparedHudMesh
     {
-        var arrayMesh = new ArrayMesh();
+        /// <summary>One array set per surface (vertex, UV, index), for <c>AddSurfaceFromArrays</c>.</summary>
+        public required Godot.Collections.Array[] SurfaceArrays { get; init; }
+        public required int[] FaceIndices { get; init; }
+        public required HudTriangle[] Triangles { get; init; }
+
+        /// <summary>The trimesh collision faces, three points per triangle: exactly what
+        /// <c>ArrayMesh.CreateTrimeshShape</c> would hand its <c>ConcavePolygonShape3D</c>.</summary>
+        public required Godot.Vector3[] CollisionFaces { get; init; }
+
+        public double PrepareMs { get; init; }
+    }
+
+    /// <summary>Static (unskinned, unlit) mesh arrays for HUD content, prim scale baked into the
+    /// vertices, plus the triangles touch picking reads and the faces of its collision shape. No
+    /// normals/tangents — HUD materials are forced Unshaded (the overlay's World3D has no lights).
+    /// Winding is still reversed like every other SL-mesh builder (see BuildPartMesh) for
+    /// consistency, though it is visually moot without lighting.</summary>
+    /// <remarks>
+    /// BUG-PERF-06: pure array work, safe on a worker. It used to be a SurfaceTool commit per
+    /// submesh on the main thread followed by <c>CreateTrimeshShape</c>, which reads every surface
+    /// back out of the RenderingServer and builds a TriangleMesh just to list the faces again. The
+    /// surfaces carry exactly the arrays <c>SurfaceTool.CommitToArrays</c> produced (vertex, UV,
+    /// index), and the faces are the same points in the same order, snapped the way
+    /// <c>TriangleMesh.create</c> snaps them; the self test <c>HUD mesh prepared off the main
+    /// thread</c> holds both to the old build.
+    /// </remarks>
+    internal static PreparedHudMesh PrepareHudMesh(MeshData meshData, bool flipV, System.Numerics.Vector3 slScale)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var surfaces = new List<Godot.Collections.Array>();
         var faceList = new List<int>();
         var triList = new List<HudTriangle>();
+        var collision = new List<Godot.Vector3>();
         var guard = new MeshArrayGuard.VertexGuard(); // BUG-RENDER-40
         foreach (var sub in meshData.Submeshes)
         {
-            if (sub.Indices.Length == 0) continue;
-            var st = new SurfaceTool();
-            st.Begin(Mesh.PrimitiveType.Triangles);
-            for (int i = 0; i < sub.Positions.Length; i++)
+            // No vertices means nothing to commit: the SurfaceTool build added no surface for it.
+            if (sub.Indices.Length == 0 || sub.Positions.Length == 0) continue;
+
+            var positions = new Godot.Vector3[sub.Positions.Length];
+            var uvs = new Godot.Vector2[sub.Positions.Length];
+            for (int i = 0; i < positions.Length; i++)
             {
                 var p = sub.Positions[i];
                 var uv = sub.UVs[i];
-                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y), i));
-                st.AddVertex(guard.Position(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y), i));
+                uvs[i] = guard.Uv(new Godot.Vector2(uv.X, flipV ? 1.0f - uv.Y : uv.Y), i);
+                positions[i] = guard.Position(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y), i);
             }
 
+            var indices = new int[sub.Indices.Length / 3 * 3];
             for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
             {
                 int i0 = sub.Indices[t];
                 int i1 = sub.Indices[t + 2];
                 int i2 = sub.Indices[t + 1];
-                st.AddIndex(i0);
-                st.AddIndex(i1);
-                st.AddIndex(i2);
+                indices[t] = i0;
+                indices[t + 1] = i1;
+                indices[t + 2] = i2;
 
                 var p0 = sub.Positions[i0];
                 var p1 = sub.Positions[i1];
@@ -4174,13 +4219,48 @@ public partial class AvatarRenderer : Node3D
                     sub.UVs[i1],
                     sub.UVs[i2]));
             }
-            st.Commit(arrayMesh);
+
+            var arrays = new Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = positions;
+            arrays[(int)Mesh.ArrayType.TexUV] = uvs;
+            // A submesh of fewer than three indices committed no index array at all (the
+            // SurfaceTool never saw AddIndex), i.e. a non-indexed surface.
+            if (indices.Length > 0) arrays[(int)Mesh.ArrayType.Index] = indices;
+            surfaces.Add(arrays);
             faceList.Add(sub.FaceIndex);
+
+            // Mesh.generate_triangle_mesh: every index in order, or every vertex for a non-indexed
+            // surface, skipped when the count is not a whole number of triangles.
+            if (indices.Length > 0)
+            {
+                foreach (int index in indices) collision.Add(SnapForTriangleMesh(positions[index]));
+            }
+            else if (positions.Length % 3 == 0)
+            {
+                foreach (var position in positions) collision.Add(SnapForTriangleMesh(position));
+            }
         }
         guard.Report(() => "HUD attachment mesh");
-        faceIndices = faceList.ToArray();
-        triangles = triList.ToArray();
-        return arrayMesh;
+        return new PreparedHudMesh
+        {
+            SurfaceArrays = surfaces.ToArray(),
+            FaceIndices = faceList.ToArray(),
+            Triangles = triList.ToArray(),
+            CollisionFaces = collision.ToArray(),
+            PrepareMs = clock.Elapsed.TotalMilliseconds,
+        };
+    }
+
+    /// <summary><c>TriangleMesh.create</c>'s <c>snappedf(0.0001)</c> (core/math/triangle_mesh.cpp,
+    /// 4.7-stable): the faces CreateTrimeshShape returns come out of that table, snapped.</summary>
+    private static Godot.Vector3 SnapForTriangleMesh(Godot.Vector3 v)
+    {
+        const float Step = 0.0001f;
+        return new Godot.Vector3(
+            MathF.Floor(v.X / Step + 0.5f) * Step,
+            MathF.Floor(v.Y / Step + 0.5f) * Step,
+            MathF.Floor(v.Z / Step + 0.5f) * Step);
     }
 
     /// <summary>Per-surface face materials for a HUD mesh — same resolution as
