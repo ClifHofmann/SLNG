@@ -233,13 +233,21 @@ public partial class AvatarRenderer : Node3D
     /// request rather than the first. This is the "re-reads current state when it runs" shape
     /// <c>Enqueue</c>'s doc comment says coalescing requires.</para>
     ///
-    /// <para>Written from the mesh-load worker threads, read on the main thread.</para>
+    /// <para>BUG-PERF-06: a request now stays here until its geometry has been prepared on a worker
+    /// AND committed on the main thread, so "is this still the newest request" can be asked at
+    /// both ends (see <see cref="RequestRig"/> and <see cref="CommitPreparedRig"/>). Taking the
+    /// entry away -- the item left, or moved to a HUD point -- cancels the rig.</para>
+    ///
+    /// <para>Written from the mesh-load worker threads, read on the rig workers and the main
+    /// thread.</para>
     /// </remarks>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, PendingRig> _pendingRigs = new();
 
+    /// <param name="Definition">The skeleton definition the node was built from: what the worker
+    /// resolves the mesh's joint names against, since it must not touch the node itself.</param>
     private sealed record PendingRig(
         MeshData MeshData, AvatarVisual Visual, Skeleton3D Skeleton, Guid MeshId,
-        FaceTexture[]? Faces, FaceTexture DefaultFace);
+        FaceTexture[]? Faces, FaceTexture DefaultFace, AvatarSkeleton? Definition);
 
     // FEAT-UI-23: the bone-parented colliders that make a rigged worn item clickable -- one per
     // bone the item is weighted to. They live on the SKELETON, not under the item's own mesh
@@ -575,6 +583,9 @@ public partial class AvatarRenderer : Node3D
             _attachmentNodes.Remove(entityId);
         }
         MeshInstance3D? removedRigged = null;
+        // BUG-PERF-06: a rig still being prepared for it would otherwise be put on the skeleton
+        // after it left.
+        _pendingRigs.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
         ReleaseEditPause(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
@@ -2687,57 +2698,10 @@ public partial class AvatarRenderer : Node3D
         if (meshData.Skin != null && skeleton != null)
         {
             // BUG-PERF-01: the newest request wins, and the repeats collapse into one queued item.
-            _pendingRigs[entityId] = new PendingRig(meshData, avatarVisual, skeleton, meshId, faces, defaultFace);
-
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-            {
-                // Whatever the latest request is by the time this runs -- not what was captured
-                // when it was queued. Gone means a later item already rigged it.
-                if (!_pendingRigs.TryRemove(entityId, out var req)) return;
-                if (!IsInstanceValid(req.Skeleton)) return;
-
-                // Anything already rigged for this entity is replaced, not joined. Without this,
-                // several updates arriving before the queue drains each ADD a rigged MeshInstance
-                // to the skeleton while only the last is recorded in _riggedAttachments -- the
-                // earlier ones stay in the scene, untracked and unfreeable, costing triangles,
-                // draw calls and VRAM for the rest of the session. Measured on a busy sim:
-                // 22,500 draw calls, 38M triangles, 9.5 GB VRAM.
-                DiscardRiggedAttachment(entityId, req.Visual);
-
-                // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
-                // Apply its joint-position overrides to the skeleton BEFORE binding, like the
-                // viewer does, so invBind·jointWorld cancels at the intended pose.
-                ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin!, req.MeshId);
-                var mi = BuildRiggedMeshInstance(req.MeshData, req.Skeleton, req.MeshId, req.Visual,
-                                                 req.Faces, req.DefaultFace, out var faceIndices);
-                if (mi == null) return;
-                mi.Name = "RiggedMesh";
-
-                // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
-                mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
-                mi.SortingOffset = RiggedAlphaSortTieBreak(entityId, req.Faces, req.DefaultFace, faceIndices);
-                // BUG-RENDER-38: the tie-break orders INSTANCES. Surfaces of one instance still tie
-                // with each other, so this names every surface's texture -- a hair that still blinks
-                // and shows more than one here is that case.
-                if (Diagnostics.Enabled)
-                    GD.Print($"[RiggedSort] {(req.Visual.IsSelf ? "self" : "other")} attachment={entityId.ToString("N")[..8]} " +
-                             $"mesh={req.MeshId.ToString("N")[..8]} offset={mi.SortingOffset:0.0000} " +
-                             $"{faceIndices.Length} surface(s): " +
-                             string.Join(", ", faceIndices.Select(fi =>
-                                 $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
-
-                req.Skeleton.AddChild(mi);
-                AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId);
-                _riggedAttachments[entityId] = mi;
-                req.Visual.RiggedAttachments.Add((mi, req.MeshData, req.MeshId));
-
-                // Skin is already assigned on the instance; the skeleton path must be set after
-                // the node is in the tree so Godot can resolve and drive the skinning.
-                mi.Skeleton = mi.GetPathTo(req.Skeleton);
-                RestoreWornHighlight(entityId);
-                RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId);
-                _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId);
-            }, coalesceKey: $"avatar.rig:{entityId}", label: "avatar.rig");
+            // BUG-PERF-06: the geometry is prepared on a worker first; CommitPreparedRig below is
+            // what reaches the main thread.
+            RequestRig(entityId, new PendingRig(meshData, avatarVisual, skeleton, meshId, faces, defaultFace,
+                                                _avatarSkeleton));
             return;
         }
 
@@ -2749,7 +2713,7 @@ public partial class AvatarRenderer : Node3D
             var faceIndices = new List<int>();
 
             // BUG-RENDER-12: same authored-order surface merging as the rigged path -- see
-            // BuildRiggedMeshInstance's submesh loop for the viewer citations and the reasoning.
+            // RiggedMeshBuilder.Build for the viewer citations and the reasoning.
             // A non-rigged worn attachment (sculpt/prim hair, a mesh hat) reaches Godot's
             // transparent queue exactly the same way, so it has the same reorder problem.
             SurfaceTool? st = null;
@@ -2795,7 +2759,7 @@ public partial class AvatarRenderer : Node3D
                     var p = sub.Positions[i];
                     var n = sub.Normals[i];
                     var uv = sub.UVs[i];
-                    
+
                     st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), i));
                     st.SetUV(guard.Uv(new Godot.Vector2(uv.X, 1.0f - uv.Y), i));
                     st.AddVertex(guard.Position(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y), i));
@@ -2822,6 +2786,84 @@ public partial class AvatarRenderer : Node3D
             RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
             _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
         }, label: "avatar.attach");
+    }
+
+    /// <summary>The main-thread half of rigging a worn mesh (BUG-PERF-06): binds the skin to the
+    /// skeleton, hands the worker's arrays to the engine and puts the instance in the scene.
+    /// Runs as the <c>avatar.rig</c> queue item.</summary>
+    /// <remarks>
+    /// Whatever was prepared LAST for the entity is what it finds, not what was ready when it was
+    /// queued -- the queue drops a second item for the same entity while one is waiting, so this
+    /// item stands for every prepare that finished in the meantime. It builds only the NEWEST
+    /// request: a prepare that finished after a newer request arrived is dropped, because the newer
+    /// one is already being prepared and will queue its own commit. A request that is gone was
+    /// discarded -- the item was taken off, or moved to a HUD point -- and is not rigged at all.
+    /// </remarks>
+    private void CommitPreparedRig(Guid entityId)
+    {
+        if (!_preparedRigs.TryRemove(entityId, out var ready)) return;
+        var req = ready.Request;
+        if (!_pendingRigs.TryRemove(new KeyValuePair<Guid, PendingRig>(entityId, req))) return;
+        if (!IsInstanceValid(req.Skeleton)) return;
+
+        MainThreadWorkQueue.RecordExternal("avatar.rig.prepare", ready.PrepareMs);
+        MainThreadWorkQueue.RecordExternal("avatar.rig.verts", ready.Mesh.VertsMs);
+        MainThreadWorkQueue.RecordExternal("avatar.rig.tangents", ready.Mesh.TangentsMs);
+
+        // Anything already rigged for this entity is replaced, not joined. Without this,
+        // several updates arriving before the queue drains each ADD a rigged MeshInstance
+        // to the skeleton while only the last is recorded in _riggedAttachments -- the
+        // earlier ones stay in the scene, untracked and unfreeable, costing triangles,
+        // draw calls and VRAM for the rest of the session. Measured on a busy sim:
+        // 22,500 draw calls, 38M triangles, 9.5 GB VRAM.
+        DiscardRiggedAttachment(entityId, req.Visual);
+
+        // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
+        // Apply its joint-position overrides to the skeleton BEFORE binding, like the
+        // viewer does, so invBind·jointWorld cancels at the intended pose.
+        ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin!, req.MeshId);
+        var skin = BindRiggedSkin(req.MeshData.Skin!, req.Skeleton, req.Visual, out var slotForJoint);
+        if (skin == null) return;
+
+        var prepared = ready.Mesh;
+        if (!slotForJoint.AsSpan().SequenceEqual(prepared.SlotForJoint))
+        {
+            // The worker resolved the joints against the skeleton DEFINITION, this against
+            // the node built from it, so the two agree. Should they ever not, the weights
+            // would point at the wrong binds -- the geometry is built again, here.
+            GD.PushWarning($"[RiggedMesh] mesh {req.MeshId:N}: joint slots differ between worker and skeleton -- rebuilt on the main thread");
+            prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace);
+        }
+
+        var mi = CommitRiggedMeshInstance(prepared, skin, slotForJoint, req.Skeleton, req.MeshId,
+                                          req.Visual, out var faceIndices);
+        if (mi == null) return;
+        mi.Name = "RiggedMesh";
+
+        // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
+        mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
+        mi.SortingOffset = RiggedAlphaSortTieBreak(entityId, req.Faces, req.DefaultFace, faceIndices);
+        // BUG-RENDER-38: the tie-break orders INSTANCES. Surfaces of one instance still tie
+        // with each other, so this names every surface's texture -- a hair that still blinks
+        // and shows more than one here is that case.
+        if (Diagnostics.Enabled)
+            GD.Print($"[RiggedSort] {(req.Visual.IsSelf ? "self" : "other")} attachment={entityId.ToString("N")[..8]} " +
+                     $"mesh={req.MeshId.ToString("N")[..8]} offset={mi.SortingOffset:0.0000} " +
+                     $"{faceIndices.Length} surface(s): " +
+                     string.Join(", ", faceIndices.Select(fi =>
+                         $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
+
+        req.Skeleton.AddChild(mi);
+        AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId);
+        _riggedAttachments[entityId] = mi;
+        req.Visual.RiggedAttachments.Add((mi, req.MeshData, req.MeshId));
+
+        // Skin is already assigned on the instance; the skeleton path must be set after
+        // the node is in the tree so Godot can resolve and drive the skinning.
+        mi.Skeleton = mi.GetPathTo(req.Skeleton);
+        RestoreWornHighlight(entityId);
+        RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId);
+        _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId);
     }
 
     /// <summary>BUG-RENDER-12: resolves a submesh's SL face record exactly the way
@@ -3895,6 +3937,7 @@ public partial class AvatarRenderer : Node3D
             _attachmentNodes.Remove(entityId);
         }
         MeshInstance3D? hudMovedRigged = null;
+        _pendingRigs.TryRemove(entityId, out _); // BUG-PERF-06: nor rigged onto the body later
         ClearRiggedPickBodies(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
         {
@@ -4651,6 +4694,10 @@ public partial class AvatarRenderer : Node3D
         return true;
     }
 
+    /// <summary>Builds a rigged mesh's instance in one go on the calling (main) thread: the skin
+    /// binds, then the geometry, then the engine mesh. The worn path runs the same three steps
+    /// split across a worker and the main thread (BUG-PERF-06, AvatarRenderer.RigWorker.cs); the
+    /// control avatar and the shape-change re-skin still come through here.</summary>
     /// <param name="skinOnly">Build the bind matrices and stop — no geometry, no ArrayMesh.
     /// <see cref="RebuildRiggedAttachmentSkins"/> wants nothing else, and building the rest for it
     /// was BUG-PERF-01's largest single waste: measured in-world at <b>0.15 ms</b> for the binds
@@ -4667,7 +4714,30 @@ public partial class AvatarRenderer : Node3D
         bool skinOnly = false, RiggedExtent? extentSink = null)
     {
         faceIndices = System.Array.Empty<int>();
-        var skinData = meshData.Skin!;
+        var skin = BindRiggedSkin(meshData.Skin!, skeleton, visual, out var slotForJoint);
+        if (skin == null) return null;
+        if (skinOnly)
+        {
+            // Everything above is what a shape change actually needs; everything below is
+            // geometry it discards. The node carries the Skin and nothing else, so freeing it
+            // releases an instance RID rather than the mesh and buffer RIDs BUG-RENDER-13 was
+            // about — those are no longer created at all.
+            return new MeshInstance3D { Skin = skin };
+        }
+
+        var prepared = PrepareRiggedMesh(meshData, slotForJoint, faces, defaultFace);
+        MainThreadWorkQueue.RecordExternal("avatar.rig.verts", prepared.VertsMs);
+        MainThreadWorkQueue.RecordExternal("avatar.rig.tangents", prepared.TangentsMs);
+        return CommitRiggedMeshInstance(prepared, skin, slotForJoint, skeleton, meshId, visual, out faceIndices, extentSink);
+    }
+
+    /// <summary>The skin half of a rig: one bind per joint that names a bone of ours, built from
+    /// the mesh's own inverse-bind matrices. Reads the skeleton node, so main thread only -- it is
+    /// the ~0.1 ms part (<c>avatar.rig.bind</c>). Null when no joint binds at all.</summary>
+    /// <param name="slotForJoint">The skin slot each joint was bound to, -1 for none: what the
+    /// geometry's bone indices refer to.</param>
+    private Skin? BindRiggedSkin(MeshSkin skinData, Skeleton3D skeleton, AvatarVisual visual, out int[] slotForJoint)
+    {
         int jointCount = skinData.JointNames.Length;
 
         // Bind each joint using the mesh's OWN inverse-bind matrix (model→bone), converted
@@ -4678,21 +4748,7 @@ public partial class AvatarRenderer : Node3D
         var buildClock = System.Diagnostics.Stopwatch.StartNew();
 
         var skin = new Skin();
-        var slotForJoint = new int[jointCount];
-
-        var bindShape = skinData.BindShapeMatrix;
-
-        // Normals need the inverse-transpose of the bind-shape's linear part, not the raw
-        // matrix — verified against the viewer source (llface.cpp, getGeometryVolume):
-        // positions are pre-multiplied by BindShapeMatrix directly, but normals/tangents by
-        // `transpose(inverse(BindShapeMatrix))`. Using the raw matrix (as System.Numerics'
-        // Vector3.TransformNormal does by default) only matches for uniform scale; several of
-        // our real assets have highly non-uniform bind-shape scale (observed up to ~4:1 on one
-        // axis vs another), which would skew normals — and therefore lighting — noticeably off
-        // true. Computed once per mesh, not per vertex, since bindShape doesn't vary by vertex.
-        var bindShapeNormalMatrix = bindShape;
-        if (System.Numerics.Matrix4x4.Invert(bindShape, out var bindShapeInv))
-            bindShapeNormalMatrix = System.Numerics.Matrix4x4.Transpose(bindShapeInv);
+        slotForJoint = new int[jointCount];
 
         // Resolve every joint's bone index up front.
         var jointBone = new int[jointCount];
@@ -4766,222 +4822,27 @@ public partial class AvatarRenderer : Node3D
         if (skin.GetBindCount() == 0) return null;
 
         MainThreadWorkQueue.RecordExternal("avatar.rig.bind", buildClock.Elapsed.TotalMilliseconds);
-        if (skinOnly)
-        {
-            // Everything above is what a shape change actually needs; everything below is
-            // geometry it discards. The node carries the Skin and nothing else, so freeing it
-            // releases an instance RID rather than the mesh and buffer RIDs BUG-RENDER-13 was
-            // about — those are no longer created at all.
-            return new MeshInstance3D { Skin = skin };
-        }
-        buildClock.Restart();
+        return skin;
+    }
 
+    /// <summary>The main-thread end of a rig: the prepared arrays into an <see cref="ArrayMesh"/>,
+    /// the skin onto a new instance, and the log lines about both. Null when the mesh had nothing
+    /// to draw.</summary>
+    /// <param name="extentSink">See <see cref="BuildRiggedMeshInstance"/>.</param>
+    private MeshInstance3D? CommitRiggedMeshInstance(PreparedRiggedMesh prepared, Skin skin, int[] slotForJoint,
+        Skeleton3D skeleton, Guid meshId, AvatarVisual visual, out int[] faceIndices, RiggedExtent? extentSink = null)
+    {
+        faceIndices = System.Array.Empty<int>();
+        var geo = prepared.Geometry;
+        // BUG-RENDER-40: whatever the builder had to repair is named once.
+        MeshArrayGuard.ReportRepairs(geo, () => $"rigged mesh mesh={meshId:N} avatar={visual.AgentId:N}{(visual.IsControlAvatar ? " (animesh control avatar)" : "")}");
+        if (prepared.SurfaceArrays.Length == 0) return null;
+
+        // All that is left of what avatar.rig.tangents used to time: SurfaceTool.Commit is exactly
+        // this call, on the arrays the worker already made with CommitToArrays.
         var arrayMesh = new ArrayMesh();
-        var faceList = new List<int>();
-
-        // BUG-AVATAR-07: the REST-POSE SKINNED extent, i.e. how big and where this mesh actually
-        // renders, in metres. Every other size number in this method is pre-skinning and therefore
-        // says nothing (see the no-rejection comment below). This one is the exact palette Godot
-        // will use at rest — globalRest(bone) * bind, the same product its own skinning computes —
-        // applied to the same vertices, so "is the mesh head the right size / in the right place"
-        // stops being a question about screenshots. Self only, once per mesh id.
-        var palette = new Transform3D[skin.GetBindCount()];
-        for (int sIdx = 0; sIdx < palette.Length; sIdx++)
-            palette[sIdx] = ComputeGlobalRestTransform(skeleton, skin.GetBindBone(sIdx)) * skin.GetBindPose(sIdx);
-        bool measureSelf = visual.IsSelf && !_loggedRenderExtent.Contains(meshId);
-        bool measureRender = measureSelf || extentSink != null;
-        var rMin = new Godot.Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-        var rMax = new Godot.Vector3(float.MinValue, float.MinValue, float.MinValue);
-
-        // Track the bind-pose extent (positions AFTER the bind-shape matrix) for the sanity
-        // guard below. The RAW vertex AABB is meaningless for that: "giant rig" uploads store
-        // vertices in a huge position domain (±50 m) that the tiny bind-shape scale cancels.
-        var bpMin = new System.Numerics.Vector3(float.MaxValue);
-        var bpMax = new System.Numerics.Vector3(float.MinValue);
-
-        // Diagnostic: count vertices whose weights don't resolve to any bound joint (all 4
-        // influences reference a joint outside this mesh's own joint list, or the referenced
-        // joint failed to resolve in OUR skeleton). Those fall back to "pin to skin slot 0" —
-        // an ARBITRARY joint (whichever happened to be first in this mesh's own joint list),
-        // potentially anatomically distant from the vertex's real position. A mesh that's a mix
-        // of correctly-weighted and orphaned vertices stretches between the two — a classic
-        // "candy-wrapper" skinning artifact that looks exactly like an elongated snout/spike.
-        int totalVerts = 0, orphanedVerts = 0;
-
-        // Counts influences whose joint reference had to be remapped to stay in range (see
-        // AddInfluence). Before that method was fixed to match the viewer these were DROPPED, and
-        // the resulting renormalization snapped affected vertices onto an unrelated bone — the
-        // "hair tears into flat shards" bug. A nonzero count here means this mesh is one that
-        // relies on the viewer's clamping behavior.
-        int remappedInfluences = 0;
-
-        // Diagnostic: which bone this mesh is mostly weighted to, and how much of its total
-        // vertex weight lands there. Points straight at a shape/scale bug on a specific bone
-        // (e.g. an unexpectedly huge mHead scale) without having to guess from bind-pose extent
-        // alone, which is meaningless pre-skinning (see the no-rejection comment below).
-        var slotWeightSum = new float[skin.GetBindCount()];
-
-        // BUG-RENDER-12: consecutive submeshes that resolve to the SAME face record are committed
-        // as ONE surface, in their authored order.
-        //
-        // This is the half of the reference viewer's rigged-alpha design that makes its depth
-        // write safe. llvovolume.cpp:6332-6335, with Linden's own comment:
-        //     if (rigged) {
-        //         if (!distance_sort) // <--- alpha "sort" rigged faces by maintaining original draw order
-        //             std::sort(faces, faces + face_count, CompareBatchBreakerRigged());
-        //     }
-        // alpha_sort is always true (:6146), so for RIGGED alpha that branch sorts nothing at all:
-        // worn mesh faces are batched in the order the creator authored them and are never
-        // distance-sorted, unlike unrigged alpha (which does sort, and even then only re-sorts once
-        // the view angle has moved more than 0.64 -- llspatialpartition.cpp:667-674).
-        //
-        // Godot has no equivalent knob: every transparent SURFACE is re-sorted by AABB-centre
-        // distance each frame. Splitting a mesh into one surface per SL face therefore hands Godot
-        // six independently reorderable pieces of what the creator authored as one ordered stream.
-        // Measured on the live hair: three rigged meshes of six faces each, all six carrying the
-        // identical texture (`face ids: [b9af3b5f x 6]`) -- 18 co-located transparent draws whose
-        // order reshuffled on the smallest camera move.
-        //
-        // Merging a run restores the authored order as a single draw call, because within one
-        // surface Godot draws triangles in index order and sorts nothing. Only CONSECUTIVE runs
-        // are merged, never scattered matches: merging non-adjacent faces would interleave
-        // triangles the creator ordered deliberately, which is the very thing being preserved.
-        // Faces are merged only when their whole FaceTexture record compares equal, so the
-        // surviving surface's material is bit-identical to the ones it replaces.
-        SurfaceTool? st = null;
-        var runFace = default(FaceTexture);
-        int runVertexBase = 0;
-
-        // Reused across every vertex of every submesh. These were allocated fresh per vertex --
-        // two arrays each, on a mesh body of tens of thousands of vertices, for every rig. The
-        // session that found BUG-PERF-01 was carrying a 1.3-1.8 GB C# heap. SetBones/SetWeights
-        // marshal the contents into Godot's own packed arrays, so reusing the buffer is safe; it
-        // only has to be cleared, because AddInfluence writes only the slots it fills.
-        var bones = new int[4];
-        var wts = new float[4];
-        // BUG-RENDER-40: positions, normals and UVs are repaired on their way into the SurfaceTool
-        // (the skinned build below ends in GenerateTangents + Commit) and the mesh is named once.
-        var guard = new MeshArrayGuard.VertexGuard();
-
-        // BUG-PERF-01 step 2: the rig is one 137 ms queue item, so "which part of it" cannot be
-        // read off [WorkCost] -- that reports per QUEUE ITEM. MainThreadWorkQueue.Measure exists
-        // for exactly this ("so a single queue item can be broken down into its parts"), and these
-        // three labels are the whole of BuildRiggedMeshInstance's cost between them:
-        //   avatar.rig.bind      the skin, its bind matrices and the bone palette
-        //   avatar.rig.verts     the per-vertex submission loop
-        //   avatar.rig.tangents  GenerateTangents + Commit, Godot's own CPU passes
-        // Whichever of the three carries the seconds decides what step 2 actually has to change,
-        // instead of it being decided by whichever explanation sounded best.
-        void FlushRun()
-        {
-            if (st == null) return;
-            var flushing = st;
-            MainThreadWorkQueue.Measure("avatar.rig.tangents", () =>
-            {
-                flushing.GenerateTangents();
-                flushing.Commit(arrayMesh);
-            });
-            st = null;
-        }
-
-        foreach (var sub in meshData.Submeshes)
-        {
-            if (sub.Indices.Length == 0 || sub.Weights == null) continue;
-
-            var subFace = ResolveFaceTexture(faces, defaultFace, sub.FaceIndex);
-            if (st == null || !subFace.Equals(runFace))
-            {
-                FlushRun();
-                st = new SurfaceTool();
-                st.Begin(Mesh.PrimitiveType.Triangles);
-                runFace = subFace;
-                runVertexBase = 0;
-                faceList.Add(sub.FaceIndex);
-            }
-
-            // Indices are submesh-local, so a submesh appended to a run in progress has to shift
-            // them past everything already in the SurfaceTool.
-            int indexBase = runVertexBase;
-
-            // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
-            // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
-            // CullMode.Disabled, needed just to make anything render), and Godot's double-sided
-            // handling flips the normal for perceived backfaces, inverting diffuse lighting while
-            // leaving shadows (depth-only) unaffected. Confirmed this session via a T-pose +
-            // debug shader + a gizmo pointing at the real light direction. Fix: submit each
-            // triangle's 3 vertices in reversed order — every per-vertex step below (weight
-            // resolution, bpMin/bpMax, slotWeightSum) is order-independent across the mesh, so
-            // only the ORDER the 3 indices of each triangle are visited changes.
-            for (int i = 0; i < sub.Positions.Length; i++)
-            {
-                // Mesh-local → bind pose (SL coords) via the bind-shape matrix, then SL→Godot.
-                var pSL = System.Numerics.Vector3.Transform(sub.Positions[i], bindShape);
-                var nSL = System.Numerics.Vector3.TransformNormal(sub.Normals[i], bindShapeNormalMatrix);
-                if (nSL.LengthSquared() > 1e-8f) nSL = System.Numerics.Vector3.Normalize(nSL);
-                var uv = sub.UVs[i];
-                var w = sub.Weights[i];
-
-                bpMin = System.Numerics.Vector3.Min(bpMin, pSL);
-                bpMax = System.Numerics.Vector3.Max(bpMax, pSL);
-
-                System.Array.Clear(bones, 0, 4);
-                System.Array.Clear(wts, 0, 4);
-                int c = 0; float sum = 0f;
-                AddInfluence(w.Joint0, w.Weight0, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
-                AddInfluence(w.Joint1, w.Weight1, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
-                AddInfluence(w.Joint2, w.Weight2, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
-                AddInfluence(w.Joint3, w.Weight3, slotForJoint, jointCount, bones, wts, ref c, ref sum, ref remappedInfluences);
-                totalVerts++;
-                if (sum > 1e-5f) { for (int k = 0; k < 4; k++) wts[k] /= sum; }
-                else { bones[0] = 0; wts[0] = 1f; orphanedVerts++; } // orphaned vertex — pin to first bound bone
-                for (int k = 0; k < 4; k++) if (wts[k] > 0f) slotWeightSum[bones[k]] += wts[k];
-
-                if (measureRender)
-                {
-                    var vG = new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y);
-                    var acc = Godot.Vector3.Zero;
-                    float wSum = 0f;
-                    for (int k = 0; k < 4; k++)
-                    {
-                        if (wts[k] <= 0f || bones[k] < 0 || bones[k] >= palette.Length) continue;
-                        acc += palette[bones[k]] * vG * wts[k];
-                        wSum += wts[k];
-                    }
-                    if (wSum > 1e-6f)
-                    {
-                        acc /= wSum;
-                        rMin = new Godot.Vector3(Mathf.Min(rMin.X, acc.X), Mathf.Min(rMin.Y, acc.Y), Mathf.Min(rMin.Z, acc.Z));
-                        rMax = new Godot.Vector3(Mathf.Max(rMax.X, acc.X), Mathf.Max(rMax.Y, acc.Y), Mathf.Max(rMax.Z, acc.Z));
-                        extentSink?.Add(acc);
-                    }
-                }
-
-                st.SetBones(bones);
-                st.SetWeights(wts);
-                st.SetNormal(guard.Normal(new Godot.Vector3(nSL.X, nSL.Z, -nSL.Y), totalVerts));
-                // Same SL→Godot V-flip as the system body parts (see BuildPartResources):
-                // SL UVs are authored bottom-left origin; Godot samples top-left.
-                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, 1.0f - uv.Y), totalVerts));
-                st.AddVertex(guard.Position(new Godot.Vector3(pSL.X, pSL.Z, -pSL.Y), totalVerts));
-            }
-
-            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
-            {
-                st.AddIndex(indexBase + sub.Indices[t]);
-                st.AddIndex(indexBase + sub.Indices[t + 2]);
-                st.AddIndex(indexBase + sub.Indices[t + 1]);
-            }
-
-            runVertexBase += sub.Positions.Length;
-        }
-        FlushRun();
-        guard.Report(() => $"rigged mesh mesh={meshId:N} avatar={visual.AgentId:N}{(visual.IsControlAvatar ? " (animesh control avatar)" : "")}");
-
-        // Everything since the bind phase, minus what FlushRun already filed under
-        // avatar.rig.tangents -- so the three labels partition the method rather than overlap.
-        MainThreadWorkQueue.RecordExternal("avatar.rig.verts", buildClock.Elapsed.TotalMilliseconds);
-
-        if (arrayMesh.GetSurfaceCount() == 0) return null;
+        foreach (var arrays in prepared.SurfaceArrays)
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
 
         // Diagnostic only — deliberately NO size/distance rejection here. The static bind-pose
         // AABB says nothing about where a skinned mesh RENDERS: uploads may park the bind pose
@@ -4990,41 +4851,59 @@ public partial class AvatarRenderer : Node3D
         // numerically against the viewer chain (v·BSM)·Σw(invBind·jointWorld): such a mesh
         // lands correctly on the body — an earlier guard here hid a perfectly valid face
         // attachment. Culling is handled by the generous CustomAabb on the instance instead.
-        var bpSize = bpMax - bpMin;
-        var bpCenter = (bpMin + bpMax) * 0.5f;
+        var bpSize = geo.BindPoseMax - geo.BindPoseMin;
+        var bpCenter = (geo.BindPoseMin + geo.BindPoseMax) * 0.5f;
+        int jointCount = slotForJoint.Length;
         int resolved = 0;
         for (int j = 0; j < jointCount; j++) if (slotForJoint[j] >= 0) resolved++;
+        var slotWeightSum = geo.SlotWeightSum;
         int topSlot = 0;
         for (int s = 1; s < slotWeightSum.Length; s++) if (slotWeightSum[s] > slotWeightSum[topSlot]) topSlot = s;
         string topBoneName = slotWeightSum.Length > 0 ? skeleton.GetBoneName(skin.GetBindBone(topSlot)) : "?";
-        float topShare = totalVerts > 0 && slotWeightSum.Length > 0 ? slotWeightSum[topSlot] / totalVerts : 0f;
+        float topShare = geo.TotalVertices > 0 && slotWeightSum.Length > 0 ? slotWeightSum[topSlot] / geo.TotalVertices : 0f;
         // BUG-RENDER-12: says how many transparent draw calls this mesh will cost. If it does not
         // read "6 submeshes -> 1 surface" for a single-texture hair mesh, the merge did not fire
         // and the sort instability is back. Behind --diag: it fired 442 times in one session,
         // which is the same log flood BUG-RENDER-11 spent a round clearing out.
-        if (Diagnostics.Enabled && arrayMesh.GetSurfaceCount() != meshData.Submeshes.Count)
+        if (Diagnostics.Enabled && arrayMesh.GetSurfaceCount() != geo.SubmeshCount)
             GD.Print($"[RiggedMesh] mesh={meshId.ToString("N")[..8]} merged " +
-                     $"{meshData.Submeshes.Count} submeshes -> {arrayMesh.GetSurfaceCount()} surface(s) " +
+                     $"{geo.SubmeshCount} submeshes -> {arrayMesh.GetSurfaceCount()} surface(s) " +
                      "(same-material run, authored order preserved)");
 
-        if (measureSelf && rMax.Y > rMin.Y)
+        // BUG-AVATAR-07: the REST-POSE SKINNED extent, i.e. how big and where this mesh actually
+        // renders, in metres. Every other size number here is pre-skinning and therefore says
+        // nothing (see the no-rejection comment above). This one is the exact palette Godot will
+        // use at rest — globalRest(bone) * bind, the same product its own skinning computes —
+        // applied to the same vertices, so "is the mesh head the right size / in the right place"
+        // stops being a question about screenshots. Self only, once per mesh id -- and since
+        // BUG-PERF-06 only under --diag, the one place it is printed: it is a pass over every
+        // vertex, the one such pass left on the main thread.
+        bool measureSelf = Diagnostics.Enabled && visual.IsSelf && !_loggedRenderExtent.Contains(meshId);
+        if (measureSelf || extentSink != null)
         {
-            _loggedRenderExtent.Add(meshId);
-            float rootZ = IsInstanceValid(visual.Root) ? visual.Root.GlobalPosition.Y : 0f;
-            var size = rMax - rMin;
-            if (Diagnostics.Enabled) GD.Print($"[RenderExtent] {meshId}: rendered size ({size.X:0.###} x {size.Z:0.###} x {size.Y:0.###} m), " +
-                     $"world Z {rootZ + rMin.Y:0.###} .. {rootZ + rMax.Y:0.###}, " +
-                     $"dominant joint \"{topBoneName}\" ({topShare:P0}), {totalVerts} verts");
+            var palette = new Transform3D[skin.GetBindCount()];
+            for (int sIdx = 0; sIdx < palette.Length; sIdx++)
+                palette[sIdx] = ComputeGlobalRestTransform(skeleton, skin.GetBindBone(sIdx)) * skin.GetBindPose(sIdx);
+            var (rMin, rMax) = MeasureRestExtent(geo, palette, extentSink);
+
+            if (measureSelf && rMax.Y > rMin.Y)
+            {
+                _loggedRenderExtent.Add(meshId);
+                float rootZ = IsInstanceValid(visual.Root) ? visual.Root.GlobalPosition.Y : 0f;
+                var size = rMax - rMin;
+                GD.Print($"[RenderExtent] {meshId}: rendered size ({size.X:0.###} x {size.Z:0.###} x {size.Y:0.###} m), " +
+                         $"world Z {rootZ + rMin.Y:0.###} .. {rootZ + rMax.Y:0.###}, " +
+                         $"dominant joint \"{topBoneName}\" ({topShare:P0}), {geo.TotalVertices} verts");
+            }
         }
 
         Logger.Debug($"[RiggedMesh] mesh {meshId} joints {resolved}/{jointCount} resolved, binds {skin.GetBindCount()}, " +
                  $"bind-pose size ({bpSize.X:0.##}, {bpSize.Y:0.##}, {bpSize.Z:0.##}) at ({bpCenter.X:0.#}, {bpCenter.Y:0.#}, {bpCenter.Z:0.#}), " +
-                 $"dominant joint \"{topBoneName}\" ({topShare:P0}), orphaned verts {orphanedVerts}/{totalVerts}, " +
-                 $"remapped influences {remappedInfluences}" +
-                 (orphanedVerts > 0 ? $" [PINNED TO SKIN SLOT 0 = bone \"{skeleton.GetBoneName(skin.GetBindBone(0))}\"]" : ""));
+                 $"dominant joint \"{topBoneName}\" ({topShare:P0}), orphaned verts {geo.OrphanedVertices}/{geo.TotalVertices}, " +
+                 $"remapped influences {geo.RemappedInfluences}" +
+                 (geo.OrphanedVertices > 0 ? $" [PINNED TO SKIN SLOT 0 = bone \"{skeleton.GetBoneName(skin.GetBindBone(0))}\"]" : ""));
 
-
-        faceIndices = faceList.ToArray();
+        faceIndices = geo.FaceIndices();
         return new MeshInstance3D
         {
             Mesh = arrayMesh,
@@ -5034,51 +4913,38 @@ public partial class AvatarRenderer : Node3D
         };
     }
 
-    /// <summary>Adds one of a vertex's up-to-4 bone influences, matching the real viewer's
-    /// handling of malformed joint references (verified against
-    /// scratch/slviewer/indra/newview/llskinningutil.cpp).
-    ///
-    /// Viewer parity, and the bug this used to have: an influence whose joint index is out of
-    /// range is CLAMPED into range and KEPT — never dropped. `getPerVertexSkinMatrix` (:250) does
-    /// `idx[k] = llclamp((S32) floorf(w), 0, max_joints-1)`, and `scrubSkinWeights` (:209-222)
-    /// pre-clamps the stored weights the same way; likewise `scrubInvalidJoints` (:112-125)
-    /// rewrites a joint NAME the avatar doesn't have to "mPelvis" and `initJointNums` (:314-315)
-    /// falls back to joint num 0 — again remapping, never discarding. This method previously
-    /// `return`ed early in both cases, silently discarding that influence. Because the caller then
-    /// renormalizes the surviving weights (`wts[k] /= sum`), a vertex that should have been, say,
-    /// 60% neck / 40% head became 100% head — snapping it to an unrelated bone while its
-    /// neighbours stayed put. Whole triangles get stretched between the two, which reads as the
-    /// mesh tearing into scattered flat shards even though its bind pose, textures, UVs and
-    /// position are all correct. It also leaves the `orphanedVerts` counter at 0 (at least one
-    /// influence survives per vertex), so the existing diagnostic could not see it.</summary>
-    private static void AddInfluence(int joint, float weight, int[] slotForJoint, int jointCount,
-        int[] bones, float[] wts, ref int count, ref float sum, ref int remapped)
+    /// <summary>Where a rigged mesh's vertices land at the skeleton's rest pose: each one through
+    /// its weighted <paramref name="palette"/> (globalRest * bind per skin slot), in the skeleton's
+    /// space. Each point is also handed to <paramref name="sink"/> when there is one.</summary>
+    private static (Godot.Vector3 Min, Godot.Vector3 Max) MeasureRestExtent(
+        RiggedMeshGeometry geo, Transform3D[] palette, RiggedExtent? sink)
     {
-        // !IsFinite first: NaN fails `weight <= 0f` and would be accumulated into the sum and the
-        // weights handed to the SurfaceTool; +Inf would turn the renormalising divide into inf/inf.
-        if (count >= 4 || !float.IsFinite(weight) || weight <= 0f || jointCount <= 0) return;
-
-        int j = joint;
-        if (j < 0 || j >= jointCount)
+        var rMin = new Godot.Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+        var rMax = new Godot.Vector3(float.MinValue, float.MinValue, float.MinValue);
+        foreach (var surface in geo.Surfaces)
         {
-            j = System.Math.Clamp(j, 0, jointCount - 1);
-            remapped++;
+            for (int v = 0; v < surface.Positions.Length; v++)
+            {
+                var p = surface.Positions[v];
+                var vG = new Godot.Vector3(p.X, p.Y, p.Z);
+                var acc = Godot.Vector3.Zero;
+                float wSum = 0f;
+                for (int k = 0; k < 4; k++)
+                {
+                    int slot = surface.Bones[v * 4 + k];
+                    float w = surface.Weights[v * 4 + k];
+                    if (w <= 0f || slot < 0 || slot >= palette.Length) continue;
+                    acc += palette[slot] * vG * w;
+                    wSum += w;
+                }
+                if (wSum <= 1e-6f) continue;
+                acc /= wSum;
+                rMin = new Godot.Vector3(Mathf.Min(rMin.X, acc.X), Mathf.Min(rMin.Y, acc.Y), Mathf.Min(rMin.Z, acc.Z));
+                rMax = new Godot.Vector3(Mathf.Max(rMax.X, acc.X), Mathf.Max(rMax.Y, acc.Y), Mathf.Max(rMax.Z, acc.Z));
+                sink?.Add(acc);
+            }
         }
-
-        int slot = slotForJoint[j];
-        if (slot < 0)
-        {
-            // The joint name resolved to no bone in OUR skeleton. Viewer: remap to mPelvis /
-            // joint 0 rather than dropping. Slot 0 is this mesh's first successfully bound joint
-            // — the nearest available analog to that fallback.
-            slot = 0;
-            remapped++;
-        }
-
-        bones[count] = slot;
-        wts[count] = weight;
-        sum += weight;
-        count++;
+        return (rMin, rMax);
     }
 
     // -------------------------------------------------------------------------
