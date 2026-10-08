@@ -821,6 +821,14 @@ public sealed partial class GridSession
 
             if (typist != Guid.Empty && typist != self && !isConferenceOrGroup)
             {
+                // BUG-UI-37: typing opens a 1:1 tab for the typist, so typing into a session we do not know does too.
+                if (SessionIds.IsForeign(imSession, self, typist) && _loggedForeignTypingSessions.TryAdd(imSession, 0))
+                {
+                    Console.WriteLine(
+                        $"[Chat] typing from {e.IM.FromAgentName} ({typist}) carries session {imSession}, which is not the 1:1 id " +
+                        $"{SessionIds.PeerToPeer(self, typist)} and no conference or group we track: dialog={e.IM.Dialog} " +
+                        $"groupFlag={e.IM.GroupIM} -- opens a 1:1 tab");
+                }
                 Console.WriteLine($"[Chat] Peer typing indicator from {typist} ({e.IM.FromAgentName}): typing={e.IM.Dialog == InstantMessageDialog.StartTyping}");
                 InstantMessageTyping?.Invoke(this, new InstantMessageTypingEvent(
                     typist, e.IM.FromAgentName ?? string.Empty, e.IM.Dialog == InstantMessageDialog.StartTyping));
@@ -911,11 +919,29 @@ public sealed partial class GridSession
 
         if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
 
+        // BUG-UI-37: this is the one place where a line becomes "a 1:1 IM from X" -- and the session id never travels
+        // on from here, so a line the sim sent into a conference or group session we do not know lands in X's own tab
+        // (the tab is keyed by the sender, ChatWindow.AppendIncomingInstantMessage). Reported twice as "a chat that was
+        // neither group nor conference". The packet is what says which it was, so say it, once per session, without the
+        // text. Rare by construction (normal 1:1 lines never reach it), so it is not gated on --diag.
+        if (SessionIds.IsForeign(sessionId, imSelf, imFrom) && _loggedForeignImSessions.TryAdd(sessionId, 0))
+        {
+            Console.WriteLine(
+                $"[Chat] IM from {e.IM.FromAgentName} ({imFrom}) carries session {sessionId}, which is not the 1:1 id " +
+                $"{SessionIds.PeerToPeer(imSelf, imFrom)}: dialog={e.IM.Dialog} groupFlag={e.IM.GroupIM} offline={e.IM.Offline} " +
+                $"to={e.IM.ToAgentID} lmvKnowsSession={lmvKnowsSession} conferenceTracked={_conferenceSessions.ContainsKey(sessionId)} " +
+                $"groupMember={IsGroupMember(sessionId)} bucketBytes={e.IM.BinaryBucket?.Length ?? 0} -- shown as a 1:1 IM");
+        }
+
         InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
             e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, e.IM.IMSessionID.Guid));
     }
 
     private readonly ConcurrentDictionary<Guid, byte> _conferenceSessions = new();
+
+    /// <summary>Sessions already reported by the BUG-UI-37 line in <see cref="OnInstantMessage"/>.</summary>
+    private readonly ConcurrentDictionary<Guid, byte> _loggedForeignImSessions = new();
+    private readonly ConcurrentDictionary<Guid, byte> _loggedForeignTypingSessions = new();
 
     // Who has spoken in each conference. LibreMetaverse's own member list (GroupChatSessions) fills only from the
     // session's agent-list updates, which a conference we are invited into may never send for the people already
