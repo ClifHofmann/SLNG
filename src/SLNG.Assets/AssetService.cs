@@ -686,6 +686,30 @@ public class AssetService
         return lazy.Value;
     }
 
+    /// <summary>BUG-PERF-09: the decoded pixels of a texture that is already on this machine -- the
+    /// memory cache or the decoded-texture disk cache -- and nothing else. Never the network, never a
+    /// J2K decode, so it is safe to ask for a texture that has no business being fetched again (a
+    /// shrink of one already uploaded). Null when neither cache has it.
+    ///
+    /// <para>The result is the full-resolution decode; the caller reduces it. It shares the decode
+    /// slots (the disk read is the same cost as a decode-cache hit on the load path) at the lowest
+    /// priority, so a shrink never queues ahead of a texture someone is waiting to see.</para></summary>
+    public async Task<TextureData?> TryGetLocalDecodedAsync(Guid textureId)
+    {
+        if (_memCache.TryGetValue(textureId, out TextureData? cached)) return cached;
+
+        string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v5.j2c");
+        await _textureDecodeThrottle.WaitAsync(LocalDecodePriority).ConfigureAwait(false);
+        try
+        {
+            var decoded = await DecodedCache.TryGetAsync(textureId, 0, cacheFile).ConfigureAwait(false);
+            return decoded is { IsDegraded: false } ? decoded : null;
+        }
+        finally { _textureDecodeThrottle.Release(); }
+    }
+
+    private const float LocalDecodePriority = -1000f;
+
     /// <summary>BUG-AVATAR-02: fetches and decodes an avatar BAKE texture through SL's dedicated
     /// bake-texture host, not the generic per-face path <see cref="GetTextureAsync"/> uses --
     /// see <see cref="GridSession.FetchBakeTextureDataAsync"/>'s own doc comment for why bakes
