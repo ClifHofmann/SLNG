@@ -321,6 +321,124 @@ public class GroupChatNamingAndMuteTests
         Assert.Equal("Our Conference", Assert.Single(c.Conferences).SessionName);
     }
 
+    // ---- BUG-NET-32: a conference invitation is a line of the conference, not a 1:1 IM -------------------
+
+    private static InstantMessageEventArgs InvitationIm(UUID sessionId, UUID from, string message)
+    {
+        var im = new InstantMessage
+        {
+            Dialog = InstantMessageDialog.MessageFromAgent,
+            IMSessionID = sessionId,
+            FromAgentID = from,
+            FromAgentName = "Inviter Resident",
+            Message = message,
+            BinaryBucket = Array.Empty<byte>(),
+        };
+        return new InstantMessageEventArgs(im, null);
+    }
+
+    private static void LibreMetaverseRegistersSession(GridSession session, UUID id)
+    {
+        var client = (GridClient)typeof(GridSession).GetField("_client", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(session)!;
+        client.Self.GroupChatSessions.TryAdd(id, new List<ChatSessionMember>());
+    }
+
+    [Fact]
+    public void An_invitation_that_arrives_as_a_plain_im_opens_the_conference_not_a_one_to_one_tab()
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        var conference = UUID.Random();
+        var inviter = UUID.Random();
+        SetMembership(session, UUID.Random(), "Some Group"); // membership loaded: before it, a tracked session counts as group chat
+        LibreMetaverseRegistersSession(session, conference); // what ChatterBoxInvitation does before it raises the event
+
+        Invoke(session, "OnInstantMessage", InvitationIm(conference, inviter, "Somebody was invited to the conversation."));
+
+        var line = Assert.Single(c.Conferences);
+        Assert.Equal(conference.Guid, line.SessionId);
+        Assert.Equal(inviter.Guid, line.FromAgentId);
+        Assert.Empty(c.Ims);
+    }
+
+    [Fact]
+    public void A_one_to_one_im_stays_one_to_one_even_when_the_library_tracks_other_sessions()
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        var from = UUID.Random();
+        LibreMetaverseRegistersSession(session, UUID.Random());
+
+        // The 1:1 session id is the two ids xor-ed; self is the zero id in a session that never logged in.
+        Invoke(session, "OnInstantMessage", InvitationIm(from, from, "hello"));
+
+        Assert.Single(c.Ims);
+        Assert.Empty(c.Conferences);
+    }
+
+    [Fact]
+    public void An_im_with_a_foreign_session_id_that_the_library_never_registered_stays_an_im()
+    {
+        // Only an invitation is registered by the library; a message that merely has an odd session id is not one.
+        using var session = new GridSession();
+        var c = Listen(session);
+
+        Invoke(session, "OnInstantMessage", InvitationIm(UUID.Random(), UUID.Random(), "hello"));
+
+        Assert.Single(c.Ims);
+        Assert.Empty(c.Conferences);
+    }
+
+    // ---- FEAT-UI-71: the member list of a conference --------------------------------------------------
+
+    [Fact]
+    public void Everybody_who_speaks_in_a_conference_is_listed_and_the_change_is_announced_once()
+    {
+        using var session = new GridSession();
+        Listen(session);
+        SetMembership(session, UUID.Random(), "Some Group");
+        var conference = UUID.Random();
+        var changes = new List<Guid>();
+        session.ConferenceMembersChanged += (_, e) => changes.Add(e.SessionId);
+
+        var first = Im(InstantMessageDialog.SessionSend, conference, "hello");
+        var second = Im(InstantMessageDialog.SessionSend, conference, "me too");
+        Invoke(session, "OnInstantMessage", first);
+        Invoke(session, "OnInstantMessage", second);
+        // The same speaker again is no change.
+        Invoke(session, "OnInstantMessage", new InstantMessageEventArgs(new InstantMessage
+        {
+            Dialog = InstantMessageDialog.SessionSend,
+            IMSessionID = conference,
+            FromAgentID = first.IM.FromAgentID,
+            FromAgentName = "Some Resident",
+            Message = "and again",
+            BinaryBucket = Array.Empty<byte>(),
+        }, null));
+
+        var members = session.GetConferenceMembers(conference.Guid);
+        Assert.Contains(first.IM.FromAgentID.Guid, members);
+        Assert.Contains(second.IM.FromAgentID.Guid, members);
+        Assert.Equal(2, changes.Count);
+        Assert.All(changes, id => Assert.Equal(conference.Guid, id));
+    }
+
+    [Fact]
+    public void Leaving_a_conference_forgets_its_members()
+    {
+        using var session = new GridSession();
+        Listen(session);
+        SetMembership(session, UUID.Random(), "Some Group");
+        var conference = UUID.Random();
+        Invoke(session, "OnInstantMessage", Im(InstantMessageDialog.SessionSend, conference, "hello"));
+        Assert.NotEmpty(session.GetConferenceMembers(conference.Guid));
+
+        // Not connected, so nothing is sent -- the local bookkeeping is what is under test.
+        session.LeaveConference(conference.Guid);
+
+        Assert.Empty(session.GetConferenceMembers(conference.Guid));
+    }
+
     [Fact]
     public void A_group_nobody_can_name_is_reported_unnamed_so_the_app_asks_and_re_titles()
     {

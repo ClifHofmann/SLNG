@@ -808,6 +808,7 @@ public sealed partial class GridSession
         if (Volatile.Read(ref _logoutAbandoned) != 0) return;
         if (_client.Network.Connected)
         {
+            LeaveAllConferences();
             _client.Network.Logout();
         }
     }
@@ -829,6 +830,7 @@ public sealed partial class GridSession
         var started = System.Diagnostics.Stopwatch.StartNew();
         var logout = Task.Run(() =>
         {
+            try { LeaveAllConferences(); } catch (Exception ex) { Console.Error.WriteLine($"[Logout] leaving conferences failed: {ex.Message}"); }
             try { _client.Network.Logout(); }
             catch (Exception ex) { Console.Error.WriteLine($"[Logout] the network logout failed: {ex.Message}"); }
         });

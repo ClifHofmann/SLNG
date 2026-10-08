@@ -391,6 +391,9 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// <inheritdoc cref="GroupsUpdated"/>
     public event EventHandler<ConferenceChatMessageEvent>? ConferenceChatMessageReceived;
 
+    /// <summary>The member list of a conference changed. Network thread -- marshal before touching the UI.</summary>
+    public event EventHandler<ConferenceMembersChangedEvent>? ConferenceMembersChanged;
+
     /// <summary>Somebody started or stopped typing to us in a 1:1 IM. Raised on a network thread.</summary>
     public event EventHandler<InstantMessageTypingEvent>? InstantMessageTyping;
 
@@ -812,6 +815,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Friends.FriendshipTerminated += OnFriendshipTerminated;
         _client.Friends.FriendRightsUpdate += OnFriendRightsUpdate;
         _client.Self.IM += OnInstantMessage;
+        _client.Self.ChatSessionMemberAdded += OnChatSessionMemberAdded;
+        _client.Self.ChatSessionMemberLeft += OnChatSessionMemberLeft;
         _client.Self.ScriptDialog += OnScriptDialog;
         // Without this subscription the simulator's question is never even seen: LibreMetaverse's
         // ScriptQuestionHandler early-returns when nothing is listening. A script that has to ask
@@ -911,6 +916,8 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Groups.CurrentGroups -= OnCurrentGroups;
         _client.Groups.GroupProfile -= OnGroupProfile;
         _client.Self.GroupChatJoined -= OnGroupChatJoined;
+        _client.Self.ChatSessionMemberAdded -= OnChatSessionMemberAdded;
+        _client.Self.ChatSessionMemberLeft -= OnChatSessionMemberLeft;
         _client.Self.AlertMessage -= OnAlertMessage;
         // The next session's regions have nothing to do with this one's (BUG-NET-20).
         lock (_eventQueueHealth) _eventQueueHealth.Clear();
