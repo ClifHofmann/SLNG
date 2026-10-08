@@ -179,6 +179,8 @@ public static partial class SelfTest
         results.Add(CheckHudMeshPreparedOffMainThread());
         results.Add(CheckStaticMeshPrepared(tree));
         results.Add(CheckAlphaStatsWithoutReadBack()); // BUG-PERF-07
+        results.Add(CheckGpuCacheAdmission()); // BUG-PERF-09
+        results.Add(CheckShrinkWithoutReadBack());
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
         results.Add(CheckLoginScreenCoversTheWorld());
