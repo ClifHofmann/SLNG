@@ -940,7 +940,20 @@
       "emoji_cat_nature": "Tiere & Natur",
       "emoji_cat_objects": "Objekte",
       "mention": "Resident erwähnen (@)",
-      "send": "Senden"
+      "send": "Senden",
+      "tab_chat": "Chat",
+      "tab_friends": "Freunde",
+      "tab_groups": "Gruppen",
+      "tab_main": "Hauptchat",
+      "jump_to_latest": "▼ Nach unten springen",
+      "attach": "Anhängen (nicht implementiert)",
+      "history": "Verlauf",
+      "give_item": "Gegenstand übergeben",
+      "voice_call": "Sprachanruf (nicht implementiert)",
+      "search": "Suchen (nicht implementiert)",
+      "give_item_select_im": "[System] Bitte wähle zuerst einen IM-Tab mit einem Gesprächspartner aus.",
+      "give_item_instructions": "[System] Wähle ein Objekt im Inventar aus und klicke 'Weitergeben...' oder ziehe es per Drag & Drop hierher, um es an {0} zu senden.",
+      "give_item_open_im": "[System] Bitte öffne zuerst einen IM-Tab mit dem Empfänger."
     },
     "common": {
       "cancel": "Abbrechen"

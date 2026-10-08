@@ -940,7 +940,20 @@
       "emoji_cat_nature": "Animals & Nature",
       "emoji_cat_objects": "Objects",
       "mention": "Mention resident (@)",
-      "send": "Send"
+      "send": "Send",
+      "tab_chat": "Chat",
+      "tab_friends": "Friends",
+      "tab_groups": "Groups",
+      "tab_main": "Main",
+      "jump_to_latest": "▼ Jump to latest",
+      "attach": "Attach (not implemented)",
+      "history": "History",
+      "give_item": "Give Item",
+      "voice_call": "Voice Call (not implemented)",
+      "search": "Search (not implemented)",
+      "give_item_select_im": "[System] Please select an IM tab with a conversation partner first.",
+      "give_item_instructions": "[System] Select an object in your inventory and click 'Give...' or drag and drop it here to send it to {0}.",
+      "give_item_open_im": "[System] Please open an IM tab with the recipient first."
     },
     "common": {
       "cancel": "Cancel"
