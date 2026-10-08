@@ -515,6 +515,12 @@ public partial class ChatWindow : SLNGWindow
     /// friend -- wired to FriendsPanel's "IM / Call" button and double-clicking a friend row.</summary>
     public void OpenOrFocusImTab(Guid friendId, string friendName)
     {
+        if (!Visible)
+        {
+            Visible = true;
+            EnsureOnScreen();
+        }
+        if (IsMinimized) Unminimize();
         var tab = GetOrCreateImTab(friendId, friendName);
         SelectOuterTab(_chatPageControl);
         SelectChatTab(tab);
@@ -1868,8 +1874,10 @@ public partial class ChatWindow : SLNGWindow
                 }
             }
         }
-        UpdateHeaderForTab(_activeChatTab);
+        CallDeferred(nameof(UpdateActiveTabHeader));
     }
+
+    private void UpdateActiveTabHeader() => UpdateHeaderForTab(_activeChatTab);
 
     // ---- the other side is typing ----------------------------------------------------------------------
 
@@ -1911,6 +1919,14 @@ public partial class ChatWindow : SLNGWindow
                 }
                 var tab = GetOrCreateImTab(e.FromAgentId, name);
                 SetPeerTyping(tab, true);
+                if (!Visible)
+                {
+                    Visible = true;
+                    EnsureOnScreen();
+                }
+                if (IsMinimized) Unminimize();
+                SelectOuterTab(_chatPageControl);
+                SelectChatTab(tab);
             }
             else
             {

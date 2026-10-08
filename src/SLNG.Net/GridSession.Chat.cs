@@ -877,6 +877,7 @@ public sealed partial class GridSession
 
             if (typist != Guid.Empty && typist != self && !isConferenceOrGroup)
             {
+                Console.WriteLine($"[Chat] Peer typing indicator from {typist} ({e.IM.FromAgentName}): typing={e.IM.Dialog == InstantMessageDialog.StartTyping}");
                 InstantMessageTyping?.Invoke(this, new InstantMessageTypingEvent(
                     typist, e.IM.FromAgentName ?? string.Empty, e.IM.Dialog == InstantMessageDialog.StartTyping));
             }

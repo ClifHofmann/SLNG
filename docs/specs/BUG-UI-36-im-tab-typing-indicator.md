@@ -29,16 +29,19 @@ FEAT-UI-60 promised that an IM conversation opens on `IM_TYPING_START` (dialog 4
    - Filter out typing events only if they belong to a known group or tracked conference session (`_conferenceSessions`, `GroupChatSessions`, or `GroupIM`), so conference typing does not open 1:1 tabs.
 2. In `app/scripts/UI/ChatWindow.cs`:
    - Added `HasImTab(Guid agentId)` and `DrainPeerTypingForSelfTest` for automated verification.
+   - Updated `DrainPeerTyping` to actively show `ChatWindow` (`Visible = true`, `EnsureOnScreen()`, `Unminimize()`), switch outer tab to the Chat page, and select the IM tab so the conversation actively opens on screen.
+   - Updated `OpenOrFocusImTab` to ensure window is visible and unminimized.
+   - Fixed thread safety violation in `OnNearbyAvatarsUpdated` via `CallDeferred(nameof(UpdateActiveTabHeader))`.
 3. In `tests/SLNG.Net.Tests/InstantMessageTypingTests.cs`:
-   - Added 6 unit tests verifying that `StartTyping` and `StopTyping` with `UUID.Zero`, peer-to-peer XOR, or sender ID raise `InstantMessageTyping` correctly, while empty sender or group chat indicators are filtered out.
+   - Added unit tests verifying `StartTyping` and `StopTyping` handling and LibreMetaverse packet dispatch for `ImprovedInstantMessagePacket`.
 4. In `app/scripts/SelfTest.cs`:
    - Added `CheckChatWindowTypingIndicatorOpensTab` to verify that a peer typing event opens an IM tab for the sender.
 5. In `app/scripts/Boot.cs`:
-   - Bumped `AppVersion` to `v0.26.126-alpha`.
+   - Bumped `AppVersion` to `v0.26.127-alpha`.
 
 ## Acceptance Criteria
 
 - [x] Incoming 1:1 `StartTyping` indicator raises `InstantMessageTyping` even when wire `IMSessionID` is `UUID.Zero` or sender ID.
-- [x] Peer typing event opens an IM tab in `ChatWindow` before the first message text arrives.
+- [x] Peer typing event opens an IM tab in `ChatWindow` before the first message text arrives and ensures the window and tab are visible on screen.
 - [x] Unit tests in `InstantMessageTypingTests` pass.
 - [x] SelfTest `CheckChatWindowTypingIndicatorOpensTab` passes.
