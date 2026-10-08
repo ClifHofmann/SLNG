@@ -192,6 +192,7 @@ public partial class LandmarksWindow : SLNGWindow
             SizeFlagsHorizontal = SizeFlags.ExpandFill
         };
         _searchEdit.TextChanged += _ => FilterList();
+        _searchEdit.TextSubmitted += _ => SelectFirstLandmarkItem();
         searchRow.AddChild(_searchEdit);
 
         _viewModeBtn = new Button
@@ -301,6 +302,14 @@ public partial class LandmarksWindow : SLNGWindow
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         AddChild(_contextMenu);
 
+        VisibilityChanged += () =>
+        {
+            if (Visible && !IsMinimized)
+            {
+                FocusSearch();
+            }
+        };
+
         CallDeferred(MethodName.ApplyFirstOpenDefaultIfNeeded);
     }
 
@@ -332,11 +341,31 @@ public partial class LandmarksWindow : SLNGWindow
         if (Visible)
         {
             BringToFront();
+            FocusSearch();
             if (_landmarks.Count == 0 && _session != null)
             {
                 _ = RefreshLandmarksAsync();
             }
         }
+    }
+
+    public void FocusSearch()
+    {
+        if (_searchEdit == null || !GodotObject.IsInstanceValid(_searchEdit)) return;
+        Callable.From(() =>
+        {
+            if (!GodotObject.IsInstanceValid(_searchEdit)) return;
+            _searchEdit.GrabFocus();
+            _searchEdit.SelectAll();
+        }).CallDeferred();
+    }
+
+    public bool IsSearchFocused() => _searchEdit != null && GodotObject.IsInstanceValid(_searchEdit) && _searchEdit.HasFocus();
+
+    protected override void OnRestoredFromMinimized()
+    {
+        base.OnRestoredFromMinimized();
+        FocusSearch();
     }
 
     public async Task RefreshLandmarksAsync()
@@ -447,6 +476,7 @@ public partial class LandmarksWindow : SLNGWindow
     private void OnTreeItemCollapsed(TreeItem item)
     {
         if (_isClearingOrUpdating || item == null) return;
+        if (!string.IsNullOrWhiteSpace(_searchEdit?.Text)) return;
         string meta = item.GetMetadata(0).AsString();
         if (string.IsNullOrEmpty(meta) || !meta.StartsWith("folder|")) return;
 
@@ -571,27 +601,28 @@ public partial class LandmarksWindow : SLNGWindow
                     }
                 }
 
+                bool hasFilter = !string.IsNullOrWhiteSpace(filter);
+
                 // Render main Landmarks root node
-                if (landmarksRoot.TotalLandmarksCount > 0 || landmarksRoot.Subfolders.Count > 0 || string.IsNullOrEmpty(filter))
+                if (landmarksRoot.TotalLandmarksCount > 0 || landmarksRoot.Subfolders.Count > 0 || !hasFilter)
                 {
                     var lmRootItem = _tree.CreateItem(root);
                     lmRootItem.SetText(0, $"📁 {L10n.Tr("ui.landmarks.folder_landmarks")} ({landmarksRoot.TotalLandmarksCount})");
                     lmRootItem.SetSelectable(0, true);
                     lmRootItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks");
                     lmRootItem.SetCustomColor(0, new Color(0.85f, 0.93f, 1.0f, 0.95f));
-                    lmRootItem.Collapsed = !IsFolderExpanded("Landmarks", defaultExpanded: true);
+                    lmRootItem.Collapsed = hasFilter ? false : !IsFolderExpanded("Landmarks", defaultExpanded: true);
 
                     // 1. "Allgemeine Landmarken" (Direct root-level landmarks in Landmarks folder)
                     // Clear, distinct visual separation from categorized subfolders
-                    if (landmarksRoot.Landmarks.Count > 0 || string.IsNullOrEmpty(filter))
+                    if (landmarksRoot.Landmarks.Count > 0 || !hasFilter)
                     {
                         var genItem = _tree.CreateItem(lmRootItem);
                         genItem.SetText(0, $"📂 {L10n.Tr("ui.landmarks.general_landmarks")} ({landmarksRoot.Landmarks.Count})");
                         genItem.SetSelectable(0, true);
                         genItem.SetMetadata(0, $"folder|{landmarksRoot.FolderId}|Landmarks/__general__");
                         genItem.SetCustomColor(0, new Color(1.0f, 0.85f, 0.55f, 0.95f));
-                        bool genDefault = !string.IsNullOrEmpty(filter);
-                        genItem.Collapsed = !IsFolderExpanded("Landmarks/__general__", defaultExpanded: genDefault);
+                        genItem.Collapsed = hasFilter ? false : !IsFolderExpanded("Landmarks/__general__", defaultExpanded: false);
 
                         foreach (var lm in landmarksRoot.Landmarks.OrderBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase))
                         {
@@ -622,8 +653,7 @@ public partial class LandmarksWindow : SLNGWindow
                     otherRootItem.SetSelectable(0, false);
                     otherRootItem.SetMetadata(0, "folder||Other");
                     otherRootItem.SetCustomColor(0, new Color(0.8f, 0.8f, 0.85f, 0.9f));
-                    bool otherDefault = !string.IsNullOrEmpty(filter);
-                    otherRootItem.Collapsed = !IsFolderExpanded("Other", defaultExpanded: otherDefault);
+                    otherRootItem.Collapsed = hasFilter ? false : !IsFolderExpanded("Other", defaultExpanded: false);
 
                     foreach (var sub in otherRoot.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
                     {
@@ -960,7 +990,8 @@ public partial class LandmarksWindow : SLNGWindow
 
     private void RenderSubfolderTree(TreeItem parentItem, FolderNode node, string filter)
     {
-        if (!string.IsNullOrEmpty(filter) && node.TotalLandmarksCount == 0 && !node.Name.Contains(filter, StringComparison.OrdinalIgnoreCase))
+        bool hasFilter = !string.IsNullOrWhiteSpace(filter);
+        if (hasFilter && node.TotalLandmarksCount == 0 && !node.Name.Contains(filter, StringComparison.OrdinalIgnoreCase))
             return;
 
         var folderItem = _tree.CreateItem(parentItem);
@@ -969,8 +1000,7 @@ public partial class LandmarksWindow : SLNGWindow
         folderItem.SetMetadata(0, $"folder|{node.FolderId}|{node.FullPath}");
         folderItem.SetCustomColor(0, new Color(0.85f, 0.92f, 1.0f, 0.95f));
 
-        bool defaultExpanded = !string.IsNullOrEmpty(filter);
-        folderItem.Collapsed = !IsFolderExpanded(node.FullPath, defaultExpanded);
+        folderItem.Collapsed = hasFilter ? false : !IsFolderExpanded(node.FullPath, defaultExpanded: false);
 
         // 1. Subfolders first:
         foreach (var sub in node.Subfolders.Values.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
@@ -990,6 +1020,36 @@ public partial class LandmarksWindow : SLNGWindow
                 _tree.ScrollToItem(itemNode);
                 _selectItemIdAfterRefresh = null;
             }
+        }
+    }
+
+    private void SelectFirstLandmarkItem()
+    {
+        if (_tree == null) return;
+        var root = _tree.GetRoot();
+        if (root == null) return;
+
+        TreeItem? FindFirst(TreeItem parent)
+        {
+            for (var child = parent.GetFirstChild(); child != null; child = child.GetNext())
+            {
+                string meta = child.GetMetadata(0).AsString();
+                if (!string.IsNullOrEmpty(meta) && !meta.StartsWith("folder|"))
+                {
+                    return child;
+                }
+                var nested = FindFirst(child);
+                if (nested != null) return nested;
+            }
+            return null;
+        }
+
+        var first = FindFirst(root);
+        if (first != null)
+        {
+            _tree.SetSelected(first, 0);
+            _tree.ScrollToItem(first);
+            UpdateActionButtons();
         }
     }
 

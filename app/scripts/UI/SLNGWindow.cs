@@ -465,7 +465,11 @@ public partial class SLNGWindow : MarginContainer
         _contentContainer.Visible = true;
         foreach (var h in _resizeHandles) h.Visible = true;
         Size = _preMinimizeSize; // Restore the pre-minimize frame size
+        OnRestoredFromMinimized();
     }
+
+    /// <summary>Invoked when the window has been restored from minimized state.</summary>
+    protected virtual void OnRestoredFromMinimized() { }
 
     /// <summary>Raise this window (and its Control ancestors) above overlapping siblings -- the
     /// same walk the click-to-front handler does, exposed for programmatic activation from a

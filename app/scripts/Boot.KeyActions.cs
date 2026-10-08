@@ -65,7 +65,7 @@ public partial class Boot
         keys.Register(this, WindowGroups, () => InWorld && ToggleChatPage(SLNG.App.UI.ChatWindow.Page.Groups));
         keys.Register(this, WindowWorldMap, () => Launch("worldmap"));
         keys.Register(this, WindowMiniMap, () => Launch("minimap"));
-        keys.Register(this, WindowLandmarks, () => Launch("landmarks"));
+        keys.Register(this, WindowLandmarks, ToggleLandmarksWindow);
         keys.Register(this, WindowSnapshot, () => Launch("snapshot"));
         keys.Register(this, WindowCameraControls, () => Launch("camera"));
         keys.Register(this, WindowNotifications, () => Launch("notifications"));
@@ -143,6 +143,28 @@ public partial class Boot
         }
         if (!_chatWindow.Visible || _chatWindow.IsMinimized) InvokeLauncher("chat"); // opens / un-minimizes
         _chatWindow.ShowPage(page);
+        return true;
+    }
+
+    /// <summary>Ctrl+L / Landmarks: opens the window and focuses search. If already open but not focused,
+    /// brings it to front and focuses search; if already focused on search, toggles it closed.</summary>
+    private bool ToggleLandmarksWindow()
+    {
+        if (!InWorld) return false;
+        if (_landmarksWindow.Visible && !_landmarksWindow.IsMinimized)
+        {
+            if (_landmarksWindow.IsSearchFocused())
+            {
+                InvokeLauncher("landmarks"); // already focused on search: toggles it closed
+            }
+            else
+            {
+                _landmarksWindow.BringToFront();
+                _landmarksWindow.FocusSearch();
+            }
+            return true;
+        }
+        InvokeLauncher("landmarks");
         return true;
     }
 

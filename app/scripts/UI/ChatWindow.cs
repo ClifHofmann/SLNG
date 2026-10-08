@@ -56,6 +56,11 @@ public partial class ChatWindow : SLNGWindow
     private Control _outerPageHost = null!;
 
     private Control _chatPageControl = null!;
+    private Button _profileButton = null!;
+    private TextureRect _headerAvatarIcon = null!;
+    private Button _headerTitleButton = null!;
+    private PopupMenu _tabContextMenu = null!;
+    private ChatTab? _contextMenuTab;
     private Button _participantsButton = null!;
     private PanelContainer _participantsPanel = null!;
     private Label _participantsHeader = null!;
@@ -427,6 +432,9 @@ public partial class ChatWindow : SLNGWindow
         AddOuterTab(L10n.Tr("ui.recent.tab"), "history", _recentPanel);
 
         AddChatTab("main", L10n.Tr("ui.chat.tab_main"), ChatLogKind.Local, closeable: false);
+        _tabContextMenu = new PopupMenu();
+        _tabContextMenu.IdPressed += OnTabContextMenuPressed;
+        AddChild(_tabContextMenu);
         SelectChatTab(_chatTabs[0]);
     }
 
@@ -910,6 +918,7 @@ public partial class ChatWindow : SLNGWindow
 
         if (_recentPanel != null && _recentPanel.IsVisibleInTree()) RefreshRecentPanel();
         if (_friendsPanel != null && _friendsPanel.IsVisibleInTree()) _friendsPanel.RefreshIcons();
+        UpdateHeaderForTab(_activeChatTab);
     }
 
     /// <summary>Selftest: the Recent list as the window holds it.</summary>
@@ -1476,14 +1485,54 @@ public partial class ChatWindow : SLNGWindow
         if (_activeChatTab?.TargetConferenceId == sessionId) RefreshParticipants();
     }
 
-    /// <summary>Per-conversation action icons above the message log. Only History is wired up
-    /// today; Give Item / Voice Call / Search are placeholders captured from the M5-3 UX
-    /// proposal §9 (Gemini Canvas mockup review) -- shown now with a "(not implemented)" tooltip
-    /// so the intended affordance isn't lost, rather than added silently later.</summary>
+    /// <summary>Per-conversation action icons above the message log, plus conversation partner header
+    /// allowing one-click profile viewing for IMs and Groups.</summary>
     private Control BuildActionIconRow()
     {
-        var row = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        row.AddThemeConstantOverride("separation", 2);
+        var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        row.AddThemeConstantOverride("separation", 6);
+
+        _headerAvatarIcon = new TextureRect
+        {
+            CustomMinimumSize = new Vector2(24, 24),
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            MouseFilter = MouseFilterEnum.Stop,
+            TooltipText = L10n.Tr("ui.chat.participant_profile"),
+            Texture = AvatarIcons.Placeholder,
+            Visible = false,
+        };
+        _headerAvatarIcon.GuiInput += @event =>
+        {
+            if (@event is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left })
+            {
+                OnProfilePressed();
+            }
+        };
+        row.AddChild(_headerAvatarIcon);
+
+        _headerTitleButton = new Button
+        {
+            Flat = true,
+            FocusMode = FocusModeEnum.None,
+            Alignment = HorizontalAlignment.Left,
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+            TooltipText = L10n.Tr("ui.chat.participant_profile"),
+            Visible = false,
+        };
+        _headerTitleButton.AddThemeFontSizeOverride("font_size", BodyFontSize);
+        _headerTitleButton.AddThemeColorOverride("font_color", new Color(0.9f, 0.9f, 0.9f));
+        _headerTitleButton.AddThemeColorOverride("font_hover_color", new Color(1f, 1f, 1f));
+        _headerTitleButton.Pressed += OnProfilePressed;
+        row.AddChild(_headerTitleButton);
+
+        var spacer = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        row.AddChild(spacer);
+
+        _profileButton = BuildIconButton("person", L10n.Tr("ui.chat.participant_profile"), OnProfilePressed);
+        _profileButton.Visible = false;
+        row.AddChild(_profileButton);
 
         // Conference tabs only (see RefreshParticipants): who is in this conversation.
         _participantsButton = BuildIconButton("group", L10n.Tr("ui.chat.participants_toggle"), ToggleParticipants);
@@ -1495,6 +1544,54 @@ public partial class ChatWindow : SLNGWindow
         row.AddChild(BuildIconButton("search", L10n.Tr("ui.chat.search"), null));
 
         return row;
+    }
+
+    private void OnProfilePressed()
+    {
+        if (_activeChatTab?.TargetAgentId is { } agentId)
+        {
+            OnOpenProfileRequested?.Invoke(agentId, _activeChatTab.DisplayName);
+        }
+        else if (_activeChatTab?.TargetGroupId is { } groupId)
+        {
+            OnOpenGroupInfoRequested?.Invoke(groupId, _activeChatTab.DisplayName);
+        }
+    }
+
+    private void UpdateHeaderForTab(ChatTab? tab)
+    {
+        if (tab == null || !IsInstanceValid(_headerTitleButton)) return;
+
+        if (tab.TargetAgentId != null)
+        {
+            _headerAvatarIcon.Visible = true;
+            _headerAvatarIcon.Texture = tab.IconRect?.Texture ?? AvatarIcons.Placeholder;
+            _headerTitleButton.Visible = true;
+            _headerTitleButton.Text = tab.DisplayName;
+            _headerTitleButton.Disabled = false;
+            _headerTitleButton.TooltipText = L10n.Tr("ui.chat.participant_profile");
+            _profileButton.Visible = true;
+            _profileButton.TooltipText = L10n.Tr("ui.chat.participant_profile");
+        }
+        else if (tab.TargetGroupId != null)
+        {
+            _headerAvatarIcon.Visible = false;
+            _headerTitleButton.Visible = true;
+            _headerTitleButton.Text = tab.DisplayName;
+            _headerTitleButton.Disabled = false;
+            _headerTitleButton.TooltipText = L10n.Tr("ui.groups.action_profile");
+            _profileButton.Visible = true;
+            _profileButton.TooltipText = L10n.Tr("ui.groups.action_profile");
+        }
+        else
+        {
+            _headerAvatarIcon.Visible = false;
+            _headerTitleButton.Visible = true;
+            _headerTitleButton.Text = tab.DisplayName;
+            _headerTitleButton.Disabled = true;
+            _headerTitleButton.TooltipText = "";
+            _profileButton.Visible = false;
+        }
     }
 
     public bool HasActiveImTab() => _activeChatTab?.TargetAgentId != null;
@@ -1762,6 +1859,7 @@ public partial class ChatWindow : SLNGWindow
                 }
             }
         }
+        UpdateHeaderForTab(_activeChatTab);
     }
 
     // ---- the other side is typing ----------------------------------------------------------------------
@@ -1943,7 +2041,8 @@ public partial class ChatWindow : SLNGWindow
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
                 StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
                 SizeFlagsVertical = SizeFlags.ShrinkCenter,
-                MouseFilter = MouseFilterEnum.Ignore,
+                MouseFilter = MouseFilterEnum.Stop,
+                TooltipText = L10n.Tr("ui.chat.participant_profile"),
                 Texture = AvatarIcons.Placeholder, // until the real picture arrives, and for an avatar with none
             };
             inner.AddChild(iconRect);
@@ -1986,7 +2085,28 @@ public partial class ChatWindow : SLNGWindow
         };
         _chatTabs.Add(tab);
 
+        if (iconRect != null)
+        {
+            iconRect.GuiInput += @event =>
+            {
+                if (@event is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left })
+                {
+                    if (tab.TargetAgentId is { } aid)
+                    {
+                        OnOpenProfileRequested?.Invoke(aid, tab.DisplayName);
+                    }
+                }
+            };
+        }
+
         label.Pressed += () => SelectChatTab(tab);
+        label.GuiInput += @event =>
+        {
+            if (@event is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right })
+            {
+                ShowTabContextMenu(tab, (Vector2I)label.GetGlobalMousePosition());
+            }
+        };
 
         // Manual sorting: drag a conversation onto another to put it there. "Main" stays first and cannot be
         // dragged; everything else can.
@@ -2064,6 +2184,72 @@ public partial class ChatWindow : SLNGWindow
         ShowJumpToLatest(false);
         UpdatePeerTypingLabel();
         RefreshParticipants();
+        UpdateHeaderForTab(tab);
+    }
+
+    private void ShowTabContextMenu(ChatTab tab, Vector2I screenPos)
+    {
+        _contextMenuTab = tab;
+        _tabContextMenu.Clear();
+
+        if (tab.TargetAgentId != null)
+        {
+            _tabContextMenu.AddItem(L10n.Tr("ui.chat.participant_profile"), 0);
+            _tabContextMenu.AddItem(L10n.Tr("ui.chat.history"), 1);
+            _tabContextMenu.AddItem(L10n.Tr("ui.chat.give_item"), 2);
+            if (tab.Closeable)
+            {
+                _tabContextMenu.AddSeparator();
+                _tabContextMenu.AddItem(L10n.Tr("common.close"), 3);
+            }
+        }
+        else if (tab.TargetGroupId != null)
+        {
+            _tabContextMenu.AddItem(L10n.Tr("ui.groups.action_profile"), 0);
+            _tabContextMenu.AddItem(L10n.Tr("ui.chat.history"), 1);
+            if (tab.Closeable)
+            {
+                _tabContextMenu.AddSeparator();
+                _tabContextMenu.AddItem(L10n.Tr("common.close"), 3);
+            }
+        }
+        else
+        {
+            _tabContextMenu.AddItem(L10n.Tr("ui.chat.history"), 1);
+            if (tab.Closeable)
+            {
+                _tabContextMenu.AddSeparator();
+                _tabContextMenu.AddItem(L10n.Tr("common.close"), 3);
+            }
+        }
+
+        _tabContextMenu.Position = screenPos;
+        _tabContextMenu.Popup();
+    }
+
+    private void OnTabContextMenuPressed(long id)
+    {
+        if (_contextMenuTab == null) return;
+        if (id == 0)
+        {
+            if (_contextMenuTab.TargetAgentId is { } aid)
+                OnOpenProfileRequested?.Invoke(aid, _contextMenuTab.DisplayName);
+            else if (_contextMenuTab.TargetGroupId is { } gid)
+                OnOpenGroupInfoRequested?.Invoke(gid, _contextMenuTab.DisplayName);
+        }
+        else if (id == 1)
+        {
+            OpenHistoryFor(_contextMenuTab.LogKind, _contextMenuTab.LogName);
+        }
+        else if (id == 2)
+        {
+            SelectChatTab(_contextMenuTab);
+            OnGiveItemIconPressed();
+        }
+        else if (id == 3 && _contextMenuTab.Closeable)
+        {
+            CloseChatTab(_contextMenuTab);
+        }
     }
 
     private void AppendLineToTab(ChatTab tab, string bbcodeLine, bool countUnread = true)

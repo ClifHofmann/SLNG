@@ -957,7 +957,8 @@
       "give_item_open_im": "[System] Bitte öffne zuerst einen IM-Tab mit dem Empfänger."
     },
     "common": {
-      "cancel": "Abbrechen"
+      "cancel": "Abbrechen",
+      "close": "Schließen"
     },
     "outfit_menu": {
       "wear": "Dieses Outfit anziehen",
