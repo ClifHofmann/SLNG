@@ -431,7 +431,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.26.112-alpha";
+    public const string AppVersion = "v0.26.115-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2010,7 +2010,9 @@ public partial class Boot : Control
             _networkSettings,
             kbps => { if (_session != null) _session.MaxBandwidthKbps = kbps; }, // FEAT-NET-05: resends the throttle to every simulator
             GridData.AllObjectCacheDirectories, // BUG-GRID-01: one object cache per grid, plus the old shared one
-            () => _session?.ClearObjectCache()); // FEAT-NET-04: one button clears both caches
+            () => _session?.ClearObjectCache(), // FEAT-NET-04: one button clears both caches
+            enabled => { if (_assetService != null) _assetService.DecodedCache.Enabled = enabled; },
+            () => _assetService?.DecodedCache.Clear());
 
         // FEAT-UI-41: where chat logs are kept and the import of older SLNG logs. The page asks for the
         // running session's folder each time it needs it -- there is none before a login.
@@ -3810,7 +3812,8 @@ public partial class Boot : Control
         _world.EntityDeselected += (s, e) => _session?.DeselectObject(e.Entity.RegionHandle, e.Entity.LocalId);
 
         string cacheDir = ProjectSettings.GlobalizePath("user://cache/assets");
-        _assetService = new SLNG.Assets.AssetService(_session, cacheDir);
+        _assetService = new SLNG.Assets.AssetService(_session, cacheDir, _networkSettings.DecodedCacheSizeMb);
+        _assetService.DecodedCache.Enabled = _networkSettings.DecodedCacheEnabled;
 
         // GPU budget shared by meshes and textures. Sized for the nearby working set on a
         // 12 GB card with headroom for post-FX; out-of-range content is released so the LRU

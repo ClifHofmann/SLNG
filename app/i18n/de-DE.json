@@ -581,6 +581,7 @@
       "network_heading": "Netzwerk- und Cache-Einstellungen:",
       "clear_cache": "Asset- und Objekt-Cache leeren",
       "cache_size": "{0} Assets, {1} Objekte",
+      "decoded_cache_enabled": "Dekodierten Textur-Cache aktivieren (schnelleres Laden bei Wiederbesuch)",
       "max_bandwidth": "Max. Bandbreite",
       "max_bandwidth_hint": "Wie viel der Simulator Ihnen höchstens pro Sekunde schicken darf. Mehr lädt eine neue Region schneller; bei einer langsamen oder wackligen Leitung hilft weniger. Der Standard 3000 kbps entspricht dem Second-Life-Viewer.",
       "tab_chat_logs": "Chat-Protokolle",
