@@ -113,4 +113,128 @@ public class WorldTests
 
         Assert.Equal(0, world.EntityCount);
     }
+
+    [Fact]
+    public void RekeyEntity_MovesEntityToNewKey_PreservesIdAndComponents_AndFiresEntityRekeyed()
+    {
+        var world = new World();
+        const ulong oldRegion = 100ul;
+        const ulong newRegion = 200ul;
+        const uint oldLocal = 42u;
+        const uint newLocal = 84u;
+
+        var entity = world.GetOrCreateEntity(oldRegion, oldLocal);
+        var originalGuid = entity.Id;
+        var transform = new TransformComponent { Position = new Vector3(1, 2, 3) };
+        entity.SetComponent(transform);
+
+        EntityRekeyedEventArgs? receivedArgs = null;
+        world.EntityRekeyed += (s, e) => receivedArgs = e;
+
+        bool rekeyed = world.RekeyEntity(entity, newRegion, newLocal);
+
+        Assert.True(rekeyed);
+        Assert.Equal(newRegion, entity.RegionHandle);
+        Assert.Equal(newLocal, entity.LocalId);
+        Assert.Equal(originalGuid, entity.Id);
+        Assert.Same(transform, entity.GetComponent<TransformComponent>());
+
+        // Key lookups
+        Assert.Null(world.GetEntity(oldRegion, oldLocal));
+        Assert.Same(entity, world.GetEntity(newRegion, newLocal));
+        Assert.Same(entity, world.GetEntity(originalGuid));
+
+        // Event
+        Assert.NotNull(receivedArgs);
+        Assert.Same(entity, receivedArgs.Entity);
+        Assert.Equal(oldRegion, receivedArgs.OldRegionHandle);
+        Assert.Equal(oldLocal, receivedArgs.OldLocalId);
+        Assert.Equal(newRegion, receivedArgs.NewRegionHandle);
+        Assert.Equal(newLocal, receivedArgs.NewLocalId);
+    }
+
+    [Fact]
+    public void RekeyEntity_EvictsConflictingEntityAtTargetKey()
+    {
+        var world = new World();
+        const ulong region = 100ul;
+        var entityToMove = world.GetOrCreateEntity(region, 1);
+        var conflictingEntity = world.GetOrCreateEntity(region, 2);
+
+        bool removedFired = false;
+        world.EntityRemoved += (s, e) =>
+        {
+            if (e.Entity.LocalId == 2) removedFired = true;
+        };
+
+        world.RekeyEntity(entityToMove, region, 2);
+
+        Assert.True(removedFired);
+        Assert.Same(entityToMove, world.GetEntity(region, 2));
+    }
+
+    [Fact]
+    public void RemoveRegion_PreservesLocalAgent_AndAllAttachmentsAndHUDs_AndMarksAwaitingReconfirmation()
+    {
+        var world = new World();
+        const ulong region = 500ul;
+
+        // 1. Self avatar
+        var selfAvatar = world.GetOrCreateEntity(region, 10);
+        selfAvatar.SetComponent(new AvatarComponent(System.Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+
+        // 2. Direct attachment root (e.g. hair)
+        var hairRoot = world.GetOrCreateEntity(region, 20);
+        var hairAtt = new AttachmentComponent(selfAvatar.Id, 2 /* Skull */);
+        hairRoot.SetComponent(hairAtt);
+        hairRoot.SetComponent(new TransformComponent { ParentLocalId = 10 });
+
+        // 3. Child prim linked to attachment root
+        var hairChild = world.GetOrCreateEntity(region, 21);
+        hairChild.SetComponent(new TransformComponent { ParentLocalId = 20 });
+
+        // 4. HUD attachment (e.g. HUD root)
+        var hudRoot = world.GetOrCreateEntity(region, 30);
+        var hudAtt = new AttachmentComponent(selfAvatar.Id, 31 /* HUD Center 2 */);
+        hudRoot.SetComponent(hudAtt);
+
+        // 5. Remote avatar and its attachment (must be removed)
+        var remoteAvatar = world.GetOrCreateEntity(region, 40);
+        remoteAvatar.SetComponent(new AvatarComponent(System.Guid.NewGuid(), "Other", "Resident", isLocalAgent: false));
+        var remoteAtt = world.GetOrCreateEntity(region, 41);
+        remoteAtt.SetComponent(new AttachmentComponent(remoteAvatar.Id, 1));
+
+        // 6. World prim (must be removed)
+        var worldPrim = world.GetOrCreateEntity(region, 50);
+        worldPrim.SetComponent(new TransformComponent());
+
+        var removedIds = new System.Collections.Generic.List<uint>();
+        world.EntityRemoved += (s, e) => removedIds.Add(e.Entity.LocalId);
+
+        world.RemoveRegion(region);
+
+        // Self avatar and attachments preserved
+        Assert.NotNull(world.GetEntity(region, 10));
+        Assert.NotNull(world.GetEntity(region, 20));
+        Assert.NotNull(world.GetEntity(region, 21));
+        Assert.NotNull(world.GetEntity(region, 30));
+
+        // Marked awaiting re-confirmation
+        Assert.True(world.GetEntity(region, 20)!.GetComponent<AttachmentComponent>()!.AwaitingReconfirmation);
+        Assert.True(world.GetEntity(region, 21)!.GetComponent<AttachmentComponent>()!.AwaitingReconfirmation);
+        Assert.True(world.GetEntity(region, 30)!.GetComponent<AttachmentComponent>()!.AwaitingReconfirmation);
+
+        // Other content removed
+        Assert.Null(world.GetEntity(region, 40));
+        Assert.Null(world.GetEntity(region, 41));
+        Assert.Null(world.GetEntity(region, 50));
+
+        Assert.Contains(40u, removedIds);
+        Assert.Contains(41u, removedIds);
+        Assert.Contains(50u, removedIds);
+        Assert.DoesNotContain(10u, removedIds);
+        Assert.DoesNotContain(20u, removedIds);
+        Assert.DoesNotContain(21u, removedIds);
+        Assert.DoesNotContain(30u, removedIds);
+    }
 }

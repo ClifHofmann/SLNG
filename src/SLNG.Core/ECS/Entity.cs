@@ -9,13 +9,19 @@ namespace SLNG.Core.ECS;
 public class Entity
 {
     public Guid Id { get; }
-    public ulong RegionHandle { get; }
-    public uint LocalId { get; }
+    public ulong RegionHandle { get; private set; }
+    public uint LocalId { get; private set; }
     private readonly Dictionary<Type, IComponent> _components = new();
 
     public Entity(ulong regionHandle, uint localId)
     {
         Id = Guid.NewGuid();
+        RegionHandle = regionHandle;
+        LocalId = localId;
+    }
+
+    internal void Rekey(ulong regionHandle, uint localId)
+    {
         RegionHandle = regionHandle;
         LocalId = localId;
     }

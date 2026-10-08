@@ -9,4 +9,8 @@
     <!-- Engine-agnostic. Never reference Godot from this project. -->
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SLNG.Core.Tests" />
+  </ItemGroup>
+
 </Project>

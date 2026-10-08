@@ -91,9 +91,9 @@ public enum TeleportStage
 /// the moment the request is sent and a terminal <see cref="TeleportStage.Finished"/> /
 /// <see cref="TeleportStage.Failed"/> once the awaited call returns (a timeout raises no
 /// LibreMetaverse event at all, so a consumer that only listened to relayed events would hang its
-/// overlay). Not world-state, so intentionally not an <see cref="IWorldEvent"/> -- consumers (UI)
-/// subscribe directly on GridSession, same as <see cref="LoginProgressEvent"/>.</summary>
-public record TeleportProgressEvent(TeleportStage Stage, string Message);
+/// overlay). Consumers (UI) subscribe directly on GridSession, and WorldSimulation consumes it
+/// for teleport keep reconciliation.</summary>
+public record TeleportProgressEvent(TeleportStage Stage, string Message) : IWorldEvent;
 
 /// <summary>A friend's online/offline presence changed. Identity/social state, not world
 /// simulation state, so intentionally not an <see cref="IWorldEvent"/> -- consumers (UI)

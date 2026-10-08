@@ -29,6 +29,27 @@ public class ComponentEventArgs : EventArgs
 }
 
 /// <summary>
+/// Event arguments for entity re-keying events (same entity, new regionHandle / localId).
+/// </summary>
+public class EntityRekeyedEventArgs : EventArgs
+{
+    public Entity Entity { get; }
+    public ulong OldRegionHandle { get; }
+    public uint OldLocalId { get; }
+    public ulong NewRegionHandle { get; }
+    public uint NewLocalId { get; }
+
+    public EntityRekeyedEventArgs(Entity entity, ulong oldRegionHandle, uint oldLocalId, ulong newRegionHandle, uint newLocalId)
+    {
+        Entity = entity;
+        OldRegionHandle = oldRegionHandle;
+        OldLocalId = oldLocalId;
+        NewRegionHandle = newRegionHandle;
+        NewLocalId = newLocalId;
+    }
+}
+
+/// <summary>
 /// The central registry of all entities in the simulator.
 /// </summary>
 public class World
@@ -42,6 +63,7 @@ public class World
     // Events to notify observers (e.g. Godot renderer) about world state changes
     public event EventHandler<EntityEventArgs>? EntityAdded;
     public event EventHandler<EntityEventArgs>? EntityRemoved;
+    public event EventHandler<EntityRekeyedEventArgs>? EntityRekeyed;
     public event EventHandler<ComponentEventArgs>? ComponentUpdated;
     public event EventHandler<ulong>? TerrainUpdated;
     public event EventHandler<ulong>? TerrainSettingsUpdated;
@@ -118,23 +140,96 @@ public class World
     }
 
     /// <summary>
+    /// Moves an existing entity to a new (regionHandle, localId) key in the index,
+    /// keeping its Entity.Id, components, and instance identity intact.
+    /// Fires <see cref="EntityRekeyed"/> instead of EntityRemoved + EntityAdded.
+    /// </summary>
+    public bool RekeyEntity(Entity entity, ulong newRegionHandle, uint newLocalId)
+    {
+        if (entity == null) throw new ArgumentNullException(nameof(entity));
+        if (!_entities.ContainsKey(entity.Id)) return false;
+
+        var oldKey = (entity.RegionHandle, entity.LocalId);
+        var newKey = (newRegionHandle, newLocalId);
+        if (oldKey == newKey) return true;
+
+        if (_entityIndex.TryGetValue(newKey, out var existingId) && existingId != entity.Id)
+        {
+            RemoveEntity(newRegionHandle, newLocalId);
+        }
+
+        _entityIndex.Remove(oldKey);
+        entity.Rekey(newRegionHandle, newLocalId);
+        _entityIndex[newKey] = entity.Id;
+
+        EntityRekeyed?.Invoke(this, new EntityRekeyedEventArgs(entity, oldKey.Item1, oldKey.Item2, newRegionHandle, newLocalId));
+        return true;
+    }
+
+    /// <summary>
     /// Removes all entities and terrain associated with a specific region.
     /// </summary>
     public void RemoveRegion(ulong regionHandle)
     {
-        // BUG-NET-13: never delete the local agent as a side effect of unloading a region. The
-        // local agent is the player, not regional content. On a teleport this runs (via the eager
-        // BUG-NET-04 cleanup) while the agent entity is still keyed to the region we left, before
-        // the destination sim's first local AvatarUpdate re-keys it -- removing it here blanks the
-        // self avatar (its AvatarComponent/BakedTextures are gone) and leaves the renderer with no
-        // self visual to follow until a fresh AvatarAppearance arrives, which the sim does not
-        // reliably re-send after a teleport (BUG-AVATAR-04). WorldSimulation.ApplyAvatarUpdate
-        // already removes the stale old-region local agent when the new one arrives, so preserving
-        // it here just bridges that gap. A genuine DisableSimulator for a neighbor region (the
-        // BUG-NET-03 walking path) never contains the local agent, so this is a no-op there.
+        // BUG-NET-13 & FEAT-NET-06: never delete the local agent or its attachment tree
+        // (worn items, HUDs, and their child prims) as a side effect of unloading a region.
+        // The local agent and worn attachments move with the agent, not with the sim.
+        // We preserve them and mark attachments as awaiting re-confirmation.
+        var localAgent = _entities.Values.FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        var preservedIds = new HashSet<Guid>();
+        if (localAgent != null)
+        {
+            preservedIds.Add(localAgent.Id);
+
+            foreach (var e in _entities.Values)
+            {
+                if (e.GetComponent<AttachmentComponent>()?.AvatarEntityId == localAgent.Id)
+                {
+                    preservedIds.Add(e.Id);
+                }
+            }
+
+            bool expanded = true;
+            while (expanded)
+            {
+                expanded = false;
+                foreach (var e in _entities.Values)
+                {
+                    if (preservedIds.Contains(e.Id)) continue;
+                    if (e.RegionHandle != regionHandle) continue;
+                    var t = e.GetComponent<TransformComponent>();
+                    if (t != null && t.ParentLocalId != 0)
+                    {
+                        if (_entityIndex.TryGetValue((regionHandle, t.ParentLocalId), out var parentId)
+                            && preservedIds.Contains(parentId))
+                        {
+                            preservedIds.Add(e.Id);
+                            expanded = true;
+                        }
+                    }
+                }
+            }
+
+            foreach (var id in preservedIds)
+            {
+                if (id == localAgent.Id) continue;
+                if (_entities.TryGetValue(id, out var entity) && entity.RegionHandle == regionHandle)
+                {
+                    var att = entity.GetComponent<AttachmentComponent>();
+                    if (att != null)
+                    {
+                        att.AwaitingReconfirmation = true;
+                    }
+                    else
+                    {
+                        entity.SetComponent(new AttachmentComponent(localAgent.Id, 0) { AwaitingReconfirmation = true });
+                    }
+                }
+            }
+        }
+
         var toRemove = _entities.Values
-            .Where(e => e.RegionHandle == regionHandle
-                        && e.GetComponent<AvatarComponent>()?.IsLocalAgent != true)
+            .Where(e => e.RegionHandle == regionHandle && !preservedIds.Contains(e.Id))
             .ToList();
         foreach (var entity in toRemove)
         {

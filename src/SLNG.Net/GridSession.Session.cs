@@ -399,7 +399,9 @@ public sealed partial class GridSession
             catch (Exception ex) { Console.Error.WriteLine($"[Teleport] stand-up on arrival failed: {ex.Message}"); }
         }
 
-        TeleportProgress?.Invoke(this, new TeleportProgressEvent(stage, message));
+        var evt = new TeleportProgressEvent(stage, message);
+        TeleportProgress?.Invoke(this, evt);
+        TeleportProgressReceived?.Invoke(this, evt);
     }
 
     /// <summary>Raises the terminal <see cref="TeleportProgress"/> event for a completed attempt

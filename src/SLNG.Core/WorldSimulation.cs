@@ -26,6 +26,18 @@ public sealed class WorldSimulation : IDisposable
     // re-composed when the root arrives or moves. Touched only on the pump thread.
     private readonly Dictionary<(ulong, uint), HashSet<System.Guid>> _children = new();
 
+    // FEAT-NET-06: Teleport keep reconciliation
+    private readonly System.Diagnostics.Stopwatch _reconcileStopwatch = new();
+    private long _lastUpdateTimestamp;
+    private int _initialKeptCount;
+    private readonly HashSet<System.Guid> _reconfirmedEntityIds = new();
+    private int _updatesSinceReconcileStart;
+    private bool _isReconciling;
+
+    private const double ReconciliationMinWaitSeconds = 5.0;
+    private const double ReconciliationQuietSeconds = 3.0;
+    private const double ReconciliationMaxWaitSeconds = 30.0;
+
     /// <summary>FEAT-UI-05: raised when a prim joins or leaves a linkset, which in practice only
     /// happens on a link or an unlink. Lets the UI re-read a state it cannot poll for cheaply.</summary>
     public event System.EventHandler<Entity>? ObjectReparented;
@@ -74,6 +86,7 @@ public sealed class WorldSimulation : IDisposable
         _source.ObjectMediaReceived += OnObjectMedia;
         _source.ObjectAnimationReceived += OnObjectAnimation;
         _source.DisplayNameResolved += OnDisplayNameResolved;
+        _source.TeleportProgressReceived += OnTeleportProgress;
         _world.EntityRemoved += OnEntityRemoved;
     }
 
@@ -91,6 +104,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnAvatarAppearance(object? sender, AvatarAppearanceEvent e) => _pending.Enqueue(e);
     private void OnAvatarAnimation(object? sender, AvatarAnimationEvent e) => _pending.Enqueue(e);
     private void OnDisplayNameResolved(object? sender, NameResolvedEvent e) => _pending.Enqueue(e);
+    private void OnTeleportProgress(object? sender, TeleportProgressEvent e) => _pending.Enqueue(e);
 
     /// <summary>
     /// Applies all queued world events to the world. Call once per frame on the main
@@ -100,6 +114,11 @@ public sealed class WorldSimulation : IDisposable
     {
         while (_pending.TryDequeue(out var evt))
         {
+            _updatesSinceReconcileStart++;
+            if (_isReconciling)
+            {
+                _lastUpdateTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            }
             switch (evt)
             {
                 case ObjectUpdateEvent e: ApplyObjectUpdate(e); break;
@@ -120,12 +139,16 @@ public sealed class WorldSimulation : IDisposable
                     _world.RemoveRegion(e.RegionHandle);
                     DropPendingAnimations(e.RegionHandle); // FEAT-ANIMESH-02: for objects that never arrived
                     _avatarCacheDirty = true; // takes every avatar in that region with it
+                    StartReconciliation();
                     break;
                 case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
                 case AvatarAnimationEvent e: ApplyAvatarAnimation(e); break;
                 case NameResolvedEvent e: ApplyDisplayNameResolved(e); break;
+                case TeleportProgressEvent e: ApplyTeleportProgress(e); break;
             }
         }
+
+        CheckReconciliationProgress();
     }
 
     /// <summary>
@@ -139,6 +162,7 @@ public sealed class WorldSimulation : IDisposable
     public void UnloadAllRegions()
     {
         while (_pending.TryDequeue(out _)) { }
+        CancelReconciliation();
         _parkedTerrain.Clear();
         _parkedOrder.Clear();
         _pendingAnimations.Clear();
@@ -386,7 +410,63 @@ public sealed class WorldSimulation : IDisposable
         if (_regionDataLogged.Add(e.RegionHandle))
             System.Console.WriteLine($"[RegionData] first object update for region {e.RegionHandle}");
 
-        var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
+        Entity? entity = null;
+        if (e.ObjectId != System.Guid.Empty)
+        {
+            Entity? existing = null;
+            if (_objectIndex.TryGetValue(e.ObjectId, out var at))
+            {
+                existing = _world.GetEntity(at.Region, at.LocalId);
+            }
+            if (existing == null)
+            {
+                existing = _world.GetAllEntities()
+                    .FirstOrDefault(ent => ent.GetComponent<MetadataComponent>()?.Id == e.ObjectId
+                                           && (ent.GetComponent<AttachmentComponent>() != null || ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true));
+            }
+
+            if (existing != null && (existing.RegionHandle != e.RegionHandle || existing.LocalId != e.LocalId))
+            {
+                var att = existing.GetComponent<AttachmentComponent>();
+                var av = existing.GetComponent<AvatarComponent>();
+                var localAgent = _world.GetAllEntities().FirstOrDefault(x => x.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+                bool isSelfAttachment = att != null && (localAgent != null && att.AvatarEntityId == localAgent.Id);
+                if (isSelfAttachment || av?.IsLocalAgent == true)
+                {
+                    ulong oldRegion = existing.RegionHandle;
+                    uint oldLocalId = existing.LocalId;
+                    _world.RekeyEntity(existing, e.RegionHandle, e.LocalId);
+                    _objectIndex[e.ObjectId] = (e.RegionHandle, e.LocalId);
+                    if (att != null)
+                    {
+                        att.AwaitingReconfirmation = false;
+                        NoteAttachmentReconfirmed(existing.Id);
+                    }
+                    if (_children.TryGetValue((oldRegion, oldLocalId), out var childSet))
+                    {
+                        _children.Remove((oldRegion, oldLocalId));
+                        var newKey = (e.RegionHandle, e.LocalId);
+                        if (!_children.TryGetValue(newKey, out var existingSet))
+                            _children[newKey] = childSet;
+                        else
+                            existingSet.UnionWith(childSet);
+                    }
+                    entity = existing;
+                }
+            }
+            else if (existing != null && existing.RegionHandle == e.RegionHandle && existing.LocalId == e.LocalId)
+            {
+                var att = existing.GetComponent<AttachmentComponent>();
+                if (att != null && att.AwaitingReconfirmation)
+                {
+                    att.AwaitingReconfirmation = false;
+                    NoteAttachmentReconfirmed(existing.Id);
+                }
+                entity = existing;
+            }
+        }
+
+        entity ??= _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
 
         var transform = entity.GetComponent<TransformComponent>() ?? new TransformComponent();
 
@@ -765,34 +845,34 @@ public sealed class WorldSimulation : IDisposable
         // avoids.
         _avatarCacheDirty = true;
 
-        AvatarComponent? carriedSelfAppearance = null;
         if (e.IsLocalAgent)
         {
             // Ensure no other entity is marked as the local agent (e.g. leftover from a previous region after teleport)
             var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
             if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
             {
-                // BUG-NET-13: a teleport re-keys the self entity to the new region, but it must NOT
-                // reset the avatar. Carry the appearance-bearing component (VisualParams,
-                // BakedTextures, hover, active anims) forward -- a fresh AvatarComponent with null
-                // VisualParams makes AvatarRenderer rebuild the skeleton from the DEFAULT shape, and
-                // that path can leave a non-finite bone transform in the Skeleton3D -> the engine
-                // re-normalizes it every frame -> the "Vector3 cannot be normalized" flood that
-                // starts on the exact frame after a teleport. It also blanks the avatar
-                // ([SelfBake] channels (null)) until a new AvatarAppearance arrives, which the sim
-                // does not reliably re-send (BUG-AVATAR-04).
-                carriedSelfAppearance = oldAgent.GetComponent<AvatarComponent>();
-                _world.RemoveEntity(oldAgent.RegionHandle, oldAgent.LocalId);
+                // FEAT-NET-06: A teleport re-keys the existing self entity to the new region.
+                // It must NOT remove and recreate the entity, which would tear down the skeleton/rig in AvatarRenderer!
+                ulong oldRegion = oldAgent.RegionHandle;
+                uint oldLocalId = oldAgent.LocalId;
+                _world.RekeyEntity(oldAgent, e.RegionHandle, e.LocalId);
+                if (oldAgent.GetComponent<MetadataComponent>()?.Id is { } agentId && agentId != System.Guid.Empty)
+                {
+                    _objectIndex[agentId] = (e.RegionHandle, e.LocalId);
+                }
+                if (_children.TryGetValue((oldRegion, oldLocalId), out var childSet))
+                {
+                    _children.Remove((oldRegion, oldLocalId));
+                    var newKey = (e.RegionHandle, e.LocalId);
+                    if (!_children.TryGetValue(newKey, out var existingSet))
+                        _children[newKey] = childSet;
+                    else
+                        existingSet.UnionWith(childSet);
+                }
             }
         }
 
         var entity = _world.GetOrCreateEntity(e.RegionHandle, e.LocalId);
-        if (carriedSelfAppearance != null && entity.GetComponent<AvatarComponent>() == null)
-        {
-            // The identity/name/scale fields below still run against this instance and update it
-            // from the fresh event; only the appearance state is preserved.
-            entity.SetComponent(carriedSelfAppearance);
-        }
 
         // MVP2-1: while seated, AvatarController stops writing this entity's Z/Rotation each
         // frame (its ground-clamp/camera-yaw ownership is suspended -- see its own isSitting
@@ -1535,6 +1615,96 @@ public sealed class WorldSimulation : IDisposable
             }
         }
         _world.RemoveEntity(regionHandle, localId);
+    }
+
+    private void StartReconciliation()
+    {
+        var unconfirmed = _world.GetAllEntities()
+            .Where(ent => ent.GetComponent<AttachmentComponent>()?.AwaitingReconfirmation == true)
+            .ToList();
+
+        if (unconfirmed.Count == 0)
+        {
+            _isReconciling = false;
+            return;
+        }
+
+        _isReconciling = true;
+        _reconcileStopwatch.Restart();
+        _lastUpdateTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        _updatesSinceReconcileStart = 0;
+        _reconfirmedEntityIds.Clear();
+
+        var localAgent = _world.GetAllEntities().FirstOrDefault(x => x.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        _initialKeptCount = unconfirmed.Count + (localAgent != null ? 1 : 0);
+    }
+
+    private void CancelReconciliation()
+    {
+        _isReconciling = false;
+        _reconcileStopwatch.Reset();
+        _reconfirmedEntityIds.Clear();
+    }
+
+    private void ApplyTeleportProgress(TeleportProgressEvent e)
+    {
+        if (e.Stage == TeleportStage.Failed || e.Stage == TeleportStage.Cancelled)
+        {
+            CancelReconciliation();
+        }
+    }
+
+    private void NoteAttachmentReconfirmed(System.Guid entityId)
+    {
+        if (_isReconciling)
+        {
+            _reconfirmedEntityIds.Add(entityId);
+            _lastUpdateTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        }
+    }
+
+    internal void CheckReconciliationProgress(double? elapsedOverride = null, double? quietSecondsOverride = null)
+    {
+        if (!_isReconciling) return;
+
+        double elapsed = elapsedOverride ?? _reconcileStopwatch.Elapsed.TotalSeconds;
+        double quiet = quietSecondsOverride ?? ((System.Diagnostics.Stopwatch.GetTimestamp() - _lastUpdateTimestamp) / (double)System.Diagnostics.Stopwatch.Frequency);
+
+        var unconfirmed = _world.GetAllEntities()
+            .Where(ent => ent.GetComponent<AttachmentComponent>()?.AwaitingReconfirmation == true)
+            .ToList();
+
+        if (unconfirmed.Count == 0)
+        {
+            FinishReconciliation(unconfirmed, elapsed);
+            return;
+        }
+
+        bool settled = (elapsed >= ReconciliationMinWaitSeconds && quiet >= ReconciliationQuietSeconds);
+        bool timedOut = elapsed >= ReconciliationMaxWaitSeconds;
+
+        if (settled || timedOut)
+        {
+            FinishReconciliation(unconfirmed, elapsed);
+        }
+    }
+
+    private void FinishReconciliation(List<Entity> unconfirmedToRemove, double elapsedSeconds)
+    {
+        int removedCount = unconfirmedToRemove.Count;
+        int reconfirmedCount = _reconfirmedEntityIds.Count;
+
+        foreach (var entity in unconfirmedToRemove)
+        {
+            HandleAttachmentRemoved(entity.RegionHandle, entity.LocalId);
+            RemoveEntityRecursive(entity.RegionHandle, entity.LocalId);
+        }
+
+        System.Console.WriteLine($"[TeleportKeep] kept {_initialKeptCount} self entities, {reconfirmedCount} re-confirmed, {removedCount} removed after {elapsedSeconds:0.#}s");
+
+        _isReconciling = false;
+        _reconcileStopwatch.Reset();
+        _reconfirmedEntityIds.Clear();
     }
 
     public void Dispose()

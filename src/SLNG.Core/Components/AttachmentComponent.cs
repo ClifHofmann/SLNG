@@ -19,6 +19,12 @@ public class AttachmentComponent : IComponent
     /// </summary>
     public byte AttachmentPoint { get; set; }
 
+    /// <summary>
+    /// True when this attachment was retained across a region change and is waiting
+    /// for the destination region to confirm it is still worn.
+    /// </summary>
+    public bool AwaitingReconfirmation { get; set; }
+
     public AttachmentComponent(Guid avatarEntityId, byte attachmentPoint)
     {
         AvatarEntityId = avatarEntityId;

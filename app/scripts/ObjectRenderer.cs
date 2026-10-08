@@ -539,6 +539,7 @@ public partial class ObjectRenderer : Node3D
         MaterialLab.ViewerSunSpecularChanged += ReapplyViewerSpecularVariants;
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
+        _world.EntityRekeyed += OnEntityRekeyed;
         _world.ComponentUpdated += OnComponentUpdated;
         _world.EntitySelected += OnEntitySelected;
         _world.EntityDeselected += OnEntityDeselected;
@@ -573,6 +574,20 @@ public partial class ObjectRenderer : Node3D
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
         CallDeferred(nameof(RemoveVisual), e.Entity.Id.ToString());
+    }
+
+    private void OnEntityRekeyed(object? sender, EntityRekeyedEventArgs e)
+    {
+        CallDeferred(nameof(HandleEntityRekeyed), e.Entity.Id.ToString(), e.NewLocalId);
+    }
+
+    private void HandleEntityRekeyed(string entityIdStr, uint newLocalId)
+    {
+        if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        if (_visuals.TryGetValue(entityId, out var state) && IsInstanceValid(state.StaticBody))
+        {
+            state.StaticBody.SetMeta("LocalId", newLocalId.ToString());
+        }
     }
 
     private void OnComponentUpdated(object? sender, ComponentEventArgs e)
@@ -5396,6 +5411,7 @@ public partial class ObjectRenderer : Node3D
         {
             _world.EntityAdded -= OnEntityAdded;
             _world.EntityRemoved -= OnEntityRemoved;
+            _world.EntityRekeyed -= OnEntityRekeyed;
             _world.ComponentUpdated -= OnComponentUpdated;
         }
         _visuals.Clear();

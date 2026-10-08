@@ -347,6 +347,7 @@ public partial class AvatarRenderer : Node3D
 
         _world.EntityAdded += OnEntityAdded;
         _world.EntityRemoved += OnEntityRemoved;
+        _world.EntityRekeyed += OnEntityRekeyed;
         _world.ComponentUpdated += OnComponentUpdated;
         // FEAT-UI-23: worn items are drawn here, not by ObjectRenderer, so the selection
         // highlight has to be drawn here too -- selecting one produced no outline at all.
@@ -362,6 +363,38 @@ public partial class AvatarRenderer : Node3D
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
         CallDeferred(nameof(RemoveVisual), e.Entity.Id.ToString());
+    }
+
+    private void OnEntityRekeyed(object? sender, EntityRekeyedEventArgs e)
+    {
+        CallDeferred(nameof(HandleEntityRekeyed), e.Entity.Id.ToString(), e.NewLocalId);
+    }
+
+    private void HandleEntityRekeyed(string entityIdStr, uint newLocalId)
+    {
+        if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+
+        if (_attachmentNodes.TryGetValue(entityId, out var boneAttach) && GodotObject.IsInstanceValid(boneAttach))
+        {
+            UpdateLocalIdMetaRecursive(boneAttach, newLocalId);
+        }
+
+        if (_hudNodes.TryGetValue(entityId, out var hudNode) && GodotObject.IsInstanceValid(hudNode))
+        {
+            UpdateLocalIdMetaRecursive(hudNode, newLocalId);
+        }
+    }
+
+    private static void UpdateLocalIdMetaRecursive(Node node, uint newLocalId)
+    {
+        if (node.HasMeta("LocalId"))
+        {
+            node.SetMeta("LocalId", newLocalId.ToString());
+        }
+        foreach (var child in node.GetChildren())
+        {
+            UpdateLocalIdMetaRecursive(child, newLocalId);
+        }
     }
 
     private void OnComponentUpdated(object? sender, ComponentEventArgs e)
@@ -5489,6 +5522,7 @@ public partial class AvatarRenderer : Node3D
         {
             _world.EntityAdded -= OnEntityAdded;
             _world.EntityRemoved -= OnEntityRemoved;
+            _world.EntityRekeyed -= OnEntityRekeyed;
             _world.ComponentUpdated -= OnComponentUpdated;
         }
     }

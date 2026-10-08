@@ -455,6 +455,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// <see cref="TeleportResult"/>. Raised on a LibreMetaverse network thread -- marshal before
     /// touching UI, same as <see cref="LoginProgress"/>.</summary>
     public event EventHandler<TeleportProgressEvent>? TeleportProgress;
+    public event EventHandler<TeleportProgressEvent>? TeleportProgressReceived;
 
     /// <summary>Fired when we connect to a NEW primary/current simulator -- i.e. on login and on
     /// every teleport/region-crossing that changes which region we're actually in. NOT fired for

@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-NET-06`
 - **Track:** `net/core`
-- **Status:** `⏸️ Pending`
-- **Owner:** `claude`
+- **Status:** `🧪 Review`
+- **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
 ## Overview & Goal
@@ -50,8 +50,8 @@ Goal: Re-key the local agent and all attached entities across teleport/region ch
   - Verify HUD clicks after teleport continue resolving to the updated `LocalId` via `TryClickHud`.
 
 ## Acceptance Criteria
-- [ ] Unit tests for `World` entity re-keying, `RemoveRegion` attachment tree retention, and quiet-window reconciliation pass.
+- [x] Unit tests for `World` entity re-keying, `RemoveRegion` attachment tree retention, and quiet-window reconciliation pass.
 - [ ] In-world teleport between two Agni regions shows ~0 `avatar.hud_mesh` and 0 self-avatar rig rebuilds in `[WorkCost]` over the subsequent 30 s.
 - [ ] HUDs remain visible, in-place, and responsive/clickable across teleports.
 - [ ] Items detached in transit are removed upon reconciliation window expiry.
-- [ ] Solution and `app/` build clean, tests pass, `dotnet format` clean.
+- [x] Solution and `app/` build clean, tests pass, `dotnet format` clean.
