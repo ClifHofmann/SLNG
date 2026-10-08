@@ -137,6 +137,193 @@ public static partial class SelfTest
         }
     }
 
+    /// <summary>
+    /// BUG-PERF-08: a NON-rigged worn mesh's arrays -- and, for the own avatar, its click collider's
+    /// faces -- are now built on a worker thread instead of a SurfaceTool commit per run plus
+    /// <c>CreateTrimeshShape</c> inside the <c>avatar.attach</c> queue item. Builds a mesh both ways, the
+    /// new one on a thread-pool thread, the old one kept below verbatim, and requires the same surfaces
+    /// (every array read back out of an ArrayMesh, and the surface format), the same face list, and
+    /// exactly the faces <c>CreateTrimeshShape</c> returns. The mesh has non-uniform scale, two
+    /// consecutive submeshes of one texture (they merge), one of another, one that falls back to the
+    /// default face, one with no indices, one with a degenerate triangle and a non-finite vertex.
+    /// </summary>
+    private static Check CheckAttachMeshPreparedOffMainThread()
+    {
+        const string Name = "worn attachment mesh prepared off the main thread";
+        var problems = new List<string>();
+        try
+        {
+            var (mesh, faces, defaultFace) = SyntheticAttachMesh();
+            var scale = new System.Numerics.Vector3(0.3f, 1.7f, 0.9f);
+
+            var prepared = Task.Run(() => AvatarRenderer.PrepareAttachmentMesh(mesh, faces, defaultFace, scale, wantPickFaces: true))
+                .GetAwaiter().GetResult();
+            var notWanted = Task.Run(() => AvatarRenderer.PrepareAttachmentMesh(mesh, faces, defaultFace, scale, wantPickFaces: false))
+                .GetAwaiter().GetResult();
+            var legacy = LegacyBuildAttachArrayMesh(mesh, faces, defaultFace, scale, out var legacyFaces);
+
+            var fresh = new ArrayMesh();
+            foreach (var arrays in prepared.SurfaceArrays)
+                fresh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+
+            if (fresh.GetSurfaceCount() != legacy.GetSurfaceCount())
+                problems.Add($"{fresh.GetSurfaceCount()} surfaces, the old build made {legacy.GetSurfaceCount()}");
+            if (fresh.GetSurfaceCount() < 4) problems.Add($"only {fresh.GetSurfaceCount()} surfaces: the runs did not split as designed");
+            for (int s = 0; s < Math.Min(fresh.GetSurfaceCount(), legacy.GetSurfaceCount()); s++)
+            {
+                var a = fresh.SurfaceGetArrays(s);
+                var b = legacy.SurfaceGetArrays(s);
+                // Equal-but-missing would pass the comparison below, so the tangents must exist.
+                int vertexCount = a[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length;
+                if (vertexCount == 0 || a[(int)Mesh.ArrayType.Tangent].AsFloat32Array().Length != 4 * vertexCount)
+                    problems.Add($"surface {s}: {vertexCount} vertices, tangents missing");
+                Compare(problems, s, "vertex", a[(int)Mesh.ArrayType.Vertex].AsVector3Array(), b[(int)Mesh.ArrayType.Vertex].AsVector3Array());
+                Compare(problems, s, "normal", a[(int)Mesh.ArrayType.Normal].AsVector3Array(), b[(int)Mesh.ArrayType.Normal].AsVector3Array());
+                Compare(problems, s, "tangent", a[(int)Mesh.ArrayType.Tangent].AsFloat32Array(), b[(int)Mesh.ArrayType.Tangent].AsFloat32Array());
+                Compare(problems, s, "uv", a[(int)Mesh.ArrayType.TexUV].AsVector2Array(), b[(int)Mesh.ArrayType.TexUV].AsVector2Array());
+                Compare(problems, s, "index", a[(int)Mesh.ArrayType.Index].AsInt32Array(), b[(int)Mesh.ArrayType.Index].AsInt32Array());
+                if (fresh.SurfaceGetFormat(s) != legacy.SurfaceGetFormat(s))
+                    problems.Add($"surface {s} format {fresh.SurfaceGetFormat(s)} vs {legacy.SurfaceGetFormat(s)}");
+            }
+
+            if (!prepared.FaceIndices.AsSpan().SequenceEqual(legacyFaces.ToArray()))
+                problems.Add($"face list [{string.Join(",", prepared.FaceIndices)}] vs [{string.Join(",", legacyFaces)}]");
+            if (!prepared.Guard.AnyBad) problems.Add("the non-finite vertex was not repaired through the guard");
+
+            var shape = legacy.CreateTrimeshShape();
+            Compare(problems, -1, "collision faces", prepared.PickFaces ?? Array.Empty<Vector3>(), shape?.Data ?? Array.Empty<Vector3>());
+            if (prepared.PickFaces == null || prepared.PickFaces.Length == 0) problems.Add("no collision faces");
+            if (notWanted.PickFaces != null) problems.Add("collision faces were built although nobody asked for them");
+
+            return problems.Count == 0
+                ? new Check(Name, true, $"{fresh.GetSurfaceCount()} surfaces, {prepared.PickFaces!.Length / 3} collision triangles identical to the main-thread build")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static (MeshData Mesh, FaceTexture[] Faces, FaceTexture DefaultFace) SyntheticAttachMesh()
+    {
+        var wood = default(FaceTexture) with { TextureId = Guid.Parse("b9af3b5f-0000-0000-0000-000000000011") };
+        var metal = default(FaceTexture) with { TextureId = Guid.Parse("b9af3b5f-0000-0000-0000-000000000012") };
+        var faces = new[] { wood, wood, metal };
+
+        // A 3x3 vertex grid of two-triangle quads, normals and UVs varied so the tangents are not trivial.
+        MeshSubmesh Grid(int face, float z, bool mirrorU, int[]? indices = null, bool poisonVertex = false)
+        {
+            var positions = new List<System.Numerics.Vector3>();
+            var normals = new List<System.Numerics.Vector3>();
+            var uvs = new List<System.Numerics.Vector2>();
+            for (int y = 0; y < 3; y++)
+            {
+                for (int x = 0; x < 3; x++)
+                {
+                    positions.Add(new System.Numerics.Vector3(x * 0.1f + 0.00003f * y, y * 0.07f, z + 0.01f * x * y));
+                    normals.Add(System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(0.1f * x, 0.2f, 1f)));
+                    float u = x * 0.5f;
+                    uvs.Add(new System.Numerics.Vector2(mirrorU ? 1f - u : u, y * 0.4f + 0.05f * x));
+                }
+            }
+            if (poisonVertex) positions[4] = new System.Numerics.Vector3(float.NaN, 0.3f, 0.2f);
+
+            if (indices == null)
+            {
+                var list = new List<int>();
+                for (int y = 0; y < 2; y++)
+                {
+                    for (int x = 0; x < 2; x++)
+                    {
+                        int i = y * 3 + x;
+                        list.AddRange(new[] { i, i + 1, i + 4, i, i + 4, i + 3 });
+                    }
+                }
+                indices = list.ToArray();
+            }
+            return new MeshSubmesh(positions.ToArray(), normals.ToArray(), uvs.ToArray(), indices, face);
+        }
+
+        var mesh = new MeshData(new[]
+        {
+            Grid(0, 0f, false),                                   // wood ...
+            Grid(1, 0.2f, true),                                  // ... merges with the first
+            Grid(2, 0.4f, false),                                 // metal: a new surface
+            Grid(5, 0.5f, false, Array.Empty<int>()),             // no indices at all: skipped
+            Grid(7, 0.6f, true, new[] { 0, 1, 4, 4, 4, 4, 1, 2, 5 }, poisonVertex: true), // no such face: the default one
+            Grid(0, 0.8f, false, new[] { 0, 1, 4, 3, 4, 1 }),     // wood again, but not next to the first two
+        });
+        return (mesh, faces, default);
+    }
+
+    /// <summary>The non-rigged worn mesh build as it was before BUG-PERF-08 (the <c>avatar.attach</c>
+    /// queue item in AvatarRenderer.ApplyAttachmentMeshDataAsync), kept unchanged as the oracle for the
+    /// worker build.</summary>
+    private static ArrayMesh LegacyBuildAttachArrayMesh(
+        MeshData meshData, FaceTexture[]? faces, FaceTexture defaultFace, System.Numerics.Vector3 slScale,
+        out List<int> faceIndices)
+    {
+        var arrayMesh = new ArrayMesh();
+        faceIndices = new List<int>();
+
+        FaceTexture Resolve(int faceIndex) =>
+            (faces != null && faceIndex >= 0 && faceIndex < faces.Length) ? faces[faceIndex] : defaultFace;
+
+        SurfaceTool? st = null;
+        var runFace = default(FaceTexture);
+        int runVertexBase = 0;
+        var guard = new MeshArrayGuard.VertexGuard();
+        var faceList = faceIndices;
+
+        void FlushRun()
+        {
+            if (st == null) return;
+            st.GenerateTangents();
+            st.Commit(arrayMesh);
+            st = null;
+        }
+
+        foreach (var sub in meshData.Submeshes)
+        {
+            if (sub.Indices.Length == 0) continue;
+
+            var subFace = Resolve(sub.FaceIndex);
+            if (st == null || !subFace.Equals(runFace))
+            {
+                FlushRun();
+                st = new SurfaceTool();
+                st.Begin(Mesh.PrimitiveType.Triangles);
+                runFace = subFace;
+                runVertexBase = 0;
+                faceList.Add(sub.FaceIndex);
+            }
+
+            int indexBase = runVertexBase;
+            for (int i = 0; i < sub.Positions.Length; i++)
+            {
+                var p = sub.Positions[i];
+                var n = sub.Normals[i];
+                var uv = sub.UVs[i];
+
+                st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), i));
+                st.SetUV(guard.Uv(new Godot.Vector2(uv.X, 1.0f - uv.Y), i));
+                st.AddVertex(guard.Position(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y), i));
+            }
+
+            for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
+            {
+                st.AddIndex(indexBase + sub.Indices[t]);
+                st.AddIndex(indexBase + sub.Indices[t + 2]);
+                st.AddIndex(indexBase + sub.Indices[t + 1]);
+            }
+
+            runVertexBase += sub.Positions.Length;
+        }
+        FlushRun();
+        return arrayMesh;
+    }
+
     private static MeshData SyntheticHudMesh()
     {
         MeshSubmesh Quad(int face, float z, int[] indices) => new(
@@ -279,6 +466,27 @@ public static partial class SelfTest
         finally
         {
             if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
+    /// <summary>BUG-PERF-08: see <see cref="AvatarRenderer.SelfTestAttachSupersede"/>.</summary>
+    private static Check CheckAttachSupersede(SceneTree tree)
+    {
+        const string Name = "worn attachment mesh requests supersede each other";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestAttachSupersede();
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
         }
     }
 

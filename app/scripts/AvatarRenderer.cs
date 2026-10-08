@@ -588,6 +588,8 @@ public partial class AvatarRenderer : Node3D
         // BUG-PERF-06: a rig still being prepared for it would otherwise be put on the skeleton
         // after it left.
         _pendingRigs.TryRemove(entityId, out _);
+        // BUG-PERF-08: likewise a non-rigged mesh still being prepared.
+        _attachNewest.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
         ReleaseEditPause(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
@@ -2689,14 +2691,22 @@ public partial class AvatarRenderer : Node3D
     /// inherits the attachment's placement -- including the per-frame bone pose above it -- for
     /// free. The prim scale is already baked into the vertices.
     /// </remarks>
-    private void AddAttachmentPickBody(MeshInstance3D mi, ArrayMesh mesh, AvatarVisual avatarVisual, Guid entityId)
+    private void AddAttachmentPickBody(MeshInstance3D mi, ArrayMesh mesh, AvatarVisual avatarVisual, Guid entityId,
+        Godot.Vector3[]? preparedFaces = null)
     {
         if (!avatarVisual.IsSelf || _world == null) return;
 
         var entity = _world.GetEntity(entityId);
         if (entity == null) return;
 
-        var shape = mesh.CreateTrimeshShape();
+        // BUG-PERF-08: CreateTrimeshShape reads every surface back out of the RenderingServer, a GPU
+        // buffer download per surface on the main thread. The worker lists the same faces from the
+        // arrays it built (TrimeshFaces); only the physics shape itself is made here. Without them
+        // (the item turned out to be the own avatar's only after the request was made) the read-back
+        // stays as the fallback.
+        ConcavePolygonShape3D? shape = preparedFaces == null
+            ? mesh.CreateTrimeshShape()
+            : preparedFaces.Length > 0 ? new ConcavePolygonShape3D { Data = preparedFaces } : null;
         if (shape == null) return;
 
         var body = new StaticBody3D
@@ -2737,87 +2747,9 @@ public partial class AvatarRenderer : Node3D
             return;
         }
 
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-        {
-            if (!IsInstanceValid(attachParent)) return;
-
-            var arrayMesh = new ArrayMesh();
-            var faceIndices = new List<int>();
-
-            // BUG-RENDER-12: same authored-order surface merging as the rigged path -- see
-            // RiggedMeshBuilder.Build for the viewer citations and the reasoning.
-            // A non-rigged worn attachment (sculpt/prim hair, a mesh hat) reaches Godot's
-            // transparent queue exactly the same way, so it has the same reorder problem.
-            SurfaceTool? st = null;
-            var runFace = default(FaceTexture);
-            int runVertexBase = 0;
-            // BUG-RENDER-40: non-finite vertex values are repaired on their way into the SurfaceTool
-            // (GenerateTangents below would otherwise hand them to the engine) and named once.
-            var guard = new MeshArrayGuard.VertexGuard();
-
-            void FlushRun()
-            {
-                if (st == null) return;
-                st.GenerateTangents();
-                st.Commit(arrayMesh);
-                st = null;
-            }
-
-            foreach (var sub in meshData.Submeshes)
-            {
-                if (sub.Indices.Length == 0) continue;
-
-                var subFace = ResolveFaceTexture(faces, defaultFace, sub.FaceIndex);
-                if (st == null || !subFace.Equals(runFace))
-                {
-                    FlushRun();
-                    st = new SurfaceTool();
-                    st.Begin(Mesh.PrimitiveType.Triangles);
-                    runFace = subFace;
-                    runVertexBase = 0;
-                    faceIndices.Add(sub.FaceIndex);
-                }
-
-                int indexBase = runVertexBase;
-                // SL/OpenGL authors triangles CCW-front; Godot/Vulkan expects CW-front — left
-                // uncorrected, every SL-sourced triangle rasterizes as a backface (masked by
-                // CullMode.Disabled, needed just to make anything render), and Godot's
-                // double-sided handling flips the normal for perceived backfaces, inverting
-                // diffuse lighting while leaving shadows (depth-only) unaffected. Confirmed this
-                // session via a T-pose + debug shader + a gizmo pointing at the real light
-                // direction. Fix: submit each triangle's 3 vertices in reversed order.
-                for (int i = 0; i < sub.Positions.Length; i++)
-                {
-                    var p = sub.Positions[i];
-                    var n = sub.Normals[i];
-                    var uv = sub.UVs[i];
-
-                    st.SetNormal(guard.Normal(new Godot.Vector3(n.X, n.Z, -n.Y), i));
-                    st.SetUV(guard.Uv(new Godot.Vector2(uv.X, 1.0f - uv.Y), i));
-                    st.AddVertex(guard.Position(new Godot.Vector3(p.X * slScale.X, p.Z * slScale.Z, -p.Y * slScale.Y), i));
-                }
-
-                for (int t = 0; t + 2 < sub.Indices.Length; t += 3)
-                {
-                    st.AddIndex(indexBase + sub.Indices[t]);
-                    st.AddIndex(indexBase + sub.Indices[t + 2]);
-                    st.AddIndex(indexBase + sub.Indices[t + 1]);
-                }
-
-                runVertexBase += sub.Positions.Length;
-            }
-            FlushRun();
-            guard.Report(() => $"worn attachment entity={entityId:N} mesh={meshId:N} avatar={avatarVisual.AgentId:N}");
-
-            var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
-            mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
-            mi.Quaternion = new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W);
-            attachParent.AddChild(mi);
-            AddAttachmentPickBody(mi, arrayMesh, avatarVisual, entityId);
-            RestoreWornHighlight(entityId);
-            RegisterBomAndUpdateVisibility(avatarVisual, mi, faceIndices.ToArray(), faces, defaultFace, meshId);
-            _ = ApplyFaceMaterialsAsync(mi, faceIndices.ToArray(), faces, defaultFace, avatarVisual, meshId);
-        }, label: "avatar.attach");
+        // BUG-PERF-08: the arrays are built on a worker; CommitPreparedAttach (the avatar.attach item)
+        // uploads them and puts the instance in the scene.
+        RequestAttachMesh(meshData, attachParent, avatarVisual, meshId, faces, defaultFace, slScale, slPos, slRot, entityId);
     }
 
     /// <summary>The main-thread half of rigging a worn mesh (BUG-PERF-06): binds the skin to the

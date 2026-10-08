@@ -178,6 +178,8 @@ public static partial class SelfTest
         results.Add(CheckRiggedMeshPreparedOffMainThread()); // BUG-PERF-06
         results.Add(CheckHudMeshPreparedOffMainThread());
         results.Add(CheckStaticMeshPrepared(tree));
+        results.Add(CheckAttachMeshPreparedOffMainThread()); // BUG-PERF-08
+        results.Add(CheckAttachSupersede(tree));
         results.Add(CheckAlphaStatsWithoutReadBack()); // BUG-PERF-07
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
