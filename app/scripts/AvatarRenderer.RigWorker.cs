@@ -52,8 +52,13 @@ public partial class AvatarRenderer
         /// thread has to agree with it.</summary>
         public required int[] SlotForJoint { get; init; }
 
+        /// <summary>The click colliders' per-bone chunks (AddRiggedPickBody), when they were asked
+        /// for; cut from the same arrays, so no read-back from the RenderingServer is needed.</summary>
+        public PickChunk[]? PickChunks { get; init; }
+
         public double VertsMs { get; init; }
         public double TangentsMs { get; init; }
+        public double PickMs { get; init; }
     }
 
     /// <summary>Records the newest rig request for a worn entity and makes sure a worker is on it.
@@ -119,7 +124,7 @@ public partial class AvatarRenderer
                     ? _ => false
                     : name => definition.GetBone(definition.ResolveBoneName(name)) != null;
                 var slots = RiggedMeshBuilder.SlotsForJoints(request.MeshData.Skin!.JointNames, isBone);
-                var mesh = PrepareRiggedMesh(request.MeshData, slots, request.Faces, request.DefaultFace);
+                var mesh = PrepareRiggedMesh(request.MeshData, slots, request.Faces, request.DefaultFace, request.WantPick);
                 return new PreparedRig(request, mesh, clock.Elapsed.TotalMilliseconds);
             }
             finally
@@ -142,7 +147,7 @@ public partial class AvatarRenderer
     /// worker; also run inline by <see cref="BuildRiggedMeshInstance"/> for the callers that build
     /// synchronously.</summary>
     internal static PreparedRiggedMesh PrepareRiggedMesh(
-        MeshData meshData, int[] slotForJoint, FaceTexture[]? faces, FaceTexture defaultFace)
+        MeshData meshData, int[] slotForJoint, FaceTexture[]? faces, FaceTexture defaultFace, bool wantPickChunks = false)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var geometry = RiggedMeshBuilder.Build(meshData, slotForJoint, fi => ResolveFaceTexture(faces, defaultFace, fi));
@@ -152,14 +157,30 @@ public partial class AvatarRenderer
         var arrays = new Godot.Collections.Array[geometry.Surfaces.Count];
         for (int i = 0; i < arrays.Length; i++)
             arrays[i] = RiggedSurfaceArrays(geometry.Surfaces[i]);
+        double tangentsMs = clock.Elapsed.TotalMilliseconds;
+
+        clock.Restart();
+        PickChunk[]? pickChunks = null;
+        if (wantPickChunks)
+        {
+            var surfaces = new System.Collections.Generic.List<(Godot.Vector3[], int[], float[], int[])>(geometry.Surfaces.Count);
+            foreach (var surface in geometry.Surfaces)
+            {
+                surfaces.Add((MemoryMarshal.Cast<System.Numerics.Vector3, Godot.Vector3>(surface.Positions.AsSpan()).ToArray(),
+                              surface.Bones, surface.Weights, surface.Indices));
+            }
+            pickChunks = ChunkByDominantSlot(surfaces, RiggedMeshBuilder.SlotCount(slotForJoint));
+        }
 
         return new PreparedRiggedMesh
         {
             Geometry = geometry,
             SurfaceArrays = arrays,
             SlotForJoint = slotForJoint,
+            PickChunks = pickChunks,
             VertsMs = vertsMs,
-            TangentsMs = clock.Elapsed.TotalMilliseconds,
+            TangentsMs = tangentsMs,
+            PickMs = clock.Elapsed.TotalMilliseconds,
         };
     }
 

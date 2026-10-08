@@ -245,9 +245,11 @@ public partial class AvatarRenderer : Node3D
 
     /// <param name="Definition">The skeleton definition the node was built from: what the worker
     /// resolves the mesh's joint names against, since it must not touch the node itself.</param>
+    /// <param name="WantPick">The item gets click colliders (AddRiggedPickBody), so the worker cuts
+    /// their per-bone chunks too.</param>
     private sealed record PendingRig(
         MeshData MeshData, AvatarVisual Visual, Skeleton3D Skeleton, Guid MeshId,
-        FaceTexture[]? Faces, FaceTexture DefaultFace, AvatarSkeleton? Definition);
+        FaceTexture[]? Faces, FaceTexture DefaultFace, AvatarSkeleton? Definition, bool WantPick);
 
     // FEAT-UI-23: the bone-parented colliders that make a rigged worn item clickable -- one per
     // bone the item is weighted to. They live on the SKELETON, not under the item's own mesh
@@ -2401,57 +2403,42 @@ public partial class AvatarRenderer : Node3D
     /// inverse-bind matrix, with the joint's own scale injected), so the collider sat somewhere
     /// the item was not, and a click on a worn item landed on whatever stood behind it.
     /// </remarks>
-    private void AddRiggedPickBody(MeshInstance3D mi, AvatarVisual avatarVisual, Skeleton3D skeleton, Guid entityId)
+    /// <param name="chunks">BUG-PERF-06: the per-bone chunks, already cut on the rig worker from
+    /// the arrays it built (<see cref="ChunkByDominantSlot"/>). Without them they are cut here from
+    /// the mesh -- which reads every surface back out of the RenderingServer, a GPU buffer download
+    /// per surface, on the main thread. Only the control-avatar path still does that.</param>
+    private void AddRiggedPickBody(MeshInstance3D mi, AvatarVisual avatarVisual, Skeleton3D skeleton, Guid entityId,
+        PickChunk[]? chunks = null)
     {
         // A control avatar's mesh is the only thing there is to click on for an animesh -- its
         // prim node carries no collision shape, since the unskinned geometry would sit in the
         // wrong place -- so it gets the same bone-parented colliders a worn item of mine does.
         if ((!avatarVisual.IsSelf && !avatarVisual.IsControlAvatar) || _world == null) return;
-        if (mi.Mesh is not ArrayMesh mesh || mi.Skin is not Skin skin) return;
+        if (mi.Skin is not Skin skin) return;
 
         var entity = _world.GetEntity(entityId);
         if (entity == null) return;
 
-        // bind slot -> its triangles, as the flat face array ConcavePolygonShape3D wants
-        var chunks = new Dictionary<int, List<Godot.Vector3>>();
-
-        for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+        if (chunks == null)
         {
-            var arrays = mesh.SurfaceGetArrays(surface);
-            var verts = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
-            var bones = arrays[(int)Mesh.ArrayType.Bones].AsInt32Array();
-            var weights = arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array();
-            var indices = arrays[(int)Mesh.ArrayType.Index].AsInt32Array();
-            if (verts.Length == 0 || bones.Length == 0 || weights.Length != bones.Length) continue;
-
-            int influences = bones.Length / verts.Length; // 4 for an SL mesh, 8 for an 8-weight one
-            if (influences is < 1 or > 8) continue;
-            int triangles = (indices.Length > 0 ? indices.Length : verts.Length) / 3;
-
-            for (int t = 0; t < triangles; t++)
+            if (mi.Mesh is not ArrayMesh mesh) return;
+            var surfaces = new List<(Godot.Vector3[] Verts, int[] Bones, float[] Weights, int[] Indices)>();
+            for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
             {
-                int i0 = indices.Length > 0 ? indices[t * 3] : t * 3;
-                int i1 = indices.Length > 0 ? indices[t * 3 + 1] : t * 3 + 1;
-                int i2 = indices.Length > 0 ? indices[t * 3 + 2] : t * 3 + 2;
-
-                int slot = DominantSlot(bones, weights, influences, i0, i1, i2);
-                if (slot < 0 || slot >= skin.GetBindCount()) continue;
-
-                if (!chunks.TryGetValue(slot, out var faces)) chunks[slot] = faces = new List<Godot.Vector3>();
-                faces.Add(verts[i0]);
-                faces.Add(verts[i1]);
-                faces.Add(verts[i2]);
+                var arrays = mesh.SurfaceGetArrays(surface);
+                surfaces.Add((arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array(),
+                              arrays[(int)Mesh.ArrayType.Bones].AsInt32Array(),
+                              arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array(),
+                              arrays[(int)Mesh.ArrayType.Index].AsInt32Array()));
             }
+            chunks = ChunkByDominantSlot(surfaces, skin.GetBindCount());
         }
 
         var bodies = new List<Node3D>();
-        // Every chunk is a node the skeleton re-poses and a body the physics server re-places,
-        // each frame, for every worn item -- so only the big ones are worth keeping. The tail is
-        // fingers and toes; dropping it costs nothing a user would click at.
-        foreach (var (slot, faces) in chunks.OrderByDescending(c => c.Value.Count).Take(MaxWornPickChunks))
+        foreach (var (slot, faces) in chunks)
         {
             int bone = skin.GetBindBone(slot);
-            if (bone < 0 || bone >= skeleton.GetBoneCount() || faces.Count < 3) continue;
+            if (bone < 0 || bone >= skeleton.GetBoneCount() || faces.Length < 3) continue;
 
             var attach = new BoneAttachment3D
             {
@@ -2476,7 +2463,7 @@ public partial class AvatarRenderer : Node3D
             // back to an entity with no special case.
             body.SetMeta("EntityId", entityId.ToString());
             body.SetMeta("LocalId", entity.LocalId.ToString());
-            body.AddChild(new CollisionShape3D { Shape = new ConcavePolygonShape3D { Data = faces.ToArray() } });
+            body.AddChild(new CollisionShape3D { Shape = new ConcavePolygonShape3D { Data = faces } });
             holder.AddChild(body);
             bodies.Add(attach);
         }
@@ -2486,6 +2473,51 @@ public partial class AvatarRenderer : Node3D
 
     /// <summary>How many per-bone colliders one worn item may keep, largest first.</summary>
     private const int MaxWornPickChunks = 8;
+
+    /// <summary>One bind slot's share of a rigged mesh, as the flat face array
+    /// ConcavePolygonShape3D wants.</summary>
+    internal readonly record struct PickChunk(int Slot, Godot.Vector3[] Faces);
+
+    /// <summary>Cuts a rigged mesh into per-bone chunks: every triangle goes to the bind slot
+    /// carrying most of its weight. Only the <see cref="MaxWornPickChunks"/> largest are kept --
+    /// every chunk is a node the skeleton re-poses and a body the physics server re-places, each
+    /// frame, for every worn item, and the tail is fingers and toes, which costs nothing a user
+    /// would click at. Pure array work: safe on the rig worker (BUG-PERF-06).</summary>
+    internal static PickChunk[] ChunkByDominantSlot(
+        IEnumerable<(Godot.Vector3[] Verts, int[] Bones, float[] Weights, int[] Indices)> surfaces, int bindCount)
+    {
+        // bind slot -> its triangles, as the flat face array ConcavePolygonShape3D wants
+        var chunks = new Dictionary<int, List<Godot.Vector3>>();
+
+        foreach (var (verts, bones, weights, indices) in surfaces)
+        {
+            if (verts.Length == 0 || bones.Length == 0 || weights.Length != bones.Length) continue;
+
+            int influences = bones.Length / verts.Length; // 4 for an SL mesh, 8 for an 8-weight one
+            if (influences is < 1 or > 8) continue;
+            int triangles = (indices.Length > 0 ? indices.Length : verts.Length) / 3;
+
+            for (int t = 0; t < triangles; t++)
+            {
+                int i0 = indices.Length > 0 ? indices[t * 3] : t * 3;
+                int i1 = indices.Length > 0 ? indices[t * 3 + 1] : t * 3 + 1;
+                int i2 = indices.Length > 0 ? indices[t * 3 + 2] : t * 3 + 2;
+
+                int slot = DominantSlot(bones, weights, influences, i0, i1, i2);
+                if (slot < 0 || slot >= bindCount) continue;
+
+                if (!chunks.TryGetValue(slot, out var faces)) chunks[slot] = faces = new List<Godot.Vector3>();
+                faces.Add(verts[i0]);
+                faces.Add(verts[i1]);
+                faces.Add(verts[i2]);
+            }
+        }
+
+        return chunks.OrderByDescending(c => c.Value.Count)
+                     .Take(MaxWornPickChunks)
+                     .Select(c => new PickChunk(c.Key, c.Value.ToArray()))
+                     .ToArray();
+    }
 
     /// <summary>The bind slot carrying the most weight across a triangle's three vertices.</summary>
     private static int DominantSlot(int[] bones, float[] weights, int influences, int i0, int i1, int i2)
@@ -2701,7 +2733,7 @@ public partial class AvatarRenderer : Node3D
             // BUG-PERF-06: the geometry is prepared on a worker first; CommitPreparedRig below is
             // what reaches the main thread.
             RequestRig(entityId, new PendingRig(meshData, avatarVisual, skeleton, meshId, faces, defaultFace,
-                                                _avatarSkeleton));
+                                                _avatarSkeleton, avatarVisual.IsSelf || avatarVisual.IsControlAvatar));
             return;
         }
 
@@ -2809,6 +2841,10 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.RecordExternal("avatar.rig.prepare", ready.PrepareMs);
         MainThreadWorkQueue.RecordExternal("avatar.rig.verts", ready.Mesh.VertsMs);
         MainThreadWorkQueue.RecordExternal("avatar.rig.tangents", ready.Mesh.TangentsMs);
+        MainThreadWorkQueue.RecordExternal("avatar.rig.pickcut", ready.Mesh.PickMs);
+        // The labels below are the main-thread parts of this item and add up to avatar.rig:
+        // discard, jointpos, bind, commit, scene, pick, bom, materials. The ones above are worker
+        // time, filed here because only the main thread may write the cost table.
 
         // Anything already rigged for this entity is replaced, not joined. Without this,
         // several updates arriving before the queue drains each ADD a rigged MeshInstance
@@ -2816,13 +2852,17 @@ public partial class AvatarRenderer : Node3D
         // earlier ones stay in the scene, untracked and unfreeable, costing triangles,
         // draw calls and VRAM for the rest of the session. Measured on a busy sim:
         // 22,500 draw calls, 38M triangles, 9.5 GB VRAM.
-        DiscardRiggedAttachment(entityId, req.Visual);
+        MainThreadWorkQueue.Measure("avatar.rig.discard", () => DiscardRiggedAttachment(entityId, req.Visual));
 
         // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
         // Apply its joint-position overrides to the skeleton BEFORE binding, like the
         // viewer does, so invBind·jointWorld cancels at the intended pose.
-        ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin!, req.MeshId);
-        var skin = BindRiggedSkin(req.MeshData.Skin!, req.Skeleton, req.Visual, out var slotForJoint);
+        MainThreadWorkQueue.Measure("avatar.rig.jointpos",
+            () => ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin!, req.MeshId));
+        Skin? skin = null;
+        int[] slotForJoint = System.Array.Empty<int>();
+        MainThreadWorkQueue.Measure("avatar.rig.bind",
+            () => skin = BindRiggedSkin(req.MeshData.Skin!, req.Skeleton, req.Visual, out slotForJoint));
         if (skin == null) return;
 
         var prepared = ready.Mesh;
@@ -2835,9 +2875,13 @@ public partial class AvatarRenderer : Node3D
             prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace);
         }
 
-        var mi = CommitRiggedMeshInstance(prepared, skin, slotForJoint, req.Skeleton, req.MeshId,
-                                          req.Visual, out var faceIndices);
-        if (mi == null) return;
+        MeshInstance3D? built = null;
+        int[] faceIndices = System.Array.Empty<int>();
+        MainThreadWorkQueue.Measure("avatar.rig.commit", () =>
+            built = CommitRiggedMeshInstance(prepared, skin, slotForJoint, req.Skeleton, req.MeshId,
+                                             req.Visual, out faceIndices));
+        if (built is not { } mi) return;
+        var sceneClock = System.Diagnostics.Stopwatch.StartNew();
         mi.Name = "RiggedMesh";
 
         // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
@@ -2854,7 +2898,6 @@ public partial class AvatarRenderer : Node3D
                          $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
 
         req.Skeleton.AddChild(mi);
-        AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId);
         _riggedAttachments[entityId] = mi;
         req.Visual.RiggedAttachments.Add((mi, req.MeshData, req.MeshId));
 
@@ -2862,8 +2905,16 @@ public partial class AvatarRenderer : Node3D
         // the node is in the tree so Godot can resolve and drive the skinning.
         mi.Skeleton = mi.GetPathTo(req.Skeleton);
         RestoreWornHighlight(entityId);
-        RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId);
-        _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId);
+        MainThreadWorkQueue.RecordExternal("avatar.rig.scene", sceneClock.Elapsed.TotalMilliseconds);
+
+        // BUG-PERF-06: the chunks were cut on the worker, so no surface is read back from the GPU.
+        MainThreadWorkQueue.Measure("avatar.rig.pick",
+            () => AddRiggedPickBody(mi, req.Visual, req.Skeleton, entityId, prepared.PickChunks));
+        MainThreadWorkQueue.Measure("avatar.rig.bom",
+            () => RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId));
+        // Only the part before its first unfinished await runs here.
+        MainThreadWorkQueue.Measure("avatar.rig.materials",
+            () => _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId));
     }
 
     /// <summary>BUG-RENDER-12: resolves a submesh's SL face record exactly the way
@@ -4825,7 +4876,6 @@ public partial class AvatarRenderer : Node3D
         // against its own bind pose, which need not equal our skeleton's rest. Binding to the
         // skeleton rest instead (as the body parts do) only works for meshes whose bind pose
         // matches exactly — these OpenSim meshes don't, and exploded into petals.
-        var buildClock = System.Diagnostics.Stopwatch.StartNew();
 
         var skin = new Skin();
         slotForJoint = new int[jointCount];
@@ -4901,7 +4951,6 @@ public partial class AvatarRenderer : Node3D
         }
         if (skin.GetBindCount() == 0) return null;
 
-        MainThreadWorkQueue.RecordExternal("avatar.rig.bind", buildClock.Elapsed.TotalMilliseconds);
         return skin;
     }
 
