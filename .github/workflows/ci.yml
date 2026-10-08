@@ -107,3 +107,19 @@ jobs:
             echo "::error::--selftest did not exit within 300s, so it never reached SelfTest.Run. Look above for 'Cannot instantiate C# script' (assembly built for the wrong configuration, or app/.godot missing) rather than for a failing check."
           fi
           exit $status
+
+  roadmap-ids:
+    name: roadmap task IDs not dropped
+    # A PR must not delete or overwrite another task's row in docs/ROADMAP.md (FEAT-NET-05's row
+    # vanished inside the FEAT-PERF-11 commit and was only found at a merge). On push to main
+    # there is nothing to compare against, so this runs for pull requests only.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The guard diffs the roadmap at the merge base against HEAD, so it needs history.
+          fetch-depth: 0
+
+      - name: Check roadmap IDs
+        run: python tools/check_roadmap_ids.py
