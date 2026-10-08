@@ -3369,7 +3369,13 @@ public partial class AvatarRenderer : Node3D
         // avatar wearing the mesh (avatarVisual) -- the CDN URL path keys on it, so an id other
         // than the wearer's 403s (BUG-AVATAR-02 follow-up: every other mesh body was untextured
         // because we always sent our own id, found live on Agni 2026-09-02).
-        var built = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded, bakeChannel: wasBom ? bomIndex : null, bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default).ConfigureAwait(false);
+        // BUG-PERF-07: avatar.material.* -- the parts of avatar.rig.materials, filed only when they
+        // run on the main thread (a texture that is already cached completes this await inline).
+        long texStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var builtTask = _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded, bakeChannel: wasBom ? bomIndex : null, bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default);
+        MainThreadWorkQueue.RecordIfMainThread("avatar.material.texture",
+            System.Diagnostics.Stopwatch.GetElapsedTime(texStart).TotalMilliseconds);
+        var built = await builtTask.ConfigureAwait(false);
         if (built == null)
         {
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which
@@ -3411,7 +3417,12 @@ public partial class AvatarRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
 
         if (!hasExplicitAlpha)
+        {
+            long alphaStart = System.Diagnostics.Stopwatch.GetTimestamp();
             (kind, scissorThreshold) = ClassifyAlpha(kind, built, texId, wasBom ? bomIndex : -1);
+            MainThreadWorkQueue.RecordIfMainThread("avatar.material.alpha",
+                System.Diagnostics.Stopwatch.GetElapsedTime(alphaStart).TotalMilliseconds);
+        }
 
         // BUG-RENDER-09. A Bakes-on-Mesh bake carries the wearer's alpha-layer wearable as a SOFT
         // gradient, and ClassifyAlpha lands such a face on Scissor -- a binary test, which turns
@@ -3649,26 +3660,23 @@ public partial class AvatarRenderer : Node3D
         // reconsidered from pixel content. Same guard as the old `Transparency == Alpha` return.
         if (current == PrimShaderFamily.Kind.Blend) return (current, 0f);
 
-        var img = tex.GetImage();
-        if (img == null)
-            return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
-
-
-        var data = img.GetData();
-        int w = img.GetWidth(), h = img.GetHeight();
-        int mip0Bytes = Math.Min(data.Length, w * h * 4);
-        int pixelCount = mip0Bytes / 4;
-
-        int min = 255; int midCount = 0; int clearCount = 0;
-        for (int i = 3; i < mip0Bytes; i += 4)
+        // BUG-PERF-07: the numbers come from the texture worker, which measured them on the decoded
+        // pixels (GpuCache.AlphaStats). Reading them back out of VRAM here -- GetImage, a full copy
+        // and a scan, per face, on the main thread -- was ~8 ms per worn mesh once textures stopped
+        // arriving late. The read-back stays only for a texture the cache did not decode.
+        if (!GpuCache.TryGetAlphaStats(texId, out var stats))
         {
-            byte a = data[i];
-            if (a < min) min = a;
-            if (a > 16 && a < 239) midCount++;
-            if (a <= 16) clearCount++;
+            // Meant never to happen: shows up in [WorkCost] if it does.
+            MainThreadWorkQueue.RecordIfMainThread("avatar.material.readback", 0);
+            var img = tex.GetImage();
+            if (img == null)
+                return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
+            stats = GpuCache.MeasureAlphaStats(img.GetData(), img.GetWidth(), img.GetHeight());
+            img.Dispose();
         }
-        float fracMid = pixelCount > 0 ? (float)midCount / pixelCount : 0f;
-        float fracClear = pixelCount > 0 ? (float)clearCount / pixelCount : 0f;
+        int min = stats.MinAlpha;
+        float fracMid = stats.FracMid;
+        float fracClear = stats.FracClear;
 
         if (min == 255)
             return LogAlphaVerdict(texId, bomChannel, min, fracMid, fracClear, PrimShaderFamily.Kind.Opaque, 0f);

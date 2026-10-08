@@ -164,6 +164,7 @@ public static class MainThreadWorkQueue
     /// </summary>
     public static void Pump(double budgetMs)
     {
+        _onPumpThread = true;
         _clock.Restart();
 
         for (int lane = 0; lane < _lanes.Length; lane++)
@@ -225,6 +226,18 @@ public static class MainThreadWorkQueue
     /// where wrapping each iteration in <see cref="Measure"/> would add more overhead than the thing
     /// being measured. Main thread only, same as everything else that writes the cost table.</summary>
     public static void RecordExternal(string label, double ms) => Record(label, ms);
+
+    /// <summary>True on the thread that pumps the queue, i.e. the main thread, once it has pumped.</summary>
+    [ThreadStatic] private static bool _onPumpThread;
+
+    /// <summary>For code that runs on the main thread or on a pool thread depending on whether an
+    /// await completed synchronously (BUG-PERF-07: an avatar face material). Files the time only when
+    /// this is the main thread -- the cost table is not thread-safe, and the question it answers is
+    /// "what does the main thread pay" anyway.</summary>
+    public static void RecordIfMainThread(string label, double ms)
+    {
+        if (_onPumpThread) Record(label, ms);
+    }
 
     private static void Record(string label, double ms)
     {
