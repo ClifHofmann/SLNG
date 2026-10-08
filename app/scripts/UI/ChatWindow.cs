@@ -65,6 +65,7 @@ public partial class ChatWindow : SLNGWindow
     private int _participantMenuIndex = -1;
     private VBoxContainer _conversationList = null!;
     private RichTextLabel _logView = null!;
+    internal RichTextLabel LogView => _logView;
     private Button _jumpToLatestButton = null!;
     private double _lastLogPage;
     private LineEdit _inputEdit = null!;
@@ -404,18 +405,18 @@ public partial class ChatWindow : SLNGWindow
         BuildOuterTabStrip(vbox);
 
         _chatPageControl = BuildChatPage();
-        AddOuterTab("Chat", "forum", _chatPageControl);
+        AddOuterTab(L10n.Tr("ui.chat.tab_chat"), "forum", _chatPageControl);
         _friendsPanel = new FriendsPanel();
         _friendsPanel.OnOpenImRequested = OpenOrFocusImTab;
         _friendsPanel.IconFor = id => _icons?.Get(id);
         _friendsPanel.OnOpenProfileRequested = (id, name) => OnOpenProfileRequested?.Invoke(id, name);
         _friendsPanel.OnPayRequested = (id, name) => OnPayRequested?.Invoke(id, name);
         _friendsPanel.OnOfferTeleportRequested = (id, _) => _session?.OfferTeleport(id);
-        AddOuterTab("Friends", "person", _friendsPanel);
+        AddOuterTab(L10n.Tr("ui.chat.tab_friends"), "person", _friendsPanel);
         _groupsPanel = new GroupsPanel();
         _groupsPanel.OnOpenGroupChatRequested = OpenOrFocusGroupTab;
         _groupsPanel.OnOpenGroupInfoRequested = (id, name) => OnOpenGroupInfoRequested?.Invoke(id, name);
-        AddOuterTab("Groups", "group", _groupsPanel);
+        AddOuterTab(L10n.Tr("ui.chat.tab_groups"), "group", _groupsPanel);
         _recentPanel = new RecentPanel();
         _recentPanel.IconFor = item => item.Kind == ChatLogKind.Im ? _icons?.Get(item.Id) : null;
         _recentPanel.ShownName = item => item.Kind == ChatLogKind.Im ? NameDisplay.For(_session, item.Id, item.Name) : item.Name;
@@ -425,7 +426,7 @@ public partial class ChatWindow : SLNGWindow
         _recentPanel.OnClearRequested = () => { _recent.Clear(); SaveAndRefreshRecent(); };
         AddOuterTab(L10n.Tr("ui.recent.tab"), "history", _recentPanel);
 
-        AddChatTab("main", "Main", ChatLogKind.Local, closeable: false);
+        AddChatTab("main", L10n.Tr("ui.chat.tab_main"), ChatLogKind.Local, closeable: false);
         SelectChatTab(_chatTabs[0]);
     }
 
@@ -1228,6 +1229,7 @@ public partial class ChatWindow : SLNGWindow
             BbcodeEnabled = true,
             ScrollFollowing = false, // manual pause/follow control -- see _Process
             SizeFlagsVertical = SizeFlags.ExpandFill,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
             // RichTextLabel is non-selectable by default, so the chat log was read-only in the
             // literal sense -- you couldn't drag-select a line to copy a name/URL out of it.
             // Ctrl+C needs the label to be focusable too (ShortcutKeysEnabled only fires on the
@@ -1245,7 +1247,11 @@ public partial class ChatWindow : SLNGWindow
         _logView.AddThemeFontSizeOverride("bold_italics_font_size", BodyFontSize);
         // FEAT-UI-13: resident names are emitted as [url=avatar:<guid>] links -- open the profile.
         _logView.MetaClicked += OnLogMetaClicked;
-        var logRow = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        var logRow = new HBoxContainer
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+        };
         logRow.AddThemeConstantOverride("separation", 6);
         logRow.AddChild(_logView);
         logRow.AddChild(BuildParticipantsPanel());
@@ -1253,7 +1259,7 @@ public partial class ChatWindow : SLNGWindow
 
         _jumpToLatestButton = new Button
         {
-            Text = "▼ Jump to latest",
+            Text = L10n.Tr("ui.chat.jump_to_latest"),
             Visible = false,
             FocusMode = FocusModeEnum.None,
         };
@@ -1277,7 +1283,7 @@ public partial class ChatWindow : SLNGWindow
         inputRow.AddThemeConstantOverride("separation", 4);
         rightVBox.AddChild(inputRow);
 
-        inputRow.AddChild(BuildIconButton("attach_file", "Attach (not implemented)", null));
+        inputRow.AddChild(BuildIconButton("attach_file", L10n.Tr("ui.chat.attach"), null));
 
         _typingDebounceTimer = new Timer
         {
@@ -1483,10 +1489,10 @@ public partial class ChatWindow : SLNGWindow
         _participantsButton = BuildIconButton("group", L10n.Tr("ui.chat.participants_toggle"), ToggleParticipants);
         _participantsButton.Visible = false;
         row.AddChild(_participantsButton);
-        row.AddChild(BuildIconButton("history", "History", OnHistoryPressed));
-        row.AddChild(BuildIconButton("card_giftcard", "Give Item", OnGiveItemIconPressed));
-        row.AddChild(BuildIconButton("call", "Voice Call (not implemented)", null));
-        row.AddChild(BuildIconButton("search", "Search (not implemented)", null));
+        row.AddChild(BuildIconButton("history", L10n.Tr("ui.chat.history"), OnHistoryPressed));
+        row.AddChild(BuildIconButton("card_giftcard", L10n.Tr("ui.chat.give_item"), OnGiveItemIconPressed));
+        row.AddChild(BuildIconButton("call", L10n.Tr("ui.chat.voice_call"), null));
+        row.AddChild(BuildIconButton("search", L10n.Tr("ui.chat.search"), null));
 
         return row;
     }
@@ -1497,7 +1503,7 @@ public partial class ChatWindow : SLNGWindow
     {
         if (_activeChatTab?.TargetAgentId == null)
         {
-            AppendSystemNotice("[System] Bitte wähle zuerst einen IM-Tab mit einem Gesprächspartner aus.");
+            AppendSystemNotice(L10n.Tr("ui.chat.give_item_select_im"));
             return;
         }
 
@@ -1506,14 +1512,14 @@ public partial class ChatWindow : SLNGWindow
         {
             invPanel.Toggle();
         }
-        AppendSystemNotice($"[System] Wähle ein Objekt im Inventar aus und klicke 'Weitergeben...' oder ziehe es per Drag & Drop hierher, um es an {_activeChatTab.DisplayName} zu senden.");
+        AppendSystemNotice(L10n.TrFormat("ui.chat.give_item_instructions", _activeChatTab.DisplayName));
     }
 
     public void GiveInventoryItemToActiveTab(Guid itemId, string itemName, int assetType, bool isFolder)
     {
         if (_session == null || _activeChatTab?.TargetAgentId is not { } recipientId)
         {
-            AppendSystemNotice("[System] Bitte öffne zuerst einen IM-Tab mit dem Empfänger.");
+            AppendSystemNotice(L10n.Tr("ui.chat.give_item_open_im"));
             return;
         }
 

@@ -196,6 +196,7 @@ public static partial class SelfTest
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
         results.Add(CheckWindowTopInsetClamping(tree));
+        results.Add(CheckChatWindowLogLayout(tree)); // BUG-UI-35
         results.Add(CheckUiScale(tree));
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
@@ -1357,6 +1358,55 @@ public static partial class SelfTest
         return failures.Count == 0
             ? new Check("window top inset clamping", true, "windows clamp Y >= TopInset (56 px/70 px), re-clamp on dynamic change, never open under top menus")
             : new Check("window top inset clamping", false, string.Join("; ", failures));
+    }
+
+    /// <summary>
+    /// BUG-UI-35: chat log view inside ChatWindow must horizontally expand to fill the conversation area,
+    /// rather than collapsing to a 0px sliver in HBoxContainer (which happened when conference participant panel was added).
+    /// </summary>
+    private static Check CheckChatWindowLogLayout(SceneTree tree)
+    {
+        const string Name = "chat window log layout";
+        var chat = new UI.ChatWindow();
+        try
+        {
+            tree.Root.AddChild(chat);
+            chat.Visible = true;
+            chat.Size = new Vector2(480, 430);
+
+            static void Layout(Control c)
+            {
+                if (c is Container) c.Notification((int)Container.NotificationSortChildren);
+                foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc);
+            }
+
+            for (int pass = 0; pass < 3; pass++)
+            {
+                chat.Size = new Vector2(480, 430);
+                Layout(chat);
+            }
+
+            var logView = chat.LogView;
+            bool flagsOk = logView.SizeFlagsHorizontal.HasFlag(Control.SizeFlags.Expand);
+            bool widthOk = logView.Size.X >= 200;
+
+            bool ok = flagsOk && widthOk;
+            return new Check(Name, ok, ok
+                ? $"_logView has ExpandFill and layout width {logView.Size.X:0.#} px (>= 200 px)"
+                : $"_logView Expand flag: {flagsOk}, width: {logView.Size.X:0.#} px (< 200 px)");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(chat))
+            {
+                chat.GetParent()?.RemoveChild(chat);
+                chat.QueueFree();
+            }
+        }
     }
 
     /// <summary>
