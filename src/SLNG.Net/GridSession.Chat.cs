@@ -804,6 +804,30 @@ public sealed partial class GridSession
             return;
         }
 
+        // "Somebody is typing": its own dialog (41/42) with the text "typing".
+        // The reference viewer and Firestorm process this by sender ID (llimprocessing.cpp:649
+        // gIMMgr->processIMTypingStart(from_id, dialog)) and ignore the packet's session ID on the wire,
+        // which may be UUID.Zero, the sender/recipient ID, or the peer-to-peer XOR (BUG-UI-36).
+        // Handled ahead of group/session classification so it is never dropped by group mute or session gates.
+        if (e.IM.Dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping)
+        {
+            Guid typist = e.IM.FromAgentID.Guid;
+            Guid self = _client.Self.AgentID.Guid;
+            Guid imSession = e.IM.IMSessionID.Guid;
+            bool isConferenceOrGroup = e.IM.GroupIM
+                || (imSession != Guid.Empty && imSession != typist && imSession != self
+                    && !SessionIds.IsPeerToPeer(imSession, self, typist)
+                    && (_conferenceSessions.ContainsKey(imSession) || _client.Self.GroupChatSessions.ContainsKey(e.IM.IMSessionID)));
+
+            if (typist != Guid.Empty && typist != self && !isConferenceOrGroup)
+            {
+                Console.WriteLine($"[Chat] Peer typing indicator from {typist} ({e.IM.FromAgentName}): typing={e.IM.Dialog == InstantMessageDialog.StartTyping}");
+                InstantMessageTyping?.Invoke(this, new InstantMessageTypingEvent(
+                    typist, e.IM.FromAgentName ?? string.Empty, e.IM.Dialog == InstantMessageDialog.StartTyping));
+            }
+            return;
+        }
+
         // Group chat first, and NOT by inspecting the dialog byte: it arrives as
         // InstantMessageDialog.SessionSend, not MessageFromAgent, and its GroupIM flag is only set
         // on the first message of a session -- a later one carries just the session id. Both the
@@ -838,9 +862,6 @@ public sealed partial class GridSession
                 e.IM.Dialog, e.IM.GroupIM, _client.Self.IsGroupMessage(e.IM), membership != null, inMembership))
         {
             if (!hasText) return; // typing/keep-alive, same as local chat
-            // The typing indicator is its own dialog (41/42) but carries the TEXT "typing", so it must be
-            // told apart by the dialog -- the empty-message test above never caught it.
-            if (e.IM.Dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping) return;
             // Our own line comes back through the session and is the ONLY copy: unlike a 1:1 IM the viewer does
             // not echo a session line locally (llimview.cpp, LLIMModel::sendMessage echoes only IM_NOTHING_SPECIAL).
             if (IsDuplicateSessionLine(e.IM)) return;
@@ -857,30 +878,6 @@ public sealed partial class GridSession
             LogNewGroupSession(e.IM, nameSource, groupName, muted: false, membership != null, inMembership);
             GroupChatMessageReceived?.Invoke(this, new GroupChatMessageEvent(
                 sessionId, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, groupName));
-            return;
-        }
-
-        // "Somebody is typing": its own dialog (41/42) with the text "typing".
-        // The reference viewer and Firestorm process this by sender ID (llimprocessing.cpp:649
-        // gIMMgr->processIMTypingStart(from_id, dialog)) and ignore the packet's session ID on the wire,
-        // which may be UUID.Zero, the sender/recipient ID, or the peer-to-peer XOR (BUG-UI-36).
-        // Indicators from known conference or group sessions are dropped so they do not open a 1:1 tab.
-        if (e.IM.Dialog is InstantMessageDialog.StartTyping or InstantMessageDialog.StopTyping)
-        {
-            Guid typist = e.IM.FromAgentID.Guid;
-            Guid self = _client.Self.AgentID.Guid;
-            Guid imSession = e.IM.IMSessionID.Guid;
-            bool isConferenceOrGroup = e.IM.GroupIM
-                || (imSession != Guid.Empty && imSession != typist && imSession != self
-                    && !SessionIds.IsPeerToPeer(imSession, self, typist)
-                    && (_conferenceSessions.ContainsKey(imSession) || _client.Self.GroupChatSessions.ContainsKey(e.IM.IMSessionID)));
-
-            if (typist != Guid.Empty && typist != self && !isConferenceOrGroup)
-            {
-                Console.WriteLine($"[Chat] Peer typing indicator from {typist} ({e.IM.FromAgentName}): typing={e.IM.Dialog == InstantMessageDialog.StartTyping}");
-                InstantMessageTyping?.Invoke(this, new InstantMessageTypingEvent(
-                    typist, e.IM.FromAgentName ?? string.Empty, e.IM.Dialog == InstantMessageDialog.StartTyping));
-            }
             return;
         }
 

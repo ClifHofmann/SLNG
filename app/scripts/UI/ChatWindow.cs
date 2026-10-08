@@ -441,6 +441,7 @@ public partial class ChatWindow : SLNGWindow
     public override void _Process(double delta)
     {
         using var _phase = MainThreadPhase.Enter("ui.chat"); // BUG-PERF-05
+        DrainPeerTyping();
         ExpirePeerTyping();
         UpdateChatTabBadge();
 
@@ -521,6 +522,7 @@ public partial class ChatWindow : SLNGWindow
             EnsureOnScreen();
         }
         if (IsMinimized) Unminimize();
+        BringToFront();
         var tab = GetOrCreateImTab(friendId, friendName);
         SelectOuterTab(_chatPageControl);
         SelectChatTab(tab);
@@ -1892,6 +1894,7 @@ public partial class ChatWindow : SLNGWindow
     /// <summary>A typing start/stop arrived (network thread): queued, applied on the main thread.</summary>
     private void OnPeerTypingEvent(object? sender, InstantMessageTypingEvent e)
     {
+        Console.WriteLine($"[ChatWindow] OnPeerTypingEvent: typist={e.FromAgentId} ({e.FromAgentName}), typing={e.Typing}");
         _peerTypingQueue.Enqueue(e);
         if (System.Threading.Interlocked.Exchange(ref _peerTypingDrainQueued, 1) == 0)
             CallDeferred(nameof(DrainPeerTyping));
@@ -1925,13 +1928,16 @@ public partial class ChatWindow : SLNGWindow
                     EnsureOnScreen();
                 }
                 if (IsMinimized) Unminimize();
+                BringToFront();
                 SelectOuterTab(_chatPageControl);
                 SelectChatTab(tab);
+                Console.WriteLine($"[ChatWindow] DrainPeerTyping: IM tab for {e.FromAgentId} ({name}) opened/selected, typing=True");
             }
             else
             {
                 var tab = _chatTabs.Find(t => t.TargetAgentId == e.FromAgentId);
                 if (tab != null) SetPeerTyping(tab, false);
+                Console.WriteLine($"[ChatWindow] DrainPeerTyping: Stopped typing for {e.FromAgentId}");
             }
         }
     }
