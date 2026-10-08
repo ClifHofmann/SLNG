@@ -37,7 +37,7 @@ FEAT-UI-60 promised that an IM conversation opens on `IM_TYPING_START` (dialog 4
 4. In `app/scripts/SelfTest.cs`:
    - Added `CheckChatWindowTypingIndicatorOpensTab` to verify that a peer typing event opens an IM tab for the sender.
 5. In `app/scripts/Boot.cs`:
-   - Bumped `AppVersion` to `v0.26.127-alpha`.
+   - Bumped `AppVersion` to `v0.26.129-alpha`.
 
 ## Acceptance Criteria
 
@@ -45,3 +45,4 @@ FEAT-UI-60 promised that an IM conversation opens on `IM_TYPING_START` (dialog 4
 - [x] Peer typing event opens an IM tab in `ChatWindow` before the first message text arrives and ensures the window and tab are visible on screen.
 - [x] Unit tests in `InstantMessageTypingTests` pass.
 - [x] SelfTest `CheckChatWindowTypingIndicatorOpensTab` passes.
+- [x] Verified in-world by the user (2026-10-08): peer typing in an IM opens the tab, brings the window to front, and displays the typing indicator.
