@@ -31,7 +31,7 @@ dotnet build app/SLNG.App.csproj   # build the Godot client -- NOT part of SLNG.
 dotnet test                        # run unit tests
 dotnet format SLNG.sln             # must be clean before a commit
 godot --path app                   # launch the client (or open app/ in the Godot editor)
-godot --headless --path app -- --selftest   # smoke test without a window
+godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest   # smoke test without a window; --log-file keeps it out of your real logs
 python tools/check_shader_globals.py        # global uniforms declared in shader AND project.godot
 ```
 

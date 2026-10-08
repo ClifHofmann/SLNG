@@ -102,7 +102,7 @@ jobs:
           # `|| status=$?` rather than a bare call: GitHub runs `shell: bash` with -e, so a
           # non-zero exit would abort the step before the message below could be printed.
           status=0
-          timeout 300 godot --headless --path app -- --selftest || status=$?
+          timeout 300 godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest || status=$?
           if [ $status -eq 124 ]; then
             echo "::error::--selftest did not exit within 300s, so it never reached SelfTest.Run. Look above for 'Cannot instantiate C# script' (assembly built for the wrong configuration, or app/.godot missing) rather than for a failing check."
           fi

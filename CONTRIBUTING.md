@@ -50,7 +50,7 @@ godot --path app
 
 Smoke test without launching a window:
 ```bash
-godot --headless --path app -- --selftest
+godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest
 ```
 
 ---

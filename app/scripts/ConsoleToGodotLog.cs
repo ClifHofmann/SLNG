@@ -165,7 +165,9 @@ internal static class PerfSidecar
             {
                 try
                 {
-                    string dir = ProjectSettings.GlobalizePath("user://logs");
+                    // Under --selftest a different directory: Create below truncates, and the
+                    // developer's own client may be writing this very file (see SelfTest.LogDir).
+                    string dir = ProjectSettings.GlobalizePath(SelfTest.UserLogsDir);
                     Directory.CreateDirectory(dir);
                     // Truncate: one file per session, so reading it never means working out which
                     // half belongs to the run being investigated.

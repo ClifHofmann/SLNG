@@ -65,8 +65,14 @@ Every global uniform must be declared in **both** the shader and `app/project.go
 ## 6. Selftest (skip only with `--quick`)
 
 ```bash
-godot --headless --path app -- --selftest
+godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest
 ```
+
+**Always with `--log-file`.** Without it the run rotates your live `godot.log` away (Godot keeps
+~10) and, while a client is running, truncates the file that client is writing — real session logs
+were lost to this three times on 2026-10-08. The selftest's own logs (`godot.log`, `slng-perf.log`)
+are in `%APPDATA%\Godot\app_userdata\Puris Viewer\logs\selftest\`. A run started without the flag
+fails its first check, `logs isolated`.
 
 Loads every shader, locale file and the Bento skeleton through the engine and exits non-zero
 on the first one that fails (`app/scripts/SelfTest.cs`). It does not log in, so it needs no

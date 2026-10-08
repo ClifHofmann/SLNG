@@ -73,7 +73,7 @@ dotnet build app/SLNG.App.csproj
 # 3. Run the Godot client
 godot --path app
 ```
-*Note: A `godot --headless --path app -- --selftest` command is available to smoke-test shaders, locales, and configurations without a grid connection.*
+*Note: A `godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest` command is available to smoke-test shaders, locales, and configurations without a grid connection.*
 
 ---
 

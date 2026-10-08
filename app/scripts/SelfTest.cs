@@ -49,6 +49,62 @@ public static partial class SelfTest
         return false;
     }
 
+    /// <summary>Where a selftest run keeps every log it writes: the engine's own
+    /// <c>godot.log</c> (via <c>--log-file</c>) and the client's <c>slng-perf.log</c>. A selftest
+    /// that logged next to the developer's real ones would rotate the live <c>godot.log</c> away
+    /// (Godot keeps ~10 files) and truncate <c>slng-perf.log</c>; against a client that is still
+    /// running it truncates the file the client is writing, which leaves a NUL gap where its
+    /// output was. The first lost three sessions' evidence on 2026-10-08.</summary>
+    public const string LogDir = "user://logs/selftest";
+
+    /// <summary>The directory the client writes its own log files to: <see cref="LogDir"/> under a
+    /// selftest, <c>user://logs</c> otherwise.</summary>
+    public static string UserLogsDir => Requested ? LogDir : "user://logs";
+
+    /// <summary>The command that keeps a selftest out of the developer's logs. Named in the failure
+    /// so the fix is one copy-paste away.</summary>
+    private const string IsolatedCommand =
+        "godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest";
+
+    /// <summary>Fails when this run was not started with <c>--log-file</c> pointing at
+    /// <see cref="LogDir"/>.
+    ///
+    /// <para>The engine opens and rotates <c>godot.log</c> before any managed code runs and does not
+    /// report <c>--log-file</c> back through <c>OS.GetCmdlineArgs</c>, so the argument cannot be read;
+    /// the evidence is the file instead. A redirected run has just (re)created
+    /// <c>selftest/godot.log</c>, so its modification time is not older than this process. A bare
+    /// <c>godot --headless --path app -- --selftest</c> leaves that file as the previous run left it.
+    /// The damage of a bare run is already done by the time this reports -- the point of failing is
+    /// that nobody keeps running it that way, because this line says what to type instead.</para></summary>
+    private static Check CheckLogsIsolated()
+    {
+        const string Name = "logs isolated";
+        const string LogFile = LogDir + "/godot.log";
+
+        bool redirected = false;
+        string detail;
+        try
+        {
+            if (FileAccess.FileExists(LogFile))
+            {
+                long started = new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime)
+                    .ToUnixTimeSeconds();
+                // Slack: file times have whole-second resolution and the engine opens the log a
+                // moment after the process starts.
+                redirected = (long)FileAccess.GetModifiedTime(LogFile) + 2 >= started;
+            }
+            detail = redirected
+                ? $"engine log is {LogFile}"
+                : $"this run did not write {LogFile}, so the developer's own godot.log was rotated or " +
+                  $"overwritten by it. Start the selftest as: {IsolatedCommand}";
+        }
+        catch (Exception ex)
+        {
+            detail = $"could not tell where the engine log went ({ex.Message}). Start the selftest as: {IsolatedCommand}";
+        }
+        return new Check(Name, redirected, detail);
+    }
+
     private readonly record struct Check(string Name, bool Passed, string Detail);
 
     /// <summary>Directories under <c>user://</c> the engine and the client own outright and write
@@ -158,6 +214,7 @@ public static partial class SelfTest
     public static void Run(SceneTree tree)
     {
         var results = new List<Check>();
+        results.Add(CheckLogsIsolated());
         results.AddRange(CheckShaders());
         results.Add(CheckShaderIncludes());
         results.AddRange(CheckShaderVariants());

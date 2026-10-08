@@ -76,6 +76,11 @@ and debounce. Reuse shared mesh and material resources instead of allocating per
 - **`godot --headless` rewrites `app/project.godot`.** Every `--selftest` run silently drops
   `lights_and_shadows/directional_shadow/size=4096`. Check `git diff app/project.godot` and
   revert before staging.
+- **A bare `--selftest` eats the developer's logs.** The engine rotates `godot.log` before any
+  managed code runs, so only the command line can redirect it: always
+  `--log-file user://logs/selftest/godot.log` (`slng-verify` step 6). The client's own
+  `slng-perf.log` follows by itself (`SelfTest.UserLogsDir`). Reading a log: a file the client
+  still has open can show a stale size/mtime to `Get-ChildItem` — read the content, not the listing.
 - **SL is CCW-front, Godot is CW-front.** Get the winding wrong and every SL mesh rasterizes
   as a backface, flipping diffuse lighting scene-wide.
 - **SL's texture V origin is bottom, Godot's is top.** Applies to shader-generated coords
