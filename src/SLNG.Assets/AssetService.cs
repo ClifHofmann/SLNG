@@ -830,28 +830,30 @@ public class AssetService
                 // only the header knows it before the work is done.
                 int reduce = ReduceFactorFromHeader(cached, isSculpt, screenPixelArea);
 
-                // FEAT-PERF-11: check decoded-texture disk cache first. If a decoded form exists
-                // for this reduce level (or higher resolution), return it directly and skip J2K decode.
-                TextureData? decodedFromDecCache = isSculpt
-                    ? await DecodedCache.TryGetSculptAsync(textureId, cacheFile).ConfigureAwait(false)
-                    : await DecodedCache.TryGetAsync(textureId, reduce, cacheFile).ConfigureAwait(false);
-
-                if (decodedFromDecCache != null)
-                {
-                    System.Threading.Interlocked.Increment(ref _texPipeDecodedCacheHit);
-                    System.Threading.Interlocked.Increment(ref _texPipeCacheHit);
-                    if (reduce > 0)
-                    {
-                        System.Threading.Interlocked.Increment(ref _texPipeReduced);
-                    }
-                    return decodedFromDecCache;
-                }
-
-                TextureData? decodedFromCache;
+                // FEAT-PERF-11: decoded-cache reads share the decode slots -- bounded and priority-ordered, not thousands of 4 MB reads at once after a teleport.
                 await _textureDecodeThrottle.WaitAsync(priority).ConfigureAwait(false);
-                var _texSw = System.Diagnostics.Stopwatch.StartNew();
+                TextureData? decodedFromCache;
+                System.Diagnostics.Stopwatch? _texSw = null;
                 try
                 {
+                    // FEAT-PERF-11: check decoded-texture disk cache first. If a decoded form exists
+                    // for this reduce level (or higher resolution), return it directly and skip J2K decode.
+                    TextureData? decodedFromDecCache = isSculpt
+                        ? await DecodedCache.TryGetSculptAsync(textureId, cacheFile).ConfigureAwait(false)
+                        : await DecodedCache.TryGetAsync(textureId, reduce, cacheFile).ConfigureAwait(false);
+
+                    if (decodedFromDecCache != null)
+                    {
+                        System.Threading.Interlocked.Increment(ref _texPipeDecodedCacheHit);
+                        System.Threading.Interlocked.Increment(ref _texPipeCacheHit);
+                        if (reduce > 0)
+                        {
+                            System.Threading.Interlocked.Increment(ref _texPipeReduced);
+                        }
+                        return decodedFromDecCache;
+                    }
+
+                    _texSw = System.Diagnostics.Stopwatch.StartNew();
                     decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt, reduce)).ConfigureAwait(false);
                     // Only a FULL decode's verdict is trusted. A reduced decode reporting degraded
                     // could be the reduce path itself misbehaving, and believing it would delete a
@@ -867,7 +869,7 @@ public class AssetService
                     }
                 }
                 finally { _textureDecodeThrottle.Release(); }
-                System.Threading.Interlocked.Add(ref _texPipeCacheDecodeTicks, _texSw.ElapsedTicks);
+                System.Threading.Interlocked.Add(ref _texPipeCacheDecodeTicks, _texSw?.ElapsedTicks ?? 0);
 
                 // The cache is only ever WRITTEN for a clean decode, so a degraded result here
                 // means the same bytes now decode worse than when they were stored -- which is
