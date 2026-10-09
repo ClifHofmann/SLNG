@@ -713,6 +713,81 @@ public partial class AvatarRenderer
     }
 
     /// <summary>
+    /// BUG-AVATAR-11: a worn item whose update arrives before its wearer has a visual is remembered and
+    /// asked for again when the visual is created, instead of being dropped for good. That order is the
+    /// normal one after a return to a region (the object cache replays the attachments, the avatars
+    /// follow), and it left nearby avatars as bare system bodies. An item that leaves while it waits is
+    /// forgotten.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestPendingWornItems()
+    {
+        LoadAvatarSkeleton();
+        if (_avatarSkeleton == null) return (false, "the avatar skeleton did not load");
+
+        const ulong Region = 11437119954698752UL;
+        var priorWorld = _world;
+        var world = new World();
+        _world = world;
+
+        AvatarVisual? visual = null;
+        var wearer = world.GetOrCreateEntity(Region, 200);
+        try
+        {
+            Guid Worn(uint localId, Guid wearerId)
+            {
+                var e = world.GetOrCreateEntity(Region, localId);
+                e.SetComponent(new TransformComponent { ParentLocalId = 200 });
+                e.SetComponent(new PrimitiveComponent(new System.Numerics.Vector3(0.1f, 0.1f, 0.1f), profileCurve: 0));
+                e.SetComponent(new AttachmentComponent(wearerId, 2));   // Skull -> mHead
+                return e.Id;
+            }
+
+            // 1. The item arrives first: no visual for its wearer yet -- it waits instead of vanishing.
+            var item = Worn(201, wearer.Id);
+            UpdateAttachment(item.ToString());
+            bool remembered = _pendingWornWearerOf.TryGetValue(item, out var waitingFor) && waitingFor == wearer.Id;
+
+            // 2. The wearer's visual is created (reduced, so recording is all UpdateAttachment does):
+            // the flush hands the item back exactly once, and the re-asked update records it as worn.
+            visual = SelfTestWearer(wearer);
+            visual.IsReduced = true;
+            int flushedBefore = PendingWornFlushed;
+            FlushPendingWornItems(wearer.Id);
+            bool flushedOnce = PendingWornFlushed == flushedBefore + 1 && !_pendingWornByWearer.ContainsKey(wearer.Id);
+            UpdateAttachment(item.ToString());   // what the deferred call runs
+            bool recorded = visual.WornAttachmentEntities.Contains(item) && !_pendingWornWearerOf.ContainsKey(item);
+
+            // 3. An item whose wearer never shows up is forgotten when the item itself goes.
+            var absentWearer = Guid.NewGuid();
+            var orphan = Worn(202, absentWearer);
+            UpdateAttachment(orphan.ToString());
+            bool orphanWaits = _pendingWornByWearer.ContainsKey(absentWearer);
+            RemoveVisual(orphan);
+            bool orphanForgotten = !_pendingWornWearerOf.ContainsKey(orphan) && !_pendingWornByWearer.ContainsKey(absentWearer);
+
+            bool ok = remembered && flushedOnce && recorded && orphanWaits && orphanForgotten;
+            return (ok, ok
+                ? "an item that came before its wearer waits, is handed back once when the visual appears and is then worn; " +
+                  "an item whose wearer never comes is forgotten when it goes"
+                : $"remembered {(remembered ? "ok" : "WRONG")}; flushed once {(flushedOnce ? "ok" : "WRONG")}; " +
+                  $"recorded as worn {(recorded ? "ok" : "WRONG")}; orphan waits {(orphanWaits ? "ok" : "WRONG")}; " +
+                  $"orphan forgotten {(orphanForgotten ? "ok" : "WRONG")}");
+        }
+        finally
+        {
+            _world = priorWorld;
+            _pendingWornByWearer.Clear();
+            _pendingWornWearerOf.Clear();
+            _attachmentToAvatar.Clear();
+            if (visual != null)
+            {
+                _visuals.Remove(wearer.Id);
+                if (IsInstanceValid(visual.Root)) visual.Root.QueueFree();
+            }
+        }
+    }
+
+    /// <summary>
     /// FEAT-PERF-08: a duplicate update of a prim or sculpt attachment must not rebuild it, while a change
     /// of any input its geometry or materials are built from must. Position and rotation are no input: they
     /// only move the node that is there.

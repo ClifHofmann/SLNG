@@ -536,6 +536,8 @@ public partial class AvatarRenderer : Node3D
             && !_controlAvatarOfPrim.ContainsKey(id)
             && !_pendingControlParts.ContainsKey(id)
             && !_attachmentToAvatar.ContainsKey(id)
+            && !_pendingWornWearerOf.ContainsKey(id)   // BUG-AVATAR-11: an item still waiting for its wearer
+            && !_pendingWornByWearer.ContainsKey(id)   // ...or a wearer that never got a visual
             && id != _selfEntityId
             && _editPausedAvatars.Count == 0)   // RemoveVisual also releases an edit pause held for the entity
         {
@@ -792,6 +794,10 @@ public partial class AvatarRenderer : Node3D
 
         _visuals[entityId] = visual;
 
+        // BUG-AVATAR-11: worn items that arrived before this visual existed (the normal order after a return
+        // to a region: the object cache replays the attachments, the avatars follow) are asked for again.
+        FlushPendingWornItems(entityId);
+
         UpdateVisual(entityIdStr);
     }
 
@@ -807,6 +813,10 @@ public partial class AvatarRenderer : Node3D
         // control avatar with it (and the skeleton itself when it was the last one). Idempotent --
         // ObjectRenderer's own RemoveVisual releases the same part.
         ReleaseControlAvatarMesh(entityId);
+        // BUG-AVATAR-11: neither an item waiting for its wearer nor a wearer with items waiting for it
+        // outlives its entity.
+        ForgetPendingWornItem(entityId);
+        ForgetPendingWearer(entityId);
         if (_visuals.TryGetValue(entityId, out var visual))
         {
             foreach (var attId in visual.WornAttachmentEntities)
@@ -2364,9 +2374,18 @@ public partial class AvatarRenderer : Node3D
         if (boneName == null && !isMeshAttachment) return;
         boneName ??= "mPelvis";
 
-        // Avatar must already be rendered.
-        if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual)) return;
+        // Avatar must already be rendered. BUG-AVATAR-11: when it is not yet, the item is REMEMBERED, and
+        // CreateVisual asks again once the visual exists -- nothing else ever would (the world does not
+        // re-fire a component update for an object that did not change).
+        if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual))
+        {
+            NotePendingWornItem(entityId, attachment.AvatarEntityId);
+            return;
+        }
+        // A visual has its skeleton from CreateVisual on, or never (the character files did not load),
+        // so there is nothing to wait for here and nothing to record.
         if (avatarVisual.Skeleton == null) return;
+        ForgetPendingWornItem(entityId);
 
         avatarVisual.WornAttachmentEntities.Add(entityId);
         _attachmentToAvatar[entityId] = attachment.AvatarEntityId;

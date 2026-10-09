@@ -256,4 +256,20 @@ public static partial class SelfTest
             renderer.Free();
         }
     }
+
+    /// <summary>BUG-AVATAR-11: worn items that arrive before their wearer's visual are not dropped.</summary>
+    private static Check CheckPendingWornItems()
+    {
+        const string Name = "worn items that arrive before their avatar are remembered and built later";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            var (passed, detail) = renderer.SelfTestPendingWornItems();
+            return new Check(Name, passed, detail);
+        }
+        finally
+        {
+            renderer.Free();
+        }
+    }
 }

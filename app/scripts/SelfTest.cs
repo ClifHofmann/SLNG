@@ -254,6 +254,7 @@ public static partial class SelfTest
         results.Add(CheckAvatarReduction()); // FEAT-PERF-08
         results.Add(CheckAvatarLimitStability()); // FEAT-PERF-08
         results.Add(CheckPrimAttachmentSignature()); // FEAT-PERF-08
+        results.Add(CheckPendingWornItems()); // BUG-AVATAR-11
         results.Add(CheckShrinkWithoutReadBack());
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
