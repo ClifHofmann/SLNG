@@ -249,6 +249,7 @@ public static partial class SelfTest
         results.Add(CheckRiggedPickBodiesPerItem(tree)); // BUG-PERF-08
         results.Add(CheckAlphaStatsWithoutReadBack()); // BUG-PERF-07
         results.Add(CheckGpuCacheAdmission()); // BUG-PERF-09
+        results.Add(CheckAvatarTextureRemoval()); // BUG-PERF-13
         results.Add(CheckShrinkWithoutReadBack());
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());

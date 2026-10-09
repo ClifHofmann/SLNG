@@ -724,7 +724,26 @@ public partial class AvatarRenderer : Node3D
             {
                 _attachmentToAvatar.Remove(attId);
             }
-            if (visual.TexturesPinned && _gpuCache != null)
+            if (!visual.IsSelf && _gpuCache != null)
+            {
+                if (visual.TexturesPinned)
+                {
+                    foreach (var texId in visual.PinnedTextureIds)
+                    {
+                        _gpuCache.ReleaseRef(texId);
+                    }
+                    visual.TexturesPinned = false;
+                }
+                foreach (var texId in visual.UsedTextureIds)
+                {
+                    _gpuCache.UnregisterAvatarTexture(texId, evictIfUnreferenced: true);
+                }
+                foreach (var texId in visual.PinnedTextureIds)
+                {
+                    _gpuCache.UnregisterAvatarTexture(texId, evictIfUnreferenced: true);
+                }
+            }
+            else if (visual.TexturesPinned && _gpuCache != null)
             {
                 foreach (var texId in visual.PinnedTextureIds)
                 {
@@ -791,12 +810,16 @@ public partial class AvatarRenderer : Node3D
                             if (f.TextureId != Guid.Empty && ownerVisual.PinnedTextureIds.Remove(f.TextureId))
                             {
                                 if (ownerVisual.TexturesPinned) _gpuCache.ReleaseRef(f.TextureId);
+                                if (!ownerVisual.IsSelf) _gpuCache.UnregisterAvatarTexture(f.TextureId, evictIfUnreferenced: true);
                             }
+                            ownerVisual.UsedTextureIds.Remove(f.TextureId);
                         }
                     }
                     if (wornFaces.DefaultFace.TextureId != Guid.Empty && ownerVisual.PinnedTextureIds.Remove(wornFaces.DefaultFace.TextureId))
                     {
                         if (ownerVisual.TexturesPinned) _gpuCache.ReleaseRef(wornFaces.DefaultFace.TextureId);
+                        if (!ownerVisual.IsSelf) _gpuCache.UnregisterAvatarTexture(wornFaces.DefaultFace.TextureId, evictIfUnreferenced: true);
+                        ownerVisual.UsedTextureIds.Remove(wornFaces.DefaultFace.TextureId);
                     }
                 }
             }
@@ -2077,12 +2100,16 @@ public partial class AvatarRenderer : Node3D
                 _gpuCache.ReleaseRef(oldTextureId);
             }
             visual.UsedTextureIds.Remove(oldTextureId);
+            if (!visual.IsSelf && _gpuCache != null)
+            {
+                _gpuCache.UnregisterAvatarTexture(oldTextureId, evictIfUnreferenced: true);
+            }
         }
         visual.PinnedTextureIds.Add(textureId);
         visual.UsedTextureIds.Add(textureId);
         if (!visual.TexturesPinned)
         {
-            _gpuCache.ReleaseRef(textureId);
+            _gpuCache?.ReleaseRef(textureId);
         }
         // Map SL bake indices (AvatarTextureIndex) to which mesh parts they cover.
         // 8=HeadBaked, 9=UpperBaked, 10=LowerBaked, 11=EyesBaked, 19=SkirtBaked, 20=HairBaked —
@@ -3719,7 +3746,7 @@ public partial class AvatarRenderer : Node3D
             avatarVisual.UsedTextureIds.Add(texId);
             if (!avatarVisual.TexturesPinned)
             {
-                _gpuCache.ReleaseRef(texId);
+                _gpuCache?.ReleaseRef(texId);
             }
         }
         if (built == null)
@@ -6331,12 +6358,16 @@ void fragment() {
                             if (f.TextureId != Guid.Empty && visual.PinnedTextureIds.Remove(f.TextureId))
                             {
                                 if (visual.TexturesPinned) _gpuCache.ReleaseRef(f.TextureId);
+                                if (!visual.IsSelf) _gpuCache.UnregisterAvatarTexture(f.TextureId, evictIfUnreferenced: true);
                             }
+                            visual.UsedTextureIds.Remove(f.TextureId);
                         }
                     }
                     if (wornFaces.DefaultFace.TextureId != Guid.Empty && visual.PinnedTextureIds.Remove(wornFaces.DefaultFace.TextureId))
                     {
                         if (visual.TexturesPinned) _gpuCache.ReleaseRef(wornFaces.DefaultFace.TextureId);
+                        if (!visual.IsSelf) _gpuCache.UnregisterAvatarTexture(wornFaces.DefaultFace.TextureId, evictIfUnreferenced: true);
+                        visual.UsedTextureIds.Remove(wornFaces.DefaultFace.TextureId);
                     }
                 }
             }

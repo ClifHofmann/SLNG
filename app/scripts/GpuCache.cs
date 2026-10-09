@@ -289,14 +289,18 @@ public class GpuCache
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
         if (assetService != null && !ReferenceEquals(_assets, assetService)) _assets = assetService;
 
-        // BUG-PERF-13: Bake textures (bakeChannel != null) stay full-res and exempt from distance LOD
-        // and shrink pass (matching reference viewer BOOST_AVATAR_BAKED).
+        // BUG-PERF-13: Bake textures (bakeChannel != null) stay full-res and exempt from distance LOD.
+        // Only the OWN avatar's textures go into _noShrink; remote bakes stay full-res at upload
+        // but must NOT be in _noShrink so they can be evicted when unreferenced or shrunk when over budget.
         if (bakeChannel.HasValue)
         {
             screenPixelArea = 0f;
             _avatarTextures.TryAdd(textureId, 0);
             _bakeTextures.TryAdd(textureId, 0);
-            _noShrink.TryAdd(textureId, 0);
+            if (isSelf)
+            {
+                _noShrink.TryAdd(textureId, 0);
+            }
         }
         else if (isAvatar)
         {
@@ -630,6 +634,38 @@ public class GpuCache
             else
             {
                 _noShrink.TryRemove(id, out _);
+            }
+        }
+    }
+
+    /// <summary>
+    /// BUG-PERF-13: Unregisters avatar texture ids from avatar-specific tracking tables
+    /// (_avatarTextures, _bakeTextures, _noShrink) so eviction can reclaim them.
+    /// If <paramref name="evictIfUnreferenced"/> is true and the texture's RefCount is 0,
+    /// it is evicted immediately to free VRAM.
+    /// </summary>
+    public void UnregisterAvatarTexture(Guid textureId, bool evictIfUnreferenced = false)
+    {
+        bool wasBake = _bakeTextures.TryRemove(textureId, out _);
+        _avatarTextures.TryRemove(textureId, out _);
+        _noShrink.TryRemove(textureId, out _);
+
+        if (evictIfUnreferenced || wasBake)
+        {
+            lock (_cache)
+            {
+                if (_cache.TryGetValue(textureId, out var entry) && entry.RefCount <= 0)
+                {
+                    if (entry.Node != null) _lruList.Remove(entry.Node);
+                    _cache.Remove(textureId);
+                    _uploadFromDegraded.TryRemove(textureId, out _);
+                    _currentSize -= entry.Size;
+                    if (GodotObject.IsInstanceValid(entry.Res))
+                    {
+                        entry.Res.Dispose();
+                    }
+                }
+                EvictIfNeeded();
             }
         }
     }
@@ -1158,6 +1194,20 @@ public class GpuCache
 
     internal void SelfTestMarkNoShrink(Guid textureId) => _noShrink.TryAdd(textureId, 0);
 
+    internal bool SelfTestIsNoShrink(Guid textureId) => _noShrink.ContainsKey(textureId);
+    internal bool SelfTestIsAvatarTexture(Guid textureId) => _avatarTextures.ContainsKey(textureId);
+    internal bool SelfTestIsBakeTexture(Guid textureId) => _bakeTextures.ContainsKey(textureId);
+    internal int SelfTestGetRefCount(Guid textureId)
+    {
+        lock (_cache) return _cache.TryGetValue(textureId, out var e) ? e.RefCount : 0;
+    }
+    internal void SelfTestMarkAvatarTexture(Guid textureId, bool isBake, bool isSelf)
+    {
+        _avatarTextures.TryAdd(textureId, 0);
+        if (isBake) _bakeTextures.TryAdd(textureId, 0);
+        if (isSelf) _noShrink.TryAdd(textureId, 0);
+    }
+
     /// <summary>Self test seam: <see cref="PrepareShrinkImage"/>, whose pixels must equal the
     /// read-back shrink's.</summary>
     internal static (Image? Image, AlphaStats Stats) SelfTestPrepareShrink(SLNG.Assets.TextureData decoded, int nw, int nh, bool mips)
@@ -1297,6 +1347,7 @@ public class GpuCache
 
         lock (_cache)
         {
+            EvictIfNeeded();
             bool over = _currentSize > _maxSize;
             bool under = _currentSize < (long)(_maxSize * LowWater);
 

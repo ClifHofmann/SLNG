@@ -483,4 +483,43 @@ public partial class AvatarRenderer
             if (rebuilt != null && IsInstanceValid(rebuilt.Root)) rebuilt.Root.QueueFree();
         }
     }
+
+    /// <summary>
+    /// BUG-PERF-13: Verifies that when a remote AvatarVisual is removed, all its textures
+    /// are unpinned (ReleaseRef) and unregistered from _avatarTextures and _noShrink,
+    /// and that unreferenced bake textures are evicted immediately.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestAvatarTextureRemoval(GpuCache cache)
+    {
+        var entityId = Guid.NewGuid();
+        var visual = new AvatarVisual { IsSelf = false, EntityId = entityId };
+        var texId = Guid.NewGuid();
+        _visuals[entityId] = visual;
+        _gpuCache = cache;
+
+        const int S = 64;
+        var data = new SLNG.Assets.TextureData(S, S, new byte[S * S * 4], false, S, S);
+        var (tex, _, _) = cache.SelfTestUpload(texId, data, 0f, true, initialRefCount: 1);
+        if (tex == null) return (false, "failed to upload test texture");
+
+        // Simulate bake texture upload
+        cache.SelfTestMarkAvatarTexture(texId, isBake: true, isSelf: false);
+
+        visual.PinnedTextureIds.Add(texId);
+        visual.UsedTextureIds.Add(texId);
+        visual.TexturesPinned = true;
+
+        if (cache.SelfTestIsNoShrink(texId)) return (false, "remote bake texture was in _noShrink");
+        if (cache.SelfTestGetRefCount(texId) != 1) return (false, "test texture was not pinned");
+
+        RemoveVisual(entityId);
+
+        if (_visuals.ContainsKey(entityId)) return (false, "visual was not removed from _visuals");
+        if (cache.SelfTestIsNoShrink(texId)) return (false, "texture still in _noShrink after avatar removal");
+        if (cache.SelfTestIsAvatarTexture(texId)) return (false, "texture still in _avatarTextures after avatar removal");
+        if (cache.SelfTestGetRefCount(texId) != 0) return (false, "texture refcount is not 0 after avatar removal");
+        if (cache.IsResident(texId)) return (false, "unreferenced bake texture was not evicted after avatar removal");
+
+        return (true, "remote avatar removal unpins and evicts textures");
+    }
 }

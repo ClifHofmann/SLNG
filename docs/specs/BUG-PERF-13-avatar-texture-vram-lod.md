@@ -47,11 +47,12 @@ This feature implements:
 2. Other avatars' worn-mesh and BoM textures receive screen-area-based discard computed from avatar distance and size.
 3. Own avatar textures stay full-resolution (`screenPixelArea: 0f`).
 4. Distance bands: When an avatar moves closer (area grows 4x), textures re-sharpen in place using `TryUpgradeCachedTexture`.
-5. Avatar textures count toward `texture_memory_mb`. Only self and the nearest N (3) avatars are protected in `_noShrink`. Distant avatars' textures are reducible and can be shrunk by `Tick()` when over budget.
-6. Pinned refcounts (`initialRefCount: 1`) are released when an avatar departs (`RemoveVisual`) or is culled far away.
+5. Avatar textures count toward `texture_memory_mb`. Only self textures go into `_noShrink`; remote bakes stay full-resolution at upload (`screenPixelArea 0`) but are NOT in `_noShrink` and can be shrunk or evicted.
+6. When an avatar visual is removed (`RemoveVisual`), detached, or reduced, its pinned refcounts are released and texture IDs are unregistered from `_avatarTextures` and `_noShrink`, with unreferenced bake textures evicted immediately.
 7. `[GpuCache]` stats log extended with `avatarMB` and `reducibleMB`.
 
 ## Acceptance Criteria
 - [x] Pure arithmetic in `TextureLod` for sphere screen area and discard level.
 - [x] Unit tests for discard/budget arithmetic passing.
-- [ ] In-world (unverified): At a 15-avatar spot, `[GpuCache] sizeMB` stays at or under budget, dedicated VRAM stays below card size, and GPU time returns to ~10 ms baseline while near avatars stay sharp.
+- [x] Regression check in `--selftest`: remote bakes exempt from `_noShrink`, and avatar removal unpins, unregisters, and evicts textures.
+- [ ] In-world (unverified): At a 15-avatar spot, `[GpuCache] sizeMB` stays at or under budget, dedicated VRAM stays below card size, and GPU time returns to ~10 ms baseline while near avatars stay sharp. Teleporting to an empty sim reclaims remote VRAM within ~30s.

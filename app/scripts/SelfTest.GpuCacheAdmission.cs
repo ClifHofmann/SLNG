@@ -161,4 +161,49 @@ public static partial class SelfTest
             return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// BUG-PERF-13: Verifies that remote avatar bake textures are not added to _noShrink,
+    /// and that when an avatar visual is removed, its texture ids are no longer pinned or in _noShrink
+    /// and are evicted from GpuCache.
+    /// </summary>
+    private static Check CheckAvatarTextureRemoval()
+    {
+        const string Name = "remote avatar texture removal unpins and unregisters from GpuCache";
+        var problems = new List<string>();
+        var cache = new GpuCache(10_000_000);
+        try
+        {
+            var renderer = new AvatarRenderer();
+            var (passed, detail) = renderer.SelfTestAvatarTextureRemoval(cache);
+            if (!passed) problems.Add(detail);
+
+            // Also test own avatar vs remote avatar bake texture upload logic
+            var remoteBake = Guid.NewGuid();
+            var selfBake = Guid.NewGuid();
+            cache.SelfTestMarkAvatarTexture(remoteBake, isBake: true, isSelf: false);
+            cache.SelfTestMarkAvatarTexture(selfBake, isBake: true, isSelf: true);
+
+            if (cache.SelfTestIsNoShrink(remoteBake))
+                problems.Add("remote bake texture was added to _noShrink");
+            if (!cache.SelfTestIsNoShrink(selfBake))
+                problems.Add("own avatar bake texture was NOT added to _noShrink");
+
+            // UpdateProtectedAvatarTextures should never add remote bakes to _noShrink
+            var protectedSet = new HashSet<Guid> { remoteBake, selfBake };
+            cache.UpdateProtectedAvatarTextures(protectedSet);
+            if (cache.SelfTestIsNoShrink(remoteBake))
+                problems.Add("UpdateProtectedAvatarTextures added remote bake to _noShrink");
+            if (!cache.SelfTestIsNoShrink(selfBake))
+                problems.Add("UpdateProtectedAvatarTextures removed own bake from _noShrink");
+        }
+        finally
+        {
+            cache.DisposeAll();
+        }
+
+        return problems.Count == 0
+            ? new Check(Name, true, "remote avatar textures unpinned, unregistered, and evicted")
+            : new Check(Name, false, string.Join("; ", problems));
+    }
 }
