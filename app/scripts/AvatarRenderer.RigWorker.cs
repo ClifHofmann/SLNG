@@ -126,7 +126,23 @@ public partial class AvatarRenderer
         finally
         {
             Interlocked.Decrement(ref _activeRigWorkers);
+            // A request that arrived after this worker's last claim but before the decrement found the pool
+            // full and started nobody: without this look it would wait for the next request to come along.
+            if (HasClaimableRig()) EnsureRigWorkers();
         }
+    }
+
+    /// <summary>True when some pending rig is neither being prepared nor already prepared for exactly its
+    /// current request - i.e. a worker has something to claim.</summary>
+    private bool HasClaimableRig()
+    {
+        foreach (var (id, req) in _pendingRigs)
+        {
+            if (_rigsPreparing.ContainsKey(id)) continue;
+            if (_preparedRigs.TryGetValue(id, out var ready) && ready.Request.Equals(req)) continue;
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Picks the highest priority pending rig: self avatar always 0, then distance from

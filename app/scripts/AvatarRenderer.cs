@@ -2086,10 +2086,20 @@ public partial class AvatarRenderer : Node3D
             ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
             : default;
 
-        if (prim != null)
+        // BUG-PERF-12: a mesh attachment's faces count towards the system parts it hides even when the rig
+        // leaves its invisible submeshes out. Only when they CHANGED: this runs on every ObjectUpdate of every
+        // worn item, and the recompute is six interop writes plus a walk over the avatar's worn faces.
+        if (isMeshAttachment)
         {
-            avatarVisual.WornAttachmentFaces[entityId] = (prim.Faces, defaultFace);
-            RecomputeMeshVisibility(avatarVisual);
+            bool known = avatarVisual.WornAttachmentFaces.TryGetValue(entityId, out var worn);
+            bool same = known && worn.DefaultFace == defaultFace
+                        && (worn.Faces == prim!.Faces
+                            || (worn.Faces != null && prim.Faces != null && worn.Faces.AsSpan().SequenceEqual(prim.Faces)));
+            if (!same)
+            {
+                avatarVisual.WornAttachmentFaces[entityId] = (prim!.Faces, defaultFace);
+                RecomputeMeshVisibility(avatarVisual);
+            }
         }
         else
         {
