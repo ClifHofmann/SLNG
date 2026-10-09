@@ -431,7 +431,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.3-alpha";
+    public const string AppVersion = "v0.27.18-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3803,6 +3803,7 @@ public partial class Boot : Control
         _pendingPresenceToasts.Clear(); // ...and a toast still waiting for a name from the last session must not appear
         _presenceSessionStartMsec = Godot.Time.GetTicksMsec();
         _worldSimulation = new SLNG.Core.WorldSimulation(_world, _session);
+        SLNG.App.UI.StatsOverlay.WorldDrainReport = _worldSimulation.TakeDrainReport;
         _worldSimulation.SelfAnimationStopRequested += OnSelfAnimationStopRequested;
 
         // Server-side deselect (M5-2 acceptance criterion): fires on any client-side

@@ -119,36 +119,101 @@ public sealed class WorldSimulation : IDisposable
             {
                 _lastUpdateTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
             }
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            int kind;
             switch (evt)
             {
-                case ObjectUpdateEvent e: ApplyObjectUpdate(e); break;
-                case AvatarUpdateEvent e: ApplyAvatarUpdate(e); break;
-                case ObjectRemovedEvent e: ApplyObjectRemoved(e); break;
-                case ObjectPropertiesEvent e: ApplyObjectProperties(e); break;
-                case PhysicsPropertiesEvent e: ApplyPhysicsProperties(e); break;
-                case ObjectMediaEvent e: ApplyObjectMedia(e); break;
-                case ObjectAnimationEvent e: ApplyObjectAnimation(e); break;
-                case TerrainPatchEvent e: ApplyTerrainPatch(e); break;
-                case TerrainSettingsEvent e: ApplyTerrainSettings(e); break;
+                case ObjectUpdateEvent e: kind = 0; ApplyObjectUpdate(e); break;
+                case AvatarUpdateEvent e: kind = 1; ApplyAvatarUpdate(e); break;
+                case ObjectRemovedEvent e: kind = 2; ApplyObjectRemoved(e); break;
+                case ObjectPropertiesEvent e: kind = 3; ApplyObjectProperties(e); break;
+                case PhysicsPropertiesEvent e: kind = 4; ApplyPhysicsProperties(e); break;
+                case ObjectMediaEvent e: kind = 5; ApplyObjectMedia(e); break;
+                case ObjectAnimationEvent e: kind = 6; ApplyObjectAnimation(e); break;
+                case TerrainPatchEvent e: kind = 7; ApplyTerrainPatch(e); break;
+                case TerrainSettingsEvent e: kind = 8; ApplyTerrainSettings(e); break;
                 // BUG-NET-24: a region the whole session took with it stays as it was --
                 // UnloadAllRegions clears it once the client leaves.
                 case RegionDisconnectedEvent { SessionEnded: true }:
+                    kind = 9;
                     break;
                 case RegionDisconnectedEvent e:
+                    kind = 9;
                     ParkTerrain(e.RegionHandle);
                     _world.RemoveRegion(e.RegionHandle);
                     DropPendingAnimations(e.RegionHandle); // FEAT-ANIMESH-02: for objects that never arrived
                     _avatarCacheDirty = true; // takes every avatar in that region with it
                     StartReconciliation();
                     break;
-                case AvatarAppearanceEvent e: ApplyAvatarAppearance(e); break;
-                case AvatarAnimationEvent e: ApplyAvatarAnimation(e); break;
-                case NameResolvedEvent e: ApplyDisplayNameResolved(e); break;
-                case TeleportProgressEvent e: ApplyTeleportProgress(e); break;
+                case AvatarAppearanceEvent e: kind = 10; ApplyAvatarAppearance(e); break;
+                case AvatarAnimationEvent e: kind = 11; ApplyAvatarAnimation(e); break;
+                case NameResolvedEvent e: kind = 12; ApplyDisplayNameResolved(e); break;
+                case TeleportProgressEvent e: kind = 13; ApplyTeleportProgress(e); break;
+                default: kind = DrainKinds.Length - 1; break;
             }
+            _drainTicks[kind] += System.Diagnostics.Stopwatch.GetTimestamp() - started;
+            _drainCounts[kind]++;
         }
 
-        CheckReconciliationProgress();
+        // BUG-PERF-10: this looks at every entity in the world, and it ran once per frame for as long as a
+        // teleport was being reconciled (up to 30 s) -- ~2 ms of a 53,000-entity scene per frame for
+        // nothing. The test is about seconds, so a few times a second is as good.
+        if (_isReconciling)
+        {
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (now - _lastReconCheckTimestamp >= System.Diagnostics.Stopwatch.Frequency / 4)
+            {
+                _lastReconCheckTimestamp = now;
+                CheckReconciliationProgress();
+            }
+        }
+    }
+
+    private long _lastReconCheckTimestamp;
+
+    // BUG-PERF-10: the local agent's entity. Looking it up meant visiting every entity in the world, and
+    // that happened for every update of the local agent (several a second), for every attachment re-keyed
+    // after a teleport, and when a teleport started. The cached entity is only trusted while it is still in
+    // the world and still flagged; otherwise the world is searched again, exactly as before.
+    private Entity? _localAgentCache;
+
+    private Entity? FindLocalAgent()
+    {
+        var cached = _localAgentCache;
+        if (cached != null
+            && cached.GetComponent<AvatarComponent>()?.IsLocalAgent == true
+            && ReferenceEquals(_world.GetEntity(cached.Id), cached))
+            return cached;
+
+        return _localAgentCache = _world.GetAllEntities()
+            .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+    }
+
+    // BUG-PERF-10: what draining the world costs, by kind of event. Counted per Pump call, read by the
+    // main thread's perf report.
+    private static readonly string[] DrainKinds =
+    {
+        "ObjectUpdate", "AvatarUpdate", "ObjectRemoved", "ObjectProperties", "PhysicsProperties", "ObjectMedia",
+        "ObjectAnimation", "TerrainPatch", "TerrainSettings", "RegionDisconnected", "AvatarAppearance",
+        "AvatarAnimation", "NameResolved", "TeleportProgress", "other",
+    };
+    private readonly long[] _drainTicks = new long[DrainKinds.Length];
+    private readonly int[] _drainCounts = new int[DrainKinds.Length];
+
+    /// <summary>One line: for each kind of event drained since the last call, how many and how long,
+    /// then the tally cleared. Null when nothing was drained. Main thread only, like <see cref="Pump"/>.</summary>
+    public string? TakeDrainReport()
+    {
+        var parts = new List<string>();
+        for (int i = 0; i < DrainKinds.Length; i++)
+        {
+            if (_drainCounts[i] == 0) continue;
+            double ms = _drainTicks[i] * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            parts.Add($"{DrainKinds[i]}=n{_drainCounts[i]}/{ms:F0}ms({ms / _drainCounts[i]:F3}/ea)");
+            _drainTicks[i] = 0;
+            _drainCounts[i] = 0;
+        }
+        return parts.Count == 0 ? null : $"[WorldDrain] entities={_world.EntityCount} {string.Join(" ", parts)}";
     }
 
     /// <summary>
@@ -418,7 +483,12 @@ public sealed class WorldSimulation : IDisposable
             {
                 existing = _world.GetEntity(at.Region, at.LocalId);
             }
-            if (existing == null)
+            // BUG-PERF-10: this fallback looks at every entity in the world, and it used to run for every
+            // object seen for the first time -- i.e. every object of a region that is streaming in, with
+            // the world growing as it goes. 53,000 cached objects across five regions cost ~550 ms of
+            // every second of the main thread. The only entities it can find are the ones kept across a
+            // teleport, whose UUIDs are known when the reconciliation starts (_keptObjectIds).
+            if (existing == null && _keptObjectIds.Contains(e.ObjectId))
             {
                 existing = _world.GetAllEntities()
                     .FirstOrDefault(ent => ent.GetComponent<MetadataComponent>()?.Id == e.ObjectId
@@ -429,7 +499,7 @@ public sealed class WorldSimulation : IDisposable
             {
                 var att = existing.GetComponent<AttachmentComponent>();
                 var av = existing.GetComponent<AvatarComponent>();
-                var localAgent = _world.GetAllEntities().FirstOrDefault(x => x.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+                var localAgent = FindLocalAgent();
                 bool isSelfAttachment = att != null && (localAgent != null && att.AvatarEntityId == localAgent.Id);
                 if (isSelfAttachment || av?.IsLocalAgent == true)
                 {
@@ -848,7 +918,7 @@ public sealed class WorldSimulation : IDisposable
         if (e.IsLocalAgent)
         {
             // Ensure no other entity is marked as the local agent (e.g. leftover from a previous region after teleport)
-            var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+            var oldAgent = FindLocalAgent();
             if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
             {
                 // FEAT-NET-06: A teleport re-keys the existing self entity to the new region.
@@ -1635,12 +1705,24 @@ public sealed class WorldSimulation : IDisposable
         _updatesSinceReconcileStart = 0;
         _reconfirmedEntityIds.Clear();
 
-        var localAgent = _world.GetAllEntities().FirstOrDefault(x => x.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        var localAgent = FindLocalAgent();
         _initialKeptCount = unconfirmed.Count + (localAgent != null ? 1 : 0);
+
+        _keptObjectIds.Clear();
+        foreach (var kept in unconfirmed)
+            if (kept.GetComponent<MetadataComponent>()?.Id is { } keptId && keptId != System.Guid.Empty)
+                _keptObjectIds.Add(keptId);
+        if (localAgent?.GetComponent<MetadataComponent>()?.Id is { } agentUuid && agentUuid != System.Guid.Empty)
+            _keptObjectIds.Add(agentUuid);
     }
+
+    /// <summary>UUIDs of the entities a teleport kept (attachments awaiting reconfirmation and the local
+    /// agent), for as long as the reconciliation lasts. See the fallback in <see cref="ApplyObjectUpdate"/>.</summary>
+    private readonly HashSet<System.Guid> _keptObjectIds = new();
 
     private void CancelReconciliation()
     {
+        _keptObjectIds.Clear();
         _isReconciling = false;
         _reconcileStopwatch.Reset();
         _reconfirmedEntityIds.Clear();
@@ -1702,6 +1784,7 @@ public sealed class WorldSimulation : IDisposable
 
         System.Console.WriteLine($"[TeleportKeep] kept {_initialKeptCount} self entities, {reconfirmedCount} re-confirmed, {removedCount} removed after {elapsedSeconds:0.#}s");
 
+        _keptObjectIds.Clear();
         _isReconciling = false;
         _reconcileStopwatch.Reset();
         _reconfirmedEntityIds.Clear();

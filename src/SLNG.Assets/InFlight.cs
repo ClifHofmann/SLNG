@@ -16,6 +16,13 @@ namespace SLNG.Assets;
 ///
 /// <para>Here the entry is taken out by the task's own completion, removing exactly that task and
 /// nothing newer, and a finished entry found on the way in is dropped.</para>
+///
+/// <para>BUG-PERF-10: the factory never runs on the CALLER's thread. An async method runs inline until its
+/// first await that does not complete at once, and the first awaits of an asset fetch are a file
+/// existence check and a read of a file the OS already holds in memory -- which complete at once. A
+/// warm start asks for thousands of cached meshes from the Godot main thread, and every one of those
+/// requests paid the file work (3.4 ms each, measured) inside the frame budget before this hopped to a
+/// pool thread. Starting the factory on the pool costs microseconds and moves all of that away.</para>
 /// </summary>
 internal static class InFlight
 {
@@ -29,7 +36,7 @@ internal static class InFlight
         if (map.TryGetValue(key, out var finished) && finished.IsCompleted)
             pairs.Remove(new KeyValuePair<TKey, Task<T>>(key, finished));
 
-        var task = map.GetOrAdd(key, start);
+        var task = map.GetOrAdd(key, k => Task.Run(() => start(k)));
 
         // Removed by the task itself once it is done; by the time this runs GetOrAdd has stored it,
         // whichever way the factory finished. Equality is on the task, so a newer run is never hit.

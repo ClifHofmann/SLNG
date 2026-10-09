@@ -469,6 +469,98 @@ public static partial class SelfTest
         }
     }
 
+    /// <summary>BUG-PERF-11: see <see cref="ObjectRenderer.SelfTestUrgentCollisionQueue"/>.</summary>
+    private static Check CheckUrgentCollisionQueue(SceneTree tree)
+    {
+        const string Name = "urgent collision shapes built nearest first";
+        var objects = new ObjectRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            var world = new SLNG.Core.ECS.World();
+            objects.Initialize(world, null!, null!);
+            var (passed, detail) = objects.SelfTestUrgentCollisionQueue(world);
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
+    /// <summary>BUG-PERF-11: see <see cref="ObjectRenderer.SelfTestCullSlice"/>.</summary>
+    private static Check CheckCullSlice(SceneTree tree)
+    {
+        const string Name = "cull sweep slice bounded";
+        var objects = new ObjectRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            var world = new SLNG.Core.ECS.World();
+            objects.Initialize(world, null!, null!);
+            var (passed, detail) = objects.SelfTestCullSlice(world);
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
+    /// <summary>BUG-PERF-11: see <see cref="ObjectRenderer.SelfTestDormantAndSculptShapes"/>.</summary>
+    private static Check CheckDormantAndSculptShapes(SceneTree tree)
+    {
+        const string Name = "released objects come back, sculpt shapes keep their flags";
+        var objects = new ObjectRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            var world = new SLNG.Core.ECS.World();
+            objects.Initialize(world, null!, null!);
+            var (passed, detail) = objects.SelfTestDormantAndSculptShapes(world);
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
+    /// <summary>BUG-PERF-11: see <see cref="ObjectRenderer.SelfTestMeshAssetCollisionAndRemovals"/>.</summary>
+    private static Check CheckMeshAssetCollisionAndRemovals(SceneTree tree)
+    {
+        const string Name = "mesh asset collision retained across LODs and removals deferred";
+        var objects = new ObjectRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            var world = new SLNG.Core.ECS.World();
+            objects.Initialize(world, null!, null!);
+            var (passed, detail) = objects.SelfTestMeshAssetCollisionAndRemovals(world);
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
     /// <summary>BUG-PERF-08: see <see cref="AvatarRenderer.SelfTestAttachSupersede"/>.</summary>
     private static Check CheckAttachSupersede(SceneTree tree)
     {

@@ -221,6 +221,8 @@ public static partial class SelfTest
         results.AddRange(CheckLocales());
         results.Add(CheckAvatarSkeleton());
         results.Add(CheckControlAvatar(tree));
+        results.Add(CheckWornJointOverrides(tree));
+        results.Add(CheckWornAnimesh(tree));
         results.Add(CheckAvatarPick(tree));
         results.Add(CheckAnimeshHandOver(tree));
         results.Add(CheckControlAvatarAnimation(tree));
@@ -235,6 +237,10 @@ public static partial class SelfTest
         results.Add(CheckRiggedMeshPreparedOffMainThread()); // BUG-PERF-06
         results.Add(CheckHudMeshPreparedOffMainThread());
         results.Add(CheckStaticMeshPrepared(tree));
+        results.Add(CheckUrgentCollisionQueue(tree)); // BUG-PERF-11
+        results.Add(CheckCullSlice(tree)); // BUG-PERF-11
+        results.Add(CheckMeshAssetCollisionAndRemovals(tree)); // BUG-PERF-11
+        results.Add(CheckDormantAndSculptShapes(tree)); // BUG-PERF-11
         results.Add(CheckAttachMeshPreparedOffMainThread()); // BUG-PERF-08
         results.Add(CheckAttachSupersede(tree));
         results.Add(CheckRiggedPickBodiesPerItem(tree)); // BUG-PERF-08
@@ -243,6 +249,7 @@ public static partial class SelfTest
         results.Add(CheckShrinkWithoutReadBack());
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
+        results.Add(CheckWorkQueuePartsAddUp());
         results.Add(CheckLoginScreenCoversTheWorld());
         results.Add(CheckAvatarAnimationPlayer());
         results.Add(CheckAvatarHoldMode());
@@ -1761,6 +1768,54 @@ public static partial class SelfTest
     /// answer. The failure it exists for does not throw and does not log: a robot that is built
     /// perfectly well and lies on its side.</para>
     /// </summary>
+    /// <summary>
+    /// BUG-AVATAR-10: an animated object worn on an avatar leaves the wearer's skeleton alone, and an
+    /// ordinary rigged mesh gives its joint overrides back when it is taken off.
+    /// </summary>
+    private static Check CheckWornJointOverrides(SceneTree tree)
+    {
+        const string Name = "worn joint overrides";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestWornJointOverrides();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// BUG-AVATAR-10: a worn animated object gets a control avatar of its own, placed at the wearer's
+    /// attachment point, while the wearer's skeleton stays as it was.
+    /// </summary>
+    private static Check CheckWornAnimesh(SceneTree tree)
+    {
+        const string Name = "worn animesh";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestWornAnimesh();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
     private static Check CheckControlAvatar(SceneTree tree)
     {
         const string Name = "control avatar (animesh)";
@@ -1922,6 +1977,57 @@ public static partial class SelfTest
         return new Check(Name, covered, covered
             ? "nametags stay hidden while the login screen is up"
             : "Boot.IsWorldCovered is false at the login screen -- nametags would draw over it");
+    }
+
+    /// <summary>
+    /// BUG-PERF-10: the parts of a queue item are disjoint (a part nested in another counts for the
+    /// inner one only) and, with the "rest" the pump files for what no part covers, add up to the
+    /// item's total. The cost table is what a warm-start investigation reads; if its parts overlapped
+    /// or lost time it would point at the wrong thing.
+    /// </summary>
+    private static Check CheckWorkQueuePartsAddUp()
+    {
+        const string Name = "work queue parts add up";
+        const string Item = "selftest.parts";
+        try
+        {
+            MainThreadWorkQueue.TakeCostTotals(); // start from empty
+
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+            {
+                using (MainThreadWorkQueue.Part("outer"))
+                {
+                    System.Threading.Thread.Sleep(20);
+                    using (MainThreadWorkQueue.Part("inner")) System.Threading.Thread.Sleep(30);
+                    System.Threading.Thread.Sleep(10);
+                }
+                System.Threading.Thread.Sleep(15); // covered by no part -> "rest"
+                using (MainThreadWorkQueue.Part("later")) System.Threading.Thread.Sleep(5);
+            }, label: Item);
+            MainThreadWorkQueue.Pump(1000);
+
+            var t = MainThreadWorkQueue.TakeCostTotals();
+            double whole = t.GetValueOrDefault(Item);
+            double outer = t.GetValueOrDefault(Item + "/outer");
+            double inner = t.GetValueOrDefault(Item + "/inner");
+            double later = t.GetValueOrDefault(Item + "/later");
+            double rest = t.GetValueOrDefault(Item + "/rest");
+            double sum = outer + inner + later + rest;
+
+            // Sleep is not exact; the point is the shape, and that nothing is counted twice.
+            bool nested = outer is > 25 and < 60 && inner is > 25 and < 50;
+            bool adds = Math.Abs(sum - whole) < 1.0;
+            bool restSeen = rest is > 10 and < 40;
+            bool ok = nested && adds && restSeen;
+            return new Check(Name, ok, ok
+                ? $"whole {whole:F0} ms = outer {outer:F0} (own) + inner {inner:F0} + later {later:F0} + rest {rest:F0}"
+                : $"whole {whole:F1}, outer {outer:F1} (want ~30), inner {inner:F1} (want ~30), later {later:F1}, " +
+                  $"rest {rest:F1} (want ~15), sum {sum:F1}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>

@@ -544,6 +544,451 @@ public partial class ObjectRenderer
             : (false, string.Join("; ", failures));
     }
 
+    /// <summary>
+    /// BUG-PERF-11: the collision shapes of objects within reach of the avatar. One touching it is built
+    /// on the spot; the rest are queued and built nearest first, one per frame when the budget is
+    /// nothing, and an object that goes away while its shape is queued costs no shape at all. The node
+    /// copies the cull sweep reads (<c>Pos</c>, <c>Scl</c>) match the node they stand for.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestUrgentCollisionQueue(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        double savedBudget = RenderConfig.CollisionUrgentFrameBudgetMs;
+        var data = SelfTestStaticMesh();
+        var made = new List<Entity>();
+        try
+        {
+            // A at 1 m touches the avatar; B..E are queued and, set up out of order, must come out by distance.
+            float[] distances = { 1f, 16f, 5f, 20f, 9f, 12f };
+            foreach (var _ in distances) made.Add(SelfTestAddPrim(world, 950 + (uint)made.Count, 0, animated: false));
+            var states = made.Select(e => _visuals[e.Id]).ToList();
+
+            var origin = states[0].Pos;
+            _agentPos = origin;
+            _agentPosKnown = true;
+
+            for (int i = 0; i < states.Count; i++)
+            {
+                var st = states[i];
+                Expect(st.Pos.IsEqualApprox(st.MeshInstance.Position), $"prim {i}: Pos is not the node's Position");
+                Expect(st.Scl.IsEqualApprox(st.MeshInstance.Scale), $"prim {i}: Scl is not the node's Scale");
+                st.Pos = origin + new Godot.Vector3(distances[i], 0f, 0f);
+                st.MeshInstance.Position = st.Pos;
+            }
+
+            RenderConfig.CollisionUrgentFrameBudgetMs = 0; // nothing: one shape per tick, the nearest
+            foreach (var e in made) SelfTestArrive(e, data);
+
+            Expect(states[0].CollisionShape.Shape is ConcavePolygonShape3D, "the object touching the avatar has no shape yet");
+            for (int i = 1; i < states.Count; i++)
+                Expect(states[i].CollisionShape.Shape == null && states[i].CollisionDeferred,
+                       $"prim {i} at {distances[i]} m was built on the spot or lost its place in the queue");
+
+            // 5 m (index 2), 9 m (4), 12 m (5), 16 m (1), 20 m (3).
+            int[] expectedOrder = { 2, 4, 5, 1, 3 };
+            for (int step = 0; step < expectedOrder.Length; step++)
+            {
+                TickUrgentShapes();
+                for (int i = 1; i < states.Count; i++)
+                {
+                    bool shouldHave = Array.IndexOf(expectedOrder, i) <= step;
+                    bool has = states[i].CollisionShape.Shape != null;
+                    if (has != shouldHave)
+                        failures.Add($"after tick {step + 1}: prim {i} ({distances[i]} m) {(has ? "has" : "lacks")} a shape, expected the opposite");
+                }
+            }
+            Expect(_urgentShapes.Count == 0, "the queue is not empty after every shape was built");
+
+            // A shape much bigger than the budget is paid back: the next ticks build nothing, then the queue goes on.
+            RenderConfig.CollisionUrgentFrameBudgetMs = 4;
+            _urgentDebtMs = 0;
+            var big = new MeshData(new[] { SelfTestHugeSubmesh(60000) });
+            var bigA = SelfTestAddPrim(world, 960, 0, animated: false);
+            var bigB = SelfTestAddPrim(world, 961, 0, animated: false);
+            made.Add(bigA);
+            made.Add(bigB);
+            var sA = _visuals[bigA.Id];
+            var sB = _visuals[bigB.Id];
+            foreach (var (st, dist) in new[] { (sA, 6f), (sB, 7f) })
+            {
+                st.Pos = origin + new Godot.Vector3(dist, 0f, 0f);
+                st.MeshInstance.Position = st.Pos;
+            }
+            SelfTestArrive(bigA, big);
+            SelfTestArrive(bigB, SelfTestHugeCopy(big));
+            Expect(sA.CollisionShape.Shape == null && sB.CollisionShape.Shape == null, "a big shape was built on the spot");
+            TickUrgentShapes();
+            Expect(sA.CollisionShape.Shape != null, "the nearest big shape was not built");
+            Expect(sB.CollisionShape.Shape == null, "a second big shape was built in the same tick");
+            Expect(_urgentDebtMs > 0, "a shape far over the budget left no debt");
+            TickUrgentShapes();
+            Expect(sB.CollisionShape.Shape == null, "the tick after a big shape built another instead of paying the debt back");
+            for (int i = 0; i < 12 && sB.CollisionShape.Shape == null; i++) TickUrgentShapes();
+            Expect(sB.CollisionShape.Shape != null, "the queue did not go on after the debt was paid");
+            RenderConfig.CollisionUrgentFrameBudgetMs = 0;
+            var built = states[2].CollisionShape.Shape as ConcavePolygonShape3D;
+            Expect(built != null && built.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(data)),
+                   "a queued shape is not the trimesh faces of its mesh");
+            Expect(states.All(s => !s.CollisionDeferred), "an object is still marked as waiting for its shape");
+
+            // One that goes away while queued: no shape for it.
+            var later = SelfTestAddPrim(world, 990, 0, animated: false);
+            made.Add(later);
+            var laterState = _visuals[later.Id];
+            laterState.Pos = origin + new Godot.Vector3(7f, 0f, 0f);
+            laterState.MeshInstance.Position = laterState.Pos;
+            SelfTestArrive(later, data);
+            var laterKey = laterState.LoadedGeometryKey;
+            Expect(_urgentShapes.ContainsKey(laterKey), "the object near the avatar was not queued");
+            RemoveVisual(later.Id.ToString());
+            Settle();
+            TickUrgentShapes();
+            Expect(!_urgentShapes.ContainsKey(laterKey), "the queue still holds a shape nobody is waiting for");
+            Expect(!_meshCollisionShapes.ContainsKey(laterKey), "a shape was built for an object that was gone");
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RenderConfig.CollisionUrgentFrameBudgetMs = savedBudget;
+            _agentPosKnown = false;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id.ToString());
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "touching object solid at once, five more built nearest first one per tick, a vanished object costs no shape")
+            : (false, string.Join("; ", failures));
+    }
+
+    /// <summary>
+    /// BUG-PERF-11: the cull sweep's slice. One frame after a stall must not be answered with a slice that is
+    /// most of the pass (the frame time it is sized from is capped), and a slice that has run out of time stops
+    /// and leaves the rest to the next frames - which still get through the whole pass.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestCullSlice(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        double savedBudget = RenderConfig.CullSliceBudgetMs;
+        var made = new List<Entity>();
+        try
+        {
+            var agent = world.GetOrCreateEntity(SelfTestRegion, 1);
+            agent.SetComponent(new AvatarComponent(Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+            agent.SetComponent(new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity));
+            const int Count = 400;
+            for (int i = 0; i < Count; i++) made.Add(SelfTestAddPrim(world, 2000 + (uint)i, 0, animated: false));
+            Settle();
+            int total = _visuals.Count;
+
+            // A 10 s frame: a slice of 0.1 s worth (40% of the pass), not 40 passes.
+            _cullOrder.Clear();
+            _cullCursor = 0;
+            _cullCarry = 0;
+            _cullOrder.AddRange(_visuals.Keys);
+            _cullCursor = 0;
+            _Process(10.0);
+            Expect(_cullCursor > 0 && _cullCursor <= (int)(total * CullMaxDeltaSeconds / CullSweepSeconds) + 1,
+                   $"a 10 s frame visited {_cullCursor} of {total} (expected about {total * CullMaxDeltaSeconds / CullSweepSeconds:0})");
+
+            // No time at all: a slice stops at the first clock check (every CullClockEvery visits) but always moves.
+            RenderConfig.CullSliceBudgetMs = 0;
+            _cullCursor = 0;
+            _cullCarry = 0;
+            _Process(10.0);
+            Expect(_cullCursor >= 1 && _cullCursor <= 2 * CullClockEvery,
+                   $"a slice with no budget visited {_cullCursor} (expected 1 to {2 * CullClockEvery})");
+
+            int frames = 0;
+            while (_cullCursor < _cullOrder.Count && frames++ < 500) _Process(10.0);
+            Expect(_cullCursor >= _cullOrder.Count, $"the pass did not finish in {frames} frames of an empty budget (at {_cullCursor} of {_cullOrder.Count})");
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RenderConfig.CullSliceBudgetMs = savedBudget;
+            _agentPosKnown = false;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id.ToString());
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "a long frame no longer makes a long slice, a slice without time stops early and the pass still completes")
+            : (false, string.Join("; ", failures));
+    }
+
+    /// <summary>
+    /// BUG-PERF-11: verifies that:
+    /// 1. LOD changes retain the first collision shape built for a mesh asset via _meshAssetCollisionShapes.
+    /// 2. Entity removals are queued in _pendingRemovals and drained under a frame budget rather than freezing inline.
+    /// 3. ObjectInstanceGroups batches group realisation via TickRealise outside the cull sweep.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestMeshAssetCollisionAndRemovals(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        var made = new List<Entity>();
+        try
+        {
+            var agent = world.GetOrCreateEntity(SelfTestRegion, 1);
+            agent.SetComponent(new AvatarComponent(Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+            agent.SetComponent(new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity));
+            _agentPos = new Godot.Vector3(128f, 128f, 25f);
+            _agentPosKnown = true;
+
+            var dataLow = SelfTestStaticMesh();
+            var dataHigh = SelfTestStaticMesh();
+            var meshId = Guid.NewGuid();
+
+            // 1. First collision shape retained across LOD changes
+            var e1 = SelfTestAddPrim(world, 3100, 0, animated: false);
+            made.Add(e1);
+            var st1 = _visuals[e1.Id];
+            st1.Pos = _agentPos + new Godot.Vector3(1f, 0f, 0f);
+            st1.MeshInstance.Position = st1.Pos;
+            st1.LoadedMeshId = meshId;
+            st1.LoadedMeshDetailLevel = MeshDetailLevel.Low;
+            ApplyArrivedMesh(st1, meshId, MeshDetailLevel.Low, dataLow);
+            Settle();
+
+            var shape1 = st1.CollisionShape.Shape as ConcavePolygonShape3D;
+            Expect(shape1 != null, "prim 1 has no collision shape after initial arrival");
+            Expect(_meshAssetCollisionShapes.ContainsKey(meshId) && _meshAssetCollisionShapes[meshId] == shape1,
+                   "initial shape was not recorded in _meshAssetCollisionShapes");
+
+            // Switch LOD to Highest with different data: shape must be retained
+            st1.LoadedMeshDetailLevel = MeshDetailLevel.Highest;
+            ApplyArrivedMesh(st1, meshId, MeshDetailLevel.Highest, dataHigh);
+            Settle();
+            Expect(st1.CollisionShape.Shape == shape1,
+                   "prim 1 replaced its collision shape on LOD change instead of retaining the first one");
+
+            // A second prim with the same meshId also reuses the asset shape
+            var e2 = SelfTestAddPrim(world, 3101, 0, animated: false);
+            made.Add(e2);
+            var st2 = _visuals[e2.Id];
+            st2.Pos = _agentPos + new Godot.Vector3(2f, 0f, 0f);
+            st2.MeshInstance.Position = st2.Pos;
+            st2.LoadedMeshId = meshId;
+            st2.LoadedMeshDetailLevel = MeshDetailLevel.Highest;
+            ApplyArrivedMesh(st2, meshId, MeshDetailLevel.Highest, dataHigh);
+            Settle();
+            Expect(st2.CollisionShape.Shape == shape1,
+                   "prim 2 did not reuse the existing asset collision shape");
+
+            // 2. Pending removals are queued and drained under budget
+            var e3 = SelfTestAddPrim(world, 3102, 0, animated: false);
+            made.Add(e3);
+            Settle();
+            Expect(_visuals.ContainsKey(e3.Id), "prim 3 was not created");
+
+            OnEntityRemoved(this, new EntityEventArgs(e3));
+            Expect(_pendingRemovalSet.Contains(e3.Id), "prim 3 was not queued in _pendingRemovalSet");
+            Expect(_visuals.ContainsKey(e3.Id), "prim 3 was removed synchronously instead of being deferred");
+
+            ProcessPendingRemovals(maxBudgetMs: 5.0);
+            Expect(!_visuals.ContainsKey(e3.Id), "prim 3 visual was not removed by ProcessPendingRemovals");
+            Expect(!_pendingRemovalSet.Contains(e3.Id), "prim 3 remains in _pendingRemovalSet after processing");
+
+            // 3. ObjectInstanceGroups batches group realisation via TickRealise
+            if (_instanceGroups != null)
+            {
+                var sharedMesh = new BoxMesh();
+                var sharedMat = new StandardMaterial3D();
+                var key = new InstanceGroupKey(Guid.NewGuid(), "test_mat", true);
+
+                var e4 = SelfTestAddPrim(world, 3103, 0, animated: false);
+                var e5 = SelfTestAddPrim(world, 3104, 0, animated: false);
+                made.Add(e4);
+                made.Add(e5);
+                Settle();
+
+                _instanceGroups.Join(e4.Id, key, sharedMesh, sharedMat, Transform3D.Identity);
+                _instanceGroups.Join(e5.Id, key, sharedMesh, sharedMat, Transform3D.Identity);
+
+                Expect(!_instanceGroups.IsInstanced(e4.Id),
+                       "group was realised inline in Join instead of waiting for TickRealise");
+
+                _instanceGroups.TickRealise(maxGroups: 2, maxMs: 5.0);
+                Expect(_instanceGroups.IsInstanced(e4.Id) && _instanceGroups.IsInstanced(e5.Id),
+                       "group was not realised by TickRealise");
+
+                _instanceGroups.Leave(e4.Id);
+                _instanceGroups.Leave(e5.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            _agentPosKnown = false;
+            foreach (var e in made)
+            {
+                if (_pendingRemovalSet.Contains(e.Id)) _pendingRemovalSet.Remove(e.Id);
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id);
+            }
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "mesh asset collision shapes retained over LODs, entity removals deferred, instance groups realised under budget")
+            : (false, string.Join("; ", failures));
+    }
+
+    /// <summary>
+    /// BUG-PERF-11: two things the budgeted sweep and the shared collision shapes must not break.
+    /// (1) A released, hidden object far from the viewer is skipped by the sweep - and comes back when the
+    /// viewer walks up to it, or jumps next to it, however far away it was when it was last looked at.
+    /// (2) A shape shared across the LODs of one mesh asset is not shared across sculpts that use the same
+    /// sculpt map with different stitching or mirror flags: those are different geometry.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestDormantAndSculptShapes(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        var made = new List<Entity>();
+        // The draw distance is the user's preference, loaded at boot: the distances below assume the default.
+        float savedDraw = RenderConfig.DrawDistance;
+        RenderConfig.DrawDistance = 96f;
+        try
+        {
+            var agent = world.GetOrCreateEntity(SelfTestRegion, 1);
+            agent.SetComponent(new AvatarComponent(Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+            var agentAt = new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity);
+            agent.SetComponent(agentAt);
+
+            // ---- (1) a far, released object comes back ------------------------------------------------
+            var far = SelfTestAddPrim(world, 4000, 0, animated: false);
+            made.Add(far);
+            var farTransform = far.GetComponent<TransformComponent>()!;
+            farTransform.Position = new System.Numerics.Vector3(128f + 230f, 128f, 25f);   // 230 m east
+            world.NotifyComponentUpdated(far, farTransform);
+            Settle();
+            var farState = _visuals[far.Id];
+
+            void Frames(int n) { for (int f = 0; f < n; f++) _Process(0.1); }
+            Frames(60);
+            Expect(farState.ResourcesReleased && !farState.Shown, $"an object 230 m away was not released and hidden by the sweep (released={farState.ResourcesReleased} shown={farState.Shown} pos={farState.Pos} agent={_agentPos} cursor={_cullCursor}/{_cullOrder.Count} visuals={_visuals.Count})");
+
+            // Walking: 8 m a step, a few frames at each, until the object is 10 m away.
+            for (float x = 128f; x <= 128f + 220f; x += 8f)
+            {
+                agentAt.Position = new System.Numerics.Vector3(x, 128f, 25f);
+                Frames(4);
+            }
+            Expect(!farState.ResourcesReleased && farState.Shown,
+                   "walking up to a released object 230 m away did not bring it back (released=" +
+                   farState.ResourcesReleased + ", shown=" + farState.Shown + ")");
+
+            // Teleporting: gone far away again, released and hidden, then one jump next to it.
+            agentAt.Position = new System.Numerics.Vector3(128f - 800f, 128f, 25f);
+            Frames(60);
+            Expect(farState.ResourcesReleased && !farState.Shown, "the object was not released after the agent left");
+            agentAt.Position = new System.Numerics.Vector3(128f + 225f, 128f, 25f);
+            Frames(30);
+            Expect(!farState.ResourcesReleased && farState.Shown, "a jump next to a released object did not bring it back");
+
+            // A longer draw distance reaches an object that was out of range.
+            agentAt.Position = new System.Numerics.Vector3(128f, 128f, 25f);
+            Frames(60);
+            Expect(farState.ResourcesReleased && !farState.Shown, "the object was not released again at 230 m");
+            RenderConfig.DrawDistance = 300f;
+            Frames(30);
+            Expect(!farState.ResourcesReleased && farState.Shown, "raising the draw distance past a released object did not bring it back");
+            RenderConfig.DrawDistance = 96f;
+
+            // ---- (2) sculpts of one map with different flags keep their own shape -------------------------
+            agentAt.Position = new System.Numerics.Vector3(128f, 128f, 25f);
+            _agentPos = RenderConfig.ToGodot(SelfTestRegion, agentAt.Position);
+            _agentPosKnown = true;
+            var sculptId = Guid.NewGuid();
+            var dataA = SelfTestStaticMesh();
+            var dataB = new MeshData(dataA.Submeshes.Select(sm => sm with
+            {
+                Positions = sm.Positions.Select(p => new System.Numerics.Vector3(-p.X, p.Y, p.Z)).ToArray(),
+            }).ToList());
+
+            var a = SelfTestAddPrim(world, 4001, 0, animated: false);
+            var b = SelfTestAddPrim(world, 4002, 0, animated: false);
+            made.Add(a);
+            made.Add(b);
+            Settle();
+            var stateA = _visuals[a.Id];
+            var stateB = _visuals[b.Id];
+            foreach (var (st, type) in new[] { (stateA, (byte)1), (stateB, (byte)0x41) })
+            {
+                st.Pos = _agentPos + new Godot.Vector3(1f, 0f, 0f);
+                st.MeshInstance.Position = st.Pos;
+                st.LoadedMeshId = sculptId;
+                st.LoadedSculptType = type;
+                st.LoadedMeshDetailLevel = null;   // a sculpt has no LOD ladder
+                st.CollisionShape.Shape = null;
+            }
+            EnsureCollisionShape(stateA, KeyForSculpt(sculptId, 1), dataA);
+            EnsureCollisionShape(stateB, KeyForSculpt(sculptId, 0x41), dataB);
+            Expect(stateA.CollisionShape.Shape is ConcavePolygonShape3D sa
+                   && sa.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(dataA)), "the first sculpt has the wrong collision shape");
+            Expect(stateB.CollisionShape.Shape is ConcavePolygonShape3D sb
+                   && sb.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(dataB)),
+                   "a sculpt of the same map with other flags was given the first sculpt's collision shape");
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RenderConfig.DrawDistance = savedDraw;
+            _agentPosKnown = false;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id);
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "a released object comes back by walking, by a jump and by a longer draw distance; sculpts with other flags keep their own shape")
+            : (false, string.Join("; ", failures));
+    }
+
+    /// <summary>A single submesh of <paramref name="triangles"/> triangles - a trimesh shape that costs tens of ms.</summary>
+    private static MeshSubmesh SelfTestHugeSubmesh(int triangles)
+    {
+        var rng = new Random(11);
+        var pos = new System.Numerics.Vector3[triangles * 3];
+        var idx = new int[triangles * 3];
+        for (int i = 0; i < pos.Length; i++)
+        {
+            pos[i] = new System.Numerics.Vector3((float)rng.NextDouble(), (float)rng.NextDouble(), (float)rng.NextDouble());
+            idx[i] = i;
+        }
+        var nrm = Enumerable.Repeat(System.Numerics.Vector3.UnitZ, pos.Length).ToArray();
+        var uv = new System.Numerics.Vector2[pos.Length];
+        return new MeshSubmesh(pos, nrm, uv, idx, 0);
+    }
+
+    /// <summary>The same geometry as another object (another mesh asset, so another shape).</summary>
+    private static MeshData SelfTestHugeCopy(MeshData source)
+        => new(source.Submeshes.Select(sm => sm with { Positions = (System.Numerics.Vector3[])sm.Positions.Clone() }).ToList());
+
     /// <summary>Four submeshes: faces 0 and 1 (same record, so merged), an empty one, face 2.</summary>
     private static MeshData SelfTestStaticMesh()
     {

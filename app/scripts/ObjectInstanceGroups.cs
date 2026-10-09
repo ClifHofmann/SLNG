@@ -65,6 +65,22 @@ internal sealed class ObjectInstanceGroups
     /// puts it back in play.</summary>
     public bool IsTracked(Guid id) => _memberKey.ContainsKey(id);
 
+    private readonly struct ReadyGroup
+    {
+        public readonly InstanceGroupKey Key;
+        public readonly Mesh SharedMesh;
+        public readonly Material SharedMaterial;
+        public ReadyGroup(InstanceGroupKey key, Mesh mesh, Material mat)
+        {
+            Key = key;
+            SharedMesh = mesh;
+            SharedMaterial = mat;
+        }
+    }
+
+    private readonly Queue<ReadyGroup> _readyGroups = new();
+    private readonly HashSet<InstanceGroupKey> _readyGroupKeys = new();
+
     /// <summary>Offers a prim to its group. Safe to call every cull sweep: a no-op when the prim
     /// is already in the right group at an unchanged transform.</summary>
     public void Join(Guid id, in InstanceGroupKey key, Mesh sharedMesh, Material sharedMaterial, Transform3D xf)
@@ -96,19 +112,58 @@ internal sealed class ObjectInstanceGroups
         if (!list.Contains(id)) list.Add(id);
         _memberKey[id] = key;
 
-        if (list.Count >= 2)
+        // BUG-PERF-11: group formation is budgeted across frames rather than realized synchronously
+        // inside the cull-sweep visit. Members render normally via their own node until realized.
+        if (list.Count >= 2 && _readyGroupKeys.Add(key))
         {
-            var realised = new InstanceGroup(_parent, key, sharedMesh, sharedMaterial);
-            foreach (var member in list)
-            {
-                var mn = _nodeFor(member);
-                if (mn == null) { _memberKey.Remove(member); continue; }
-                realised.AddOrUpdate(member, member == id ? xf : mn.Transform);
-                mn.Mesh = null;
-            }
-            _groups[key] = realised;
-            _pending.Remove(key);
+            _readyGroups.Enqueue(new ReadyGroup(key, sharedMesh, sharedMaterial));
         }
+    }
+
+    /// <summary>BUG-PERF-11: realises pending instancing groups incrementally with a time/count budget,
+    /// outside the cull sweep so a single visit never hitches on MultiMesh/scene-tree creation.</summary>
+    public void TickRealise(int maxGroups = 2, double maxMs = 1.0)
+    {
+        if (_readyGroups.Count == 0) return;
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        long budgetTicks = (long)(maxMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+        int done = 0;
+
+        while (_readyGroups.TryDequeue(out var ready))
+        {
+            _readyGroupKeys.Remove(ready.Key);
+            RealisePendingGroup(ready.Key, ready.SharedMesh, ready.SharedMaterial);
+            done++;
+            if (done >= maxGroups || (System.Diagnostics.Stopwatch.GetTimestamp() - start) > budgetTicks)
+                break;
+        }
+    }
+
+    /// <summary>Synchronously flushes all pending group realisations (used by self-tests).</summary>
+    public void FlushRealise()
+    {
+        while (_readyGroups.TryDequeue(out var ready))
+        {
+            _readyGroupKeys.Remove(ready.Key);
+            RealisePendingGroup(ready.Key, ready.SharedMesh, ready.SharedMaterial);
+        }
+    }
+
+    private void RealisePendingGroup(in InstanceGroupKey key, Mesh sharedMesh, Material sharedMaterial)
+    {
+        if (!_pending.TryGetValue(key, out var list) || list.Count < 2) return;
+        if (_groups.ContainsKey(key)) return;
+
+        var realised = new InstanceGroup(_parent, key, sharedMesh, sharedMaterial);
+        foreach (var member in list)
+        {
+            var mn = _nodeFor(member);
+            if (mn == null) { _memberKey.Remove(member); continue; }
+            realised.AddOrUpdate(member, mn.Transform);
+            mn.Mesh = null;
+        }
+        _groups[key] = realised;
+        _pending.Remove(key);
     }
 
     /// <summary>Updates just the instance transform of an already-instanced prim (the common
@@ -129,7 +184,11 @@ internal sealed class ObjectInstanceGroups
         if (_pending.TryGetValue(key, out var pend))
         {
             pend.Remove(id);
-            if (pend.Count == 0) _pending.Remove(key);
+            if (pend.Count == 0)
+            {
+                _pending.Remove(key);
+                _readyGroupKeys.Remove(key);
+            }
             return; // a pending member never had its mesh nulled
         }
 

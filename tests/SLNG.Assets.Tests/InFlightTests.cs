@@ -75,6 +75,40 @@ public class InFlightTests
         Assert.Equal("answer", await Start());
     }
 
+    // BUG-PERF-10. The caller is the Godot main thread, and a factory that "starts" with a file check
+    // and a read of a file the OS already holds finishes that part before it ever yields. If it ran
+    // inline, that would be the caller's frame time. It must run on another thread, and the call must
+    // come back without waiting for it.
+    [Fact]
+    public async Task The_factory_runs_on_another_thread_and_the_caller_does_not_wait_for_it()
+    {
+        var map = Map();
+        using var release = new ManualResetEventSlim(false);
+        int factoryThread = -1;
+        int callerThread = -1;
+        Task<string>? task = null;
+
+        var caller = new Thread(() =>
+        {
+            callerThread = Environment.CurrentManagedThreadId;
+            task = InFlight.GetOrStart(map, 9, _ =>
+            {
+                factoryThread = Environment.CurrentManagedThreadId;
+                release.Wait();                       // blocks like synchronous file work would
+                return Task.FromResult("answer");
+            });
+        });
+        caller.Start();
+        Assert.True(caller.Join(TimeSpan.FromSeconds(5)), "GetOrStart waited for its factory");
+
+        Assert.NotNull(task);
+        Assert.False(task!.IsCompleted);
+        release.Set();
+        Assert.Equal("answer", await task);
+        Assert.NotEqual(callerThread, factoryThread);
+        Assert.NotEqual(-1, factoryThread);
+    }
+
     [Fact]
     public async Task Different_keys_do_not_share_a_run()
     {

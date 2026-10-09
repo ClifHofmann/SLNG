@@ -9,7 +9,9 @@ namespace SLNG.App;
 ///
 /// The offsets matter: an SL attachment point is NOT the joint's origin. "Skull" (the point hair
 /// uses) sits 0.15 m ABOVE mHead and is turned 90 degrees about Z; "Chest" is 0.15 m forward,
-/// 0.1 m down and rotated twice. Attaching worn items straight onto the raw joint — which this
+/// 0.1 m down and rotated about two axes (Spine too) -- whose Euler angles are combined the way
+/// <c>LLQuaternion::setQuat(roll, pitch, yaw)</c> does, not the way the skeleton's joints are
+/// (<see cref="SLNG.Core.AttachmentPointRotation"/>). Attaching worn items straight onto the raw joint — which this
 /// map's earlier bone-name-only version forced callers to do — therefore renders every static
 /// attachment displaced by exactly that offset. On the Skull point that is a 15 cm drop, which is
 /// what "my hair sits far too low, but it's fine in Firestorm" looks like.
