@@ -86,6 +86,20 @@ public partial class AvatarRenderer
         /// <summary>--diag: print the pose once, after the change just applied has moved a frame.</summary>
         public bool ReportPoseAfterAdvance;
 
+        // BUG-AVATAR-10 (AvatarRenderer.WornAnimesh.cs): a control avatar of a WORN animated object
+        // follows the wearer's attachment point instead of a region position, and the wearer's
+        // visibility. Guid.Empty for an object that is rezzed in the world.
+        /// <summary>The avatar entity wearing the object; empty for a region animesh.</summary>
+        public Guid WearerEntityId;
+        /// <summary>The wearer's visual as it was when this avatar was made: a different one in
+        /// <c>_visuals</c> later means the wearer was rebuilt, and this avatar's skeleton is stale.</summary>
+        public AvatarVisual? WearerVisual;
+        public byte AttachmentPoint;
+        public bool IsAttached => WearerEntityId != Guid.Empty;
+        public Transform3D LastAttachedTransform;
+        /// <summary>--diag: the "created" line was printed (with the first part).</summary>
+        public bool CreatedLogged;
+
         public ControlAvatar(Guid rootEntityId, AvatarVisual visual)
         {
             RootEntityId = rootEntityId;
@@ -323,16 +337,23 @@ public partial class AvatarRenderer
             ca.BindRotation = ControlAvatarPlacement.BindRotation(meshData.Skin!.BindShapeMatrix);
             ca.RotationDirty = true;
         }
-        ApplyControlAvatarPlacement(ca, rootRenderPosition, rootRotation);
+        // A worn object follows its attachment point (BUG-AVATAR-10), a rezzed one its root prim.
+        if (ca.IsAttached) PlaceAttachedControlAvatar(ca);
+        else ApplyControlAvatarPlacement(ca, rootRenderPosition, rootRotation);
 
         return BuildControlAvatarPart(ca, primId, meshData, meshId, faces, defaultFace, isRoot, visible, applyMaterials);
     }
 
-    private ControlAvatar? GetOrCreateControlAvatar(Guid rootId)
+    private ControlAvatar? GetOrCreateControlAvatar(Guid rootId, Guid wearerEntityId = default,
+        AvatarVisual? wearerVisual = null, byte attachmentPoint = 0)
     {
         if (_controlAvatars.TryGetValue(rootId, out var existing))
         {
-            if (IsInstanceValid(existing.Visual.Root) && existing.Visual.Skeleton != null
+            // The same object can be rezzed one moment and worn the next (or worn by someone else,
+            // or by the same wearer after a rebuild): a skeleton made for the other situation is not
+            // reused.
+            bool sameOwner = existing.WearerEntityId == wearerEntityId && ReferenceEquals(existing.WearerVisual, wearerVisual);
+            if (sameOwner && IsInstanceValid(existing.Visual.Root) && existing.Visual.Skeleton != null
                 && IsInstanceValid(existing.Visual.Skeleton))
                 return existing;
             FreeControlAvatar(rootId);
@@ -367,7 +388,15 @@ public partial class AvatarRenderer
         // an object with no default motions (AvatarAnimationPlayer.HoldUndrivenBones).
         visual.AnimPlayer.HoldUndrivenBones = true;
 
-        var ca = new ControlAvatar(rootId, visual);
+        var ca = new ControlAvatar(rootId, visual)
+        {
+            WearerEntityId = wearerEntityId,
+            WearerVisual = wearerVisual,
+            AttachmentPoint = attachmentPoint,
+        };
+        // Nothing to follow until the first placement: a worn skeleton at the origin for a frame is a
+        // creature in the middle of the region.
+        if (ca.IsAttached) visual.Root.Visible = false;
         _controlAvatars[rootId] = ca;
         return ca;
     }
@@ -448,6 +477,7 @@ public partial class AvatarRenderer
 
         if (Diagnostics.Enabled && ca.ReportedMeshes.Add(meshId))
             ReportAnimeshRig(ca, primId, meshId, skin, mi, extent, isRoot);
+        if (ca.IsAttached) LogAttachedControlAvatarCreated(ca);
 
         return true;
     }
@@ -522,6 +552,7 @@ public partial class AvatarRenderer
     {
         if (!_controlAvatars.Remove(rootId, out var ca)) return;
 
+        if (ca.IsAttached) LogAttachedControlAvatarReleased(ca);
         foreach (var primId in ca.Parts.Keys)
         {
             // The pick bodies hang off the skeleton and go with it; only the dictionary entry is ours.
@@ -553,8 +584,16 @@ public partial class AvatarRenderer
                 _controlAvatarsToDrop.Add(rootId);
                 continue;
             }
-            ApplyControlAvatarPlacement(ca, RenderConfig.ToGodot(root.RegionHandle, transform.Position),
-                transform.Rotation);
+            // BUG-AVATAR-10: a worn object follows its attachment point and its wearer's visibility.
+            if (ca.IsAttached)
+            {
+                if (!UpdateAttachedControlAvatar(ca, root)) continue;
+            }
+            else
+            {
+                ApplyControlAvatarPlacement(ca, RenderConfig.ToGodot(root.RegionHandle, transform.Position),
+                    transform.Rotation);
+            }
 
             // FEAT-ANIMESH-02: re-read the signalled animations when a prim of the object said they
             // changed, then move whatever is playing on. Both are a flag and a bool for an object
@@ -570,11 +609,14 @@ public partial class AvatarRenderer
         if (_controlAvatarsToDrop.Count == 0) return;
         foreach (var rootId in _controlAvatarsToDrop)
         {
+            List<Guid>? reroute = null;
             if (_controlAvatars.TryGetValue(rootId, out var gone))
             {
                 foreach (var primId in gone.Parts.Keys) _pendingControlParts.Remove(primId);
+                if (_controlAvatarRerouteRoots.Remove(rootId)) reroute = gone.Parts.Keys.ToList();
             }
             FreeControlAvatar(rootId);
+            if (reroute != null) RerouteDroppedControlAvatar(reroute);
         }
         _controlAvatarsToDrop.Clear();
     }

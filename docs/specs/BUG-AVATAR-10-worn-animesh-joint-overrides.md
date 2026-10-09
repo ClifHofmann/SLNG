@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-10`
 - **Track:** `render`
-- **Status:** `🧪 Review` — implemented and covered by unit tests and a `--selftest` check; not yet confirmed in-world.
+- **Status:** `🧪 Review` — implemented (part 1 v0.27.13, part 2 v0.27.14) and covered by unit tests and `--selftest` checks; part 1 confirmed in-world (wearer no longer deformed), part 2 not yet.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -80,7 +80,7 @@ The check runs when the rig is **committed** (`CommitPreparedRig`), not when it 
 comes from the live world and a mesh takes seconds to arrive. For an animated root the whole
 `ApplyJointPositionOverrides` call is skipped — positions, scale locks and the pelvis fixup alike — and
 anything the same attachment had put there before (the root's flag arriving after the first rig) is
-handed back. The mesh is still bound to the wearer's skeleton (see Follow-up).
+handed back. In part 1 the mesh was still bound to the wearer's skeleton; part 2 (below) gives it a skeleton of its own, and this path then only sees a race (the flag arriving between the routing check and here).
 
 The root/pelvis skip *inside* `ApplyJointPositionOverrides` for ordinary (non-control) avatars is
 unchanged.
@@ -142,6 +142,11 @@ non-control avatars, like `[ScaleLock]`) reports each revert.
    **without a relog** — a `[JointOverride] … taken off` line appears and the avatar's height and feet are
    re-measured.
 3. Swap one fitted mesh for another (an applier): no leftover from the first.
+4. (Part 2) The pet is **outside the body, at the attachment point**, in its own shape (the 0.35 m creature,
+   not squashed into the wearer), playing **its own animation** (the `ObjectAnimation` stream for the root),
+   and moves with the wearer's animation. Hide the wearer (draw distance) and the pet goes too; detach it and
+   the skeleton goes (`[AttachAnimesh] control avatar released …` under `--diag`); a relog or a fresh attach
+   brings it back (`… created …`).
 
 ## Technical Specs & Affected Files
 
@@ -149,28 +154,88 @@ non-control avatars, like `[ScaleLock]`) reports each revert.
 - `app/scripts/AvatarRenderer.cs` — `AvatarVisual.JointOverrides`/`OverrideContributors`,
   `ApplyJointPositionOverrides`, `ApplyWornJointOverrides`, `ReleaseWornJointOverrides`,
   `RemoveVisual`, `UpdateAttachment`, `UpdateHudAttachment`
+- `app/scripts/AvatarRenderer.WornAnimesh.cs` (new, part 2), `app/scripts/AvatarRenderer.ControlAvatar.cs`
 - `app/scripts/AvatarRenderer.WornOverrides.SelfTest.cs` (new), `app/scripts/SelfTest.cs`
 - `tests/SLNG.Core.Tests/JointOverrideSetTests.cs` (new), `tests/SLNG.Core.Tests/AnimatedMeshLinksetTests.cs`
 - `app/scripts/Boot.cs` — `AppVersion`
 
-## Follow-up (not in this task): a control avatar for *attached* animesh
+## Part 2: a control avatar for *attached* animesh (v0.27.14)
 
-This task only keeps the pet's overrides **off the wearer**. The pet itself is still skinned to the
-wearer's skeleton, *without* its own overrides, so it renders in the wrong shape (a creature rigged to a
-0.35 m skeleton, bound to a human-sized one) and is not animated by the `ObjectAnimation` stream. The
-viewer gives an attached animated object a control avatar of its own (`LLViewerObject::updateControlAvatar`
-→ `linkControlAvatar`, llviewerobject.cpp:3218-3278 → `LLControlAvatar::createControlAvatar`,
-llcontrolavatar.cpp:336) and applies the object's overrides and animations to *that* skeleton; for an
-attachment the control avatar is positioned from the wearer's target attachment point
-(llcontrolavatar.cpp:84-95 and 176-181).
+Part 1 (v0.27.13) kept the pet's overrides off the wearer. Tested in-world, the wearer was no longer
+deformed, **and the dragon sat inside her**: still skinned to the wearer's normal-size skeleton, without
+its own overrides, and not animated by the `ObjectAnimation` stream. Confirmed from the log
+(`[AttachAnimesh] … mesh=035ac8fd root=d74624c8 animatedRoot=True`, and the same for `86f1e621`), so the
+premise holds. Part 2 gives it what the viewer gives it: a control avatar of its own.
 
-SLNG already has the pieces for region animesh (`AvatarRenderer.ControlAvatar.cs`,
-`ObjectRenderer.TryHandOverToControlAvatar`, FEAT-ANIMESH-01/02). What an attached one still needs,
-each to be verified against the viewer source before building: the hand-over from the worn path in
-`CommitPreparedRig` instead of `BuildControlAvatarPart` for a region prim; **placement** — the control
-avatar follows the attachment point's bone, not a region position (`ApplyControlAvatarPlacement` takes a
-region render position today); and routing `ObjectAnimation` events for a *worn* root, which
-`ObjectRenderer` currently receives only for prims it draws itself. Proposed ID: `FEAT-ANIMESH-04`.
+### Viewer
+
+| Fact | Where |
+|---|---|
+| An animated attachment gets a control avatar like a rezzed one | `LLViewerObject::updateControlAvatar` → `linkControlAvatar` → `LLControlAvatar::createControlAvatar`, llviewerobject.cpp:3218-3278, llcontrolavatar.cpp:336 |
+| Placement of an attached one | `LLControlAvatar::matchVolumeTransform`, llcontrolavatar.cpp:176-197: `mRoot->setWorldPosition(obj_pos.rotVec(joint_rot) + joint_pos)`, `mRoot->setWorldRotation(obj_rot * joint_rot)`, with the attachment point's `getWorldPosition()` / `getWorldRotation()` and the root prim's drawable-local position and rotation. **No `bind_rot`** (the region branch, :217-232, has one) and **no pelvis fixup** (the root joint is set directly, not through `getRenderPosition`) |
+| Its visibility is the wearer's | `shouldRenderRigged()` / `isImpostor()`, llcontrolavatar.cpp:682-697 |
+
+### Design
+
+The mesh is routed in `CommitPreparedRig` (`AvatarRenderer.WornAnimesh.cs`, `TryRouteWornRigToControlAvatar`,
+called before anything touches the wearer): when the attachment's linkset root is animated mesh
+(`AnimatedMeshLinkset.IsAnimatedAttachment`), the rig is built on a **control avatar keyed by that root**
+(`ControlAvatar`, `AvatarRenderer.ControlAvatar.cs`, with `WearerEntityId` / `WearerVisual` /
+`AttachmentPoint`), via the same `InstallControlAvatarPart` → `BuildControlAvatarPart` a rezzed animesh
+uses. `ApplyJointPositionOverrides` therefore runs on the **control** visual, where the pelvis override
+*is* applied. The wearer gets nothing from these meshes: no overrides, no skin, no `RiggedAttachments`
+entry, no `_riggedAttachments` entry. Only rigged prims route; the plain prims of the same linkset stay
+ordinary attachments at the attachment point. The prepare done for the wearer's skeleton on the rig worker
+is wasted for these meshes (two per pet); the commit simply does not use it.
+
+- **Placement, per frame** (`PlaceAttachedControlAvatar`): world transform = attachment frame × (root
+  prim's local position and rotation), SL → Godot like a static attachment's. The frame is the wearer's
+  attachment point **as the skeleton is posed now** (`TryGetPosedAttachmentFrame`: bone global pose, then
+  the point's own offset) rather than the `BoneAttachment3D` node, which only catches up with the bone at
+  the end of the frame; `UpdateControlAvatars` therefore runs at the **end** of `AvatarRenderer._Process`,
+  after the wearers' animation was advanced. The node-based `TryGetAttachmentFrame` is the fallback. No
+  `bind_rot`, no pelvis fixup, no scale (as the viewer). The skeleton stays hidden until it could be
+  placed once.
+- **Animations:** the same machinery as a rezzed animesh (`ControlAvatarAnimation`), driven by the signalled
+  lists of the **root and every child prim** of the worn linkset; `ObjectAnimation` names the root and
+  lands on its `PrimitiveComponent`, whose component-updated event runs `UpdateAttachment`, which raises the
+  control avatar's dirty flag (`SyncWornAnimesh`). The wearer's `AnimPlayer` is never involved.
+- **Visibility:** each frame the pet's parts and root follow `wearer.Root.Visible` (the draw-distance cull),
+  and a hidden pet is not advanced.
+- **Lifecycle:** detach (`RemoveVisual` → `ReleaseControlAvatarMesh`), a re-mesh or HUD move, the root
+  leaving the world, the wearer's visual being **rebuilt** (the control avatar is freed and its parts are
+  asked for again, so the new visual gets a fresh one), the wearer's visual **gone**, or the root no longer
+  being worn: each frees the skeleton (`FreeControlAvatar` → `Visual.QueueFree`, which takes the part nodes
+  and pick bodies with it). A new object id on re-attach is simply a new root. A root's animated flag
+  flipping is passed to the rest of the linkset (`UpdateAttachment` is called for the children), and a mesh
+  on the wrong side of the flag is released and reloaded.
+- **`--diag`:** the `[AttachAnimesh]` line stays; `[AttachAnimesh] control avatar created|released
+  root=<obj8> wearer=<SELF|agent8> point=<n> parts=<k>` marks the control avatar's life.
+
+### Known limits (unchanged by this part)
+
+- A worn pet is not selectable/outlined or highlighted as a worn item (the same open items as region
+  animesh: FEAT-ANIMESH-03), and a root that is itself not rigged and has no attachment node yet keeps the
+  pet hidden until its attachment point exists.
+- The rotation has no `bind_rot` because the viewer's attached branch has none. If a pet whose mesh was
+  authored with a rotated bind shape ever shows lying on its side while worn, that is the first thing to
+  compare with Firestorm.
+- Per frame, the animesh update-rate reduction for distance (FEAT-ANIMESH-03) does not exist for worn ones either.
+
+### Merge with `fix/BUG-PERF-12-crowded-avatar-load` (not merged here)
+
+That branch (v0.27.13 to v0.27.16, unmerged) also changed `CommitPreparedRig`:
+
+1. It added an early branch for rigs whose surfaces are all invisible (`ready.Mesh.SurfaceArrays.Length == 0`)
+   **after** `DiscardRiggedAttachment`, which calls `ApplyJointPositionOverrides` directly. After the merge
+   that call site must go through the animesh routing too: `TryRouteWornRigToControlAvatar(entityId, req)`
+   has to run **before** `DiscardRiggedAttachment` (so before that branch), and the branch's raw
+   `ApplyJointPositionOverrides` must become `ApplyWornJointOverrides(entityId, req)` — otherwise an
+   invisible-surface rig of an animated object puts its overrides on the wearer again, and the overrides of
+   an ordinary one are never registered as contributed (and so never given back on detach).
+2. `AppVersion` has to be **renumbered**: both branches claim `v0.27.13-alpha` (this one is now
+   `v0.27.14-alpha`, so it also collides with PERF-12's `v0.27.14`). Whichever merges second takes the next
+   free patch number.
 
 ## Sub-tasks / Progress
 
@@ -181,4 +246,8 @@ region render position today); and routing `ObjectAnimation` events for a *worn*
 - [x] `--diag` `[AttachAnimesh]` line
 - [x] `--selftest` check `worn joint overrides`
 - [x] `AppVersion` bump
+- [x] Part 2: worn animesh control avatar (routing, placement, animations, visibility, lifecycle, `--diag`)
+- [x] `--selftest` check `worn animesh` (wearer unchanged; pet skeleton carries the overrides; placement against
+      the viewer's formula; follows the wearer; own animation; hides with the wearer; freed on rebuild, detach and
+      wearer loss) — fails with the routing hook, the placement or the visibility rule removed (verified)
 - [ ] In-world confirmation

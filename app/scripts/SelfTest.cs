@@ -222,6 +222,7 @@ public static partial class SelfTest
         results.Add(CheckAvatarSkeleton());
         results.Add(CheckControlAvatar(tree));
         results.Add(CheckWornJointOverrides(tree));
+        results.Add(CheckWornAnimesh(tree));
         results.Add(CheckAvatarPick(tree));
         results.Add(CheckAnimeshHandOver(tree));
         results.Add(CheckControlAvatarAnimation(tree));
@@ -1779,6 +1780,30 @@ public static partial class SelfTest
         {
             tree.Root.AddChild(renderer);
             var (passed, detail) = renderer.SelfTestWornJointOverrides();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// BUG-AVATAR-10: a worn animated object gets a control avatar of its own, placed at the wearer's
+    /// attachment point, while the wearer's skeleton stays as it was.
+    /// </summary>
+    private static Check CheckWornAnimesh(SceneTree tree)
+    {
+        const string Name = "worn animesh";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestWornAnimesh();
             return new Check(Name, passed, detail);
         }
         catch (System.Exception ex)

@@ -673,6 +673,7 @@ public partial class AvatarRenderer : Node3D
         // at attach time, because the entity itself is already gone from the World by the time
         // this deferred call runs.
         _loggedAnimeshState.Remove(entityId);
+        _wornAnimatedRootsSeen.Remove(entityId);
         if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
             && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
         {
@@ -2059,6 +2060,10 @@ public partial class AvatarRenderer : Node3D
             ReleaseWornJointOverrides(avatarVisual, entityId);
         if (Diagnostics.Enabled) LogAttachmentAnimeshState(entityId, avatarVisual, entity);
 
+        // BUG-AVATAR-10: tell a worn animated object's control avatar about the update, pass a flag
+        // flip on to the rest of the linkset, and notice a mesh that is on the wrong side of the flag.
+        bool routeChanged = SyncWornAnimesh(entityId, entity, prim);
+
         var defaultFace = isMeshAttachment
             ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
             : default;
@@ -2076,7 +2081,7 @@ public partial class AvatarRenderer : Node3D
         // FEAT-PERF-09 adds the LOD to this comparison. The dedupe is what makes the re-ask on
         // the cull sweep work at all: same mesh, same faces, but a level the camera has since
         // earned is a REAL update, not a duplicate.
-        if (isMeshAttachment && _attachmentMeshIds.TryGetValue(entityId, out var loaded)
+        if (!routeChanged && isMeshAttachment && _attachmentMeshIds.TryGetValue(entityId, out var loaded)
             && loaded.MeshId == prim!.MeshId
             && loaded.DefaultFace == defaultFace
             && loaded.Lod == PickAttachmentDetailLevel(avatarVisual)
@@ -2151,7 +2156,10 @@ public partial class AvatarRenderer : Node3D
         // identical values and the skeleton need not be rebuilt twice.
         if (_attachmentMeshIds.TryGetValue(entityId, out var priorMeshInfo)
             && (!isMeshAttachment || priorMeshInfo.MeshId != prim!.MeshId))
+        {
             ReleaseWornJointOverrides(avatarVisual, entityId);
+            ReleaseControlAvatarMesh(entityId);
+        }
 
         // Kick off mesh/texture load for mesh attachments.
         if (prim != null)
@@ -2944,6 +2952,10 @@ public partial class AvatarRenderer : Node3D
         // discard, jointpos, bind, commit, scene, bom, materials. The ones above are worker
         // time, filed here because only the main thread may write the cost table. The click
         // colliders (avatar.rig.pick) are queue items of their own since BUG-PERF-08.
+
+        // BUG-AVATAR-10: an animated object's mesh is skinned to the object's own skeleton, not the
+        // wearer's. Before anything below touches the wearer.
+        if (TryRouteWornRigToControlAvatar(entityId, req)) return;
 
         // Anything already rigged for this entity is replaced, not joined. Without this,
         // several updates arriving before the queue drains each ADD a rigged MeshInstance
@@ -4115,6 +4127,7 @@ public partial class AvatarRenderer : Node3D
             if (hudMovedRigged != null) hudOwnerVisual.RiggedAttachments.RemoveAll(r => r.Mi == hudMovedRigged);
             ReleaseWornJointOverrides(hudOwnerVisual, entityId);
         }
+        ReleaseControlAvatarMesh(entityId);
         _attachmentMeshIds.Remove(entityId);
 
         EnsureHudViewport();
@@ -4749,7 +4762,8 @@ public partial class AvatarRenderer : Node3D
         GD.Print($"[AttachAnimesh] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} " +
                  $"attachment={Short(ownObject)} mesh={Short(meshId)} " +
                  $"root={(root == null ? "unresolved" : Short(rootObject))} animatedRoot={animated}" +
-                 (overridesSkipped ? " -- joint overrides NOT applied to the wearer (they belong to the object's own skeleton)" : ""));
+                 (overridesSkipped ? " -- joint overrides NOT applied to the wearer (they belong to the object's own skeleton)" : "") +
+                 (animated && !overridesSkipped ? " -- rigged parts are skinned to the object's own control avatar" : ""));
     }
 
     /// <summary>BUG-AVATAR-10, --diag: the same answer for an attachment that is not being rigged (a
@@ -6094,11 +6108,6 @@ void fragment() {
         float dt = (float)delta;
         ReportAvatarCost(delta);
 
-        // FEAT-ANIMESH-01: animated-mesh skeletons follow their root prim, and (FEAT-ANIMESH-02)
-        // play what its scripts started. Not part of the _visuals loop below -- a control avatar is
-        // not a person.
-        UpdateControlAvatars(dt);
-
         // Recompute draw-distance visibility a few times a second (not every frame — the
         // agent lookup scans all entities). Animation still advances every frame, but only
         // for avatars currently inside the draw distance.
@@ -6212,6 +6221,13 @@ void fragment() {
                 }
             }
         }
+
+        // FEAT-ANIMESH-01: animated-mesh skeletons follow their root prim, and (FEAT-ANIMESH-02)
+        // play what its scripts started. Not part of the _visuals loop above -- a control avatar is
+        // not a person. After it, since BUG-AVATAR-10: a pet worn on an avatar follows that avatar's
+        // attachment point, and the point has only moved for this frame once the wearer's animation
+        // has been advanced.
+        UpdateControlAvatars(dt);
     }
 
     /// <summary>Animation ids already reported as unavailable, so a set the simulator keeps
