@@ -824,6 +824,123 @@ public partial class ObjectRenderer
             : (false, string.Join("; ", failures));
     }
 
+    /// <summary>
+    /// BUG-PERF-11: two things the budgeted sweep and the shared collision shapes must not break.
+    /// (1) A released, hidden object far from the viewer is skipped by the sweep - and comes back when the
+    /// viewer walks up to it, or jumps next to it, however far away it was when it was last looked at.
+    /// (2) A shape shared across the LODs of one mesh asset is not shared across sculpts that use the same
+    /// sculpt map with different stitching or mirror flags: those are different geometry.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestDormantAndSculptShapes(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        var made = new List<Entity>();
+        // The draw distance is the user's preference, loaded at boot: the distances below assume the default.
+        float savedDraw = RenderConfig.DrawDistance;
+        RenderConfig.DrawDistance = 96f;
+        try
+        {
+            var agent = world.GetOrCreateEntity(SelfTestRegion, 1);
+            agent.SetComponent(new AvatarComponent(Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+            var agentAt = new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity);
+            agent.SetComponent(agentAt);
+
+            // ---- (1) a far, released object comes back ------------------------------------------------
+            var far = SelfTestAddPrim(world, 4000, 0, animated: false);
+            made.Add(far);
+            var farTransform = far.GetComponent<TransformComponent>()!;
+            farTransform.Position = new System.Numerics.Vector3(128f + 230f, 128f, 25f);   // 230 m east
+            world.NotifyComponentUpdated(far, farTransform);
+            Settle();
+            var farState = _visuals[far.Id];
+
+            void Frames(int n) { for (int f = 0; f < n; f++) _Process(0.1); }
+            Frames(60);
+            Expect(farState.ResourcesReleased && !farState.Shown, $"an object 230 m away was not released and hidden by the sweep (released={farState.ResourcesReleased} shown={farState.Shown} pos={farState.Pos} agent={_agentPos} cursor={_cullCursor}/{_cullOrder.Count} visuals={_visuals.Count})");
+
+            // Walking: 8 m a step, a few frames at each, until the object is 10 m away.
+            for (float x = 128f; x <= 128f + 220f; x += 8f)
+            {
+                agentAt.Position = new System.Numerics.Vector3(x, 128f, 25f);
+                Frames(4);
+            }
+            Expect(!farState.ResourcesReleased && farState.Shown,
+                   "walking up to a released object 230 m away did not bring it back (released=" +
+                   farState.ResourcesReleased + ", shown=" + farState.Shown + ")");
+
+            // Teleporting: gone far away again, released and hidden, then one jump next to it.
+            agentAt.Position = new System.Numerics.Vector3(128f - 800f, 128f, 25f);
+            Frames(60);
+            Expect(farState.ResourcesReleased && !farState.Shown, "the object was not released after the agent left");
+            agentAt.Position = new System.Numerics.Vector3(128f + 225f, 128f, 25f);
+            Frames(30);
+            Expect(!farState.ResourcesReleased && farState.Shown, "a jump next to a released object did not bring it back");
+
+            // A longer draw distance reaches an object that was out of range.
+            agentAt.Position = new System.Numerics.Vector3(128f, 128f, 25f);
+            Frames(60);
+            Expect(farState.ResourcesReleased && !farState.Shown, "the object was not released again at 230 m");
+            RenderConfig.DrawDistance = 300f;
+            Frames(30);
+            Expect(!farState.ResourcesReleased && farState.Shown, "raising the draw distance past a released object did not bring it back");
+            RenderConfig.DrawDistance = 96f;
+
+            // ---- (2) sculpts of one map with different flags keep their own shape -------------------------
+            agentAt.Position = new System.Numerics.Vector3(128f, 128f, 25f);
+            _agentPos = RenderConfig.ToGodot(SelfTestRegion, agentAt.Position);
+            _agentPosKnown = true;
+            var sculptId = Guid.NewGuid();
+            var dataA = SelfTestStaticMesh();
+            var dataB = new MeshData(dataA.Submeshes.Select(sm => sm with
+            {
+                Positions = sm.Positions.Select(p => new System.Numerics.Vector3(-p.X, p.Y, p.Z)).ToArray(),
+            }).ToList());
+
+            var a = SelfTestAddPrim(world, 4001, 0, animated: false);
+            var b = SelfTestAddPrim(world, 4002, 0, animated: false);
+            made.Add(a);
+            made.Add(b);
+            Settle();
+            var stateA = _visuals[a.Id];
+            var stateB = _visuals[b.Id];
+            foreach (var (st, type) in new[] { (stateA, (byte)1), (stateB, (byte)0x41) })
+            {
+                st.Pos = _agentPos + new Godot.Vector3(1f, 0f, 0f);
+                st.MeshInstance.Position = st.Pos;
+                st.LoadedMeshId = sculptId;
+                st.LoadedSculptType = type;
+                st.LoadedMeshDetailLevel = null;   // a sculpt has no LOD ladder
+                st.CollisionShape.Shape = null;
+            }
+            EnsureCollisionShape(stateA, KeyForSculpt(sculptId, 1), dataA);
+            EnsureCollisionShape(stateB, KeyForSculpt(sculptId, 0x41), dataB);
+            Expect(stateA.CollisionShape.Shape is ConcavePolygonShape3D sa
+                   && sa.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(dataA)), "the first sculpt has the wrong collision shape");
+            Expect(stateB.CollisionShape.Shape is ConcavePolygonShape3D sb
+                   && sb.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(dataB)),
+                   "a sculpt of the same map with other flags was given the first sculpt's collision shape");
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RenderConfig.DrawDistance = savedDraw;
+            _agentPosKnown = false;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id);
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "a released object comes back by walking, by a jump and by a longer draw distance; sculpts with other flags keep their own shape")
+            : (false, string.Join("; ", failures));
+    }
+
     /// <summary>Four submeshes: faces 0 and 1 (same record, so merged), an empty one, face 2.</summary>
     private static MeshData SelfTestStaticMesh()
     {

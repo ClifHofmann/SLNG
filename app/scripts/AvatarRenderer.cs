@@ -375,8 +375,13 @@ public partial class AvatarRenderer : Node3D
             && !_attachNewest.ContainsKey(id)
             && !_hudNodes.ContainsKey(id)
             && !_hudPlacements.ContainsKey(id)
+            && !_hudContent.ContainsKey(id)
+            && !_hudTriangles.ContainsKey(id)
+            && !_riggedPickBodies.ContainsKey(id)
             && !_controlAvatarOfPrim.ContainsKey(id)
-            && !_pendingControlParts.ContainsKey(id))
+            && !_pendingControlParts.ContainsKey(id)
+            && id != _selfEntityId
+            && _editPausedAvatars.Count == 0)   // RemoveVisual also releases an edit pause held for the entity
         {
             return;
         }

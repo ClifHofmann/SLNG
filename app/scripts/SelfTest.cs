@@ -238,6 +238,7 @@ public static partial class SelfTest
         results.Add(CheckUrgentCollisionQueue(tree)); // BUG-PERF-11
         results.Add(CheckCullSlice(tree)); // BUG-PERF-11
         results.Add(CheckMeshAssetCollisionAndRemovals(tree)); // BUG-PERF-11
+        results.Add(CheckDormantAndSculptShapes(tree)); // BUG-PERF-11
         results.Add(CheckAttachMeshPreparedOffMainThread()); // BUG-PERF-08
         results.Add(CheckAttachSupersede(tree));
         results.Add(CheckRiggedPickBodiesPerItem(tree)); // BUG-PERF-08
