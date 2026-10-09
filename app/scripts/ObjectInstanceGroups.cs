@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Godot;
-using GDArray = Godot.Collections.Array;
 using GDDict = Godot.Collections.Dictionary;
 
 namespace SLNG.App;
@@ -435,14 +434,10 @@ internal static class MaterialFingerprint
             Variant texGen = mat.GetShaderParameter(UvTexGen);
             bool planar = texGen.VariantType == Variant.Type.Int && texGen.AsInt64() == 1L;
 
-            // getGroups:false -> real uniforms only, no group/subgroup headers. Order is the
-            // shader's declaration order, identical for two materials sharing a shader, so the
-            // string is directly comparable.
-            GDArray uniforms = shader.GetShaderUniformList();
-            foreach (Variant u in uniforms)
+            // Order is the shader's declaration order, identical for two materials sharing a
+            // shader, so the string is directly comparable.
+            foreach (string name in UniformNames(shader))
             {
-                if (u.Obj is not GDDict d || !d.TryGetValue("name", out Variant nameV)) continue;
-                string name = nameV.AsString();
                 string value = !planar && name == PrimScaleUniform
                     ? "inert"
                     : VariantKey(mat.GetShaderParameter(name));
@@ -451,6 +446,29 @@ internal static class MaterialFingerprint
         }
         return sb.ToString();
     }
+
+    /// <summary>The shader's real uniform names in declaration order, read once per shader.
+    /// <c>Shader.GetShaderUniformList</c> is a round trip into the RenderingServer
+    /// (<c>get_shader_parameter_list</c> is a synchronous server call), and it builds a Godot
+    /// <c>Array</c> of <c>Dictionary</c>s per call. Per material that was affordable with rendering on
+    /// the main thread and would wait out a whole draw each time on a separate render thread
+    /// (FEAT-PERF-13). The list of a loaded shader does not change, so it is cached on the shader
+    /// object; <c>getGroups: false</c> drops the group and subgroup headers.</summary>
+    private static string[] UniformNames(Shader shader)
+    {
+        if (_uniformNames.TryGetValue(shader, out var cached)) return cached;
+        var names = new List<string>();
+        foreach (Variant u in shader.GetShaderUniformList())
+        {
+            if (u.Obj is not GDDict d || !d.TryGetValue("name", out Variant nameV)) continue;
+            names.Add(nameV.AsString());
+        }
+        var result = names.ToArray();
+        _uniformNames.AddOrUpdate(shader, result);
+        return result;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Shader, string[]> _uniformNames = new();
 
     private static readonly StringName UvTexGen = "uv_texgen";
     private const string PrimScaleUniform = "prim_scale";

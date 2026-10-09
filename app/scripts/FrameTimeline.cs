@@ -25,7 +25,24 @@ namespace SLNG.App;
 ///                                         faces, every viewport, canvas, present
 /// [frame_post_draw]
 /// </code>
-/// <para>Main thread only; the signals fire on it because rendering runs on the main thread.</para>
+/// <para>Main thread only; the signals fire on it. Rendering on the main thread makes
+/// <c>frame_post_draw</c> arrive inline, right after the draw.</para>
+///
+/// <para><b>FEAT-PERF-13, separate render thread.</b> <c>frame_pre_draw</c> is still emitted on the
+/// main thread, by <c>RenderingServer::draw</c> after its <c>sync()</c>, but the draw itself is only
+/// queued, and <c>frame_post_draw</c> is delivered later through the message queue, at whichever flush
+/// the next frame reaches first. So "pre_draw to post_draw" is no longer a cost the main thread pays,
+/// and the strict ordering check below would throw most frames away. In that mode a frame is closed
+/// by its own <c>frame_pre_draw</c> instead, and the stretches mean:</para>
+/// <list type="bullet">
+/// <item><c>postFlushMs</c> includes the main thread's <b>wait for the render thread</b>
+/// (<c>RenderingServer::sync()</c> is the last thing before pre_draw). It exceeds the main-thread
+/// value by exactly that wait, so it grows when the render thread is the slower side.</item>
+/// <item><c>drawMs</c> is 0: queueing the draw is not measurable here. The render thread's own cost is
+/// <c>renderCpuMs</c> / <c>renderGpuMs</c> / <c>setupMs</c> in <see cref="RenderTimes"/>.</item>
+/// <item><c>frameMs</c> is still the frame period (pre_draw to the next pre_draw), so fps and the
+/// stretches stay comparable across the two modes.</item>
+/// </list>
 /// </summary>
 public partial class FrameTimeline : Node
 {
@@ -54,8 +71,31 @@ public partial class FrameTimeline : Node
         if (_hooked) return;
         _hooked = true;
         parent.GetTree().ProcessFrame += () => _processFrame = Stopwatch.GetTimestamp();
-        RenderingServer.FramePreDraw += () => _preDraw = Stopwatch.GetTimestamp();
-        RenderingServer.FramePostDraw += OnPostDraw;
+        RenderingServer.FramePreDraw += OnPreDraw;
+        // Separate render thread: post_draw arrives out of step with the frame (see the class
+        // summary), and pre_draw closes the frame instead.
+        if (!RenderThread.IsSeparate) RenderingServer.FramePostDraw += OnPostDraw;
+    }
+
+    private static void OnPreDraw()
+    {
+        long now = Stopwatch.GetTimestamp();
+        _preDraw = now;
+        if (!RenderThread.IsSeparate) return;
+
+        long previous = _lastPostDraw; // in this mode: the previous frame's pre_draw
+        _lastPostDraw = now;
+        if (previous == 0 || !(previous < _processFrame && _processFrame <= _scriptsStart
+                               && _scriptsStart <= _scriptsEnd && _scriptsEnd <= now))
+        {
+            return;
+        }
+
+        _preFlushSum += Ms(_scriptsStart - _processFrame);
+        _scriptsSum += Ms(_scriptsEnd - _scriptsStart);
+        _postFlushSum += Ms(now - _scriptsEnd);
+        _frameSum += Ms(now - previous);
+        _frames++;
     }
 
     public override void _Process(double delta)

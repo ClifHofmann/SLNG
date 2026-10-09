@@ -306,7 +306,7 @@ public partial class StatsOverlay : PanelContainer
             $"drawsCanvas={RenderTimes.MainCanvasDraws} tris={_lastPrimitives / 1000.0:F0}k " +
             $"vramMB={_lastVideoMb:F0} csMB={_lastManagedMb:F0} gc0ps={_gc0Rate:F0} gc1ps={_gc1Rate:F0} " +
             $"queue={_lastQueueDepth} queuePeak={_lastQueuePeak} " +
-            $"nodes={_lastNodes:F0} vsync={DisplayServer.WindowGetVsyncMode()}");
+            $"nodes={_lastNodes:F0} vsync={DisplayServer.WindowGetVsyncMode()} rt={RenderThread.ModeName}");
 
         // Immediately after the [Perf] line, so a session log reads as: what the frame looked like,
         // then what the main thread actually spent that frame's time on.

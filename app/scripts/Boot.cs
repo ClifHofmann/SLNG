@@ -431,7 +431,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.28-alpha";
+    public const string AppVersion = "v0.27.29-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -547,6 +547,9 @@ public partial class Boot : Control
         // changes, so several rounds were spent unable to tell from a log which build had
         // actually run.
         GD.Print($"[Boot] {AppVersion}");
+        // FEAT-PERF-13: which thread Godot renders on. The [Perf] lines carry the same word (rt=), but
+        // this one is always in godot.log, and it says where the choice came from.
+        GD.Print($"[Boot] render thread: {RenderThread.Describe()}");
 
         // Background is standard at startup. User-specific screenshot is loaded in OnLoginPressed.
 
@@ -5475,6 +5478,10 @@ public partial class Boot : Control
 
     public override void _ExitTree()
     {
+        // FEAT-PERF-13: first, while the render thread still answers. The sampler thread may be
+        // waiting on it for a render-time getter.
+        RenderTimes.Shutdown();
+
         // Dispose the GPU cache's Resources explicitly, before the engine's own shutdown teardown
         // -- see GpuCache.DisposeAll's doc comment for why (a late .NET GC finalizer touching an
         // already-destroyed RenderingServer is the documented cause of the "N RID allocations...

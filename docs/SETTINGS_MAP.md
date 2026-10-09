@@ -21,6 +21,7 @@ Dieses Dokument listet alle geplanten und bereits vorhandenen Viewer-Einstellung
 | | Qualität | Schatten-Qualität | ✅ Done | In `Hardware / Qualität` |
 | | | Wasser-Reflektionen | ⏸️ Pending | |
 | | | Anti-Aliasing (MSAA) | ✅ Done | In `Hardware / Qualität` |
+| | | Render-Thread (Haupt / eigener Thread) | 🧪 Review | In `Hardware`, wirkt erst nach Neustart; Standard: Haupt-Thread. Engine-Einstellung, deshalb nicht in `preferences.cfg`, sondern in `user://engine_overrides.cfg` (FEAT-PERF-13) |
 | | Post-FX | Depth of Field (DoF) | ⏸️ Pending | |
 | | | Umgebungsverdeckung (SSAO) | ⏸️ Pending | |
 | | | Glow / Bloom | ⏸️ Pending | |

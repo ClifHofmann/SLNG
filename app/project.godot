@@ -16,6 +16,12 @@ run/main_scene="res://scenes/Boot.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 config/icon="res://icon.svg"
 
+; Engine settings the client itself changes from its Graphics page (FEAT-PERF-13: the render
+; thread model). The engine reads project settings before any managed code runs, so a choice kept
+; in preferences.cfg would always arrive one start too late; this file is merged over project.godot
+; at startup instead. Absent until the person picks something other than the default.
+config/project_settings_override="user://engine_overrides.cfg"
+
 ; No Godot boot splash on an alpha release -- the client shows its own login screen with the
 ; version on it, and the engine logo in front of that only says which engine it is.
 boot_splash/show_image=false

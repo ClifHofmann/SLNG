@@ -463,18 +463,19 @@ internal sealed partial class RadarCanvas : Control
         _objectPixels ??= new byte[RadarObjectRaster.BufferLength];
         RadarObjectRaster.Render(_objects, _objectPixels, ObjectPalette, RadarObjects.PhantomOpacity);
 
-        if (_objectImage == null || _objectLayer == null)
-        {
-            _objectImage = Image.CreateFromData(RadarObjectRaster.SizeMetres, RadarObjectRaster.SizeMetres,
-                false, Image.Format.Rgba8, _objectPixels);
+        // A new Image every time, never SetData on the one the texture was last given:
+        // ImageTexture.Update hands the Image to the RenderingServer by reference, and with Godot
+        // rendering on its own thread (FEAT-PERF-13) the render thread may not have read it yet when
+        // the next rebuild runs here. Rewriting its pixels then is a data race. Costs nothing extra: the
+        // pixels were copied into the Image on every rebuild already, and it only runs when the list changed.
+        var previous = _objectImage;
+        _objectImage = Image.CreateFromData(RadarObjectRaster.SizeMetres, RadarObjectRaster.SizeMetres,
+            false, Image.Format.Rgba8, _objectPixels);
+        if (_objectLayer == null)
             _objectLayer = ImageTexture.CreateFromImage(_objectImage);
-        }
         else
-        {
-            _objectImage.SetData(RadarObjectRaster.SizeMetres, RadarObjectRaster.SizeMetres,
-                false, Image.Format.Rgba8, _objectPixels);
             _objectLayer.Update(_objectImage);
-        }
+        previous?.Dispose(); // the RenderingServer keeps its own reference until it has read it
     }
 
     /// <summary>Whisper, say and shout as full circles around the LOCAL avatar -- not the focus, so a

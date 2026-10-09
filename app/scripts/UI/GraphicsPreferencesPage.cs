@@ -58,6 +58,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     // Hardware sub-tab controls
     private OptionButton _vsyncOption = null!;
     private OptionButton _fpsOption = null!;
+    private OptionButton _renderThreadOption = null!;
+    private Label _renderThreadHint = null!;
     private OptionButton _msaaOption = null!;
     private OptionButton _shadowResOption = null!;
     private HSlider _textureMemSlider = null!;
@@ -473,6 +475,28 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             fpsIndex < 0 ? 0 : fpsIndex,
             idx => { if (!_refreshing) { _settings.SetMaxFps(FpsChoices[idx]); _apply(); } },
             out _fpsOption));
+
+        // Render thread (FEAT-PERF-13). Not a GraphicsSettings value and not part of any preset: the
+        // engine decides it before the client's code runs, so it is saved where the engine reads it
+        // (RenderThread.OverridePath) and only takes effect on the next start.
+        AddRow(_panelHardware, L10n.Tr("ui.preferences.render_thread"), BuildOption(
+            new[]
+            {
+                L10n.Tr("ui.preferences.render_thread_main"),
+                L10n.Tr("ui.preferences.render_thread_separate"),
+            },
+            RenderThread.SavedPreferenceIsSeparate() ? 1 : 0,
+            idx =>
+            {
+                if (_refreshing) return;
+                RenderThread.SavePreference(idx == 1);
+                UpdateRenderThreadHint();
+            },
+            out _renderThreadOption));
+        _renderThreadHint = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        _renderThreadHint.AddThemeFontSizeOverride("font_size", 12);
+        _panelHardware.AddChild(_renderThreadHint);
+        UpdateRenderThreadHint();
 
         _panelHardware.AddChild(new HSeparator());
 
@@ -950,6 +974,18 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         var heading = new Label { Text = text };
         heading.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f));
         parent.AddChild(heading);
+    }
+
+    /// <summary>The explanation under the render-thread row, switching to a "restart" notice (in the
+    /// warning colour) once the saved choice differs from what this run is using.</summary>
+    private void UpdateRenderThreadHint()
+    {
+        bool pending = RenderThread.SavedPreferenceIsSeparate() != RenderThread.IsSeparate;
+        _renderThreadHint.Text = pending
+            ? L10n.Tr("ui.preferences.render_thread_restart")
+            : L10n.Tr("ui.preferences.render_thread_hint");
+        _renderThreadHint.AddThemeColorOverride("font_color",
+            pending ? new Color(0.95f, 0.75f, 0.25f) : new Color(0.5f, 0.5f, 0.5f));
     }
 
     private static void AddHint(Control parent, string text)

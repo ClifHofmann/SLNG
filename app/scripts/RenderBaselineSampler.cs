@@ -90,6 +90,6 @@ public partial class RenderBaselineSampler : Node
         GD.Print($"[RenderBaseline] {_label} | frames={sorted.Count} " +
                   $"medianMs={median:F2} p95Ms={p95:F2} worstMs={worst:F2} " +
                   $"drawCalls={drawCalls:F0} primitives={primitives:F0} objects={objects:F0} " +
-                  $"videoMemMB={videoMemMb:F1}");
+                  $"videoMemMB={videoMemMb:F1} rt={RenderThread.ModeName}");
     }
 }
