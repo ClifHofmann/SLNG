@@ -221,6 +221,7 @@ public static partial class SelfTest
         results.AddRange(CheckLocales());
         results.Add(CheckAvatarSkeleton());
         results.Add(CheckControlAvatar(tree));
+        results.Add(CheckWornJointOverrides(tree));
         results.Add(CheckAvatarPick(tree));
         results.Add(CheckAnimeshHandOver(tree));
         results.Add(CheckControlAvatarAnimation(tree));
@@ -1766,6 +1767,30 @@ public static partial class SelfTest
     /// answer. The failure it exists for does not throw and does not log: a robot that is built
     /// perfectly well and lies on its side.</para>
     /// </summary>
+    /// <summary>
+    /// BUG-AVATAR-10: an animated object worn on an avatar leaves the wearer's skeleton alone, and an
+    /// ordinary rigged mesh gives its joint overrides back when it is taken off.
+    /// </summary>
+    private static Check CheckWornJointOverrides(SceneTree tree)
+    {
+        const string Name = "worn joint overrides";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestWornJointOverrides();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
     private static Check CheckControlAvatar(SceneTree tree)
     {
         const string Name = "control avatar (animesh)";

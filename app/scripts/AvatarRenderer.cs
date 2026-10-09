@@ -49,20 +49,27 @@ public partial class AvatarRenderer : Node3D
         // Set by a retry of a set that did not fully arrive; the next request for the set carries it on.
         public int PendingAnimationRetry { get; set; }
         public byte[]? LastAppliedVisualParams { get; set; }
-        // Joint-position overrides harvested from worn rigged meshes (viewer:
-        // LLVOAvatar::addAttachmentOverridesForObject). Keyed by bone name; value is the
-        // overridden LOCAL joint position in SL space (relative to the parent joint).
-        // ApplyShape re-applies these after rebuilding rests so they survive shape updates.
-        public Dictionary<string, System.Numerics.Vector3> JointPosOverrides { get; } = new();
+        // Joint-position overrides and scale locks harvested from worn rigged meshes (viewer:
+        // LLVOAvatar::addAttachmentOverridesForObject), kept PER MESH (BUG-AVATAR-10) so taking a
+        // mesh off takes its share back -- see SLNG.Core.JointOverrideSet, which also holds the
+        // viewer's "greatest mesh id wins a joint" rule and the left/right mirror.
+        public JointOverrideSet JointOverrides { get; } = new();
+        // The EFFECTIVE joint-position overrides: bone name -> overridden LOCAL joint position in
+        // SL space (relative to the parent joint). ApplyShape re-applies these after rebuilding
+        // rests so they survive shape updates.
+        public IReadOnlyDictionary<string, System.Numerics.Vector3> JointPosOverrides => JointOverrides.Positions;
         // Bones whose SCALE a worn rigged mesh has pinned to the skeleton's default, because its
         // skin section sets lock_scale_if_joint_position (viewer: LLVOAvatar::
         // addAttachmentOverridesForObject -> LLJoint::addAttachmentScaleOverride, which
         // LLPolySkeletalDistortion::apply's setScale(..., apply_attachment_overrides: true) then
-        // loses to). ApplyShape skips the shape's scale distortion on these — see
-        // SlJointComposer.IsScaleLocked for the full source trail (BUG-AVATAR-07). Populated
-        // alongside JointPosOverrides and, like it, not reverted per-mesh on detach: a re-login or
-        // the next full appearance rebuild re-derives both from whatever is actually worn.
-        public HashSet<string> JointScaleLocks { get; } = new();
+        // loses to). ApplyShape skips the shape's scale distortion on these -- see
+        // SlJointComposer.IsScaleLocked for the full source trail (BUG-AVATAR-07). A lock holds
+        // while any worn mesh still asks for it (lljoint.cpp addAttachmentScaleOverride).
+        public IReadOnlySet<string> JointScaleLocks => JointOverrides.ScaleLocks;
+        // Worn attachment entity -> the mesh id it put into JointOverrides. The overrides are keyed
+        // by MESH, like the viewer's, so two attachments of one mesh share an entry; this is what
+        // lets a detach tell whether another worn item still stands behind it (BUG-AVATAR-10).
+        public Dictionary<Guid, Guid> OverrideContributors { get; } = new();
         // Per-mesh pelvis Z fixups harvested from worn rigged meshes' skin data (viewer:
         // LLAvatarAppearance::addPelvisFixup / LLVector3OverrideMap, indra/llappearance/
         // llavatarappearance.cpp + indra/llcharacter/lljoint.{h,cpp}). Keyed by the contributing
@@ -665,15 +672,21 @@ public partial class AvatarRenderer : Node3D
         // removePelvisFixup(mesh_id)). The owner has to come from _attachmentMeshIds, captured
         // at attach time, because the entity itself is already gone from the World by the time
         // this deferred call runs.
+        _loggedAnimeshState.Remove(entityId);
         if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
             && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
         {
-            ownerVisual.PelvisFixups.Remove(removedMeshInfo.MeshId);
             // M4-7: a detached BoM mesh body/head must un-hide the system part it was covering.
             // QueueFree above is deferred, so drop the entry by reference here — RecomputeMesh-
             // Visibility's IsInstanceValid sweep would still see it live this frame.
             if (removedRigged != null) ownerVisual.BomAttachments.RemoveAll(e => e.Mi == removedRigged);
             RecomputeMeshVisibility(ownerVisual);
+            // BUG-AVATAR-10: and the joint overrides and pelvis fixup it put on the avatar go with it
+            // (viewer parity: removeAttachmentOverridesForObject). The same deferral applies -- the
+            // node is not free yet, so it comes out of the visual's rigged list first, or the rebind
+            // would skin a mesh that is about to disappear.
+            if (removedRigged != null) ownerVisual.RiggedAttachments.RemoveAll(r => r.Mi == removedRigged);
+            ReleaseWornJointOverrides(ownerVisual, entityId);
         }
         _attachmentMeshIds.Remove(entityId);
         if (_hudNodes.TryGetValue(entityId, out var hudNode))
@@ -1749,7 +1762,7 @@ public partial class AvatarRenderer : Node3D
     /// ComputeSlAccurateGlobalRest / BuildRiggedMeshInstance / BuildPartResources.</summary>
     private void ApplyShape(AvatarVisual visual, Skeleton3D skeleton, AvatarSkeleton avatarSkeleton,
         Dictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions,
-        Dictionary<string, System.Numerics.Vector3>? posOverrides = null)
+        IReadOnlyDictionary<string, System.Numerics.Vector3>? posOverrides = null)
     {
         visual.BoneOwnScale.Clear();
 
@@ -2038,6 +2051,14 @@ public partial class AvatarRenderer : Node3D
         if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual)) return;
         if (avatarVisual.Skeleton == null) return;
 
+        // BUG-AVATAR-10: the object's root may turn out to be an animated mesh only after its
+        // overrides went in (the flag arrives with the root, which can be after a child's rig). The
+        // viewer keeps those off the wearer, so they come back off here.
+        if (_world != null && avatarVisual.OverrideContributors.ContainsKey(entityId)
+            && AnimatedMeshLinkset.IsAnimatedAttachment(_world, entity, out _))
+            ReleaseWornJointOverrides(avatarVisual, entityId);
+        if (Diagnostics.Enabled) LogAttachmentAnimeshState(entityId, avatarVisual, entity);
+
         var defaultFace = isMeshAttachment
             ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
             : default;
@@ -2117,19 +2138,20 @@ public partial class AvatarRenderer : Node3D
         }
         boneAttach.AddChild(pointNode);
         
-        // Clear previous rigged attachment visuals
-        if (_riggedAttachments.TryGetValue(entityId, out var oldRigged))
-        {
-            oldRigged.QueueFree();
-            _riggedAttachments.Remove(entityId);
-        }
+        // Clear previous rigged attachment visuals. DiscardRiggedAttachment also takes the node out
+        // of the visual's own list: the joint-override release below rebinds every mesh on it.
+        DiscardRiggedAttachment(entityId, avatarVisual);
         ClearRiggedPickBodies(entityId);
         // Same item being re-rezzed with a NEW mesh id at this attachment point (e.g. an
         // applier swapping mesh assets, not just face textures): the OLD mesh's pelvis fixup
         // must go too, or a removed/replaced fitted item leaves the avatar's height shifted
-        // forever (viewer parity: removeAttachmentOverridesForObject on detach).
-        if (_attachmentMeshIds.TryGetValue(entityId, out var priorMeshInfo))
-            avatarVisual.PelvisFixups.Remove(priorMeshInfo.MeshId);
+        // forever (viewer parity: removeAttachmentOverridesForObject on detach) -- and with it
+        // its joint overrides and scale locks (BUG-AVATAR-10). The SAME mesh again (another detail
+        // level, new face textures) keeps them all: it is the identical asset, so the new rig sets
+        // identical values and the skeleton need not be rebuilt twice.
+        if (_attachmentMeshIds.TryGetValue(entityId, out var priorMeshInfo)
+            && (!isMeshAttachment || priorMeshInfo.MeshId != prim!.MeshId))
+            ReleaseWornJointOverrides(avatarVisual, entityId);
 
         // Kick off mesh/texture load for mesh attachments.
         if (prim != null)
@@ -2933,9 +2955,9 @@ public partial class AvatarRenderer : Node3D
 
         // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
         // Apply its joint-position overrides to the skeleton BEFORE binding, like the
-        // viewer does, so invBind·jointWorld cancels at the intended pose.
-        MainThreadWorkQueue.Measure("avatar.rig.jointpos",
-            () => ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin!, req.MeshId));
+        // viewer does, so invBind·jointWorld cancels at the intended pose. Not when it is an
+        // animated object's mesh: those belong to the object's own skeleton (BUG-AVATAR-10).
+        MainThreadWorkQueue.Measure("avatar.rig.jointpos", () => ApplyWornJointOverrides(entityId, req));
         Skin? skin = null;
         int[] slotForJoint = System.Array.Empty<int>();
         MainThreadWorkQueue.Measure("avatar.rig.bind",
@@ -4086,10 +4108,12 @@ public partial class AvatarRenderer : Node3D
         if (_attachmentMeshIds.TryGetValue(entityId, out var hudMovedMeshInfo)
             && _visuals.TryGetValue(hudMovedMeshInfo.AvatarEntityId, out var hudOwnerVisual))
         {
-            hudOwnerVisual.PelvisFixups.Remove(hudMovedMeshInfo.MeshId);
             // M4-7: same as detach — a mesh moved onto a HUD point no longer hides the body.
             if (hudMovedRigged != null) hudOwnerVisual.BomAttachments.RemoveAll(e => e.Mi == hudMovedRigged);
             RecomputeMeshVisibility(hudOwnerVisual);
+            // BUG-AVATAR-10: nor does it keep shaping the skeleton it left (overrides, locks, fixup).
+            if (hudMovedRigged != null) hudOwnerVisual.RiggedAttachments.RemoveAll(r => r.Mi == hudMovedRigged);
+            ReleaseWornJointOverrides(hudOwnerVisual, entityId);
         }
         _attachmentMeshIds.Remove(entityId);
 
@@ -4484,39 +4508,36 @@ public partial class AvatarRenderer : Node3D
                      (alt.Length != jointCount ? "  -- SKIPPED: altBinds != joints, no overrides applied" : ""));
         }
 
+        // BUG-AVATAR-10: what this mesh contributes is collected here and handed to
+        // visual.JointOverrides in ONE call at the end (replacing anything the same mesh put there
+        // before), so the overrides are the mesh's own and can be taken back when it is.
+        var overrides = visual.JointOverrides;
+        var meshLocks = new HashSet<string>();
+        var meshPositions = new Dictionary<string, System.Numerics.Vector3>();
+
         // Scale-Lock detection:
         // Meshes declaring LockScaleIfJointPosition: lock all joints influenced by the mesh
         // to skeleton default scale, discarding shape slider distortions for those joints
         // (viewer parity: llvoavatar.cpp:6812-6817).
-        int locked = 0;
         if (skinData.LockScaleIfJointPosition)
         {
             foreach (var n in skinData.JointNames)
-            {
-                string resolved = _avatarSkeleton?.ResolveBoneName(n) ?? n;
-                if (visual.JointScaleLocks.Add(resolved)) locked++;
-            }
+                meshLocks.Add(_avatarSkeleton?.ResolveBoneName(n) ?? n);
         }
+        // Joints this mesh pins that no mesh pinned before: what the log lines below report.
+        int locked = 0;
+        foreach (var joint in meshLocks)
+            if (!overrides.ScaleLocks.Contains(joint)) locked++;
 
         // Viewer rule: overrides only count when EVERY joint has one (bindCnt == jointCnt).
         if (alt == null || alt.Length != jointCount)
         {
-            if (locked > 0)
+            if (overrides.Apply(meshId, meshPositions, meshLocks))
             {
                 // BUG-PERF-08: the five parts of the refresh are labelled apart (avatar.jointpos.*, nested
                 // inside avatar.rig.jointpos) because the rig item's jointpos peaked at 32 ms in-world
                 // (Amrum, v0.26.116) without saying which of them it was.
-                MainThreadWorkQueue.Measure("avatar.jointpos.shape", () =>
-                {
-                    if (_avatarSkeleton != null)
-                    {
-                        ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
-                    }
-                    skeleton.ResetBonePoses();
-                });
-                MainThreadWorkQueue.Measure("avatar.jointpos.reskin", () => RebuildRiggedAttachmentSkins(visual));
-                MainThreadWorkQueue.Measure("avatar.jointpos.bodyparts", () => RefreshBodyPartSkins(visual));
-                MainThreadWorkQueue.Measure("avatar.jointpos.static", () => RefreshStaticAttachmentOffsets(visual));
+                RebuildSkeletonAfterJointChange(visual, skeleton);
 
                 if (!visual.IsControlAvatar || Diagnostics.Enabled)
                     GD.Print($"[ScaleLock] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: " +
@@ -4524,21 +4545,12 @@ public partial class AvatarRenderer : Node3D
                              $"(lock_scale: {skinData.LockScaleIfJointPosition}) — " +
                              $"total scale-locked joints: {visual.JointScaleLocks.Count}");
 
-                MainThreadWorkQueue.Measure("avatar.jointpos.foot", () =>
-                {
-                    RecomputeFootOffset(visual, visual.LastDistortions);
-                    LogAvatarHeight(visual, "scale lock");
-                });
+                RefreshFootAfterJointChange(visual, "scale lock");
             }
             return;
         }
 
         int applied = 0;
-        // True only when this mesh actually MOVED the skeleton (a new/different position override,
-        // or a newly locked joint scale). A worn outfit hands the same overrides in again mesh
-        // after mesh; re-applying the shape and rebuilding every bind for each of those is pure
-        // waste, and skipping it keeps the refresh below affordable.
-        bool skeletonChanged = (locked > 0);
         float maxDelta = 0f;
         for (int j = 0; j < jointCount; j++)
         {
@@ -4567,11 +4579,7 @@ public partial class AvatarRenderer : Node3D
             // joint having passed the position threshold, which mPelvis can and does. The lock is
             // a property of the JOINT, so a mesh BODY declaring it also freezes the scale a
             // separately-worn mesh HEAD renders at (BUG-AVATAR-07).
-            if (skinData.LockScaleIfJointPosition && visual.JointScaleLocks.Add(boneName))
-            {
-                locked++;
-                skeletonChanged = true;
-            }
+            if (skinData.LockScaleIfJointPosition) meshLocks.Add(boneName);
 
             // The skeleton ROOT (mPelvis — the one bone with no ParentName, see
             // avatar_skeleton.xml) is excluded here, even though the real viewer's
@@ -4619,82 +4627,28 @@ public partial class AvatarRenderer : Node3D
                 continue;
             }
 
-            if (!visual.JointPosOverrides.TryGetValue(boneName, out var prevPos) || prevPos != slPos)
-                skeletonChanged = true;
-            visual.JointPosOverrides[boneName] = slPos;
+            meshPositions[boneName] = slPos;
             applied++;
             if (delta > maxDelta) maxDelta = delta;
         }
 
-        // Viewer parity (LLVOAvatar::applyAttachmentOverrides): 
-        // Worn meshes often only provide joint overrides for one side (e.g. mFootLeft).
-        // The viewer implicitly mirrors them to the other side (mFootRight) by negating the Y axis
-        // (which is the left/right axis in SL local bone space).
-        var toAdd = new Dictionary<string, System.Numerics.Vector3>();
-        var toLock = new List<string>();
-        foreach (var kvp in visual.JointPosOverrides)
-        {
-            string name = kvp.Key;
-            var pos = kvp.Value;
-            
-            if (name.EndsWith("Left"))
-            {
-                string rightName = name.Substring(0, name.Length - 4) + "Right";
-                if (!visual.JointPosOverrides.ContainsKey(rightName))
-                {
-                    toAdd[rightName] = new System.Numerics.Vector3(pos.X, -pos.Y, pos.Z);
-                    if (visual.JointScaleLocks.Contains(name)) toLock.Add(rightName);
-                }
-            }
-            else if (name.EndsWith("Right"))
-            {
-                string leftName = name.Substring(0, name.Length - 5) + "Left";
-                if (!visual.JointPosOverrides.ContainsKey(leftName))
-                {
-                    toAdd[leftName] = new System.Numerics.Vector3(pos.X, -pos.Y, pos.Z);
-                    if (visual.JointScaleLocks.Contains(name)) toLock.Add(leftName);
-                }
-            }
-        }
-        
-        foreach (var kvp in toAdd)
-        {
-            visual.JointPosOverrides[kvp.Key] = kvp.Value;
-            skeletonChanged = true;
-            // Don't increment applied count for implicitly added bones so logging remains accurate to the asset
-        }
-        // The mirrored sibling inherits the lock too — its position override is synthetic, so
-        // leaving its scale slider-driven while the real side is frozen would make the two
-        // asymmetric, which is the one thing the mirroring exists to prevent.
-        foreach (var boneName in toLock)
-            if (visual.JointScaleLocks.Add(boneName)) skeletonChanged = true;
+        // Viewer parity (LLVOAvatar::applyAttachmentOverrides): a mesh that overrides only one side
+        // of a left/right pair (e.g. mFootLeft) is applied to the other side too, mirrored on Y --
+        // JointOverrideSet does that when it builds the effective view, so the mirror leaves with
+        // the mesh that caused it.
+        //
+        // True only when this mesh actually MOVED the skeleton (a new/different position override,
+        // or a newly locked joint scale). A worn outfit hands the same overrides in again mesh
+        // after mesh; re-applying the shape and rebuilding every bind for each of those is pure
+        // waste, and skipping it keeps the refresh below affordable.
+        bool skeletonChanged = overrides.Apply(meshId, meshPositions, meshLocks);
 
         if (skeletonChanged)
         {
             // BUG-PERF-08: labelled apart, see the scale-lock branch above.
-            MainThreadWorkQueue.Measure("avatar.jointpos.shape", () =>
-            {
-                if (_avatarSkeleton != null)
-                {
-                    ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
-                }
-                skeleton.ResetBonePoses();
-            });
-
-            // ApplyShape just rewrote every bone's rest AND visual.BoneOwnScale — and a skinning
-            // bind BAKES that scale in (see InjectOwnScale). Every mesh already bound therefore
-            // still renders at the PREVIOUS skeleton, which is why this used to look like "the
-            // change had no effect at all": the stale bind carries the old scale, so the result is
-            // pixel-identical rather than merely approximate. The shape-change path has always
-            // refreshed both (RebuildRiggedAttachmentSkins + RebuildBodyMorphs' skin eviction);
-            // this path mutates exactly the same state and must do the same. Order matters for a
-            // worn mesh BODY declaring lock_scale_if_joint_position: it loads after the mesh HEAD
-            // as often as not, and it is the body's flag that frees the head's mHead scale
-            // (BUG-AVATAR-07). The mesh being bound by THIS call isn't in RiggedAttachments yet,
-            // so it picks the new values up on its own, a few lines later.
-            MainThreadWorkQueue.Measure("avatar.jointpos.reskin", () => RebuildRiggedAttachmentSkins(visual));
-            MainThreadWorkQueue.Measure("avatar.jointpos.bodyparts", () => RefreshBodyPartSkins(visual));
-            MainThreadWorkQueue.Measure("avatar.jointpos.static", () => RefreshStaticAttachmentOffsets(visual));
+            // The mesh being bound by THIS call isn't in RiggedAttachments yet, so it picks the new
+            // values up on its own, a few lines later.
+            RebuildSkeletonAfterJointChange(visual, skeleton);
 
             // Ungated, unlike the per-mesh detail below: this fires at most a couple of times per
             // login (only a mesh that declares the flag AND contributes NEW locks reaches it) and
@@ -4707,14 +4661,7 @@ public partial class AvatarRenderer : Node3D
             if (Diagnostics.Enabled) GD.Print($"[JointOverride] mesh {meshId}: {applied}/{jointCount} joint positions overridden (max shift {maxDelta:0.###} m)" +
                      (skinData.LockScaleIfJointPosition ? $", {locked} joint scale(s) locked to skeleton default (lock_scale_if_joint_position)" : ""));
 
-            // A fitted mesh can override leg/spine joints (e.g. an alternate-bind mesh body/legs)
-            // that move mFootLeft — refresh the measured foot offset now rather than waiting for
-            // the next shape change. See RecomputeFootOffset's doc comment.
-            MainThreadWorkQueue.Measure("avatar.jointpos.foot", () =>
-            {
-                RecomputeFootOffset(visual, visual.LastDistortions);
-                LogAvatarHeight(visual, "joint override");
-            });
+            RefreshFootAfterJointChange(visual, "joint override");
         }
         // Viewer parity: LLAvatarAppearance::addPelvisFixup (indra/llappearance/
         // llavatarappearance.cpp) — this offset does NOT move the mPelvis joint's local
@@ -4736,6 +4683,155 @@ public partial class AvatarRenderer : Node3D
             // symmetrical with "removed" cleanup rather than leaving a stale zero-ish entry.
             visual.PelvisFixups.Remove(meshId);
         }
+    }
+
+    /// <summary>BUG-AVATAR-10: the worn path's joint overrides for one rigged attachment -- and the
+    /// decision NOT to apply them when the attachment is an animated object.</summary>
+    /// <remarks>
+    /// <para><b>An animesh pet shapes its own skeleton, not its wearer's.</b> The reference viewer
+    /// leaves an attached animated object out of the wearer's override rebuild
+    /// (<c>LLVOAvatar::rebuildAttachmentOverrides</c>, llvoavatar.cpp:6573-6575: "Attached animated
+    /// objects affect joints in their control avs, not the avs to which they are attached") and out
+    /// of the update on attach and detach (llvoavatar.cpp:7607 and the matching
+    /// <c>detachObject</c> branch). Applying them here is not a cosmetic slip: the dragon pet a
+    /// resident held carries 84 joint overrides forming a 0.35 m creature skeleton (pelvis 0.145 m,
+    /// knees 5 cm below the hips, scale-locked), and applying those to HER skeleton folded her into
+    /// it -- head on top of her shoes -- until a relog. That covers everything the overrides carry:
+    /// positions, scale locks and the pelvis fixup.</para>
+    ///
+    /// <para>The decision is made when the rig is committed, not when it was requested: the
+    /// answer is the root prim's flag, read from the live world, and a mesh takes seconds to
+    /// arrive. An attachment that turns out animated after its overrides went in (the root's flag
+    /// arriving late) hands them back the next time it is re-rigged or updated. The mesh is still
+    /// skinned to the wearer's skeleton either way -- giving the pet a control avatar of its own is
+    /// the follow-up (docs/specs/BUG-AVATAR-10).</para>
+    /// </remarks>
+    private void ApplyWornJointOverrides(Guid entityId, PendingRig req)
+    {
+        var visual = req.Visual;
+        var skin = req.MeshData.Skin!;
+        var entity = _world?.GetEntity(entityId);
+
+        Entity? root = null;
+        bool animated = entity != null && _world != null
+                        && AnimatedMeshLinkset.IsAnimatedAttachment(_world, entity, out root);
+        if (Diagnostics.Enabled)
+            LogAttachmentAnimeshState(entityId, visual, req.MeshId, root, animated, overridesSkipped: animated);
+
+        if (animated)
+        {
+            ReleaseWornJointOverrides(visual, entityId);
+            return;
+        }
+
+        ApplyJointPositionOverrides(visual, req.Skeleton, skin, req.MeshId);
+        visual.OverrideContributors[entityId] = req.MeshId;
+    }
+
+    // attachment entity -> the animated-mesh answer (and whether the overrides were withheld) last
+    // logged for it (--diag only), so a line appears once per attachment and again only when
+    // either changes -- the rig commit adds the "withheld" half to what the update already said.
+    private readonly Dictionary<Guid, (bool Animated, bool Skipped)> _loggedAnimeshState = new();
+
+    /// <summary>BUG-AVATAR-10, --diag: whether the linkset ROOT of a worn attachment carries the
+    /// animated-mesh flag, and which object that root is. The root id is the SL object UUID, so it
+    /// is the same eight characters an <c>[ObjectAnimation] object=</c> line prints -- which is how
+    /// a stream of those is matched to the thing being worn.</summary>
+    private void LogAttachmentAnimeshState(Guid entityId, AvatarVisual visual, Guid meshId, Entity? root,
+        bool animated, bool overridesSkipped)
+    {
+        if (_loggedAnimeshState.TryGetValue(entityId, out var logged) && logged == (animated, overridesSkipped)) return;
+        _loggedAnimeshState[entityId] = (animated, overridesSkipped);
+
+        string Short(Guid id) => id == Guid.Empty ? "--------" : id.ToString("N")[..8];
+        Guid rootObject = root?.GetComponent<MetadataComponent>()?.Id ?? Guid.Empty;
+        Guid ownObject = _world?.GetEntity(entityId)?.GetComponent<MetadataComponent>()?.Id ?? Guid.Empty;
+        GD.Print($"[AttachAnimesh] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} " +
+                 $"attachment={Short(ownObject)} mesh={Short(meshId)} " +
+                 $"root={(root == null ? "unresolved" : Short(rootObject))} animatedRoot={animated}" +
+                 (overridesSkipped ? " -- joint overrides NOT applied to the wearer (they belong to the object's own skeleton)" : ""));
+    }
+
+    /// <summary>BUG-AVATAR-10, --diag: the same answer for an attachment that is not being rigged (a
+    /// plain prim, a static mesh), so every worn object reports once -- an animesh root is often not
+    /// the rigged part.</summary>
+    private void LogAttachmentAnimeshState(Guid entityId, AvatarVisual visual, Entity entity)
+    {
+        if (_world == null) return;
+        bool animated = AnimatedMeshLinkset.IsAnimatedAttachment(_world, entity, out var root);
+        var meshId = entity.GetComponent<PrimitiveComponent>()?.MeshId ?? Guid.Empty;
+        LogAttachmentAnimeshState(entityId, visual, meshId, root, animated, overridesSkipped: false);
+    }
+
+    /// <summary>BUG-AVATAR-10: takes back the joint overrides, scale locks and pelvis fixup the mesh
+    /// worn as <paramref name="attachmentId"/> put on <paramref name="visual"/>, and rebuilds the
+    /// skeleton and everything skinned to it -- the viewer's
+    /// <c>removeAttachmentOverridesForObject</c> (llvoavatar.cpp:6996), run on detach.</summary>
+    /// <remarks>
+    /// Until this existed nothing ever took an override back: a pet or a mesh body that was taken
+    /// off left the avatar deformed until a relog. The overrides are the MESH's, so another worn
+    /// item of the same mesh keeps them. Nothing happens when the overrides were not applied (an
+    /// animesh pet, a mesh that never carried any) or when removing them moves no joint (a mesh
+    /// whose every joint another mesh with a greater id wins).
+    /// </remarks>
+    private void ReleaseWornJointOverrides(AvatarVisual visual, Guid attachmentId)
+    {
+        if (!visual.OverrideContributors.Remove(attachmentId, out var meshId)) return;
+        if (visual.OverrideContributors.ContainsValue(meshId)) return;
+        visual.PelvisFixups.Remove(meshId);
+        if (!visual.JointOverrides.Remove(meshId)) return;
+
+        var skeleton = visual.Skeleton;
+        if (skeleton == null || !IsInstanceValid(skeleton)) return;
+
+        RebuildSkeletonAfterJointChange(visual, skeleton);
+        if (!visual.IsControlAvatar || Diagnostics.Enabled)
+            GD.Print($"[JointOverride] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])} mesh {meshId}: taken off -- " +
+                     $"its joint overrides are gone, {visual.JointPosOverrides.Count} joint position(s) and " +
+                     $"{visual.JointScaleLocks.Count} scale lock(s) remain");
+        RefreshFootAfterJointChange(visual, "joint override removed");
+    }
+
+    /// <summary>Re-applies the shape over <paramref name="visual"/>'s CURRENT joint overrides and
+    /// rebinds everything skinned to the skeleton. The one sequence behind every change to
+    /// <see cref="AvatarVisual.JointOverrides"/> -- a mesh adding its overrides and, since
+    /// BUG-AVATAR-10, a mesh taking them back.</summary>
+    /// <remarks>
+    /// ApplyShape just rewrote every bone's rest AND visual.BoneOwnScale -- and a skinning bind
+    /// BAKES that scale in (see InjectOwnScale). Every mesh already bound therefore still renders at
+    /// the PREVIOUS skeleton, which is why this used to look like "the change had no effect at all":
+    /// the stale bind carries the old scale, so the result is pixel-identical rather than merely
+    /// approximate. The shape-change path has always refreshed both (RebuildRiggedAttachmentSkins +
+    /// RebuildBodyMorphs' skin eviction); this path mutates exactly the same state and must do the
+    /// same. Order matters for a worn mesh BODY declaring lock_scale_if_joint_position: it loads
+    /// after the mesh HEAD as often as not, and it is the body's flag that frees the head's mHead
+    /// scale (BUG-AVATAR-07).
+    /// </remarks>
+    private void RebuildSkeletonAfterJointChange(AvatarVisual visual, Skeleton3D skeleton)
+    {
+        MainThreadWorkQueue.Measure("avatar.jointpos.shape", () =>
+        {
+            if (_avatarSkeleton != null)
+            {
+                ApplyShape(visual, skeleton, _avatarSkeleton, visual.LastDistortions, visual.JointPosOverrides);
+            }
+            skeleton.ResetBonePoses();
+        });
+        MainThreadWorkQueue.Measure("avatar.jointpos.reskin", () => RebuildRiggedAttachmentSkins(visual));
+        MainThreadWorkQueue.Measure("avatar.jointpos.bodyparts", () => RefreshBodyPartSkins(visual));
+        MainThreadWorkQueue.Measure("avatar.jointpos.static", () => RefreshStaticAttachmentOffsets(visual));
+    }
+
+    /// <summary>A fitted mesh can override leg/spine joints (e.g. an alternate-bind mesh body/legs)
+    /// that move mFootLeft -- refresh the measured foot offset now rather than waiting for the next
+    /// shape change. See RecomputeFootOffset's doc comment.</summary>
+    private void RefreshFootAfterJointChange(AvatarVisual visual, string reason)
+    {
+        MainThreadWorkQueue.Measure("avatar.jointpos.foot", () =>
+        {
+            RecomputeFootOffset(visual, visual.LastDistortions);
+            LogAvatarHeight(visual, reason);
+        });
     }
 
     /// <summary>Refreshes the position of static attachment points (e.g. hair, hats) when
