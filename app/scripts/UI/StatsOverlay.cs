@@ -274,6 +274,9 @@ public partial class StatsOverlay : PanelContainer
     /// <summary>One perf line: always into the flushed sidecar next to godot.log, and into
     /// godot.log itself only under --diag. Shared by every caller so the two destinations cannot
     /// drift apart.</summary>
+    /// <summary>BUG-PERF-10: asked for once per report; returns a ready [WorldDrain] line or null.</summary>
+    internal static System.Func<string?>? WorldDrainReport;
+
     internal static void EmitPerfLine(string line)
     {
         PerfSidecar.Write(line);
@@ -319,6 +322,9 @@ public partial class StatsOverlay : PanelContainer
                               .Select(kv => $"{kv.Key}={kv.Value / _secondsSinceLog:F1}");
             EmitPerfLine($"[PhaseCost] ms per second of wall clock: {string.Join(" ", parts)}");
         }
+
+        // BUG-PERF-10: what the world-drain phase was spent on, by kind of event (Boot sets this).
+        if (WorldDrainReport?.Invoke() is { } drain) EmitPerfLine(drain);
 
         _worstSinceLog = 0;
         _hitchesSinceLog = 0;

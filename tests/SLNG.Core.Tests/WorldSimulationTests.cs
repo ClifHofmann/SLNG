@@ -1170,4 +1170,55 @@ public class WorldSimulationTests
         Assert.Equal(PrimSaleType.NotForSale, meta.SaleType);
         Assert.Equal(0, meta.SalePrice);
     }
+
+    // BUG-PERF-10. A region streaming in is thousands of objects the world has never seen. Each one used to
+    // make ApplyObjectUpdate look at EVERY entity already in the world (a fallback for attachments kept
+    // across a teleport), so draining N objects cost N^2/2 entity visits: 53,000 cached objects across five
+    // regions held the main thread for ~550 ms of every second. The cost has to stay linear.
+    [Fact]
+    public void Streaming_in_new_objects_does_not_visit_every_entity_per_object()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        const int Count = 30_000;
+        for (uint i = 1; i <= Count; i++)
+        {
+            session.RaiseObjectUpdate(new ObjectUpdateEvent(
+                7ul, i, new Vector3(i % 256, i / 256 % 256, 20), Quaternion.Identity, Vector3.One,
+                1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One,
+                ParentLocalId: 0, AttachmentPoint: 0, ObjectId: Guid.NewGuid()));
+        }
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        simulation.Pump();
+        clock.Stop();
+
+        Assert.Equal(Count, world.EntityCount);
+        // ~0.2 s when linear; ~10 s with the per-object world scan. The bound is wide on purpose.
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(3), $"draining {Count} new objects took {clock.Elapsed.TotalSeconds:F1} s");
+    }
+
+    [Fact]
+    public void The_drain_report_counts_what_was_drained_and_starts_over()
+    {
+        var world = new World();
+        using var session = new GridSession();
+        using var simulation = new WorldSimulation(world, session);
+
+        Assert.Null(simulation.TakeDrainReport());
+
+        for (uint i = 1; i <= 3; i++)
+            session.RaiseObjectUpdate(new ObjectUpdateEvent(
+                7ul, i, Vector3.Zero, Quaternion.Identity, Vector3.One,
+                1, false, Guid.Empty, Guid.Empty, Guid.Empty, Vector4.One, ParentLocalId: 0, AttachmentPoint: 0));
+        simulation.Pump();
+
+        var report = simulation.TakeDrainReport();
+        Assert.NotNull(report);
+        Assert.Contains("entities=3", report);
+        Assert.Contains("ObjectUpdate=n3/", report);
+        Assert.Null(simulation.TakeDrainReport());
+    }
 }
