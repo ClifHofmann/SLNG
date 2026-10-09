@@ -297,8 +297,14 @@ public class World
 
     public IEnumerable<Entity> GetAllEntities()
     {
+        FullScans++;
         return _entities.Values;
     }
+
+    /// <summary>BUG-PERF-10: how many times a caller asked for the whole world to walk over
+    /// (<see cref="GetAllEntities"/>, <see cref="Query{T}"/>). A test seam: the thing that must not grow
+    /// with the number of objects streaming in is this.</summary>
+    internal long FullScans { get; private set; }
 
     /// <summary>
     /// Queries the world for all entities possessing a specific component type.
@@ -314,6 +320,7 @@ public class World
     /// </summary>
     public IEnumerable<Entity> Query<T>() where T : class, IComponent
     {
+        FullScans++;
         return _entities.Values.Where(e => e.HasComponent<T>());
     }
 

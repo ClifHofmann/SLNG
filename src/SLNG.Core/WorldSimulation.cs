@@ -171,6 +171,24 @@ public sealed class WorldSimulation : IDisposable
 
     private long _lastReconCheckTimestamp;
 
+    // BUG-PERF-10: the local agent's entity. Looking it up meant visiting every entity in the world, and
+    // that happened for every update of the local agent (several a second), for every attachment re-keyed
+    // after a teleport, and when a teleport started. The cached entity is only trusted while it is still in
+    // the world and still flagged; otherwise the world is searched again, exactly as before.
+    private Entity? _localAgentCache;
+
+    private Entity? FindLocalAgent()
+    {
+        var cached = _localAgentCache;
+        if (cached != null
+            && cached.GetComponent<AvatarComponent>()?.IsLocalAgent == true
+            && ReferenceEquals(_world.GetEntity(cached.Id), cached))
+            return cached;
+
+        return _localAgentCache = _world.GetAllEntities()
+            .FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+    }
+
     // BUG-PERF-10: what draining the world costs, by kind of event. Counted per Pump call, read by the
     // main thread's perf report.
     private static readonly string[] DrainKinds =
@@ -481,7 +499,7 @@ public sealed class WorldSimulation : IDisposable
             {
                 var att = existing.GetComponent<AttachmentComponent>();
                 var av = existing.GetComponent<AvatarComponent>();
-                var localAgent = _world.GetAllEntities().FirstOrDefault(x => x.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+                var localAgent = FindLocalAgent();
                 bool isSelfAttachment = att != null && (localAgent != null && att.AvatarEntityId == localAgent.Id);
                 if (isSelfAttachment || av?.IsLocalAgent == true)
                 {
@@ -900,7 +918,7 @@ public sealed class WorldSimulation : IDisposable
         if (e.IsLocalAgent)
         {
             // Ensure no other entity is marked as the local agent (e.g. leftover from a previous region after teleport)
-            var oldAgent = _world.GetAllEntities().FirstOrDefault(ent => ent.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+            var oldAgent = FindLocalAgent();
             if (oldAgent != null && (oldAgent.RegionHandle != e.RegionHandle || oldAgent.LocalId != e.LocalId))
             {
                 // FEAT-NET-06: A teleport re-keys the existing self entity to the new region.
@@ -1687,7 +1705,7 @@ public sealed class WorldSimulation : IDisposable
         _updatesSinceReconcileStart = 0;
         _reconfirmedEntityIds.Clear();
 
-        var localAgent = _world.GetAllEntities().FirstOrDefault(x => x.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        var localAgent = FindLocalAgent();
         _initialKeptCount = unconfirmed.Count + (localAgent != null ? 1 : 0);
 
         _keptObjectIds.Clear();
