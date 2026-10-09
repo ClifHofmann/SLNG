@@ -233,6 +233,7 @@ public static partial class SelfTest
         results.Add(CheckInstanceSlotMap());
         results.Add(CheckMeshArrayGuard());
         results.Add(CheckRiggedMeshPreparedOffMainThread()); // BUG-PERF-06
+        results.Add(CheckInvisibleRiggedFacesSkipped()); // BUG-PERF-12
         results.Add(CheckHudMeshPreparedOffMainThread());
         results.Add(CheckStaticMeshPrepared(tree));
         results.Add(CheckUrgentCollisionQueue(tree)); // BUG-PERF-11

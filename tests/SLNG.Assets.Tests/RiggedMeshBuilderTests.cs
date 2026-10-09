@@ -195,6 +195,54 @@ public sealed class RiggedMeshBuilderTests
         Assert.Equal((1, 1), (geo.BadUvs, geo.FirstBadUv));
     }
 
+    [Fact]
+    public void Invisible_submeshes_are_skipped_and_surviving_face_indices_preserved()
+    {
+        var transparentFace = default(FaceTexture) with { TextureId = FaceTexture.TransparentTextureId };
+        var zeroAlphaFace = default(FaceTexture) with { TextureId = Guid.NewGuid(), Color = new Vector4(1f, 1f, 1f, 0f) };
+        var visibleFace0 = default(FaceTexture) with { TextureId = Guid.NewGuid() };
+        var visibleFace2 = default(FaceTexture) with { TextureId = Guid.NewGuid() };
+
+        var sub0 = Triangle(0);
+        var sub1 = Triangle(1);
+        var sub2 = Triangle(2);
+        var sub3 = Triangle(3);
+
+        FaceTexture Resolver(int faceIndex) => faceIndex switch
+        {
+            0 => visibleFace0,
+            1 => transparentFace,
+            2 => visibleFace2,
+            3 => zeroAlphaFace,
+            _ => default,
+        };
+
+        var mesh = new MeshData(new[] { sub0, sub1, sub2, sub3 }, Skin(1));
+        var geo = RiggedMeshBuilder.Build(mesh, new[] { 0 }, Resolver);
+
+        Assert.Equal(2, geo.Surfaces.Count);
+        Assert.Equal(new[] { 0, 2 }, geo.FaceIndices());
+        Assert.Equal(0, geo.Surfaces[0].FaceIndex);
+        Assert.Equal(2, geo.Surfaces[1].FaceIndex);
+    }
+
+    [Fact]
+    public void All_invisible_submeshes_yield_zero_surfaces_and_zero_extent()
+    {
+        var transparentFace = default(FaceTexture) with { TextureId = FaceTexture.TransparentTextureId };
+        var sub0 = Triangle(0);
+        var sub1 = Triangle(1);
+
+        var mesh = new MeshData(new[] { sub0, sub1 }, Skin(1));
+        var geo = RiggedMeshBuilder.Build(mesh, new[] { 0 }, _ => transparentFace);
+
+        Assert.Empty(geo.Surfaces);
+        Assert.Empty(geo.FaceIndices());
+        Assert.Equal(0, geo.TotalVertices);
+        Assert.Equal(Vector3.Zero, geo.BindPoseMin);
+        Assert.Equal(Vector3.Zero, geo.BindPoseMax);
+    }
+
     private static void AssertNear(float expected, float actual) => Assert.InRange(actual, expected - 1e-5f, expected + 1e-5f);
 
     private static void AssertNear(Vector3 expected, Vector3 actual)

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-PERF-12`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `🚧 In Progress`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md) -- follows BUG-PERF-05, BUG-PERF-06, BUG-PERF-08 and BUG-PERF-11
 
@@ -100,9 +100,9 @@ and `tests/SLNG.Assets.Tests`.
 
 ## Sub-tasks / Progress
 
-- [ ] Counters first: rigs with a normal map, faces hidden at request time, per-avatar skinned mesh count (`[AvatarCost]`)
-- [ ] Measure 1 (skip invisible submeshes) on the Millenium / crowded-place data above
-- [ ] Measure 2 (nearest avatar first)
+- [x] Counters first: rigs with a normal map, faces hidden at request time, per-avatar skinned mesh count (`[AvatarCost]`)
+- [x] Measure 1 (skip invisible submeshes)
+- [x] Measure 2 (nearest avatar first)
 - [ ] Measure 3 (tangents) -- only if the counter says it pays
 - [ ] Measure 4 (pose rate) -- only if rest fps is still below 40
 - [ ] In-world check by the owner, numbers back into the ROADMAP row

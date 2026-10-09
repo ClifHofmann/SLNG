@@ -95,4 +95,11 @@ public readonly record struct FaceTexture(
 
     /// <summary>True when this face wants the planar projection rather than the mesh UVs.</summary>
     public bool IsPlanar => TexGen == TexGenPlanar;
+
+    /// <summary>The well-known Second Life transparent texture UUID.</summary>
+    public static readonly Guid TransparentTextureId = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
+
+    /// <summary>True when this face will draw nothing (transparent texture or color alpha &lt;= 0.001).</summary>
+    public bool IsInvisible =>
+        TextureId == TransparentTextureId || (Color != default && Color.W <= 0.001f);
 }

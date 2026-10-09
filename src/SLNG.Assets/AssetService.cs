@@ -19,7 +19,7 @@ namespace SLNG.Assets;
 /// </summary>
 public class AssetService
 {
-    private static readonly Guid TextureTransparentId = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
+    private static readonly Guid TextureTransparentId = FaceTexture.TransparentTextureId;
     private static readonly Guid TextureWhiteId = new("5748decc-f629-461c-9a36-a35a221fe21f");
     private static readonly TextureData TextureTransparentData = new(1, 1, new byte[] { 0, 0, 0, 0 });
     private static readonly TextureData TextureWhiteData = new(1, 1, new byte[] { 255, 255, 255, 255 });

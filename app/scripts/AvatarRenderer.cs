@@ -36,6 +36,10 @@ public partial class AvatarRenderer : Node3D
         public float LastRootY { get; set; } = float.NaN;
         public float LastLoggedRootY { get; set; } = float.NaN;
         public double LastHeightLogTime { get; set; }
+        // BUG-PERF-12: managed copies of Root position and visibility so rig workers can evaluate
+        // distance/priority without touching Godot interop.
+        public Godot.Vector3 GodotPos { get; set; }
+        public bool Shown { get; set; } = true;
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         // Base (un-morphed) body-part data, keyed by part name. Kept so the body meshes can be
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
@@ -242,6 +246,7 @@ public partial class AvatarRenderer : Node3D
     /// thread.</para>
     /// </remarks>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, PendingRig> _pendingRigs = new();
+    private Godot.Vector3 _lastCamPos = Godot.Vector3.Zero;
 
     /// <param name="Definition">The skeleton definition the node was built from: what the worker
     /// resolves the mesh's joint names against, since it must not touch the node itself.</param>
@@ -1297,6 +1302,7 @@ public partial class AvatarRenderer : Node3D
             // (seated: HoverOffsetZ is already folded into rootPos.Y above, per llvoavatar.cpp:4729)
 
             visual.Root.Position = rootPos;
+            visual.GodotPos = rootPos;
 
             // A world-Z readout is only useful where the avatar actually IS, and a shape apply
             // happens once at login — so re-report it whenever the self avatar has SETTLED at a
@@ -2931,6 +2937,18 @@ public partial class AvatarRenderer : Node3D
         // 22,500 draw calls, 38M triangles, 9.5 GB VRAM.
         MainThreadWorkQueue.Measure("avatar.rig.discard", () => DiscardRiggedAttachment(entityId, req.Visual));
 
+        if (ready.Mesh.SurfaceArrays.Length == 0)
+        {
+            // BUG-PERF-12: all surfaces are invisible; previous attachment discarded and
+            // any joint-position overrides applied, but no Skin, ArrayMesh or scene node needed.
+            if (req.MeshData.Skin != null)
+            {
+                MainThreadWorkQueue.Measure("avatar.rig.jointpos",
+                    () => ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin, req.MeshId));
+            }
+            return;
+        }
+
         // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
         // Apply its joint-position overrides to the skeleton BEFORE binding, like the
         // viewer does, so invBind·jointWorld cancels at the intended pose.
@@ -3294,8 +3312,7 @@ public partial class AvatarRenderer : Node3D
         FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
         PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
     {
-        if (ft.TextureId == new Guid("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903")
-            || (ft.Color != default && ft.Color.W <= 0.001f))
+        if (ft.IsInvisible)
         {
             return new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
         }
@@ -5939,6 +5956,7 @@ void fragment() {
 
         int avatars = 0, shown = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0, boundBinds = 0;
         int surfaces = 0, hiddenSurfaces = 0;
+        int maxSkinned = 0;
         foreach (var visual in _visuals.Values)
         {
             if (visual.Skeleton == null || !IsInstanceValid(visual.Skeleton)) continue;
@@ -5946,20 +5964,25 @@ void fragment() {
             bool isShown = visual.Root.Visible;
             if (isShown) shown++;
             if (isShown && visual.AnimPlayer.IsPlaying) animating++;
+            int avSkinned = 0;
             foreach (var node in visual.Skeleton.GetChildren())
             {
-                CountSkin(node as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
+                CountSkin(node as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
                           ref boundBinds, ref surfaces, ref hiddenSurfaces);
                 foreach (var grandchild in node.GetChildren())
-                    CountSkin(grandchild as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
+                    CountSkin(grandchild as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
                               ref boundBinds, ref surfaces, ref hiddenSurfaces);
             }
+            skinned += avSkinned;
+            if (avSkinned > maxSkinned) maxSkinned = avSkinned;
         }
 
         SLNG.App.UI.StatsOverlay.EmitPerfLine(
             $"[AvatarCost] avatars={avatars} shown={shown} animating={animating} skinnedMeshes={skinned} " +
             $"drawnSkinnedMeshes={drawn} surfaces={surfaces} hiddenSurfaces={hiddenSurfaces} " +
-            $"skinBinds={binds} shownSkinBinds={shownBinds} boundSkinBinds={boundBinds} controlAvatars={_controlAvatars.Count}");
+            $"skinBinds={binds} shownSkinBinds={shownBinds} boundSkinBinds={boundBinds} maxSkinned={maxSkinned} " +
+            $"rigNormal={_rigsWithNormalCount}/{_rigsPreparedCount} " +
+            $"reqHiddenSubmeshes={_submeshesHiddenCount}/{_submeshesTotalCount} controlAvatars={_controlAvatars.Count}");
 
         // Surfaces are counted on the instance that owns the face: a split child counts its one
         // surface, and the parent's Hidden stand-in for it is not counted again.
@@ -6021,6 +6044,10 @@ void fragment() {
         var viewport = GetViewport();
         var camera = viewport?.GetCamera3D();
         Godot.Vector3? camPos = camera?.GlobalPosition;
+        if (camPos.HasValue)
+            _lastCamPos = camPos.Value;
+        else if (haveAgent)
+            _lastCamPos = agentPos;
         float nameTagMaxDist = 20.0f;
         float nameTagFadeStart = 15.0f;
 
@@ -6030,6 +6057,7 @@ void fragment() {
             {
                 bool visible = visual.Root.Position.DistanceSquaredTo(agentPos) <= maxSq;
                 if (visual.Root.Visible != visible) visual.Root.Visible = visible;
+                visual.Shown = visible;
             }
 
             if (visual.IsSelf)
