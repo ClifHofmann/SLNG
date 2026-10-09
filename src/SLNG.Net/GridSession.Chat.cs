@@ -814,21 +814,10 @@ public sealed partial class GridSession
             Guid typist = e.IM.FromAgentID.Guid;
             Guid self = _client.Self.AgentID.Guid;
             Guid imSession = e.IM.IMSessionID.Guid;
-            bool isConferenceOrGroup = e.IM.GroupIM
-                || (imSession != Guid.Empty && imSession != typist && imSession != self
-                    && !SessionIds.IsPeerToPeer(imSession, self, typist)
-                    && (_conferenceSessions.ContainsKey(imSession) || _client.Self.GroupChatSessions.ContainsKey(e.IM.IMSessionID)));
+            bool isConferenceOrGroup = e.IM.GroupIM || SessionIds.IsForeign(imSession, self, typist);
 
             if (typist != Guid.Empty && typist != self && !isConferenceOrGroup)
             {
-                // BUG-UI-37: typing opens a 1:1 tab for the typist, so typing into a session we do not know does too.
-                if (SessionIds.IsForeign(imSession, self, typist) && _loggedForeignTypingSessions.TryAdd(imSession, 0))
-                {
-                    Console.WriteLine(
-                        $"[Chat] typing from {e.IM.FromAgentName} ({typist}) carries session {imSession}, which is not the 1:1 id " +
-                        $"{SessionIds.PeerToPeer(self, typist)} and no conference or group we track: dialog={e.IM.Dialog} " +
-                        $"groupFlag={e.IM.GroupIM} -- opens a 1:1 tab");
-                }
                 Console.WriteLine($"[Chat] Peer typing indicator from {typist} ({e.IM.FromAgentName}): typing={e.IM.Dialog == InstantMessageDialog.StartTyping}");
                 InstantMessageTyping?.Invoke(this, new InstantMessageTypingEvent(
                     typist, e.IM.FromAgentName ?? string.Empty, e.IM.Dialog == InstantMessageDialog.StartTyping));
@@ -849,13 +838,26 @@ public sealed partial class GridSession
         // BUG-UI-23: and a session that IS one of our groups is group chat even when LibreMetaverse's own
         // GroupChatSessions table does not know it (see GroupChatSessionLogic.IsGroupSession).
         Guid sessionId = e.IM.IMSessionID.Guid;
+        Guid imFrom = e.IM.FromAgentID.Guid;
+        Guid imSelf = _client.Self.AgentID.Guid;
         bool hasText = !string.IsNullOrEmpty(e.IM.Message);
+
+        bool isForeign = SessionIds.IsForeign(sessionId, imSelf, imFrom);
+
+        // Keep the 1:1 XOR id path unchanged: non-foreign session and not marked as group chat.
+        if (!isForeign && !e.IM.GroupIM)
+        {
+            if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
+
+            InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
+                imFrom, e.IM.FromAgentName, e.IM.Message, sessionId));
+            return;
+        }
 
         // FEAT-UI-54 / BUG-UI-23: a group whose chat the user switched off is dropped before anything sees it,
         // decided by the session id alone and ahead of every classification below -- the invitation that
         // opens the session (LibreMetaverse has already joined it by now), a UDP line, and a stray line after
         // we left all end here, so none of them can open a tab, count as unread, be logged or notify.
-        // The typing indicators are their own dialogs and are dropped further down anyway.
         bool muted = GroupChatSessionLogic.IsSessionLineDialog(e.IM.Dialog) && GroupChatIgnored?.Invoke(sessionId) == true;
         if (GroupChatSessionLogic.ShouldConsumeAsIgnored(e.IM.Dialog, hasText, muted))
         {
@@ -864,10 +866,33 @@ public sealed partial class GridSession
             return;
         }
 
+        bool lmvKnowsSession = _client.Self.GroupChatSessions.ContainsKey(e.IM.IMSessionID);
+
+        // Join/accept the session the way the viewer does: llimview.cpp:4233-4296, where a ChatterBoxInvitation
+        // is handled as IM_SESSION_INVITE keyed by session_id, followed by a ChatSessionRequest accept.
+        if (!lmvKnowsSession)
+        {
+            _client.Self.GroupChatSessions.TryAdd(e.IM.IMSessionID, new List<ChatSessionMember>());
+            if (_client.Network.Connected)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _client.Self.ChatterBoxAcceptInviteAsync(e.IM.IMSessionID).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Capability may not be present on OpenSim or network error
+                    }
+                });
+            }
+        }
+
         var membership = _groups;
         bool inMembership = membership != null && membership.Any(g => g.Id == sessionId);
         if (GroupChatSessionLogic.IsGroupSession(
-                e.IM.Dialog, e.IM.GroupIM, _client.Self.IsGroupMessage(e.IM), membership != null, inMembership))
+                e.IM.Dialog, e.IM.GroupIM, lmvKnowsSession, membership != null, inMembership))
         {
             if (!hasText) return; // typing/keep-alive, same as local chat
             // Our own line comes back through the session and is the ONLY copy: unlike a 1:1 IM the viewer does
@@ -885,67 +910,28 @@ public sealed partial class GridSession
             if (nameSource == GroupNameSource.None) RequestUnknownGroupName(sessionId);
             LogNewGroupSession(e.IM, nameSource, groupName, muted: false, membership != null, inMembership);
             GroupChatMessageReceived?.Invoke(this, new GroupChatMessageEvent(
-                sessionId, e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, groupName));
+                sessionId, imFrom, e.IM.FromAgentName, e.IM.Message, groupName));
             return;
         }
 
-        // An ad-hoc conference: several people, no group. Its own session, answered in the same session.
-        // The invitation itself ("X was invited") is a session line too, whatever dialog it carries: the viewer files it
-        // into the conference (llimview.cpp:4274, addMessage with the session id), it does not make it a 1:1 IM. LibreMetaverse
-        // has just registered the session for it (GroupChatSessions) and accepted it, which is what tells it from a plain IM.
+        // An ad-hoc conference: several people, no group. Any other foreign session.
         // The viewer drops an invitation from ourselves (llimview.cpp:4270).
-        Guid imFrom = e.IM.FromAgentID.Guid, imSelf = _client.Self.AgentID.Guid;
-        bool lmvKnowsSession = _client.Self.GroupChatSessions.ContainsKey(e.IM.IMSessionID);
-        bool invitationLine = e.IM.Dialog == InstantMessageDialog.MessageFromAgent && imFrom != Guid.Empty
-            && !SessionIds.IsPeerToPeer(sessionId, imSelf, imFrom) && lmvKnowsSession;
-        if (invitationLine && imFrom == imSelf) return;
+        if (imFrom == imSelf && e.IM.Dialog == InstantMessageDialog.MessageFromAgent) return;
 
-        if (e.IM.Dialog == InstantMessageDialog.SessionSend || invitationLine)
-        {
-            if (string.IsNullOrEmpty(e.IM.Message) || IsDuplicateSessionLine(e.IM)) return;
+        if (!hasText || IsDuplicateSessionLine(e.IM)) return;
 
-            Guid from = imFrom;
-            // Who to address replies to: the viewer sends a session line to the session's "other participant",
-            // which for an invited session is whoever invited us (llimview.cpp addMessage -> target_id).
-            _conferenceSessions.TryAdd(sessionId, 0);
-            if (from != Guid.Empty && from != imSelf) _conferencePeers.TryAdd(sessionId, from);
-            if (from != Guid.Empty && _conferenceSpeakers.GetOrAdd(sessionId, _ => new()).TryAdd(from, 0))
-                ConferenceMembersChanged?.Invoke(this, new ConferenceMembersChangedEvent(sessionId));
+        // Who to address replies to: the viewer sends a session line to the session's "other participant",
+        // which for an invited session is whoever invited us (llimview.cpp addMessage -> target_id).
+        _conferenceSessions.TryAdd(sessionId, 0);
+        if (imFrom != Guid.Empty && imFrom != imSelf) _conferencePeers.TryAdd(sessionId, imFrom);
+        if (imFrom != Guid.Empty && _conferenceSpeakers.GetOrAdd(sessionId, _ => new()).TryAdd(imFrom, 0))
+            ConferenceMembersChanged?.Invoke(this, new ConferenceMembersChangedEvent(sessionId));
 
-            ConferenceChatMessageReceived?.Invoke(this, new ConferenceChatMessageEvent(
-                sessionId, DecodeSessionName(e.IM.BinaryBucket), from, e.IM.FromAgentName, e.IM.Message));
-            return;
-        }
-
-        if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
-
-        // BUG-UI-37: this is the one place where a line becomes "a 1:1 IM from X" -- and the session id never travels
-        // on from here, so a line the sim sent into a conference or group session we do not know lands in X's own tab
-        // (the tab is keyed by the sender, ChatWindow.AppendIncomingInstantMessage). Reported twice as "a chat that was
-        // neither group nor conference". The packet is what says which it was, so say it, once per session, without the
-        // text. Rare by construction (normal 1:1 lines never reach it), so it is not gated on --diag.
-        if (SessionIds.IsForeign(sessionId, imSelf, imFrom) && _loggedForeignImSessions.TryAdd(sessionId, 0))
-        {
-            Console.WriteLine(
-                $"[Chat] IM from {e.IM.FromAgentName} ({imFrom}) carries session {sessionId}, which is not the 1:1 id " +
-                $"{SessionIds.PeerToPeer(imSelf, imFrom)}: dialog={e.IM.Dialog} groupFlag={e.IM.GroupIM} offline={e.IM.Offline} " +
-                $"to={e.IM.ToAgentID} lmvKnowsSession={lmvKnowsSession} conferenceTracked={_conferenceSessions.ContainsKey(sessionId)} " +
-                $"groupMember={IsGroupMember(sessionId)} bucketBytes={e.IM.BinaryBucket?.Length ?? 0} " +
-                // The bucket of a group or conference line carries the session's NAME (never the message text) --
-                // the one field that says which group or conference the line belonged to.
-                $"bucketName=\"{DecodeSessionName(e.IM.BinaryBucket)}\" region={e.IM.RegionID} estate={e.IM.ParentEstateID} " +
-                "-- shown as a 1:1 IM");
-        }
-
-        InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
-            e.IM.FromAgentID.Guid, e.IM.FromAgentName, e.IM.Message, e.IM.IMSessionID.Guid));
+        ConferenceChatMessageReceived?.Invoke(this, new ConferenceChatMessageEvent(
+            sessionId, DecodeSessionName(e.IM.BinaryBucket), imFrom, e.IM.FromAgentName, e.IM.Message));
     }
 
     private readonly ConcurrentDictionary<Guid, byte> _conferenceSessions = new();
-
-    /// <summary>Sessions already reported by the BUG-UI-37 line in <see cref="OnInstantMessage"/>.</summary>
-    private readonly ConcurrentDictionary<Guid, byte> _loggedForeignImSessions = new();
-    private readonly ConcurrentDictionary<Guid, byte> _loggedForeignTypingSessions = new();
 
     // Who has spoken in each conference. LibreMetaverse's own member list (GroupChatSessions) fills only from the
     // session's agent-list updates, which a conference we are invited into may never send for the people already

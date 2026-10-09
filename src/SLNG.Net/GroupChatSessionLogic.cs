@@ -58,10 +58,11 @@ internal static class GroupChatSessionLogic
     }
 
     /// <summary>True for the dialogs a session line (or the invitation to one) arrives as: <c>SessionAdd</c> (13,
-    /// the viewer's <c>IM_SESSION_INVITE</c>), <c>SessionGroupStart</c> (15) and <c>SessionSend</c> (17). Not
+    /// the viewer's <c>IM_SESSION_INVITE</c>), <c>SessionGroupStart</c> (15), <c>SessionSend</c> (17), and
+    /// <c>MessageFromAgent</c> (0, e.g. group chat lines arriving as plain IM dialogs, BUG-UI-37). Not
     /// <c>SessionCardlessStart</c> (16, a conference being started) and not the typing indicators.</summary>
     internal static bool IsSessionLineDialog(InstantMessageDialog dialog) =>
-        dialog is InstantMessageDialog.SessionAdd or InstantMessageDialog.SessionGroupStart or InstantMessageDialog.SessionSend;
+        dialog is InstantMessageDialog.SessionAdd or InstantMessageDialog.SessionGroupStart or InstantMessageDialog.SessionSend or InstantMessageDialog.MessageFromAgent;
 
     /// <summary>Whether a session message is group chat.
     ///

@@ -89,8 +89,9 @@ public class GroupChatNamingAndMuteTests
     // BUG-UI-23: one of our groups but LibreMetaverse forgot it (we left it): still group chat
     [InlineData(InstantMessageDialog.SessionSend, false, false, true, true, true)]
     [InlineData(InstantMessageDialog.SessionAdd, false, false, true, true, true)]
-    // ...but only for a session dialog; a plain IM never becomes group chat by its session id
-    [InlineData(InstantMessageDialog.MessageFromAgent, false, false, true, true, false)]
+    // BUG-UI-37: group lines can arrive as MessageFromAgent (e.g. LAQ updates)
+    [InlineData(InstantMessageDialog.MessageFromAgent, false, false, true, true, true)]
+    [InlineData(InstantMessageDialog.MessageFromAgent, false, false, true, false, false)]
     public void IsGroupSession_matrix(
         InstantMessageDialog dialog, bool flag, bool tracked, bool loaded, bool member, bool expected)
     {
@@ -105,7 +106,7 @@ public class GroupChatNamingAndMuteTests
     [InlineData(InstantMessageDialog.SessionGroupStart, true, true, true)]
     [InlineData(InstantMessageDialog.SessionSend, true, false, false)]   // not muted
     [InlineData(InstantMessageDialog.SessionSend, false, true, false)]   // nothing to consume (keep-alive)
-    [InlineData(InstantMessageDialog.MessageFromAgent, true, true, false)] // a 1:1 IM is never the group's
+    [InlineData(InstantMessageDialog.MessageFromAgent, true, true, true)] // BUG-UI-37: muted group lines can arrive as MessageFromAgent
     [InlineData(InstantMessageDialog.StartTyping, true, true, false)]
     public void ShouldConsumeAsIgnored_matrix(InstantMessageDialog dialog, bool hasText, bool muted, bool expected)
     {
@@ -377,16 +378,54 @@ public class GroupChatNamingAndMuteTests
     }
 
     [Fact]
-    public void An_im_with_a_foreign_session_id_that_the_library_never_registered_stays_an_im()
+    public void A_foreign_session_id_that_is_in_group_membership_opens_group_tab_even_with_MessageFromAgent()
     {
-        // Only an invitation is registered by the library; a message that merely has an odd session id is not one.
         using var session = new GridSession();
         var c = Listen(session);
+        var group = UUID.Random();
+        var speaker = UUID.Random();
+        SetMembership(session, group, "LAQ updates");
 
-        Invoke(session, "OnInstantMessage", InvitationIm(UUID.Random(), UUID.Random(), "hello"));
+        // BUG-UI-37: group lines arrive with dialog=MessageFromAgent, groupIM=false, bucket="LAQ updates"
+        Invoke(session, "OnInstantMessage",
+            Im(InstantMessageDialog.MessageFromAgent, group, "new skin release", groupIM: false, bucket: Bytes("LAQ updates\0"), fromName: "LAQ Bot"));
 
-        Assert.Single(c.Ims);
+        var line = Assert.Single(c.Groups);
+        Assert.Equal(group.Guid, line.GroupId);
+        Assert.Equal("LAQ updates", line.GroupName);
+        Assert.Equal("new skin release", line.Message);
+        Assert.Equal("LAQ Bot", line.FromAgentName);
+        Assert.Empty(c.Ims);
         Assert.Empty(c.Conferences);
+
+        // Verifies session is registered in LibreMetaverse's GroupChatSessions
+        var client = (GridClient)typeof(GridSession).GetField("_client", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(session)!;
+        Assert.True(client.Self.GroupChatSessions.ContainsKey(group));
+    }
+
+    [Fact]
+    public void A_foreign_session_id_that_is_not_a_group_opens_conference_tab_named_by_bucket()
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        var conference = UUID.Random();
+        var speaker = UUID.Random();
+        SetMembership(session, UUID.Random(), "Some Group");
+
+        // BUG-UI-37: any other foreign session opens conference tab named by bucketName, not a 1:1 tab
+        Invoke(session, "OnInstantMessage",
+            Im(InstantMessageDialog.MessageFromAgent, conference, "hello all", groupIM: false, bucket: Bytes("Team Chat\0")));
+
+        var line = Assert.Single(c.Conferences);
+        Assert.Equal(conference.Guid, line.SessionId);
+        Assert.Equal("Team Chat", line.SessionName);
+        Assert.Equal("hello all", line.Message);
+        Assert.Empty(c.Ims);
+        Assert.Empty(c.Groups);
+
+        // Verifies session is registered in LibreMetaverse's GroupChatSessions
+        var client = (GridClient)typeof(GridSession).GetField("_client", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(session)!;
+        Assert.True(client.Self.GroupChatSessions.ContainsKey(conference));
     }
 
     // ---- FEAT-UI-71: the member list of a conference --------------------------------------------------

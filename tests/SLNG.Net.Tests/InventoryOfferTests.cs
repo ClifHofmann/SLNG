@@ -111,8 +111,9 @@ public class InventoryOfferTests
         session.InventoryOfferReceived += (s, e) => offer = e;
         session.InstantMessageReceived += (s, e) => im = e;
 
+        var sender = UUID.Random();
         Invoke(session, "OnInstantMessage", Im(
-            InstantMessageDialog.MessageFromAgent, UUID.Random(), UUID.Random(), "Denise Resident",
+            InstantMessageDialog.MessageFromAgent, sender, sender, "Denise Resident",
             "hi", Array.Empty<byte>()));
 
         Assert.Null(offer);

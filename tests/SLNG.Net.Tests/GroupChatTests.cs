@@ -124,7 +124,7 @@ public class GroupChatTests
 
         var sender = UUID.Random();
         Invoke(session, "OnInstantMessage",
-            Im(InstantMessageDialog.MessageFromAgent, UUID.Random(), sender, "Friend Resident", "hi", groupIM: false));
+            Im(InstantMessageDialog.MessageFromAgent, sender, sender, "Friend Resident", "hi", groupIM: false));
 
         Assert.Null(group);
         Assert.NotNull(im);
