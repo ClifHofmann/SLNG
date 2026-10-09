@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-10`
 - **Track:** `render`
-- **Status:** `🧪 Review` — implemented (part 1 v0.27.13, part 2 v0.27.14, part 3 v0.27.15) and covered by unit tests and `--selftest` checks; part 1 confirmed in-world (wearer no longer deformed), part 2 not yet.
+- **Status:** `✅ Done` — parts 1-3 (v0.27.13-v0.27.15) confirmed in-world 2026-10-09 against Firestorm: the wearer stays undeformed, the worn dragon stands upright at the wearer's right side with its own animation.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -131,7 +131,7 @@ non-control avatars, like `[ScaleLock]`) reports each revert.
       (`worn joint overrides`) — the check fails with either half of the fix removed (verified by
       disabling each in turn: the animated-root skip leaves the hip 300 mm off; the release on detach
       leaves it there after the item is gone).
-- [ ] Confirmed in-world (below).
+- [x] Confirmed in-world (below).
 
 ## In-world check
 
@@ -311,4 +311,4 @@ That branch (v0.27.13 to v0.27.16, unmerged) also changed `CommitPreparedRig`:
       the viewer's formula; follows the wearer; own animation; hides with the wearer; freed on rebuild, detach and
       wearer loss) — fails with the routing hook, the placement or the visibility rule removed (verified)
 - [x] Part 3: the attachment point's Euler order (`AttachmentPointRotation`), `[AttachAnimesh] placement` diagnostics, selftest regression check
-- [ ] In-world confirmation
+- [x] In-world confirmation
