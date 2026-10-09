@@ -372,6 +372,26 @@ public partial class AvatarRenderer
             }
             else Expect(false, "no Chest attachment point");
 
+            // 4c. Firestorm's own numbers for the worn dragon (Edit floater, worn on Chest): Pos <-0.26352,
+            //     0.18030, 0.17475>, Rot <279.1, 359.4, 3.6> (getEulerAngles, the inverse of setQuat). In the chest
+            //     JOINT's frame the viewer puts the root 32 cm forward, 26 cm to the wearer's right, at chest height
+            //     (SL (0.325, -0.264, 0.080) = Godot (0.325, 0.080, 0.264)), standing upright. Through the real
+            //     AttachPointOffset and AttachedControlAvatarTransform, with the joint frame left as identity.
+            //     The single-axis Skull point must be unchanged by the fix.
+            if (chestPoint is { } chestForDragon)
+            {
+                var dragonPos = new System.Numerics.Vector3(-0.26352f, 0.18030f, 0.17475f);
+                var dragonRot = AttachmentPointRotation.FromEulerDegrees(new System.Numerics.Vector3(279.1f, 359.4f, 3.6f));
+                var onJoint = AttachedControlAvatarTransform(AttachPointOffset(chestForDragon, null, "mChest"), dragonPos, dragonRot);
+                bool dragonPlace = (onJoint.Origin - new Godot.Vector3(0.325f, 0.080f, 0.264f)).Length() < 3e-3f;
+                bool dragonUpright = onJoint.Basis.Y.Normalized().Dot(Godot.Vector3.Up) > 0.98f;
+                Expect(dragonPlace && dragonUpright,
+                       $"the worn dragon is at {onJoint.Origin} (up.y {onJoint.Basis.Y.Normalized().Y:0.##}), Firestorm has it at (0.325, 0.08, 0.264) standing upright");
+            }
+            if (AttachmentPointMap.GetPoint(2) is { } skullPoint)
+                Expect(AttachPointOffset(skullPoint, null, "mHead").Basis.IsEqualApprox(SkeletonBuilder.SlEulerDegToGodotBasis(skullPoint.RotationDeg)),
+                       "a single-axis point (Skull) changed with the Euler order");
+
             // 5. It follows the wearer's animation and movement: the attachment point moves, so does the pet.
             var before = ca?.Visual.Root.GlobalTransform.Origin ?? default;
             visual.Root.Position += new Godot.Vector3(2f, 0f, 1f);

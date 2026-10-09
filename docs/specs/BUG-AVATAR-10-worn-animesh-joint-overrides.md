@@ -259,6 +259,17 @@ Each input of the pet's placement was checked against the viewer:
 `AttachPointOffset` uses it. This changes **every** attachment worn on Chest or Spine, static prims and meshes
 included, and the edit gizmo's frame (`TryGetAttachmentFrame`), which share the function.
 
+**Ground truth (Firestorm, Edit on the worn dragon root, worn on Chest):** Pos `<-0.26352, 0.18030, 0.17475>`,
+Rot `<279.1, 359.4, 3.6>` (the Edit floater shows `getEulerAngles`, the inverse of `setQuat`). Replayed by hand and in
+`AttachmentPointRotationTests` / the `worn animesh` selftest, in the chest joint's frame (SL axes):
+
+| Order | Root position | Root up | Reads as |
+|---|---|---|---|
+| `setQuat` (the viewer; now) | (0.325, -0.264, 0.080) | (0.16, -0.01, 0.99) = chest up | 32 cm forward, 26 cm to her RIGHT, chest height, standing upright: Firestorm's picture |
+| `mayaQ` XYZ (SLNG until v0.27.15) | (-0.030, 0.175, 0.164) | (-0.99, 0.16, 0.01) = backwards | at her LEFT shoulder, lying flat with its wings spread level above her head: the SLNG screenshot |
+
+A single-axis point (Skull `0 0 90`) is asserted unchanged.
+
 **Diagnostics:** `[AttachAnimesh] placement root=… point=<id> (<bone>, state=0x.., pointRot=(..)) local pos=… rot=…
 frame[posed] … frame[node] … -> root pos=… rot=…`, once per change of the point or the root's local transform
 (not every frame): the attachment point as decoded and the State byte it came from, the root prim's local
