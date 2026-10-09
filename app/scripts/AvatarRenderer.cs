@@ -87,6 +87,7 @@ public partial class AvatarRenderer : Node3D
         // meshes whose face materials must be re-resolved when a new server bake arrives.
         public HashSet<int> AttachmentBakeChannels { get; } = new();
         public List<(MeshInstance3D Mi, int[] FaceIndices, FaceTexture[]? Faces, FaceTexture DefaultFace)> BomAttachments { get; } = new();
+        public Dictionary<Guid, (FaceTexture[]? Faces, FaceTexture DefaultFace)> WornAttachmentFaces { get; } = new();
         // Per-bone OWN scale (base + shape distortion), keyed by bone name — deliberately NOT
         // multiplied by any ancestor's scale. Verified against LLXformMatrix::update()/
         // LLMatrix4::initAll (indra/llmath/xform.cpp, m4math.cpp): a real SL joint's world matrix
@@ -254,7 +255,41 @@ public partial class AvatarRenderer : Node3D
     /// their per-bone chunks too.</param>
     private sealed record PendingRig(
         MeshData MeshData, AvatarVisual Visual, Skeleton3D Skeleton, Guid MeshId,
-        FaceTexture[]? Faces, FaceTexture DefaultFace, AvatarSkeleton? Definition, bool WantPick);
+        FaceTexture[]? Faces, FaceTexture DefaultFace, AvatarSkeleton? Definition, bool WantPick)
+    {
+        public bool Equals(PendingRig? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return MeshData == other.MeshData &&
+                   Visual == other.Visual &&
+                   Skeleton == other.Skeleton &&
+                   MeshId == other.MeshId &&
+                   DefaultFace.Equals(other.DefaultFace) &&
+                   Definition == other.Definition &&
+                   WantPick == other.WantPick &&
+                   ((Faces == null && other.Faces == null) ||
+                    (Faces != null && other.Faces != null && Faces.AsSpan().SequenceEqual(other.Faces.AsSpan())));
+        }
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(MeshData);
+            hash.Add(Visual);
+            hash.Add(Skeleton);
+            hash.Add(MeshId);
+            hash.Add(DefaultFace);
+            hash.Add(Definition);
+            hash.Add(WantPick);
+            if (Faces != null)
+            {
+                hash.Add(Faces.Length);
+                for (int i = 0; i < Faces.Length; i++) hash.Add(Faces[i]);
+            }
+            return hash.ToHashCode();
+        }
+    }
 
     // FEAT-UI-23: the bone-parented colliders that make a rigged worn item clickable -- one per
     // bone the item is weighted to. They live on the SKELETON, not under the item's own mesh
@@ -676,6 +711,7 @@ public partial class AvatarRenderer : Node3D
             && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
         {
             ownerVisual.PelvisFixups.Remove(removedMeshInfo.MeshId);
+            ownerVisual.WornAttachmentFaces.Remove(entityId);
             // M4-7: a detached BoM mesh body/head must un-hide the system part it was covering.
             // QueueFree above is deferred, so drop the entry by reference here — RecomputeMesh-
             // Visibility's IsInstanceValid sweep would still see it live this frame.
@@ -2050,6 +2086,17 @@ public partial class AvatarRenderer : Node3D
             ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
             : default;
 
+        if (prim != null)
+        {
+            avatarVisual.WornAttachmentFaces[entityId] = (prim.Faces, defaultFace);
+            RecomputeMeshVisibility(avatarVisual);
+        }
+        else
+        {
+            if (avatarVisual.WornAttachmentFaces.Remove(entityId))
+                RecomputeMeshVisibility(avatarVisual);
+        }
+
         // Skip a redundant reload: LibreMetaverse's ObjectUpdate can fire several times for the
         // same object during initial rez (observed 4x for one entity before the first async
         // mesh load even finished). Without this guard each overlapping call tears down +
@@ -2733,6 +2780,7 @@ public partial class AvatarRenderer : Node3D
         _riggedAttachments.Remove(entityId);
         ClearRiggedPickBodies(entityId);
         visual.RiggedAttachments.RemoveAll(r => r.Mi == existing);
+        visual.BomAttachments.RemoveAll(r => r.Mi == existing);
         if (IsInstanceValid(existing)) existing.QueueFree();
     }
 
@@ -2948,6 +2996,7 @@ public partial class AvatarRenderer : Node3D
                 MainThreadWorkQueue.Measure("avatar.rig.jointpos",
                     () => ApplyJointPositionOverrides(req.Visual, req.Skeleton, req.MeshData.Skin, req.MeshId));
             }
+            RecomputeMeshVisibility(req.Visual);
             return;
         }
 
@@ -3872,6 +3921,16 @@ public partial class AvatarRenderer : Node3D
             if (e.Faces != null) foreach (var f in e.Faces) Scan(f);
             Scan(e.DefaultFace);
         }
+        foreach (var (_, (faces, defaultFace)) in avatarVisual.WornAttachmentFaces)
+        {
+            void Scan(FaceTexture f)
+            {
+                if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(f.TextureId, out int b))
+                    ch.Add(b);
+            }
+            if (faces != null) foreach (var f in faces) Scan(f);
+            Scan(defaultFace);
+        }
 
         // Hide base parts per consumed channel (head bake also covers the eyelashes part, exactly
         // like MESH_ID_EYELASH in the viewer's updateMeshVisibility).
@@ -4108,6 +4167,7 @@ public partial class AvatarRenderer : Node3D
             && _visuals.TryGetValue(hudMovedMeshInfo.AvatarEntityId, out var hudOwnerVisual))
         {
             hudOwnerVisual.PelvisFixups.Remove(hudMovedMeshInfo.MeshId);
+            hudOwnerVisual.WornAttachmentFaces.Remove(entityId);
             // M4-7: same as detach — a mesh moved onto a HUD point no longer hides the body.
             if (hudMovedRigged != null) hudOwnerVisual.BomAttachments.RemoveAll(e => e.Mi == hudMovedRigged);
             RecomputeMeshVisibility(hudOwnerVisual);
