@@ -46,6 +46,7 @@ public partial class AvatarRenderer : Node3D
         public bool TexturesPinned { get; set; } = true;
         public float LastRefreshedArea { get; set; }
         public Guid EntityId { get; set; }
+        public volatile float ScreenPixelArea;
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         // Base (un-morphed) body-part data, keyed by part name. Kept so the body meshes can be
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
@@ -499,6 +500,8 @@ public partial class AvatarRenderer : Node3D
 
         var avatar = entity.GetComponent<AvatarComponent>()!;
         var visual = new AvatarVisual { AgentId = avatar.AgentId, EntityId = entityId };
+        visual.IsSelf = avatar.IsLocalAgent;
+        visual.ScreenPixelArea = visual.IsSelf ? 0f : ComputeAvatarScreenPixelArea(visual);
 
         // FEAT-ANIM-01: warm the animation cache with the built-in locomotion set the moment the
         // self avatar appears, so the first local walk/turn/fly prediction is a cache hit, not a
@@ -1396,6 +1399,7 @@ public partial class AvatarRenderer : Node3D
 
             visual.Root.Position = rootPos;
             visual.GodotPos = rootPos;
+            visual.ScreenPixelArea = visual.IsSelf ? 0f : ComputeAvatarScreenPixelArea(visual);
 
             // A world-Z readout is only useful where the avatar actually IS, and a shape apply
             // happens once at login — so re-report it whenever the self avatar has SETTLED at a
@@ -1978,6 +1982,7 @@ public partial class AvatarRenderer : Node3D
     /// <summary>
     /// BUG-PERF-13: Computes projected on-screen pixel area for an avatar based on its distance
     /// to the camera and height/radius. Used to size remote avatar textures for distance LOD.
+    /// MAIN THREAD ONLY: accesses GetViewport, Camera3D, and node transforms.
     /// </summary>
     private float ComputeAvatarScreenPixelArea(AvatarVisual visual)
     {
@@ -2006,9 +2011,9 @@ public partial class AvatarRenderer : Node3D
     {
         if (_assetService == null || _gpuCache == null) return;
 
-        // BUG-PERF-13: own avatar stays full-res (screenPixelArea 0), while remote avatars obey
-        // distance LOD based on screen pixel area. Distant textures count toward VRAM budget.
-        float screenPixelArea = visual.IsSelf ? 0f : ComputeAvatarScreenPixelArea(visual);
+        // BUG-PERF-13: Bake textures stay full-res (screenPixelArea 0) and are exempt from distance LOD
+        // and shrinking (matching reference viewer BOOST_AVATAR_BAKED).
+        float screenPixelArea = 0f;
         var godotTexture = await _gpuCache.GetOrUploadTextureAsync(
             textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
             bakeChannel: bakeIndex, bakeAgentId: visual.AgentId,
@@ -3642,7 +3647,9 @@ public partial class AvatarRenderer : Node3D
         long texStart = System.Diagnostics.Stopwatch.GetTimestamp();
         bool isSelf = avatarVisual != null && avatarVisual.IsSelf;
         bool isHud = surface == PrimShaderFamily.Surface.Hud;
-        float screenPixelArea = (isSelf || isHud) ? 0f : (avatarVisual != null ? ComputeAvatarScreenPixelArea(avatarVisual) : 0f);
+        // BUG-PERF-13: Only READ ScreenPixelArea (computed on the main thread). Never call Godot viewport APIs off-thread.
+        // Bakes (wasBom), HUD, and self avatar stay full-resolution (screenPixelArea = 0f).
+        float screenPixelArea = (isSelf || isHud || wasBom) ? 0f : (avatarVisual != null ? avatarVisual.ScreenPixelArea : 0f);
         var builtTask = _gpuCache.GetOrUploadTextureAsync(
             texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded,
             bakeChannel: wasBom ? bomIndex : null,
@@ -6365,6 +6372,7 @@ void fragment() {
 
             if (visual.IsSelf)
             {
+                visual.ScreenPixelArea = 0f;
                 UpdateSelfHeadGaze(visual, camera, dt);
             }
             else if (doCull)
@@ -6375,6 +6383,7 @@ void fragment() {
                 if (visual.Shown)
                 {
                     float curArea = ComputeAvatarScreenPixelArea(visual);
+                    visual.ScreenPixelArea = curArea;
                     if (visual.LastRefreshedArea <= 0f)
                     {
                         visual.LastRefreshedArea = curArea;

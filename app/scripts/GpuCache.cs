@@ -63,6 +63,7 @@ public class GpuCache
     // BUG-PERF-13: all avatar textures (worn meshes and bakes). Distant avatar textures are reducible
     // and can be shrunk when over budget; only self and the nearest N avatars are protected in _noShrink.
     private readonly ConcurrentDictionary<Guid, byte> _avatarTextures = new();
+    private readonly ConcurrentDictionary<Guid, byte> _bakeTextures = new();
 
     // BUG-PERF-09: textures with a shrink in flight, and the bytes each is expected to give back.
     // The shrink now prepares on a worker, so several can be pending at once; Tick has to count what
@@ -288,10 +289,16 @@ public class GpuCache
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
         if (assetService != null && !ReferenceEquals(_assets, assetService)) _assets = assetService;
 
-        // BUG-PERF-13: Track avatar textures in _avatarTextures. Only self avatar textures
-        // are unconditionally in _noShrink; remote avatar textures obey the VRAM budget and
-        // can be shrunk when under pressure, keeping the nearest N protected via UpdateProtectedAvatarTextures.
-        if (isAvatar || bakeChannel.HasValue)
+        // BUG-PERF-13: Bake textures (bakeChannel != null) stay full-res and exempt from distance LOD
+        // and shrink pass (matching reference viewer BOOST_AVATAR_BAKED).
+        if (bakeChannel.HasValue)
+        {
+            screenPixelArea = 0f;
+            _avatarTextures.TryAdd(textureId, 0);
+            _bakeTextures.TryAdd(textureId, 0);
+            _noShrink.TryAdd(textureId, 0);
+        }
+        else if (isAvatar)
         {
             _avatarTextures.TryAdd(textureId, 0);
             if (isSelf)
@@ -615,6 +622,7 @@ public class GpuCache
     {
         foreach (var id in _avatarTextures.Keys)
         {
+            if (_bakeTextures.ContainsKey(id)) continue;
             if (protectedIds.Contains(id))
             {
                 _noShrink.TryAdd(id, 0);
@@ -632,6 +640,7 @@ public class GpuCache
     public void TryUpgradeTexture(Guid textureId, SLNG.Assets.AssetService? assetService, bool generateMipmaps, float screenPixelArea, float priority = 0.5f)
     {
         if (assetService == null || screenPixelArea <= 0f) return;
+        if (_bakeTextures.ContainsKey(textureId)) return;
         ImageTexture? tex;
         lock (_cache)
         {
@@ -1533,6 +1542,7 @@ public class GpuCache
                 _cache.Remove(entry.Id);
                 _uploadFromDegraded.TryRemove(entry.Id, out _);
                 _avatarTextures.TryRemove(entry.Id, out _);
+                _bakeTextures.TryRemove(entry.Id, out _);
                 _noShrink.TryRemove(entry.Id, out _);
                 _currentSize -= entry.Size;
                 // Explicitly dispose the C# wrapper so its finalizer won't run later (e.g. after RenderingServer is gone)
