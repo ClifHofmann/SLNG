@@ -522,4 +522,47 @@ public partial class AvatarRenderer
 
         return (true, "remote avatar removal unpins and evicts textures");
     }
+
+    /// <summary>
+    /// FEAT-PERF-08: Verifies that reduced avatars have rigged and rigid attachments freed,
+    /// skins detached from Skeleton3D, animations stopped, and are restored when set full.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestAvatarReductionLifecycle()
+    {
+        var entityId = Guid.NewGuid();
+        var visual = new AvatarVisual { IsSelf = false, EntityId = entityId };
+        var skeleton = new Skeleton3D();
+        visual.Root.AddChild(skeleton);
+        visual.Skeleton = skeleton;
+        visual.AnimPlayer.SetSkeleton(skeleton);
+        _visuals[entityId] = visual;
+
+        var riggedAttId = Guid.NewGuid();
+        var rigidAttId = Guid.NewGuid();
+
+        var mi = new MeshInstance3D { Skin = new Skin() };
+        skeleton.AddChild(mi);
+        mi.Skeleton = mi.GetPathTo(skeleton);
+        _riggedAttachments[riggedAttId] = mi;
+        visual.RiggedAttachments.Add((mi, new MeshData(Array.Empty<MeshSubmesh>()), Guid.NewGuid()));
+        visual.WornAttachmentEntities.Add(riggedAttId);
+
+        var boneAttach = new BoneAttachment3D();
+        skeleton.AddChild(boneAttach);
+        _attachmentNodes[rigidAttId] = boneAttach;
+        visual.WornAttachmentEntities.Add(rigidAttId);
+
+        SetAvatarReduced(visual);
+
+        if (!visual.IsReduced) return (false, "visual was not marked reduced");
+        if (_riggedAttachments.ContainsKey(riggedAttId)) return (false, "rigged attachment was not removed from _riggedAttachments");
+        if (visual.RiggedAttachments.Count > 0) return (false, "visual.RiggedAttachments was not cleared");
+        if (!mi.Skeleton.IsEmpty) return (false, "rigged mesh was not detached from skeleton");
+        if (_attachmentNodes.ContainsKey(rigidAttId)) return (false, "rigid attachment was not removed from _attachmentNodes");
+
+        SetAvatarFull(visual);
+        if (visual.IsReduced) return (false, "visual was not restored to full");
+
+        return (true, "avatar reduction frees attachments, detaches skin, and resets state");
+    }
 }

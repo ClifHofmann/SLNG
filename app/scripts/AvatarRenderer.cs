@@ -1503,7 +1503,11 @@ public partial class AvatarRenderer : Node3D
                     visual.CapsuleShape.Position = new Godot.Vector3(0, targetHeight * 0.5f, 0);
                 }
             }
+        }
 
+        if (visual.IsReduced)
+        {
+            return;
         }
 
         // 2. Apply Shape Morphs (Skeletal Distortions) — only when params actually changed.
@@ -1750,7 +1754,7 @@ public partial class AvatarRenderer : Node3D
 
     private void ApplyActiveAnimations(Guid entityId, AvatarVisual visual, AvatarComponent avatar)
     {
-        if (_assetService == null || visual.Skeleton == null) return;
+        if (_assetService == null || visual.Skeleton == null || visual.IsReduced) return;
 
         List<Guid> desired;
         if (avatar.IsLocalAgent && _selfPredictedLocomotion is { } predicted)
@@ -2974,7 +2978,11 @@ public partial class AvatarRenderer : Node3D
         ClearRiggedPickBodies(entityId);
         visual.RiggedAttachments.RemoveAll(r => r.Mi == existing);
         visual.BomAttachments.RemoveAll(r => r.Mi == existing);
-        if (IsInstanceValid(existing)) existing.QueueFree();
+        if (IsInstanceValid(existing))
+        {
+            DetachSkeleton(existing);
+            existing.QueueFree();
+        }
     }
 
     private void ClearRiggedPickBodies(Guid entityId)
@@ -6326,6 +6334,12 @@ void fragment() {
         if (visual.IsReduced) return;
         visual.IsReduced = true;
 
+        visual.AnimPlayer.Stop();
+        if (visual.Skeleton != null && GodotObject.IsInstanceValid(visual.Skeleton))
+        {
+            visual.Skeleton.ResetBonePoses();
+        }
+
         foreach (var attId in visual.WornAttachmentEntities)
         {
             _pendingRigs.TryRemove(attId, out _);
@@ -6340,9 +6354,10 @@ void fragment() {
                 ReleaseControlAvatarMesh(attId);
             }
 
-            if (_attachmentNodes.TryGetValue(attId, out var attachNode) && GodotObject.IsInstanceValid(attachNode))
+            if (_attachmentNodes.TryGetValue(attId, out var attachNode))
             {
-                attachNode.Visible = false;
+                if (GodotObject.IsInstanceValid(attachNode)) attachNode.QueueFree();
+                _attachmentNodes.Remove(attId);
             }
 
             _attachmentMeshIds.Remove(attId);
@@ -6373,6 +6388,15 @@ void fragment() {
             }
         }
 
+        foreach (var (rMi, _, _) in visual.RiggedAttachments)
+        {
+            if (GodotObject.IsInstanceValid(rMi))
+            {
+                DetachSkeleton(rMi);
+                rMi.QueueFree();
+            }
+        }
+        visual.RiggedAttachments.Clear();
         visual.BomAttachments.Clear();
         RecomputeMeshVisibility(visual);
     }
@@ -6382,13 +6406,18 @@ void fragment() {
         if (!visual.IsReduced) return;
         visual.IsReduced = false;
 
+        if (visual.Skeleton != null && GodotObject.IsInstanceValid(visual.Skeleton))
+        {
+            visual.AnimPlayer.SetSkeleton(visual.Skeleton);
+        }
+
+        if (visual.EntityId != Guid.Empty)
+        {
+            UpdateVisual(visual.EntityId.ToString());
+        }
+
         foreach (var attId in visual.WornAttachmentEntities)
         {
-            if (_attachmentNodes.TryGetValue(attId, out var attachNode) && GodotObject.IsInstanceValid(attachNode))
-            {
-                attachNode.Visible = true;
-            }
-
             CallDeferred(nameof(UpdateAttachment), attId.ToString());
         }
 
@@ -6467,18 +6496,22 @@ void fragment() {
             bool isShown = visual.Root.Visible;
             if (isShown) shown++;
             if (visual.IsReduced) reduced++;
-            if (isShown && visual.AnimPlayer.IsPlaying) animating++;
-            int avSkinned = 0;
-            foreach (var node in visual.Skeleton.GetChildren())
+            if (isShown && !visual.IsReduced && visual.AnimPlayer.IsPlaying) animating++;
+
+            if (!visual.IsReduced)
             {
-                CountSkin(node as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
-                          ref boundBinds, ref surfaces, ref hiddenSurfaces);
-                foreach (var grandchild in node.GetChildren())
-                    CountSkin(grandchild as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
+                int avSkinned = 0;
+                foreach (var node in visual.Skeleton.GetChildren())
+                {
+                    CountSkin(node as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
                               ref boundBinds, ref surfaces, ref hiddenSurfaces);
+                    foreach (var grandchild in node.GetChildren())
+                        CountSkin(grandchild as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
+                                  ref boundBinds, ref surfaces, ref hiddenSurfaces);
+                }
+                skinned += avSkinned;
+                if (avSkinned > maxSkinned) maxSkinned = avSkinned;
             }
-            skinned += avSkinned;
-            if (avSkinned > maxSkinned) maxSkinned = avSkinned;
         }
 
         SLNG.App.UI.StatsOverlay.EmitPerfLine(
@@ -6593,7 +6626,7 @@ void fragment() {
                 visual.ScreenPixelArea = 0f;
                 UpdateSelfHeadGaze(visual, camera, dt);
             }
-            else if (doCull)
+            else if (doCull && !visual.IsReduced)
             {
                 ReconsiderAttachmentDetail(avatarEntityId, visual);
 
@@ -6624,10 +6657,10 @@ void fragment() {
                 }
             }
 
-            bool shouldAdvance = visual.AnimPlayer.IsPlaying
+            bool shouldAdvance = !visual.IsReduced && (visual.AnimPlayer.IsPlaying
                 || visual.AnimPlayer.HoldMode != AvatarHoldMode.None
                 || visual.AnimPlayer.IsFrozen
-                || (visual.IsSelf && (Mathf.Abs(visual.AnimPlayer.HeadGazeYaw) > 0.001f || Mathf.Abs(visual.AnimPlayer.HeadGazePitch) > 0.001f));
+                || (visual.IsSelf && (Mathf.Abs(visual.AnimPlayer.HeadGazeYaw) > 0.001f || Mathf.Abs(visual.AnimPlayer.HeadGazePitch) > 0.001f)));
 
             if (visual.Root.Visible && !_tposeActive && shouldAdvance)
             {

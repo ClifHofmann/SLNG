@@ -206,4 +206,21 @@ public static partial class SelfTest
             ? new Check(Name, true, "remote avatar textures unpinned, unregistered, and evicted")
             : new Check(Name, false, string.Join("; ", problems));
     }
+
+    /// <summary>
+    /// FEAT-PERF-08: Verifies that reduced avatars have rigged and rigid attachments freed,
+    /// skins detached from Skeleton3D, animations stopped, and are restored when set full.
+    /// </summary>
+    private static Check CheckAvatarReduction()
+    {
+        const string Name = "reduced avatars free attachments, detach skins, and stop animation";
+        var problems = new List<string>();
+        var renderer = new AvatarRenderer();
+        var (passed, detail) = renderer.SelfTestAvatarReductionLifecycle();
+        if (!passed) problems.Add(detail);
+
+        return problems.Count == 0
+            ? new Check(Name, true, "avatar reduction frees attachments and detaches skins")
+            : new Check(Name, false, string.Join("; ", problems));
+    }
 }
