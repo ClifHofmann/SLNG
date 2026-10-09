@@ -79,6 +79,10 @@ public static class MainThreadWorkQueue
     /// <summary>Written only from the pump, i.e. the main thread, so it needs no lock.</summary>
     private static readonly Dictionary<string, Cost> _costs = new();
 
+    /// <summary>BUG-PERF-10: what the parts of an item cost, keyed by (item label, part label). Same
+    /// threading as <see cref="_costs"/>.</summary>
+    private static readonly Dictionary<(string Item, string Part), Cost> _partCosts = new();
+
     private static readonly Stopwatch _clock = new();
 
     /// <summary>Set once the pump has left the scene tree -- the client is quitting. From then on
@@ -186,6 +190,8 @@ public static class MainThreadWorkQueue
 
                 double before = _clock.Elapsed.TotalMilliseconds;
                 _currentLabel = item.Label;
+                _partChildTicks = 0;
+                _itemPartTicks = 0;
                 try
                 {
                     item.Work();
@@ -197,7 +203,11 @@ public static class MainThreadWorkQueue
                     GD.PrintErr($"[MainThreadWork] item threw: {ex.Message}");
                 }
                 _currentLabel = null;
-                Record(item.Label, _clock.Elapsed.TotalMilliseconds - before);
+                double took = _clock.Elapsed.TotalMilliseconds - before;
+                Record(item.Label, took);
+                // BUG-PERF-10: whatever the item's parts do not account for, so that parts + rest = whole.
+                if (_itemPartTicks > 0)
+                    RecordPart(item.Label, "rest", Math.Max(0, took - _itemPartTicks * 1000.0 / Stopwatch.Frequency));
 
                 ranOne = true;
                 itemsProcessed++;
@@ -247,6 +257,60 @@ public static class MainThreadWorkQueue
         if (ms > c.MaxMs) c.MaxMs = ms;
     }
 
+    private static void RecordPart(string item, string part, double ms)
+    {
+        if (!_partCosts.TryGetValue((item, part), out var c)) _partCosts[(item, part)] = c = new Cost();
+        c.Count++;
+        c.TotalMs += ms;
+        if (ms > c.MaxMs) c.MaxMs = ms;
+    }
+
+    // BUG-PERF-10: part timing. Parts nest, and each records only its OWN time -- what is left after the
+    // parts opened inside it -- so the parts of one item are disjoint and, with the "rest" the pump files
+    // for what no part covers, add up to the item's total. All of it is main thread (the pump thread);
+    // elsewhere a part is a no-op, so the same code can sit in a method that runs on a pool thread
+    // whenever an await in front of it did not complete synchronously.
+    //
+    // Inclusive ticks of the parts that closed directly inside the part now open (or inside the item).
+    [ThreadStatic] private static long _partChildTicks;
+    // Sum of the parts' own ticks since the current item started.
+    [ThreadStatic] private static long _itemPartTicks;
+
+    /// <summary>Times the code up to the end of the <c>using</c> under <paramref name="part"/>, filed
+    /// against the queue item that is running (or "frame" outside one). Only for code with no
+    /// <c>await</c> inside the scope: the scope would otherwise be closed from another thread.</summary>
+    public static PartScope Part(string part)
+    {
+        if (!_onPumpThread) return default;
+        long outer = _partChildTicks;
+        _partChildTicks = 0;
+        return new PartScope(part, Stopwatch.GetTimestamp(), outer);
+    }
+
+    public readonly struct PartScope : IDisposable
+    {
+        private readonly string? _part;
+        private readonly long _start;
+        private readonly long _outerChildTicks;
+
+        internal PartScope(string part, long start, long outerChildTicks)
+        {
+            _part = part;
+            _start = start;
+            _outerChildTicks = outerChildTicks;
+        }
+
+        public void Dispose()
+        {
+            if (_part == null) return;
+            long elapsed = Stopwatch.GetTimestamp() - _start;
+            long own = Math.Max(0, elapsed - _partChildTicks);
+            _partChildTicks = _outerChildTicks + elapsed;
+            _itemPartTicks += own;
+            RecordPart(_currentLabel ?? "frame", _part, own * 1000.0 / Stopwatch.Frequency);
+        }
+    }
+
     /// <summary>
     /// Writes one line per kind of work, ordered by total time spent, then clears the tally.
     ///
@@ -258,15 +322,43 @@ public static class MainThreadWorkQueue
     /// </summary>
     public static void ReportCosts()
     {
-        if (_costs.Count == 0) return;
+        if (_costs.Count == 0 && _partCosts.Count == 0) return;
 
         foreach (var (label, c) in _costs.OrderByDescending(kv => kv.Value.TotalMs))
         {
-            UI.StatsOverlay.EmitPerfLine(
-                $"[WorkCost] {label,-18} n={c.Count,-6} totalMs={c.TotalMs,8:F1} " +
-                $"avgMs={c.TotalMs / Math.Max(c.Count, 1),6:F2} maxMs={c.MaxMs,7:F1}");
+            EmitCost(label, c);
+            // BUG-PERF-10: the parts of this item, right under it. avgMs of a part is per call of the
+            // part, so a part that runs once per item and the item itself compare directly.
+            foreach (var (key, pc) in _partCosts.Where(kv => kv.Key.Item == label)
+                         .OrderByDescending(kv => kv.Value.TotalMs))
+                EmitCost($"  {label}/{key.Part}", pc);
         }
+        // Parts filed against something that is not a queue item (the frame's own sweeps).
+        foreach (var (key, pc) in _partCosts.Where(kv => !_costs.ContainsKey(kv.Key.Item))
+                     .OrderBy(kv => kv.Key.Item).ThenByDescending(kv => kv.Value.TotalMs))
+            EmitCost($"  {key.Item}/{key.Part}", pc);
+
         _costs.Clear();
+        _partCosts.Clear();
+    }
+
+    private static void EmitCost(string label, Cost c)
+    {
+        UI.StatsOverlay.EmitPerfLine(
+            $"[WorkCost] {label,-18} n={c.Count,-6} totalMs={c.TotalMs,8:F1} " +
+            $"avgMs={c.TotalMs / Math.Max(c.Count, 1),6:F2} maxMs={c.MaxMs,7:F1}");
+    }
+
+    /// <summary>Self test seam: every total in the cost tables (items as their label, parts as
+    /// "item/part"), then the tables cleared. Same data <see cref="ReportCosts"/> prints.</summary>
+    internal static Dictionary<string, double> TakeCostTotals()
+    {
+        var totals = new Dictionary<string, double>();
+        foreach (var (label, c) in _costs) totals[label] = c.TotalMs;
+        foreach (var (key, c) in _partCosts) totals[$"{key.Item}/{key.Part}"] = c.TotalMs;
+        _costs.Clear();
+        _partCosts.Clear();
+        return totals;
     }
 
     /// <summary>Current depth plus the peak since the previous call, which this resets.</summary>

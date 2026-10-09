@@ -2624,203 +2624,226 @@ public partial class ObjectRenderer : Node3D
         var prim = entity.GetComponent<PrimitiveComponent>();
         if (prim != null)
         {
-            // Do not render attachments as standalone objects. They are handled by AvatarRenderer.
-            if (entity.GetComponent<AttachmentComponent>() != null) return;
+            // BUG-PERF-10: the parts below add up to what this method costs; see
+            // MainThreadWorkQueue.Part. Plain scopes, no await inside any of them.
+            using (MainThreadWorkQueue.Part("uv.head"))
+            {
+                // Do not render attachments as standalone objects. They are handled by AvatarRenderer.
+                if (entity.GetComponent<AttachmentComponent>() != null) return;
 
-            UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
+                UpdateTextureAnimRegistration(state.EntityId, prim.TextureAnim);
 
-            // FEAT-ANIMESH-02: outside the in-range guard below -- the list lives on the component
-            // whether or not this prim is being drawn, and a plain child out of range can hold the
-            // animation its root's robot is playing.
-            SyncSignaledAnimations(entity, state, prim);
+                // FEAT-ANIMESH-02: outside the in-range guard below -- the list lives on the component
+                // whether or not this prim is being drawn, and a plain child out of range can hold the
+                // animation its root's robot is playing.
+                SyncSignaledAnimations(entity, state, prim);
 
-            // BUG-RENDER-16: an animation that arrives AFTER the mesh was built changes the merge
-            // barrier, and nothing else in UpdateVisual re-plans for it -- a TextureAnim block
-            // touches neither the shape nor the face records the two other re-plan triggers watch.
-            if (state.LoadedMeshKey != Guid.Empty && state.LoadedAnimBarrierFace != AnimBarrierFace(prim))
-                RePlanSurfaceMerge(state);
+                // BUG-RENDER-16: an animation that arrives AFTER the mesh was built changes the merge
+                // barrier, and nothing else in UpdateVisual re-plans for it -- a TextureAnim block
+                // touches neither the shape nor the face records the two other re-plan triggers watch.
+                if (state.LoadedMeshKey != Guid.Empty && state.LoadedAnimBarrierFace != AnimBarrierFace(prim))
+                    RePlanSurfaceMerge(state);
+            }
 
             // Skip all asset loading while the object is released (out of draw distance). The
             // cull pass clears ResourcesReleased and re-calls UpdateVisual when it returns; only
             // position/scale are kept current here so the distance check stays accurate.
             if (!state.ResourcesReleased)
             {
-                // FEAT-ANIMESH-01: a prim whose geometry stopped being an uploaded mesh (it became
-                // a sculpt or a plain prim) has nothing left to skin.
-                if (state.ControlAvatarOwned && !(prim.IsMesh && prim.MeshId != Guid.Empty))
-                    ReleaseControlAvatar(state);
+                using (MainThreadWorkQueue.Part("uv.load"))
+                {
+                    // FEAT-ANIMESH-01: a prim whose geometry stopped being an uploaded mesh (it became
+                    // a sculpt or a plain prim) has nothing left to skin.
+                    if (state.ControlAvatarOwned && !(prim.IsMesh && prim.MeshId != Guid.Empty))
+                        ReleaseControlAvatar(state);
 
-                // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
-                // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
-                // what stalls the main thread on a busy region.
-                if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
-                {
-                    if (state.LoadedMeshId != prim.MeshId)
+                    // Only (re)load the mesh when it actually changes — UpdateVisual fires on every
+                    // ObjectUpdate (i.e. every position change), and rebuilding the mesh each time is
+                    // what stalls the main thread on a busy region.
+                    if (prim.IsMesh && _assetService != null && prim.MeshId != Guid.Empty)
                     {
-                        state.LoadedMeshId = prim.MeshId;
-                        state.LoadedPrimShape = null;
-                        state.LoadedPrimDetailLevel = null;
-                        var meshLod = PickMeshDetailLevel(entity, prim.Scale);
-                        state.LoadedMeshDetailLevel = meshLod;
-                        _ = LoadAndApplyMeshAsync(state, prim.MeshId, meshLod);
+                        if (state.LoadedMeshId != prim.MeshId)
+                        {
+                            state.LoadedMeshId = prim.MeshId;
+                            state.LoadedPrimShape = null;
+                            state.LoadedPrimDetailLevel = null;
+                            var meshLod = PickMeshDetailLevel(entity, prim.Scale);
+                            state.LoadedMeshDetailLevel = meshLod;
+                            _ = LoadAndApplyMeshAsync(state, prim.MeshId, meshLod);
+                        }
                     }
-                }
-                else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
-                {
-                    // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
-                    if (state.LoadedMeshId != prim.SculptId || state.LoadedSculptType != prim.SculptType)
+                    else if (prim.IsSculpt && _assetService != null && prim.SculptId != Guid.Empty)
                     {
-                        state.LoadedMeshId = prim.SculptId;
-                        state.LoadedSculptType = prim.SculptType;
-                        state.LoadedPrimShape = null;
-                        state.LoadedPrimDetailLevel = null;
+                        // Sculpted prim: geometry comes from the sculpt-map texture, not the profile/path.
+                        if (state.LoadedMeshId != prim.SculptId || state.LoadedSculptType != prim.SculptType)
+                        {
+                            state.LoadedMeshId = prim.SculptId;
+                            state.LoadedSculptType = prim.SculptType;
+                            state.LoadedPrimShape = null;
+                            state.LoadedPrimDetailLevel = null;
+                            state.LoadedMeshDetailLevel = null;
+                            _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
+                        }
+                    }
+                    else if (_assetService != null && !prim.IsSculpt && state.LoadedPrimShape != prim.Shape)
+                    {
+                        // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
+                        // off-thread instead of a box placeholder. Re-requested only when the shape
+                        // changes. Falls back to a primitive solid if meshing fails.
+                        state.LoadedPrimShape = prim.Shape;
+                        state.LoadedMeshId = Guid.Empty;
                         state.LoadedMeshDetailLevel = null;
-                        _ = LoadAndApplySculptMeshAsync(state, prim.SculptId, prim.SculptType, prim.ProfileCurve);
+                        var lod = PickPrimDetailLevel(entity, prim.Scale);
+                        state.LoadedPrimDetailLevel = lod;
+                        _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
                     }
-                }
-                else if (_assetService != null && !prim.IsSculpt && state.LoadedPrimShape != prim.Shape)
-                {
-                    // Procedural prim: generate its real geometry (profile/path/cut/hollow/twist)
-                    // off-thread instead of a box placeholder. Re-requested only when the shape
-                    // changes. Falls back to a primitive solid if meshing fails.
-                    state.LoadedPrimShape = prim.Shape;
-                    state.LoadedMeshId = Guid.Empty;
-                    state.LoadedMeshDetailLevel = null;
-                    var lod = PickPrimDetailLevel(entity, prim.Scale);
-                    state.LoadedPrimDetailLevel = lod;
-                    _ = LoadAndApplyPrimMeshAsync(state, prim.Shape, prim.ProfileCurve, lod);
                 }
 
                 // FEAT-ANIMESH-01: does this prim belong to a control avatar, as of now? Settles the
                 // two arrival orders the mesh callback cannot (the flag turning up AFTER the mesh,
                 // and going away again).
-                SyncControlAvatar(entity, state, prim);
+                using (MainThreadWorkQueue.Part("uv.ctl"))
+                    SyncControlAvatar(entity, state, prim);
 
-                // Re-apply materials when the default texture/material/color changes (a proxy for
-                // "the object's appearance changed"). The mesh-assignment callback also re-applies
-                // once surfaces exist; here covers appearance-only changes on an already-loaded
-                // mesh. Must also watch ColorTint/Faces, not just TextureId/RenderMaterialId: a
-                // face-color or per-face-alpha edit (e.g. Object > Features > Transparency in the
-                // build floater) touches neither id, so a gate that only checked ids never noticed
-                // and the object kept rendering its original (often opaque) alpha forever — see
-                // BuildFaceMaterialAsync's colorTint.A < 0.99f Transparency branch, which was
-                // structurally correct but never re-ran after the initial load.
-                if (_assetService != null
-                    && (prim.TextureId != state.LoadedTextureId
-                        || prim.RenderMaterialId != state.LoadedMaterialId
-                        || prim.ColorTint != state.LoadedColorTint
-                        || !FacesEqual(state.LoadedFaces, prim.Faces)))
+                using (MainThreadWorkQueue.Part("uv.matgate"))
                 {
-                    state.LoadedTextureId = prim.TextureId;
-                    state.LoadedMaterialId = prim.RenderMaterialId;
-                    state.LoadedColorTint = prim.ColorTint;
-                    state.LoadedFaces = prim.Faces;
-                    if (state.LoadedMeshKey != Guid.Empty)
+                    // Re-apply materials when the default texture/material/color changes (a proxy for
+                    // "the object's appearance changed"). The mesh-assignment callback also re-applies
+                    // once surfaces exist; here covers appearance-only changes on an already-loaded
+                    // mesh. Must also watch ColorTint/Faces, not just TextureId/RenderMaterialId: a
+                    // face-color or per-face-alpha edit (e.g. Object > Features > Transparency in the
+                    // build floater) touches neither id, so a gate that only checked ids never noticed
+                    // and the object kept rendering its original (often opaque) alpha forever — see
+                    // BuildFaceMaterialAsync's colorTint.A < 0.99f Transparency branch, which was
+                    // structurally correct but never re-ran after the initial load.
+                    if (_assetService != null
+                        && (prim.TextureId != state.LoadedTextureId
+                            || prim.RenderMaterialId != state.LoadedMaterialId
+                            || prim.ColorTint != state.LoadedColorTint
+                            || !FacesEqual(state.LoadedFaces, prim.Faces)))
                     {
-                        // BUG-RENDER-16: the surface-merge grouping is a function of these very
-                        // face records, so re-plan it before re-applying materials. The three
-                        // mesh-assignment paths are all gated on a shape/asset change and never
-                        // re-run for a texture edit -- without this the object would keep a
-                        // grouping computed for its PREVIOUS texturing and every merged surface
-                        // would wear only the first face's material. AssignSharedMesh early-outs
-                        // when the plan is unchanged, which is the overwhelmingly common case.
-                        // A re-assignment re-applies the materials itself, so only apply here
-                        // when the grouping was already right.
-                        if (!RePlanSurfaceMerge(state))
-                            _ = ApplyFaceMaterialsAsync(state);
-                    }
-                    else if (state.ControlAvatarOwned && state.RiggedMeshData != null)
-                    {
-                        // FEAT-ANIMESH-01: the same edit on a prim whose mesh is drawn by a control
-                        // avatar. The face records decide its surface grouping, so it is re-skinned
-                        // with the new ones; an identical request is dropped on the other side.
-                        ControlAvatars?.SetControlAvatarMesh(state.EntityId, state.RiggedMeshData,
-                            state.LoadedMeshId, state.MeshInstance.Visible);
+                        state.LoadedTextureId = prim.TextureId;
+                        state.LoadedMaterialId = prim.RenderMaterialId;
+                        state.LoadedColorTint = prim.ColorTint;
+                        state.LoadedFaces = prim.Faces;
+                        if (state.LoadedMeshKey != Guid.Empty)
+                        {
+                            // BUG-RENDER-16: the surface-merge grouping is a function of these very
+                            // face records, so re-plan it before re-applying materials. The three
+                            // mesh-assignment paths are all gated on a shape/asset change and never
+                            // re-run for a texture edit -- without this the object would keep a
+                            // grouping computed for its PREVIOUS texturing and every merged surface
+                            // would wear only the first face's material. AssignSharedMesh early-outs
+                            // when the plan is unchanged, which is the overwhelmingly common case.
+                            // A re-assignment re-applies the materials itself, so only apply here
+                            // when the grouping was already right.
+                            if (!RePlanSurfaceMerge(state))
+                                _ = ApplyFaceMaterialsAsync(state);
+                        }
+                        else if (state.ControlAvatarOwned && state.RiggedMeshData != null)
+                        {
+                            // FEAT-ANIMESH-01: the same edit on a prim whose mesh is drawn by a control
+                            // avatar. The face records decide its surface grouping, so it is re-skinned
+                            // with the new ones; an identical request is dropped on the other side.
+                            ControlAvatars?.SetControlAvatarMesh(state.EntityId, state.RiggedMeshData,
+                                state.LoadedMeshId, state.MeshInstance.Visible);
+                        }
                     }
                 }
             }
 
-            var sx = float.IsNaN(prim.Scale.X) ? 1f : Mathf.Clamp(prim.Scale.X, 0.001f, 1000f);
-            var sy = float.IsNaN(prim.Scale.Y) ? 1f : Mathf.Clamp(prim.Scale.Y, 0.001f, 1000f);
-            var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
-            state.MeshInstance.Scale = new Godot.Vector3(sx, sz, sy);
+            using (MainThreadWorkQueue.Part("uv.scale"))
+            {
+                var sx = float.IsNaN(prim.Scale.X) ? 1f : Mathf.Clamp(prim.Scale.X, 0.001f, 1000f);
+                var sy = float.IsNaN(prim.Scale.Y) ? 1f : Mathf.Clamp(prim.Scale.Y, 0.001f, 1000f);
+                var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
+                state.MeshInstance.Scale = new Godot.Vector3(sx, sz, sy);
 
-            // Planar UVs are derived from vertex position in metres, so a resize changes them.
-            // The mesh and the materials both survive a resize untouched (only the node scale
-            // moves), so without this a planar face keeps the tiling of its previous size.
-            UpdatePrimScaleUniform(state, prim.Scale);
+                // Planar UVs are derived from vertex position in metres, so a resize changes them.
+                // The mesh and the materials both survive a resize untouched (only the node scale
+                // moves), so without this a planar face keeps the tiling of its previous size.
+                UpdatePrimScaleUniform(state, prim.Scale);
+            }
 
             // Phantom means "no collision" in SL: move off the terrain/objects layer so
             // AvatarController's ground ray (masked to layer 1) passes through, while staying
             // selectable/editable (the object-selection raycast queries all layers).
-            state.StaticBody.CollisionLayer = prim.IsPhantom ? PhantomLayer : 1u;
+            using (MainThreadWorkQueue.Part("uv.layer"))
+                state.StaticBody.CollisionLayer = prim.IsPhantom ? PhantomLayer : 1u;
 
-            // BUG-RENDER-24: does the sim say this object is a mirror? Tracked here rather than
-            // in the sweep so the sweep keeps costing one hash lookup per visual. Removed as well
-            // as added: a probe block edited back to "not a mirror" must release the hero probe.
-            if (prim.ReflectionProbe is { IsMirror: true }) _flaggedMirrors.Add(entityId);
-            else _flaggedMirrors.Remove(entityId);
-
-            // BUG-RENDER-27: the classic fullbright + Shiny HIGH fake mirror. Same place and same
-            // reasoning as the flagged set above -- decided once per update where the faces are
-            // already in hand, so the cull sweep stays a hash lookup.
-            bool legacyMirror = false;
-            if (prim.Faces is { Length: > 0 })
+            using (MainThreadWorkQueue.Part("uv.flags"))
             {
-                foreach (var f in prim.Faces)
+                // BUG-RENDER-24: does the sim say this object is a mirror? Tracked here rather than
+                // in the sweep so the sweep keeps costing one hash lookup per visual. Removed as well
+                // as added: a probe block edited back to "not a mirror" must release the hero probe.
+                if (prim.ReflectionProbe is { IsMirror: true }) _flaggedMirrors.Add(entityId);
+                else _flaggedMirrors.Remove(entityId);
+
+                // BUG-RENDER-27: the classic fullbright + Shiny HIGH fake mirror. Same place and same
+                // reasoning as the flagged set above -- decided once per update where the faces are
+                // already in hand, so the cull sweep stays a hash lookup.
+                bool legacyMirror = false;
+                if (prim.Faces is { Length: > 0 })
                 {
-                    if (f.Fullbright && f.ShinyGlossiness >= LegacyMirrorMinShiny) { legacyMirror = true; break; }
+                    foreach (var f in prim.Faces)
+                    {
+                        if (f.Fullbright && f.ShinyGlossiness >= LegacyMirrorMinShiny) { legacyMirror = true; break; }
+                    }
                 }
-            }
-            if (legacyMirror) _legacyMirrors.Add(entityId);
-            else _legacyMirrors.Remove(entityId);
-
-            if (prim.LightEnabled)
-            {
-                if (state.LightNode == null)
-                {
-                    state.LightNode = new OmniLight3D { Name = "Light" };
-                    state.MeshInstance.AddChild(state.LightNode);
-                }
-                state.LightNode.LightColor = new Godot.Color(prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z);
-                // SL's Intensity has no direct Godot equivalent unit -- scaled up so a default
-                // (Intensity 1) reads as a visible light rather than a near-invisible dim glow.
-                state.LightNode.LightEnergy = prim.LightIntensity * 2.0f;
-                state.LightNode.OmniRange = prim.LightRadius;
-                // OmniAttenuation of 0 is a degenerate/invalid falloff in Godot; SL's own default
-                // Falloff is 1.0, well inside Godot's valid range, but a user-set 0 shouldn't zero
-                // the light out entirely.
-                state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
-                state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
-            }
-            else if (state.LightNode != null)
-            {
-                state.LightNode.QueueFree();
-                state.LightNode = null;
+                if (legacyMirror) _legacyMirrors.Add(entityId);
+                else _legacyMirrors.Remove(entityId);
             }
 
-            if (prim.Particles != null)
+            using (MainThreadWorkQueue.Part("uv.lightfx"))
             {
-                if (state.ParticlesNode == null)
+                if (prim.LightEnabled)
                 {
-                    state.ParticlesNode = new ObjectParticles { Name = "Particles", EmitterEntityId = state.EntityId };
-                    state.MeshInstance.AddChild(state.ParticlesNode);
+                    if (state.LightNode == null)
+                    {
+                        state.LightNode = new OmniLight3D { Name = "Light" };
+                        state.MeshInstance.AddChild(state.LightNode);
+                    }
+                    state.LightNode.LightColor = new Godot.Color(prim.LightColor.X, prim.LightColor.Y, prim.LightColor.Z);
+                    // SL's Intensity has no direct Godot equivalent unit -- scaled up so a default
+                    // (Intensity 1) reads as a visible light rather than a near-invisible dim glow.
+                    state.LightNode.LightEnergy = prim.LightIntensity * 2.0f;
+                    state.LightNode.OmniRange = prim.LightRadius;
+                    // OmniAttenuation of 0 is a degenerate/invalid falloff in Godot; SL's own default
+                    // Falloff is 1.0, well inside Godot's valid range, but a user-set 0 shouldn't zero
+                    // the light out entirely.
+                    state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
+                    state.LightNode.OmniAttenuation = Mathf.Max(0.1f, prim.LightFalloff);
                 }
-                if (_assetService != null && _gpuCache != null)
+                else if (state.LightNode != null)
                 {
-                    state.ParticlesNode.Apply(prim.Particles, _gpuCache, _assetService);
+                    state.LightNode.QueueFree();
+                    state.LightNode = null;
                 }
-            }
-            else if (state.ParticlesNode != null)
-            {
-                state.ParticlesNode.QueueFree();
-                state.ParticlesNode = null;
+
+                if (prim.Particles != null)
+                {
+                    if (state.ParticlesNode == null)
+                    {
+                        state.ParticlesNode = new ObjectParticles { Name = "Particles", EmitterEntityId = state.EntityId };
+                        state.MeshInstance.AddChild(state.ParticlesNode);
+                    }
+                    if (_assetService != null && _gpuCache != null)
+                    {
+                        state.ParticlesNode.Apply(prim.Particles, _gpuCache, _assetService);
+                    }
+                }
+                else if (state.ParticlesNode != null)
+                {
+                    state.ParticlesNode.QueueFree();
+                    state.ParticlesNode = null;
+                }
             }
         }
 
         var transform = entity.GetComponent<TransformComponent>();
         if (transform != null)
         {
+            using var posPart = MainThreadWorkQueue.Part("uv.pos");
             state.MeshInstance.Position = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
 
             var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
@@ -2836,12 +2859,21 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task LoadAndApplyMeshAsync(VisualState state, Guid meshId, MeshDetailLevel lod)
     {
         if (_assetService == null) return;
-        // BUG-PERF-06: taken here, on the main thread, for the worker preparation below.
-        var planInputs = CapturePlanInputs(state);
-        var geometryKey = KeyForMesh(meshId, lod);
+        // BUG-PERF-10: the synchronous head of this method is a main-thread cost whenever it runs from a
+        // queue item, so its steps are timed apart (and the awaits are split from the calls they wait on).
+        SurfacePlanInputs planInputs;
+        Guid geometryKey;
+        using (MainThreadWorkQueue.Part("load.capture"))
+        {
+            // BUG-PERF-06: taken here, on the main thread, for the worker preparation below.
+            planInputs = CapturePlanInputs(state);
+            geometryKey = KeyForMesh(meshId, lod);
+        }
         var entityId = state.EntityId;
 
-        var mesh = await _assetService.GetMeshAsync(meshId, lod);
+        System.Threading.Tasks.Task<MeshData?> meshRequest;
+        using (MainThreadWorkQueue.Part("load.get")) meshRequest = _assetService.GetMeshAsync(meshId, lod);
+        var mesh = await meshRequest;
         if (mesh == null || mesh.Submeshes.Count == 0)
         {
             // A mesh object whose asset never arrives is drawn as NOTHING at all (the node keeps
@@ -2854,7 +2886,10 @@ public partial class ObjectRenderer : Node3D
             return;
         }
 
-        var prepared = await PrepareArrivedMeshAsync(mesh, flipV: true, planInputs, geometryKey, entityId);
+        System.Threading.Tasks.Task<PreparedStaticMesh?> meshPrepare;
+        using (MainThreadWorkQueue.Part("load.prepare"))
+            meshPrepare = PrepareArrivedMeshAsync(mesh, flipV: true, planInputs, geometryKey, entityId);
+        var prepared = await meshPrepare;
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
@@ -2877,7 +2912,10 @@ public partial class ObjectRenderer : Node3D
         // control avatar. Not built here at all -- the unskinned geometry, its materials and its
         // trimesh shape would all be wrong (and the shape in the wrong place).
         var geometryKey = KeyForMesh(meshId, lod);
-        if (TryHandOverToControlAvatar(state, geometryKey, meshId, mesh)) return;
+        bool handedOver;
+        using (MainThreadWorkQueue.Part("am.handover"))
+            handedOver = TryHandOverToControlAvatar(state, geometryKey, meshId, mesh);
+        if (handedOver) return;
 
         AssignSharedMesh(state, geometryKey, mesh, flipV: true, prepared);
     }
@@ -3076,12 +3114,22 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task LoadAndApplySculptMeshAsync(VisualState state, Guid sculptId, byte sculptType, byte profileCurve)
     {
         if (_assetService == null) return;
-        var planInputs = CapturePlanInputs(state); // BUG-PERF-06, main thread
-        var geometryKey = KeyForSculpt(sculptId, sculptType);
+        SurfacePlanInputs planInputs;
+        Guid geometryKey;
+        using (MainThreadWorkQueue.Part("load.capture"))
+        {
+            planInputs = CapturePlanInputs(state); // BUG-PERF-06, main thread
+            geometryKey = KeyForSculpt(sculptId, sculptType);
+        }
         var entityId = state.EntityId;
 
-        var mesh = await _assetService.GetSculptMeshAsync(sculptId, sculptType);
-        var prepared = await PrepareArrivedMeshAsync(mesh, flipV: false, planInputs, geometryKey, entityId);
+        System.Threading.Tasks.Task<MeshData?> sculptRequest;
+        using (MainThreadWorkQueue.Part("load.get")) sculptRequest = _assetService.GetSculptMeshAsync(sculptId, sculptType);
+        var mesh = await sculptRequest;
+        System.Threading.Tasks.Task<PreparedStaticMesh?> sculptPrepare;
+        using (MainThreadWorkQueue.Part("load.prepare"))
+            sculptPrepare = PrepareArrivedMeshAsync(mesh, flipV: false, planInputs, geometryKey, entityId);
+        var prepared = await sculptPrepare;
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
@@ -3241,12 +3289,22 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task LoadAndApplyPrimMeshAsync(VisualState state, PrimShape shape, byte profileCurve, MeshDetailLevel lod)
     {
         if (_assetService == null) return;
-        var planInputs = CapturePlanInputs(state); // BUG-PERF-06, main thread
-        var geometryKey = KeyForShape(shape, lod);
+        SurfacePlanInputs planInputs;
+        Guid geometryKey;
+        using (MainThreadWorkQueue.Part("load.capture"))
+        {
+            planInputs = CapturePlanInputs(state); // BUG-PERF-06, main thread
+            geometryKey = KeyForShape(shape, lod);
+        }
         var entityId = state.EntityId;
 
-        var mesh = await _assetService.GetPrimMeshAsync(shape, lod);
-        var prepared = await PrepareArrivedMeshAsync(mesh, flipV: true, planInputs, geometryKey, entityId);
+        System.Threading.Tasks.Task<MeshData?> primRequest;
+        using (MainThreadWorkQueue.Part("load.get")) primRequest = _assetService.GetPrimMeshAsync(shape, lod);
+        var mesh = await primRequest;
+        System.Threading.Tasks.Task<PreparedStaticMesh?> primPrepare;
+        using (MainThreadWorkQueue.Part("load.prepare"))
+            primPrepare = PrepareArrivedMeshAsync(mesh, flipV: true, planInputs, geometryKey, entityId);
+        var prepared = await primPrepare;
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
@@ -3316,17 +3374,24 @@ public partial class ObjectRenderer : Node3D
         // camera, before this object's faces potentially fan out into several concurrent texture
         // requests below. Must stay ahead of the first await -- see ComputeTextureLod's note on
         // main-thread-only access.
-        var (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
+        float screenPixelArea, priority;
+        // BUG-PERF-10: everything up to the first await that does not complete at once is main-thread
+        // time of whoever called this, so its steps are timed apart (MainThreadWorkQueue.Part).
+        using (MainThreadWorkQueue.Part("mat.lod"))
+            (screenPixelArea, priority) = ComputeTextureLod(state.MeshInstance);
 
-        // BUG-RENDER-16 (v0.22.26): a re-apply writes fresh materials onto the PARENT's surfaces;
-        // put any split surface back first so the new material lands where the census will read
-        // it, and the census re-splits within a second once the alpha kinds have settled.
-        UnsplitSurfaces(state);
+        using (MainThreadWorkQueue.Part("mat.unsplit"))
+        {
+            // BUG-RENDER-16 (v0.22.26): a re-apply writes fresh materials onto the PARENT's surfaces;
+            // put any split surface back first so the new material lands where the census will read
+            // it, and the census re-splits within a second once the alpha kinds have settled.
+            UnsplitSurfaces(state);
 
-        // FEAT-PERF-06: the material is being rebuilt, so this prim's group fingerprint is about
-        // to change. Pull it out; the cull sweep re-fingerprints and re-joins the right group
-        // once the new material has settled on its own node.
-        _instanceGroups?.Leave(state.EntityId);
+            // FEAT-PERF-06: the material is being rebuilt, so this prim's group fingerprint is about
+            // to change. Pull it out; the cull sweep re-fingerprints and re-joins the right group
+            // once the new material has settled on its own node.
+            _instanceGroups?.Leave(state.EntityId);
+        }
 
         // FEAT-RENDER-01 Phase 2 needs an object that actually HAS a texture rotation to be
         // testable at all. The one picked by eye turned out to have rot=0 on every face, so the
@@ -3406,7 +3471,10 @@ public partial class ObjectRenderer : Node3D
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
-            var (mat, used) = await BuildFaceMaterialAsync(defaultFace, prim.Scale, screenPixelArea, priority, prim.IsSculpt);
+            System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> wholeNode;
+            using (MainThreadWorkQueue.Part("mat.faces"))
+                wholeNode = BuildFaceMaterialAsync(defaultFace, prim.Scale, screenPixelArea, priority, prim.IsSculpt);
+            var (mat, used) = await wholeNode;
             ApplyOnMainThread(state, () =>
             {
                 state.MeshInstance.MaterialOverride = mat;
@@ -3417,20 +3485,25 @@ public partial class ObjectRenderer : Node3D
 
         var faceTasks = new List<System.Threading.Tasks.Task<(int Surface, ShaderMaterial Material, List<Guid> Used)>>();
 
-        for (int surface = 0; surface < faceIndices.Length; surface++)
+        using (MainThreadWorkQueue.Part("mat.faces"))
         {
-            int faceIdx = faceIndices[surface];
-            FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
-                ? prim.Faces[faceIdx] : defaultFace;
-
-            int surf = surface; // capture
-            faceTasks.Add(BuildFaceMaterialAsync(ft, prim.Scale, screenPixelArea, priority, prim.IsSculpt).ContinueWith(t =>
+            for (int surface = 0; surface < faceIndices.Length; surface++)
             {
-                return (surf, t.Result.Material, t.Result.Used);
-            }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
+                int faceIdx = faceIndices[surface];
+                FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
+                    ? prim.Faces[faceIdx] : defaultFace;
+
+                int surf = surface; // capture
+                faceTasks.Add(BuildFaceMaterialAsync(ft, prim.Scale, screenPixelArea, priority, prim.IsSculpt).ContinueWith(t =>
+                {
+                    return (surf, t.Result.Material, t.Result.Used);
+                }, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously));
+            }
         }
 
         var results = await System.Threading.Tasks.Task.WhenAll(faceTasks);
+        // BUG-PERF-10: no await after this point, so the scope can run to the end of the method.
+        using var finishPart = MainThreadWorkQueue.Part("mat.finish");
         var allUsed = new List<Guid>();
 
         foreach (var result in results)
@@ -3609,6 +3682,8 @@ public partial class ObjectRenderer : Node3D
         //
         // Both were expensive to find; if a future variant is added, it inherits neither
         // automatically.
+        // BUG-PERF-10: the material and its plain parameters; no await or return before the Dispose below.
+        var paramsPart = MainThreadWorkQueue.Part("mat.params");
         var material = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
         material.SetShaderParameter(PrimShaderFamily.AlbedoColor, colorTint);
         material.SetShaderParameter(PrimShaderFamily.UvScale, new Godot.Vector2(repeatU, repeatV));
@@ -3663,6 +3738,7 @@ public partial class ObjectRenderer : Node3D
         {
             material.Shader = PrimShaderFamily.Blend;
         }
+        paramsPart.Dispose();
 
         // FEAT-RENDER-04 phase 5: set true once a legacy material's DiffuseAlphaMode has decided
         // this face's transparency authoritatively, so the plain-texture branch below skips
@@ -3676,7 +3752,10 @@ public partial class ObjectRenderer : Node3D
         // material, not per face: a build shares one material across dozens of faces.
         if (ft.LegacyMaterialId != Guid.Empty && _assetService != null)
         {
-            var legacy = await _assetService.GetLegacyMaterialAsync(ft.LegacyMaterialId);
+            System.Threading.Tasks.Task<LegacyMaterialData?> legacyRequest;
+            using (MainThreadWorkQueue.Part("mat.legacy.get"))
+                legacyRequest = _assetService.GetLegacyMaterialAsync(ft.LegacyMaterialId);
+            var legacy = await legacyRequest;
             if (legacy is { } lm)
             {
                 if (DebugLegacyMaterials && _legacyMaterialsSeen.TryAdd(lm.Id, 0))
@@ -3804,7 +3883,10 @@ public partial class ObjectRenderer : Node3D
         PbrMaterialData? pbr = null;
         if (ft.RenderMaterialId != Guid.Empty && _assetService != null)
         {
-            pbr = await _assetService.GetMaterialAsync(ft.RenderMaterialId);
+            System.Threading.Tasks.Task<PbrMaterialData?> pbrRequest;
+            using (MainThreadWorkQueue.Part("mat.pbr.get"))
+                pbrRequest = _assetService.GetMaterialAsync(ft.RenderMaterialId);
+            pbr = await pbrRequest;
             if (pbr != null)
             {
                 if (_pbrMaterialsSeen.TryAdd(ft.RenderMaterialId, 0))
@@ -4265,7 +4347,10 @@ public partial class ObjectRenderer : Node3D
         if (_gpuCache == null || _assetService == null)
             return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, screenPixelArea: screenPixelArea, priority: priority);
+        // BUG-PERF-10: the synchronous part of a texture request -- a GpuCache hit, or the start of a
+        // fetch whose first awaits may complete at once -- is main-thread time for every caller.
+        using (MainThreadWorkQueue.Part("tex.request"))
+            return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, screenPixelArea: screenPixelArea, priority: priority);
     }
 
     /// <summary>
@@ -4724,27 +4809,36 @@ public partial class ObjectRenderer : Node3D
     private void AssignSharedMesh(VisualState state, Guid geometryKey, MeshData data, bool flipV,
         PreparedStaticMesh? prepared = null)
     {
-        // FEAT-ANIMESH-01: every static mesh goes through here, and a prim being given one is by
-        // definition not drawn by a control avatar any more (its geometry source changed under it).
-        // A no-op unless it was.
-        ReleaseControlAvatar(state);
+        // BUG-PERF-10: timed in parts (MainThreadWorkQueue.Part), which add up to this method.
+        (bool[] RunStart, int Surfaces, int SubmeshCount, ulong Pattern) plan;
+        Guid key;
+        using (MainThreadWorkQueue.Part("am.plan"))
+        {
+            // FEAT-ANIMESH-01: every static mesh goes through here, and a prim being given one is by
+            // definition not drawn by a control avatar any more (its geometry source changed under it).
+            // A no-op unless it was.
+            ReleaseControlAvatar(state);
 
-        // BUG-RENDER-16: decide the surface grouping BEFORE consulting the cache -- it is part of
-        // the key. Kept on the main thread with the rest of this method: it reads the object's
-        // face records out of the world and is a handful of struct comparisons.
-        var plan = PlanSurfaceMerge(state, data);
-        Guid key = MergedMeshKey(geometryKey, ref plan);
+            // BUG-RENDER-16: decide the surface grouping BEFORE consulting the cache -- it is part of
+            // the key. Kept on the main thread with the rest of this method: it reads the object's
+            // face records out of the world and is a handful of struct comparisons.
+            plan = PlanSurfaceMerge(state, data);
+            key = MergedMeshKey(geometryKey, ref plan);
+        }
 
         if (state.LoadedMeshKey == key && state.MeshInstance.Mesh != null) return;
 
-        ReleaseMeshRef(state);
-
-        ArrayMesh? mesh = _gpuCache?.Get(key) as ArrayMesh;
-        if (mesh != null && _meshFaceIndices.ContainsKey(key))
+        ArrayMesh? mesh;
+        bool cacheHit;
+        using (MainThreadWorkQueue.Part("am.lookup"))
         {
-            _gpuCache!.AddRef(key);
+            ReleaseMeshRef(state);
+
+            mesh = _gpuCache?.Get(key) as ArrayMesh;
+            cacheHit = mesh != null && _meshFaceIndices.ContainsKey(key);
+            if (cacheHit) _gpuCache!.AddRef(key);
         }
-        else
+        if (!cacheHit)
         {
             // Measured separately from the collision shape below: together they are "mesh.apply",
             // which the cost table showed averaging 10.8 ms and peaking at 188 ms -- bigger than a
@@ -4761,6 +4855,7 @@ public partial class ObjectRenderer : Node3D
                 MainThreadWorkQueue.RecordExternal("mesh.prepare", prepared.PrepareMs);
                 MainThreadWorkQueue.Measure("mesh.build", () =>
                 {
+                    using var buildPart = MainThreadWorkQueue.Part("am.build");
                     built = CommitSurfaceArrays(prepared.Surfaces);
                     faceIndices = prepared.FaceIndices;
                 });
@@ -4769,14 +4864,18 @@ public partial class ObjectRenderer : Node3D
             {
                 MainThreadWorkQueue.Measure("mesh.build.sync", () =>
                 {
+                    using var buildPart = MainThreadWorkQueue.Part("am.build.sync");
                     built = BuildArrayMesh(data, flipV, plan.RunStart, out var fi,
                         () => $"prim entity={state.EntityId:N} mesh={key:N} geometry={geometryKey:N}");
                     faceIndices = fi;
                 });
             }
             mesh = built;
-            _meshFaceIndices[key] = faceIndices!;
-            if (mesh != null) _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
+            using (MainThreadWorkQueue.Part("am.put"))
+            {
+                _meshFaceIndices[key] = faceIndices!;
+                if (mesh != null) _gpuCache?.Put(key, mesh, EstimateMeshSize(data), initialRefCount: 1);
+            }
 
             // "Did the merge fire, and did it have anything to work with?" is the one question an
             // in-world A/B cannot answer from the screen -- exactly as BUG-RENDER-12 found on the
@@ -4803,21 +4902,24 @@ public partial class ObjectRenderer : Node3D
             }
         }
 
-        state.MeshInstance.Mesh = mesh;
-        state.LoadedMeshKey = key;
-        state.LoadedGeometryKey = geometryKey;
-        state.LoadedMeshData = data;
-        state.LoadedMeshFlipV = flipV;
-
-        if (mesh != null)
+        using (MainThreadWorkQueue.Part("am.setmesh"))
         {
-            if (!RenderConfig.SmallObjectShadows && EffectiveBoundingRadius(state) < 0.5f)
+            state.MeshInstance.Mesh = mesh;
+            state.LoadedMeshKey = key;
+            state.LoadedGeometryKey = geometryKey;
+            state.LoadedMeshData = data;
+            state.LoadedMeshFlipV = flipV;
+
+            if (mesh != null)
             {
-                state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
-            }
-            else
-            {
-                state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+                if (!RenderConfig.SmallObjectShadows && EffectiveBoundingRadius(state) < 0.5f)
+                {
+                    state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                }
+                else
+                {
+                    state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+                }
             }
         }
 
@@ -4838,8 +4940,9 @@ public partial class ObjectRenderer : Node3D
             // into surfaces without changing a single triangle, so all merge variants of one
             // geometry share the one trimesh shape -- which matters, since building it was
             // measured at 6.12 ms and 94% of all mesh work.
-            EnsureCollisionShape(state, geometryKey, data,
-                prepared != null && ReferenceEquals(prepared.Data, data) ? prepared.TrimeshFaces : null);
+            using (MainThreadWorkQueue.Part("am.collision"))
+                EnsureCollisionShape(state, geometryKey, data,
+                    prepared != null && ReferenceEquals(prepared.Data, data) ? prepared.TrimeshFaces : null);
         }
         else
         {
@@ -4847,7 +4950,8 @@ public partial class ObjectRenderer : Node3D
         }
 
         // Geometry surfaces now exist — (re)apply per-face materials.
-        _ = ApplyFaceMaterialsAsync(state);
+        using (MainThreadWorkQueue.Part("am.materials"))
+            _ = ApplyFaceMaterialsAsync(state);
     }
 
     /// <summary>BUG-RENDER-06: maps a WorldPrim shader (whichever <c>Kind</c> the alpha-mode logic
@@ -5322,7 +5426,13 @@ public partial class ObjectRenderer : Node3D
         {
             MainThreadWorkQueue.Measure("collision.urgent", () =>
             {
-                var urgent = new ConcavePolygonShape3D { Data = preparedFaces ?? BuildTrimeshFaces(data) };
+                // BUG-PERF-10: the face list (a worker normally made it) and the physics-server call apart.
+                Godot.Vector3[] faces;
+                using (MainThreadWorkQueue.Part("coll.faces"))
+                    faces = preparedFaces ?? BuildTrimeshFaces(data);
+                ConcavePolygonShape3D urgent;
+                using (MainThreadWorkQueue.Part("coll.shape"))
+                    urgent = new ConcavePolygonShape3D { Data = faces };
                 _meshCollisionShapes[key] = urgent;
                 state.CollisionShape.Shape = urgent;
             });

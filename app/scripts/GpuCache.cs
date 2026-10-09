@@ -295,10 +295,17 @@ public class GpuCache
         // 2026-09-03, [TexPipe] req climbing past 2600 with ~99.9% disk-cache hits). A CLEAN
         // cached upload is safe for everyone; only re-fetch when this id's cached upload is
         // recorded as coming from a degraded decode.
-        var cached = Get(textureId) as ImageTexture;
-        bool bypassedDegraded = cached != null && rejectDegraded && _uploadFromDegraded.ContainsKey(textureId);
-        if (bypassedDegraded) cached = null;
-        MaybeDumpGpuCacheStats(cached != null, bypassedDegraded);
+        // BUG-PERF-10: timed apart (MainThreadWorkQueue.Part; a no-op off the main thread), because a
+        // texture request made from a queue item or the cull sweep is main-thread time, hit or miss.
+        ImageTexture? cached;
+        bool bypassedDegraded;
+        using (MainThreadWorkQueue.Part("tex.lookup"))
+        {
+            cached = Get(textureId) as ImageTexture;
+            bypassedDegraded = cached != null && rejectDegraded && _uploadFromDegraded.ContainsKey(textureId);
+            if (bypassedDegraded) cached = null;
+            MaybeDumpGpuCacheStats(cached != null, bypassedDegraded);
+        }
         if (cached != null)
         {
             // A texture first seen small/distant was uploaded downsampled. Walking up to it used
@@ -310,16 +317,21 @@ public class GpuCache
             // pillar). The real viewer instead re-evaluates continuously and loads a sharper level
             // when an object's on-screen size grows (LLViewerLODTexture::processTextureStats ->
             // "current_discard < mDesiredDiscardLevel" handling), so do the same here.
-            TryUpgradeCachedTexture(textureId, cached, assetService, generateMipmaps, screenPixelArea, priority);
+            using (MainThreadWorkQueue.Part("tex.upgrade"))
+                TryUpgradeCachedTexture(textureId, cached, assetService, generateMipmaps, screenPixelArea, priority);
             return Task.FromResult(cached)!;
         }
 
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
-        var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-            () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel, bakeAgentId),
-            LazyThreadSafetyMode.ExecutionAndPublication));
-        return lazy.Value;
+        // The start of a fetch runs inline up to its first await that does not complete at once.
+        using (MainThreadWorkQueue.Part("tex.miss"))
+        {
+            var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
+                () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel, bakeAgentId),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+            return lazy.Value;
+        }
     }
 
     /// <summary>Screen pixel area each cached texture's CURRENT upload was sized for, so a later
