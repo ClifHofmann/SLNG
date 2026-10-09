@@ -601,6 +601,9 @@ public partial class ChatWindow : SLNGWindow
     /// <summary>True when an IM chat tab for this avatar exists. For the selftest.</summary>
     public bool HasImTab(Guid agentId) => _chatTabs.Exists(t => t.TargetAgentId == agentId);
 
+    /// <summary>Active chat tab target agent id (for IMs) or null (main/group). For selftest verification.</summary>
+    public Guid? ActiveChatTargetAgentId => _activeChatTab?.TargetAgentId;
+
     internal void DrainPeerTypingForSelfTest(Guid agentId, string name, bool typing)
     {
         _peerTypingQueue.Enqueue(new InstantMessageTypingEvent(agentId, name, typing));
@@ -1922,16 +1925,22 @@ public partial class ChatWindow : SLNGWindow
                 }
                 var tab = GetOrCreateImTab(e.FromAgentId, name);
                 SetPeerTyping(tab, true);
+                // If the communication window is completely closed, open it to the new conversation.
+                // However, if the window is already open: do NOT steal focus, do NOT switch away
+                // from an active group/friends view, and do NOT switch away from an ongoing conversation.
                 if (!Visible)
                 {
                     Visible = true;
                     EnsureOnScreen();
+                    BringToFront();
+                    SelectOuterTab(_chatPageControl);
+                    SelectChatTab(tab);
                 }
-                if (IsMinimized) Unminimize();
-                BringToFront();
-                SelectOuterTab(_chatPageControl);
-                SelectChatTab(tab);
-                Console.WriteLine($"[ChatWindow] DrainPeerTyping: IM tab for {e.FromAgentId} ({name}) opened/selected, typing=True");
+                else if (_chatPageControl.Visible && _activeChatTab == null)
+                {
+                    SelectChatTab(tab);
+                }
+                Console.WriteLine($"[ChatWindow] DrainPeerTyping: IM tab for {e.FromAgentId} ({name}) created/updated, typing=True");
             }
             else
             {

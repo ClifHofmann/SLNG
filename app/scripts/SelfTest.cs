@@ -1497,11 +1497,25 @@ public static partial class SelfTest
             chat.Initialize(log);
             tree.Root.AddChild(chat);
             var friendId = Guid.NewGuid();
+            // Start in Groups page while window is visible: peer typing must create tab without stealing outer page or active chat tab
+            chat.Visible = true;
+            chat.ShowPage(UI.ChatWindow.Page.Groups);
             chat.DrainPeerTypingForSelfTest(friendId, "Tester Resident", true);
             bool hasTab = chat.HasImTab(friendId);
-            return new Check(Name, hasTab, hasTab
-                ? "typing indicator opened tab titled with name"
-                : "typing indicator failed to open tab");
+            bool keptGroups = chat.IsShowing(UI.ChatWindow.Page.Groups);
+            bool keptChatTab = chat.ActiveChatTargetAgentId == null;
+
+            // When window is closed: peer typing should open window and select the conversation
+            chat.Visible = false;
+            var friendId2 = Guid.NewGuid();
+            chat.DrainPeerTypingForSelfTest(friendId2, "Tester Two", true);
+            bool openedWhenClosed = chat.Visible && chat.ActiveChatTargetAgentId == friendId2;
+
+            bool allOk = hasTab && keptGroups && keptChatTab && openedWhenClosed;
+            string detail = allOk
+                ? "typing opens tab in background without stealing page/tab focus; opens window when closed"
+                : $"failed: hasTab={hasTab}, keptGroups={keptGroups}, keptChatTab={keptChatTab}, openedWhenClosed={openedWhenClosed}";
+            return new Check(Name, allOk, detail);
         }
         catch (Exception ex)
         {
