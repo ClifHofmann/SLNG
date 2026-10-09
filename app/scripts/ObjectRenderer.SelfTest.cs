@@ -544,6 +544,101 @@ public partial class ObjectRenderer
             : (false, string.Join("; ", failures));
     }
 
+    /// <summary>
+    /// BUG-PERF-11: the collision shapes of objects within reach of the avatar. One touching it is built
+    /// on the spot; the rest are queued and built nearest first, one per frame when the budget is
+    /// nothing, and an object that goes away while its shape is queued costs no shape at all. The node
+    /// copies the cull sweep reads (<c>Pos</c>, <c>Scl</c>) match the node they stand for.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestUrgentCollisionQueue(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        double savedBudget = RenderConfig.CollisionUrgentFrameBudgetMs;
+        var data = SelfTestStaticMesh();
+        var made = new List<Entity>();
+        try
+        {
+            // A at 1 m touches the avatar; B..E are queued and, set up out of order, must come out by distance.
+            float[] distances = { 1f, 16f, 5f, 20f, 9f, 12f };
+            foreach (var _ in distances) made.Add(SelfTestAddPrim(world, 950 + (uint)made.Count, 0, animated: false));
+            var states = made.Select(e => _visuals[e.Id]).ToList();
+
+            var origin = states[0].Pos;
+            _agentPos = origin;
+            _agentPosKnown = true;
+
+            for (int i = 0; i < states.Count; i++)
+            {
+                var st = states[i];
+                Expect(st.Pos.IsEqualApprox(st.MeshInstance.Position), $"prim {i}: Pos is not the node's Position");
+                Expect(st.Scl.IsEqualApprox(st.MeshInstance.Scale), $"prim {i}: Scl is not the node's Scale");
+                st.Pos = origin + new Godot.Vector3(distances[i], 0f, 0f);
+                st.MeshInstance.Position = st.Pos;
+            }
+
+            RenderConfig.CollisionUrgentFrameBudgetMs = 0; // nothing: one shape per tick, the nearest
+            foreach (var e in made) SelfTestArrive(e, data);
+
+            Expect(states[0].CollisionShape.Shape is ConcavePolygonShape3D, "the object touching the avatar has no shape yet");
+            for (int i = 1; i < states.Count; i++)
+                Expect(states[i].CollisionShape.Shape == null && states[i].CollisionDeferred,
+                       $"prim {i} at {distances[i]} m was built on the spot or lost its place in the queue");
+
+            // 5 m (index 2), 9 m (4), 12 m (5), 16 m (1), 20 m (3).
+            int[] expectedOrder = { 2, 4, 5, 1, 3 };
+            for (int step = 0; step < expectedOrder.Length; step++)
+            {
+                TickUrgentShapes();
+                for (int i = 1; i < states.Count; i++)
+                {
+                    bool shouldHave = Array.IndexOf(expectedOrder, i) <= step;
+                    bool has = states[i].CollisionShape.Shape != null;
+                    if (has != shouldHave)
+                        failures.Add($"after tick {step + 1}: prim {i} ({distances[i]} m) {(has ? "has" : "lacks")} a shape, expected the opposite");
+                }
+            }
+            Expect(_urgentShapes.Count == 0, "the queue is not empty after every shape was built");
+            var built = states[2].CollisionShape.Shape as ConcavePolygonShape3D;
+            Expect(built != null && built.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(data)),
+                   "a queued shape is not the trimesh faces of its mesh");
+            Expect(states.All(s => !s.CollisionDeferred), "an object is still marked as waiting for its shape");
+
+            // One that goes away while queued: no shape for it.
+            var later = SelfTestAddPrim(world, 990, 0, animated: false);
+            made.Add(later);
+            var laterState = _visuals[later.Id];
+            laterState.Pos = origin + new Godot.Vector3(7f, 0f, 0f);
+            laterState.MeshInstance.Position = laterState.Pos;
+            SelfTestArrive(later, data);
+            var laterKey = laterState.LoadedGeometryKey;
+            Expect(_urgentShapes.ContainsKey(laterKey), "the object near the avatar was not queued");
+            RemoveVisual(later.Id.ToString());
+            Settle();
+            TickUrgentShapes();
+            Expect(!_urgentShapes.ContainsKey(laterKey), "the queue still holds a shape nobody is waiting for");
+            Expect(!_meshCollisionShapes.ContainsKey(laterKey), "a shape was built for an object that was gone");
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RenderConfig.CollisionUrgentFrameBudgetMs = savedBudget;
+            _agentPosKnown = false;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id.ToString());
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "touching object solid at once, five more built nearest first one per tick, a vanished object costs no shape")
+            : (false, string.Join("; ", failures));
+    }
+
     /// <summary>Four submeshes: faces 0 and 1 (same record, so merged), an empty one, face 2.</summary>
     private static MeshData SelfTestStaticMesh()
     {

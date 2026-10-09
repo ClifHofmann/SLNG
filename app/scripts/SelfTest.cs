@@ -235,6 +235,7 @@ public static partial class SelfTest
         results.Add(CheckRiggedMeshPreparedOffMainThread()); // BUG-PERF-06
         results.Add(CheckHudMeshPreparedOffMainThread());
         results.Add(CheckStaticMeshPrepared(tree));
+        results.Add(CheckUrgentCollisionQueue(tree)); // BUG-PERF-11
         results.Add(CheckAttachMeshPreparedOffMainThread()); // BUG-PERF-08
         results.Add(CheckAttachSupersede(tree));
         results.Add(CheckRiggedPickBodiesPerItem(tree)); // BUG-PERF-08

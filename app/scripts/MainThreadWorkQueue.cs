@@ -237,6 +237,11 @@ public static class MainThreadWorkQueue
     /// being measured. Main thread only, same as everything else that writes the cost table.</summary>
     public static void RecordExternal(string label, double ms) => Record(label, ms);
 
+    /// <summary>BUG-PERF-11: <see cref="RecordExternal"/> for a part of <paramref name="item"/>, which is
+    /// filed under <see cref="Measure"/> rather than run by the pump (the cull sweep): ReportCosts prints
+    /// it right under that label. For parts whose time was gathered across a loop, sampled and scaled.</summary>
+    public static void RecordPartExternal(string item, string part, double ms) => RecordPart(item, part, ms);
+
     /// <summary>True on the thread that pumps the queue, i.e. the main thread, once it has pumped.</summary>
     [ThreadStatic] private static bool _onPumpThread;
 
