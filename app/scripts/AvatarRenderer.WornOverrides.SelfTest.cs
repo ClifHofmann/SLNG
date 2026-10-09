@@ -525,20 +525,40 @@ public partial class AvatarRenderer
 
     /// <summary>
     /// FEAT-PERF-08: Verifies that reduced avatars have rigged and rigid attachments freed,
-    /// skins detached from Skeleton3D, animations stopped, and are restored when set full.
+    /// skins detached from Skeleton3D, are drawn in the jelly-doll colour, keep their pose and
+    /// animation state, and are restored (with their bake materials) when set full.
     /// </summary>
     internal (bool Passed, string Detail) SelfTestAvatarReductionLifecycle()
     {
         var entityId = Guid.NewGuid();
-        var visual = new AvatarVisual { IsSelf = false, EntityId = entityId };
+        var visual = new AvatarVisual { IsSelf = false, EntityId = entityId, AgentId = Guid.NewGuid() };
         var skeleton = new Skeleton3D();
         visual.Root.AddChild(skeleton);
         visual.Skeleton = skeleton;
         visual.AnimPlayer.SetSkeleton(skeleton);
         _visuals[entityId] = visual;
 
+        // A pose a reduced avatar must keep (the stand-in is not frozen in a T-pose): Stop() and
+        // ResetBonePoses() used to wipe it.
+        int poseBone = skeleton.AddBone("mTest");
+        var pose = new Godot.Vector3(0f, 1.25f, 0f);
+        skeleton.SetBonePosePosition(poseBone, pose);
+
+        // The system parts, each on its own bake-like material (the bake shader lives in MaterialOverride).
+        var bakeMaterials = new Dictionary<string, ShaderMaterial>();
+        foreach (var name in SystemPartNames)
+        {
+            var part = new MeshInstance3D { Name = name + "_Mesh" };
+            var bake = new ShaderMaterial();
+            part.MaterialOverride = bake;
+            skeleton.AddChild(part);
+            visual.Parts[name] = part;
+            bakeMaterials[name] = bake;
+        }
+
         var riggedAttId = Guid.NewGuid();
         var rigidAttId = Guid.NewGuid();
+        var primAttId = Guid.NewGuid();
 
         var mi = new MeshInstance3D { Skin = new Skin() };
         skeleton.AddChild(mi);
@@ -552,6 +572,11 @@ public partial class AvatarRenderer
         _attachmentNodes[rigidAttId] = boneAttach;
         visual.WornAttachmentEntities.Add(rigidAttId);
 
+        // A prim item's dedupe records go with its node: a promoted avatar must rebuild it.
+        _attachmentPrimSignatures[primAttId] = PrimAttachSignature.From(new PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0), default);
+        _attachmentLocalPoses[primAttId] = (System.Numerics.Vector3.One, System.Numerics.Quaternion.Identity);
+        visual.WornAttachmentEntities.Add(primAttId);
+
         SetAvatarReduced(visual);
 
         if (!visual.IsReduced) return (false, "visual was not marked reduced");
@@ -559,10 +584,172 @@ public partial class AvatarRenderer
         if (visual.RiggedAttachments.Count > 0) return (false, "visual.RiggedAttachments was not cleared");
         if (!mi.Skeleton.IsEmpty) return (false, "rigged mesh was not detached from skeleton");
         if (_attachmentNodes.ContainsKey(rigidAttId)) return (false, "rigid attachment was not removed from _attachmentNodes");
+        if (_attachmentPrimSignatures.ContainsKey(primAttId) || _attachmentLocalPoses.ContainsKey(primAttId))
+            return (false, "the prim attachment's dedupe records survived the reduction");
+        if (skeleton.GetBonePosePosition(poseBone).DistanceTo(pose) > 1e-5f)
+            return (false, "the reduction reset the pose (a reduced avatar must keep its animation state)");
+
+        // Jelly doll: every system part wears ONE shared opaque material that is not its bake.
+        ShaderMaterial? jelly = null;
+        foreach (var name in SystemPartNames)
+        {
+            if (visual.Parts[name].MaterialOverride is not ShaderMaterial worn)
+                return (false, $"{name} has no jelly-doll MaterialOverride while reduced");
+            if (ReferenceEquals(worn, bakeMaterials[name])) return (false, $"{name} still wears its bake material while reduced");
+            jelly ??= worn;
+            if (!ReferenceEquals(worn, jelly)) return (false, "the system parts do not share one jelly-doll material");
+        }
+        if (!ReferenceEquals(GetJellyMaterial(visual.AgentId), jelly))
+            return (false, "a second lookup of the jelly-doll colour allocated another material");
+        var (jr, jg, jb) = JellyDollColor.ForAgent(visual.AgentId);
+        var tint = jelly!.GetShaderParameter(PrimShaderFamily.AlbedoColor).AsColor();
+        if (Math.Abs(tint.R - jr) > 1e-4f || Math.Abs(tint.G - jg) > 1e-4f || Math.Abs(tint.B - jb) > 1e-4f)
+            return (false, $"jelly-doll tint {tint} is not the agent's colour ({jr}, {jg}, {jb})");
+
+        // A bake that lands meanwhile goes into the stashed material, not over the shared colour.
+        var headStash = visual.StashedPartMaterials[visual.Parts["head"]];
+        if (!ReferenceEquals(headStash, bakeMaterials["head"])) return (false, "the head's bake material was not stashed");
 
         SetAvatarFull(visual);
         if (visual.IsReduced) return (false, "visual was not restored to full");
+        foreach (var name in SystemPartNames)
+        {
+            if (!ReferenceEquals(visual.Parts[name].MaterialOverride, bakeMaterials[name]))
+                return (false, $"{name} did not get its bake material back");
+        }
+        if (visual.StashedPartMaterials.Count != 0) return (false, "the stash was not emptied on promotion");
+        if (skeleton.GetBonePosePosition(poseBone).DistanceTo(pose) > 1e-5f)
+            return (false, "the pose was lost across the promotion");
 
-        return (true, "avatar reduction frees attachments, detaches skin, and resets state");
+        _visuals.Remove(entityId);
+        visual.Root.QueueFree();
+        return (true, "avatar reduction frees attachments, shows the jelly doll, keeps the pose, and restores the bake");
+    }
+
+    /// <summary>
+    /// FEAT-PERF-08: the avatar cap stays put. Two avatars 0.5 m apart do not swap (absolute margin), a
+    /// clearly closer one does, an avatar that just switched keeps its state until its dwell time is
+    /// over, and a newly created avatar's first promotion is never held back.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestAvatarLimitStability()
+    {
+        int oldCap = RenderConfig.MaxFullyRenderedAvatars;
+        var ids = new List<Guid>();
+        try
+        {
+            RenderConfig.MaxFullyRenderedAvatars = 1;
+
+            AvatarVisual Make(float distance, bool reduced, double changedAt)
+            {
+                var id = Guid.NewGuid();
+                var v = new AvatarVisual { EntityId = id, AgentId = Guid.NewGuid(), Shown = true };
+                v.GodotPos = new Godot.Vector3(distance, 0f, 0f);
+                v.IsReduced = reduced;
+                v.StateChangedAt = changedAt;
+                _visuals[id] = v;
+                ids.Add(id);
+                return v;
+            }
+
+            double now = NowSeconds;
+            var cam = Godot.Vector3.Zero;
+
+            // 1. Incumbent at 5.5 m, challenger at 5.0 m: no swap.
+            var incumbent = Make(5.5f, reduced: false, changedAt: now - 100);
+            var challenger = Make(5.0f, reduced: true, changedAt: now - 100);
+            EvaluateAvatarLimit(cam);
+            if (incumbent.IsReduced || !challenger.IsReduced)
+                return (false, "two avatars 0.5 m apart swapped slots (the absolute margin did not hold)");
+
+            // 2. A challenger well inside the margin takes the slot.
+            challenger.GodotPos = new Godot.Vector3(1.0f, 0f, 0f);
+            EvaluateAvatarLimit(cam);
+            if (!incumbent.IsReduced || challenger.IsReduced)
+                return (false, "a clearly closer avatar did not take the slot");
+
+            // 3. Both just switched: reversing the distances changes nothing within the dwell time...
+            incumbent.GodotPos = new Godot.Vector3(0.5f, 0f, 0f);
+            challenger.GodotPos = new Godot.Vector3(20f, 0f, 0f);
+            EvaluateAvatarLimit(cam);
+            if (!incumbent.IsReduced || challenger.IsReduced)
+                return (false, "an avatar that had just switched swapped again inside the dwell time");
+
+            // ...and an asked-for evaluation (cap changed, avatar pinned) skips the dwell.
+            _avatarLimitIgnoreDwell = true;
+            EvaluateAvatarLimit(cam);
+            if (incumbent.IsReduced || !challenger.IsReduced)
+                return (false, "the dwell time was not skipped for an evaluation that asked for it");
+
+            // 4. A new avatar has never switched, so the dwell does not hold its first promotion back --
+            // while it still holds back an avatar that did switch (the challenger, reduced just now,
+            // although it is nearer than the incumbent).
+            incumbent.StateChangedAt = now - 100;
+            incumbent.GodotPos = new Godot.Vector3(3f, 0f, 0f);
+            challenger.GodotPos = new Godot.Vector3(1f, 0f, 0f);
+            var fresh = Make(0.1f, reduced: true, changedAt: double.NegativeInfinity);
+            EvaluateAvatarLimit(cam);
+            if (fresh.IsReduced) return (false, "a newly created avatar's first promotion was held back");
+            if (!incumbent.IsReduced) return (false, "the incumbent kept the slot against a much closer newcomer");
+            if (!challenger.IsReduced) return (false, "an avatar that had just switched was promoted inside its dwell time");
+
+            // 5. Outside the draw distance long enough, a full avatar is reduced.
+            fresh.Shown = false;
+            fresh.HiddenSince = now - (AvatarHiddenReduceSeconds + 1);
+            EvaluateAvatarLimit(cam);
+            if (!fresh.IsReduced) return (false, "an avatar outside the draw distance for a long time stayed full");
+
+            return (true, "absolute margin, dwell time, first promotion and hidden reduction behave");
+        }
+        finally
+        {
+            RenderConfig.MaxFullyRenderedAvatars = oldCap;
+            foreach (var id in ids)
+            {
+                if (_visuals.Remove(id, out var v) && IsInstanceValid(v.Root)) v.Root.QueueFree();
+            }
+            _avatarLimitTransitions = 0;
+            _avatarLimitIgnoreDwell = false;
+        }
+    }
+
+    /// <summary>
+    /// FEAT-PERF-08: a duplicate update of a prim or sculpt attachment must not rebuild it, while a change
+    /// of any input its geometry or materials are built from must. Position and rotation are no input: they
+    /// only move the node that is there.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestPrimAttachmentSignature()
+    {
+        var faces = new[] { new FaceTexture(Guid.NewGuid(), Guid.Empty, Guid.Empty, new System.Numerics.Vector4(1f, 1f, 1f, 1f), 1f, 1f, 0f, 0f, 0f) };
+        var prim = new PrimitiveComponent(new System.Numerics.Vector3(0.2f, 0.2f, 0.2f), profileCurve: 0) { Faces = faces };
+        var built = PrimAttachSignature.From(prim, default);
+
+        if (!built.Matches(prim, default)) return (false, "an unchanged prim does not match its own signature");
+
+        // The stored copy must not follow an in-place rewrite of the component's array.
+        faces[0] = faces[0] with { TextureId = Guid.NewGuid() };
+        if (built.Matches(prim, default)) return (false, "a face rewritten in place still matched the stored signature");
+        faces[0] = built.Faces![0];
+
+        prim.Scale = new System.Numerics.Vector3(0.3f, 0.2f, 0.2f);
+        if (built.Matches(prim, default)) return (false, "a changed scale still matched");
+        prim.Scale = new System.Numerics.Vector3(0.2f, 0.2f, 0.2f);
+
+        prim.Shape = prim.Shape with { PathTwist = 0.25f };
+        if (built.Matches(prim, default)) return (false, "a changed shape still matched");
+        prim.Shape = built.Shape;
+
+        prim.IsSculpt = true;
+        prim.SculptId = Guid.NewGuid();
+        prim.SculptType = 3;
+        if (built.Matches(prim, default)) return (false, "a prim that became a sculpt still matched");
+
+        var sculpt = PrimAttachSignature.From(prim, default);
+        // A sculpt's geometry does not read the procedural shape, so a change there is not an input.
+        prim.Shape = prim.Shape with { PathTwist = 0.5f };
+        if (!sculpt.Matches(prim, default)) return (false, "a sculpt rebuilt because of its unused procedural shape");
+        prim.SculptId = Guid.NewGuid();
+        if (sculpt.Matches(prim, default)) return (false, "a changed sculpt map still matched");
+
+        return (true, "geometry and material inputs decide the rebuild; the unused ones do not");
     }
 }

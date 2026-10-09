@@ -251,6 +251,8 @@ public static partial class SelfTest
         results.Add(CheckGpuCacheAdmission()); // BUG-PERF-09
         results.Add(CheckAvatarTextureRemoval()); // BUG-PERF-13
         results.Add(CheckAvatarReduction()); // FEAT-PERF-08
+        results.Add(CheckAvatarLimitStability()); // FEAT-PERF-08
+        results.Add(CheckPrimAttachmentSignature()); // FEAT-PERF-08
         results.Add(CheckShrinkWithoutReadBack());
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());

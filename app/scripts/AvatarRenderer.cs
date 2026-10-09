@@ -42,6 +42,21 @@ public partial class AvatarRenderer : Node3D
         public bool Shown { get; set; } = true;
         // FEAT-PERF-08: cheap stand-in beyond the avatar cap
         public bool IsReduced { get; set; }
+        // When the full/reduced state last CHANGED (seconds, AvatarRenderer.NowSeconds). Negative infinity
+        // until the first change, so a freshly created avatar's first promotion is never held back by the
+        // dwell time (EvaluateAvatarLimit). Set by SetAvatarReduced/SetAvatarFull, not by CreateVisual.
+        public double StateChangedAt { get; set; } = double.NegativeInfinity;
+        // When the avatar left the draw distance (seconds), or positive infinity while it is inside. A full
+        // avatar that stays outside for AvatarHiddenReduceSeconds is reduced so it stops holding its outfit.
+        public double HiddenSince { get; set; } = double.PositiveInfinity;
+        // Reduced avatars keep their animation state but advance it ~10 Hz instead of every frame.
+        public float ReducedAnimAccum { get; set; }
+        // The body-part materials a reduced avatar swapped out for the jelly-doll colour (the system parts
+        // keep their bake shader in MaterialOverride, so the stand-in has to put it back on promotion).
+        public Dictionary<MeshInstance3D, Material?> StashedPartMaterials { get; } = new();
+        // Effective VisualParam weights of a shape that arrived while the avatar was reduced: the skeleton
+        // took it (position and height need it), the vertex morphs wait for SetAvatarFull.
+        public IReadOnlyDictionary<int, float>? PendingMorphWeights { get; set; }
         public HashSet<Guid> WornAttachmentEntities { get; } = new();
         // BUG-PERF-13: Texture tracking for distance LOD, re-sharpening, and refcount management.
         public HashSet<Guid> PinnedTextureIds { get; } = new();
@@ -251,16 +266,28 @@ public partial class AvatarRenderer : Node3D
         {
             _alwaysRenderFully.Remove(agentId);
         }
-        _activeInstance?.TriggerAvatarLimitEvaluation();
+        _activeInstance?.TriggerAvatarLimitEvaluation(ignoreDwell: true);
     }
 
     public static void NotifySettingsChanged()
     {
-        _activeInstance?.TriggerAvatarLimitEvaluation();
+        _activeInstance?.TriggerAvatarLimitEvaluation(ignoreDwell: true);
     }
 
     private bool _avatarLimitEvaluationPending = true;
-    public void TriggerAvatarLimitEvaluation() => _avatarLimitEvaluationPending = true;
+    private bool _avatarLimitIgnoreDwell;
+
+    /// <summary>Asks for an avatar-cap evaluation on the next frame instead of waiting for the once-a-second
+    /// one. <paramref name="ignoreDwell"/>: the person changed the cap or pinned an avatar, so the
+    /// minimum dwell time of avatars that just switched does not apply.</summary>
+    public void TriggerAvatarLimitEvaluation(bool ignoreDwell = false)
+    {
+        _avatarLimitEvaluationPending = true;
+        if (ignoreDwell) _avatarLimitIgnoreDwell = true;
+    }
+
+    /// <summary>Seconds on the engine clock; the unit of the avatar-cap timestamps.</summary>
+    private static double NowSeconds => Time.GetTicksMsec() / 1000.0;
 
     /// <summary>The newest rig request per worn entity, waiting for its queued turn. BUG-PERF-01.</summary>
     /// <remarks>
@@ -356,6 +383,52 @@ public partial class AvatarRenderer : Node3D
     // OnEntityRemoved only survives the CallDeferred hop as a bare Guid, so the owner has to be
     // captured here at attach time rather than re-looked-up from the (by-then-gone) entity.
     private readonly Dictionary<Guid, (Guid MeshId, FaceTexture[]? Faces, FaceTexture DefaultFace, Guid AvatarEntityId, MeshDetailLevel Lod)> _attachmentMeshIds = new();
+
+    /// <summary>The inputs a PRIM or SCULPT attachment's geometry and materials were last built from
+    /// (the counterpart of <see cref="_attachmentMeshIds"/>, which only covers LLMesh items). Without it
+    /// every ObjectUpdate of a scripted eye or a piece of jewellery rebuilt the item: measured in-world
+    /// with 11,630 prim/sculpt rebuilds in one session. Dropped everywhere <c>_attachmentMeshIds</c> is. Concurrent because a build that fails on a worker
+    /// thread forgets its signature, so the next update tries again.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, PrimAttachSignature> _attachmentPrimSignatures = new();
+
+    /// <summary>The local position and rotation a worn item was last placed with. They are not part of
+    /// what a rebuild is for: a change in them only moves the existing node (<see cref="ApplyAttachmentPose"/>).
+    /// Also what a still-loading item is placed with when it lands, so a move that arrived meanwhile is not lost.</summary>
+    private readonly Dictionary<Guid, (System.Numerics.Vector3 Position, System.Numerics.Quaternion Rotation)> _attachmentLocalPoses = new();
+
+    /// <summary>Everything <see cref="LoadAndApplyPrimAttachmentAsync"/> reads to build GEOMETRY (the
+    /// sculpt map and type, or the procedural shape, and the scale baked into the vertices) and
+    /// MATERIALS (the per-face textures and the default face). Position and rotation are deliberately
+    /// absent.</summary>
+    private sealed record PrimAttachSignature(
+        bool UsesSculpt, Guid SculptId, byte SculptType, PrimShape Shape,
+        System.Numerics.Vector3 Scale, FaceTexture[]? Faces, FaceTexture DefaultFace)
+    {
+        public static PrimAttachSignature From(PrimitiveComponent prim, FaceTexture defaultFace)
+        {
+            bool sculpt = prim.IsSculpt && prim.SculptId != Guid.Empty;
+            // The shape only matters when no sculpt map stands in for it, and the other way round.
+            var shape = sculpt ? default : prim.Shape;
+            var sculptId = sculpt ? prim.SculptId : Guid.Empty;
+            byte sculptType = sculpt ? prim.SculptType : (byte)0;
+            // A copy: the component may rewrite its array in place, and the stored one must not follow.
+            var faces = prim.Faces == null ? null : (FaceTexture[])prim.Faces.Clone();
+            return new PrimAttachSignature(sculpt, sculptId, sculptType, shape, prim.Scale, faces, defaultFace);
+        }
+
+        /// <summary>True when <paramref name="prim"/> would be built from exactly these inputs.</summary>
+        public bool Matches(PrimitiveComponent prim, FaceTexture defaultFace)
+        {
+            bool sculpt = prim.IsSculpt && prim.SculptId != Guid.Empty;
+            if (sculpt != UsesSculpt) return false;
+            if (sculpt ? prim.SculptId != SculptId || prim.SculptType != SculptType : !prim.Shape.Equals(Shape))
+                return false;
+            return prim.Scale == Scale && defaultFace.Equals(DefaultFace)
+                   && (Faces == prim.Faces
+                       || (Faces != null && prim.Faces != null && Faces.AsSpan().SequenceEqual(prim.Faces)));
+        }
+    }
+
     private Godot.CanvasLayer? _nameTagLayer;
 
 
@@ -701,6 +774,22 @@ public partial class AvatarRenderer : Node3D
             visual.AnimPlayer.IsFrozen = true;
         }
 
+        // FEAT-PERF-08: everyone but yourself, the avatars you pinned, and a cap of "unlimited" starts as
+        // the cheap stand-in. A sim full of people used to fetch and rig the whole outfit of every one of
+        // them on arrival, only for the cap to reduce most of them on the next evaluation. They now stay
+        // reduced until the evaluation below promotes the nearest ones (UpdateAttachment only records the
+        // worn items of a reduced avatar, so nothing is built for those that never make the cap).
+        bool startReduced = !visual.IsSelf
+            && RenderConfig.MaxFullyRenderedAvatars > 0
+            && !_alwaysRenderFully.Contains(avatar.AgentId);
+        if (startReduced && visual.Skeleton != null)
+        {
+            SetAvatarReduced(visual);
+            // Creation is not a change of state: the first promotion is not held back by the dwell time.
+            visual.StateChangedAt = double.NegativeInfinity;
+            TriggerAvatarLimitEvaluation();
+        }
+
         _visuals[entityId] = visual;
 
         UpdateVisual(entityIdStr);
@@ -840,6 +929,8 @@ public partial class AvatarRenderer : Node3D
             ReleaseWornJointOverrides(ownerVisual, entityId);
         }
         _attachmentMeshIds.Remove(entityId);
+        _attachmentPrimSignatures.TryRemove(entityId, out _);
+        _attachmentLocalPoses.Remove(entityId);
         if (_hudNodes.TryGetValue(entityId, out var hudNode))
         {
             if (GodotObject.IsInstanceValid(hudNode)) hudNode.QueueFree();
@@ -1312,6 +1403,14 @@ public partial class AvatarRenderer : Node3D
         if (visual.EntityId == Guid.Empty) visual.EntityId = entityId;
         visual.IsSelf = avatar.IsLocalAgent;
 
+        // The visual was created before the entity knew it was the local agent. The local avatar is never
+        // the stand-in; SetAvatarFull runs UpdateVisual itself, so this call ends here.
+        if (visual.IsSelf && visual.IsReduced)
+        {
+            SetAvatarFull(visual);
+            return;
+        }
+
         if (visual.NameTag is Godot.PanelContainer panel)
         {
             var label = panel.GetNodeOrNull<Godot.Label>("Lines/Label");
@@ -1505,10 +1604,10 @@ public partial class AvatarRenderer : Node3D
             }
         }
 
-        if (visual.IsReduced)
-        {
-            return;
-        }
+        // FEAT-PERF-08: a reduced avatar still takes the skeleton's shape -- its root height comes from
+        // PelvisToFootZ/BodySizeZ, so a stand-in left on the default skeleton sinks about a metre into the
+        // ground -- and it keeps animating. What it skips is the expensive part: the vertex morphs, the
+        // bake textures and the worn items, all of which SetAvatarFull catches up on.
 
         // 2. Apply Shape Morphs (Skeletal Distortions) — only when params actually changed.
         // ResetBonePoses() wipes all animation poses, so calling it every frame (via
@@ -1556,36 +1655,17 @@ public partial class AvatarRenderer : Node3D
 
                 RecomputeFootOffset(visual, distortions.BoneMods);
 
-                // Deform the system body into this avatar's real proportions (male/muscle/breast/…
-                // sliders are vertex morphs, not bone scales — see AvatarMorphService).
-                RebuildBodyMorphs(visual, weights);
-
-                // Worn rigged meshes (clothing/mesh body/head) don't re-morph, but their skin
-                // binds DO need this avatar's fresh BoneOwnScale — see RebuildRiggedAttachmentSkins.
-                RebuildRiggedAttachmentSkins(visual);
-                RefreshStaticAttachmentOffsets(visual);
-
-                // [FEAT-RENDER-05] The two numbers that decide "head too big or hair too small".
-                // A rigged mesh follows the SKELETON only, so its fit is set by mHead/mSkull's own
-                // scale; the system head additionally follows the vertex MORPHS, which no worn
-                // mesh can track (true in the real viewer too). So a mismatch is either an mHead
-                // scale we compute differently from the viewer, or morphs that inflate the head
-                // past what the hair was fitted to -- and these two lines tell them apart. Read
-                // against [RiggedMesh]'s bind-pose size for the hair mesh.
+                if (visual.IsReduced)
                 {
-                    visual.BoneOwnScale.TryGetValue("mHead", out var headScale);
-                    visual.BoneOwnScale.TryGetValue("mSkull", out var skullScale);
-                    var headSize = visual.Parts.TryGetValue("head", out var headMi) && headMi.Mesh != null
-                        ? headMi.Mesh.GetAabb().Size : Godot.Vector3.Zero;
-                    // Ungated (BUG-AVATAR-07): this is the number the "head too small vs Firestorm"
-                    // report is actually about, and a shape apply happens a handful of times per
-                    // login, not per frame. JointScaleLocks says whether a worn fitted mesh froze
-                    // these scales the way the reference viewer does.
-                    if (Diagnostics.Enabled) GD.Print($"[HeadSize] mHead own scale ({headScale.X:0.###}, {headScale.Y:0.###}, {headScale.Z:0.###}), " +
-                             $"mSkull ({skullScale.X:0.###}, {skullScale.Y:0.###}, {skullScale.Z:0.###}), " +
-                             $"morphed head mesh {headSize.X:0.###} x {headSize.Y:0.###} x {headSize.Z:0.###} m, " +
-                             $"scaleLocks={visual.JointScaleLocks.Count}, bodySizeZ={visual.BodySizeZ:0.###} m");
-                    LogAvatarHeight(visual, "shape");
+                    // The body parts' binds carry the bone scales the skeleton just took; the morphed
+                    // geometry is rebuilt when the avatar is promoted (SetAvatarFull). A reduced avatar
+                    // wears nothing, so there is no attachment to re-bind.
+                    RefreshBodyPartSkins(visual);
+                    visual.PendingMorphWeights = weights;
+                }
+                else
+                {
+                    ApplyShapeMorphs(visual, weights);
                 }
             }
         }
@@ -1604,7 +1684,9 @@ public partial class AvatarRenderer : Node3D
                      "until one arrives; GridSession recovers the ids from our own ObjectUpdate.");
         }
 
-        if (avatar.BakedTextures != null && _assetService != null)
+        // A reduced avatar is drawn in the jelly-doll colour, so its bakes are not fetched; the next
+        // UpdateVisual after SetAvatarFull sees them as changed and loads them.
+        if (avatar.BakedTextures != null && _assetService != null && !visual.IsReduced)
         {
             bool anyBakeChanged = false;
             foreach (var kv in avatar.BakedTextures)
@@ -1695,6 +1777,44 @@ public partial class AvatarRenderer : Node3D
         ApplyActiveAnimations(entityId, visual, avatar);
     }
 
+    /// <summary>The expensive half of a shape update, which a reduced avatar defers to
+    /// <see cref="SetAvatarFull"/>: the vertex morphs of the system body, then the fresh bone scales for
+    /// worn rigged meshes and static attachment points.</summary>
+    private void ApplyShapeMorphs(AvatarVisual visual, IReadOnlyDictionary<int, float> weights)
+    {
+        visual.PendingMorphWeights = null;
+
+        // Deform the system body into this avatar's real proportions (male/muscle/breast/…
+        // sliders are vertex morphs, not bone scales — see AvatarMorphService).
+        RebuildBodyMorphs(visual, weights);
+
+        // Worn rigged meshes (clothing/mesh body/head) don't re-morph, but their skin
+        // binds DO need this avatar's fresh BoneOwnScale — see RebuildRiggedAttachmentSkins.
+        RebuildRiggedAttachmentSkins(visual);
+        RefreshStaticAttachmentOffsets(visual);
+
+        // [FEAT-RENDER-05] The two numbers that decide "head too big or hair too small".
+        // A rigged mesh follows the SKELETON only, so its fit is set by mHead/mSkull's own
+        // scale; the system head additionally follows the vertex MORPHS, which no worn
+        // mesh can track (true in the real viewer too). So a mismatch is either an mHead
+        // scale we compute differently from the viewer, or morphs that inflate the head
+        // past what the hair was fitted to -- and these two lines tell them apart. Read
+        // against [RiggedMesh]'s bind-pose size for the hair mesh.
+        visual.BoneOwnScale.TryGetValue("mHead", out var headScale);
+        visual.BoneOwnScale.TryGetValue("mSkull", out var skullScale);
+        var headSize = visual.Parts.TryGetValue("head", out var headMi) && headMi.Mesh != null
+            ? headMi.Mesh.GetAabb().Size : Godot.Vector3.Zero;
+        // Ungated (BUG-AVATAR-07): this is the number the "head too small vs Firestorm"
+        // report is actually about, and a shape apply happens a handful of times per
+        // login, not per frame. JointScaleLocks says whether a worn fitted mesh froze
+        // these scales the way the reference viewer does.
+        if (Diagnostics.Enabled) GD.Print($"[HeadSize] mHead own scale ({headScale.X:0.###}, {headScale.Y:0.###}, {headScale.Z:0.###}), " +
+                 $"mSkull ({skullScale.X:0.###}, {skullScale.Y:0.###}, {skullScale.Z:0.###}), " +
+                 $"morphed head mesh {headSize.X:0.###} x {headSize.Y:0.###} x {headSize.Z:0.###} m, " +
+                 $"scaleLocks={visual.JointScaleLocks.Count}, bodySizeZ={visual.BodySizeZ:0.###} m");
+        LogAvatarHeight(visual, "shape");
+    }
+
     /// <summary>Reconciles a visual's playing animation set with what it should be.
     ///
     /// <para>For a remote avatar that is simply <c>avatar.ActiveAnimations</c> (the sim's echo).
@@ -1754,7 +1874,9 @@ public partial class AvatarRenderer : Node3D
 
     private void ApplyActiveAnimations(Guid entityId, AvatarVisual visual, AvatarComponent avatar)
     {
-        if (_assetService == null || visual.Skeleton == null || visual.IsReduced) return;
+        // A reduced avatar keeps its animation state (FEAT-PERF-08): it is advanced ~10 Hz in _Process, so
+        // the stand-in moves and promotion needs no new animation packet.
+        if (_assetService == null || visual.Skeleton == null) return;
 
         List<Guid> desired;
         if (avatar.IsLocalAgent && _selfPredictedLocomotion is { } predicted)
@@ -2147,11 +2269,15 @@ public partial class AvatarRenderer : Node3D
                 if (!IsInstanceValid(meshInstance)) continue;
                 // FEAT-RENDER-01 Phase 3: the system bake runs on the shader family's Avatar
                 // surface, which carries the cull_disabled this path used to set explicitly.
-                var mat = meshInstance.MaterialOverride as ShaderMaterial;
+                // FEAT-PERF-08: a bake that lands while the avatar is the jelly-doll stand-in is written
+                // into the material SetAvatarFull will put back, not over the stand-in's shared colour.
+                bool stashed = visual.StashedPartMaterials.TryGetValue(meshInstance, out var stashedMaterial);
+                var mat = (stashed ? stashedMaterial : meshInstance.MaterialOverride) as ShaderMaterial;
                 if (mat == null)
                 {
                     mat = new ShaderMaterial();
-                    meshInstance.MaterialOverride = mat;
+                    if (stashed) visual.StashedPartMaterials[meshInstance] = mat;
+                    else meshInstance.MaterialOverride = mat;
                 }
                 mat.SetShaderParameter(PrimShaderFamily.AlbedoTexture, godotTexture);
                 mat.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
@@ -2238,9 +2364,6 @@ public partial class AvatarRenderer : Node3D
         if (boneName == null && !isMeshAttachment) return;
         boneName ??= "mPelvis";
 
-        Logger.Debug($"[Attachment] pt {attachment.AttachmentPoint} bone {boneName} " +
-                 $"mesh {(isMeshAttachment ? prim!.MeshId.ToString() : "no")} entity {entityId:N}");
-
         // Avatar must already be rendered.
         if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual)) return;
         if (avatarVisual.Skeleton == null) return;
@@ -2303,12 +2426,44 @@ public partial class AvatarRenderer : Node3D
         // FEAT-PERF-09 adds the LOD to this comparison. The dedupe is what makes the re-ask on
         // the cull sweep work at all: same mesh, same faces, but a level the camera has since
         // earned is a REAL update, not a duplicate.
-        if (!routeChanged && isMeshAttachment && _attachmentMeshIds.TryGetValue(entityId, out var loaded)
+        //
+        // Only a level that is TOO LOW is a real update: ">=" and not "==". The pick follows the
+        // camera, so a level recorded at load can sit above what the pick says a moment later; with "=="
+        // every ObjectUpdate after the distance crossed a threshold downwards rebuilt (re-fetched,
+        // re-rigged) the whole mesh and ReconsiderAttachmentDetail then asked for the higher level
+        // again -- measured: 25,714 rig rebuilds in one session. The level only ever goes up, as
+        // ReconsiderAttachmentDetail's own doc says.
+        //
+        // The node must still be there: _attachmentNodes outlives a skeleton that was torn down, and a
+        // dedupe against an item the new skeleton never got would leave it missing for good.
+        // ...and on the same attachment point, which the rebuild below records in the node's meta.
+        bool nodeIntact = _attachmentNodes.TryGetValue(entityId, out var intactNode)
+            && GodotObject.IsInstanceValid(intactNode) && intactNode.GetParent() == avatarVisual.Skeleton
+            && intactNode.GetMeta("AttachPoint", -1).AsInt32() == attachment.AttachmentPoint;
+        if (nodeIntact && !routeChanged && isMeshAttachment && _attachmentMeshIds.TryGetValue(entityId, out var loaded)
             && loaded.MeshId == prim!.MeshId
             && loaded.DefaultFace == defaultFace
-            && loaded.Lod == PickAttachmentDetailLevel(avatarVisual)
+            && loaded.Lod >= PickAttachmentDetailLevel(avatarVisual)
             && (loaded.Faces == prim.Faces || (loaded.Faces != null && prim.Faces != null && loaded.Faces.SequenceEqual(prim.Faces))))
+        {
+            // Same asset, same faces: at most the item was moved on its attachment point.
+            ApplyAttachmentPose(entityId, intactNode!, transform);
             return;
+        }
+
+        // The same for a PRIM or SCULPT item, which has no mesh id to compare: it is a duplicate when
+        // everything its geometry and materials are built from is unchanged. Scripted eyes and jewellery
+        // send many updates that change none of it.
+        if (nodeIntact && !routeChanged && prim != null && !isMeshAttachment
+            && _attachmentPrimSignatures.TryGetValue(entityId, out var builtFrom)
+            && builtFrom.Matches(prim, defaultFace))
+        {
+            ApplyAttachmentPose(entityId, intactNode!, transform);
+            return;
+        }
+
+        Logger.Debug($"[Attachment] pt {attachment.AttachmentPoint} bone {boneName} " +
+                 $"mesh {(isMeshAttachment ? prim!.MeshId.ToString() : "no")} entity {entityId:N}");
 
         // Re-use existing node or create a new BoneAttachment3D on the avatar skeleton. The cached
         // node can be a stale reference to one freed with a torn-down skeleton (relog, region
@@ -2394,6 +2549,9 @@ public partial class AvatarRenderer : Node3D
                 // overlapping duplicate load.
                 _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace,
                                                 attachment.AvatarEntityId, PickAttachmentDetailLevel(avatarVisual));
+                _attachmentPrimSignatures.TryRemove(entityId, out _);
+                _attachmentLocalPoses[entityId] = (transform != null ? transform.Position : System.Numerics.Vector3.Zero,
+                                                   transform != null ? transform.Rotation : System.Numerics.Quaternion.Identity);
                 Logger.Debug($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
                 _ = LoadAndApplyAttachmentMeshAsync(pointNode, avatarVisual, prim.MeshId,
                     prim.Faces, defaultFace,
@@ -2407,6 +2565,11 @@ public partial class AvatarRenderer : Node3D
                 // Not a mesh (or reverted to a plain prim) — drop any stale mesh-id tracking so
                 // a later switch back to a mesh isn't blocked by a stale match.
                 _attachmentMeshIds.Remove(entityId);
+                // What this build is made from, so the next update with the same inputs is a duplicate
+                // (see the dedupe above). Set before the async build, like _attachmentMeshIds.
+                _attachmentPrimSignatures[entityId] = PrimAttachSignature.From(prim, defaultFace);
+                _attachmentLocalPoses[entityId] = (transform != null ? transform.Position : System.Numerics.Vector3.Zero,
+                                                   transform != null ? transform.Rotation : System.Numerics.Quaternion.Identity);
                 // Prim or sculpt attachment: build its REAL geometry, the same way ObjectRenderer
                 // already does for world objects. This used to draw a solid BoxMesh placeholder,
                 // which on sculpt-prim content (classic SL hair especially) looked like a cluster
@@ -2419,6 +2582,27 @@ public partial class AvatarRenderer : Node3D
                     entityId);
             }
         }
+    }
+
+    /// <summary>A duplicate update of a worn item that did change where it sits on its attachment point:
+    /// moves the node that is already there, the way <c>CommitPreparedAttach</c> places a new one,
+    /// instead of building the item again.</summary>
+    /// <remarks>Only an item built as a static mesh (a prim, a sculpt or a non-rigged mesh) hangs at its
+    /// own local pose. A rigged one is placed by its skin weights and has always ignored it, so there is
+    /// no node to move. An item still loading has no node yet either; <c>CommitPreparedAttach</c> reads
+    /// the pose recorded here when it lands.</remarks>
+    private void ApplyAttachmentPose(Guid entityId, BoneAttachment3D boneAttach, TransformComponent? transform)
+    {
+        if (transform == null) return;
+
+        var pose = (transform.Position, transform.Rotation);
+        if (_attachmentLocalPoses.TryGetValue(entityId, out var last) && last == pose) return;
+        _attachmentLocalPoses[entityId] = pose;
+
+        var mi = boneAttach.GetNodeOrNull<Node3D>("PointOffset/AttachMesh");
+        if (mi == null || !IsInstanceValid(mi)) return;
+        mi.Position = new Godot.Vector3(pose.Position.X, pose.Position.Z, -pose.Position.Y);
+        mi.Quaternion = new Godot.Quaternion(pose.Rotation.X, pose.Rotation.Z, -pose.Rotation.Y, pose.Rotation.W);
     }
 
     /// <summary>FEAT-PERF-09: asks again for more detail once the camera has come closer.</summary>
@@ -2571,6 +2755,7 @@ public partial class AvatarRenderer : Node3D
             if (meshData == null)
             {
                 Logger.Warn($"[Attachment] sculpt {prim.SculptId} failed to fetch/decode — skipped");
+                _attachmentPrimSignatures.TryRemove(entityId, out _); // the next update asks again
                 return;
             }
         }
@@ -2581,6 +2766,7 @@ public partial class AvatarRenderer : Node3D
             if (meshData == null)
             {
                 Logger.Warn($"[Attachment] prim shape for entity {entityId} failed to mesh — skipped");
+                _attachmentPrimSignatures.TryRemove(entityId, out _); // the next update asks again
                 return;
             }
         }
@@ -4424,6 +4610,8 @@ public partial class AvatarRenderer : Node3D
         }
         ReleaseControlAvatarMesh(entityId);
         _attachmentMeshIds.Remove(entityId);
+        _attachmentPrimSignatures.TryRemove(entityId, out _);
+        _attachmentLocalPoses.Remove(entityId);
 
         EnsureHudViewport();
 
@@ -6329,16 +6517,100 @@ void fragment() {
     private int _lastLoggedReduced = -1;
     private int _lastLoggedCap = -1;
 
+    // FEAT-PERF-08, what keeps the avatar cap from flapping. Measured in-world at a 76-avatar sim
+    // (cap 7): while the camera orbited the crowd, avatars at similar camera distances swapped between
+    // full and reduced every 0.25 s evaluation, and every swap throws the outfit away and asks for it
+    // again, so nothing ever finished loading. Three layers hold it still:
+    //   * AvatarLimitPolicy gives the avatar that already has a slot an absolute 2 m head start, on top
+    //     of the relative one that is nothing at close range;
+    //   * the evaluation runs once a second (a cap change or a new avatar still triggers it at once);
+    //   * an avatar that switched less than AvatarMinDwellSeconds ago keeps its state.
+    private const double AvatarLimitIntervalSeconds = 1.0;
+    private const double AvatarMinDwellSeconds = 5.0;
+    /// <summary>A full avatar that has been outside the draw distance this long is reduced.</summary>
+    private const double AvatarHiddenReduceSeconds = 10.0;
+    /// <summary>The [AvatarLimit] info line also appears this often when only swaps happened, which
+    /// leave the counts (its old trigger) unchanged.</summary>
+    private const double AvatarLimitInfoIntervalSeconds = 5.0;
+    /// <summary>A reduced avatar's animation advances this often instead of every frame.</summary>
+    private const float ReducedAnimationIntervalSeconds = 0.1f;
+
+    private double _lastAvatarLimitEvaluation = double.NegativeInfinity;
+    private double _lastAvatarLimitInfo = double.NegativeInfinity;
+    private int _avatarLimitTransitions;
+
+    /// <summary>The parts of the system body a reduced avatar is drawn with (the same set
+    /// <see cref="RecomputeMeshVisibility"/> shows for it).</summary>
+    private static readonly string[] SystemPartNames = { "head", "eyelashes", "upper_body", "lower_body", "eye", "hair" };
+
+    /// <summary>The jelly-doll materials, one per colour: the colour depends on the first byte of the
+    /// agent id (<see cref="JellyDollColor"/>), so there are at most 256 and every avatar of a colour
+    /// shares one. Never allocated per avatar or per evaluation.</summary>
+    private readonly Dictionary<byte, ShaderMaterial> _jellyMaterials = new();
+
+    private ShaderMaterial GetJellyMaterial(Guid agentId)
+    {
+        byte key = JellyDollColor.Colorize ? JellyDollColor.FirstByte(agentId) : (byte)0;
+        if (_jellyMaterials.TryGetValue(key, out var cached) && IsInstanceValid(cached)) return cached;
+
+        // The system body's own opaque Avatar variant, untextured and with a tint only: the same
+        // material a part starts on before its bake arrives (BuildSkinnedMeshInstance), so it has no
+        // alpha to be cut away and takes the scene's lighting like the avatars around it.
+        var (r, g, b) = JellyDollColor.ForFirstByte(key);
+        var material = new ShaderMaterial
+        {
+            Shader = PrimShaderFamily.Select(PrimShaderFamily.Kind.Opaque, PrimShaderFamily.Surface.Avatar)
+        };
+        material.SetShaderParameter(PrimShaderFamily.AlbedoColor, new Color(r, g, b));
+        _jellyMaterials[key] = material;
+        return material;
+    }
+
+    /// <summary>Draws the system body parts of a reduced avatar in its jelly-doll colour.</summary>
+    /// <remarks>
+    /// The previous stand-in only showed the parts, with their bake materials, and on a Bakes-on-Mesh
+    /// avatar the bake's alpha is exactly what hides the system body: a reduced avatar was invisible.
+    ///
+    /// <para>The override goes on <c>MaterialOverride</c> -- it wins over whatever the surfaces carry --
+    /// and what was there is kept in <see cref="AvatarVisual.StashedPartMaterials"/>, because for these
+    /// parts that IS the bake shader (see <see cref="LoadAndApplyTextureAsync"/>). Clearing it to null
+    /// on promotion would throw the bake away; <see cref="RestorePartMaterials"/> puts it back.</para>
+    /// </remarks>
+    private void ApplyJellyDoll(AvatarVisual visual)
+    {
+        ShaderMaterial? jelly = null;
+        foreach (var name in SystemPartNames)
+        {
+            if (!visual.Parts.TryGetValue(name, out var mi) || !IsInstanceValid(mi)) continue;
+            jelly ??= GetJellyMaterial(visual.AgentId);
+            if (!visual.StashedPartMaterials.ContainsKey(mi)) visual.StashedPartMaterials[mi] = mi.MaterialOverride;
+            mi.MaterialOverride = jelly;
+        }
+    }
+
+    /// <summary>Gives the body parts back the materials <see cref="ApplyJellyDoll"/> took off.</summary>
+    private void RestorePartMaterials(AvatarVisual visual)
+    {
+        foreach (var (mi, original) in visual.StashedPartMaterials)
+        {
+            if (IsInstanceValid(mi)) mi.MaterialOverride = original;
+        }
+        visual.StashedPartMaterials.Clear();
+    }
+
     private void SetAvatarReduced(AvatarVisual visual)
     {
         if (visual.IsReduced) return;
         visual.IsReduced = true;
+        visual.StateChangedAt = NowSeconds;
 
-        visual.AnimPlayer.Stop();
-        if (visual.Skeleton != null && GodotObject.IsInstanceValid(visual.Skeleton))
-        {
-            visual.Skeleton.ResetBonePoses();
-        }
+        // The animation is NOT stopped and the pose NOT reset: a reduced avatar keeps its animation state
+        // and advances it ~10 Hz in _Process, so the stand-in is not frozen in a T-pose and SetAvatarFull
+        // needs no new animation packet. (Stopping it also cleared the player's animations while
+        // LoadedAnimationIds still said they were loaded, so a promoted avatar never got them back.)
+        // The skeleton carries only the few system-body skins now, which makes the re-posing cheap. The
+        // phase differs per avatar so the 10 Hz advances do not all land in the same frame.
+        visual.ReducedAnimAccum = (uint)visual.EntityId.GetHashCode() % 100 / 100f * ReducedAnimationIntervalSeconds;
 
         foreach (var attId in visual.WornAttachmentEntities)
         {
@@ -6361,6 +6633,8 @@ void fragment() {
             }
 
             _attachmentMeshIds.Remove(attId);
+            _attachmentPrimSignatures.TryRemove(attId, out _);
+            _attachmentLocalPoses.Remove(attId);
 
             if (visual.WornAttachmentFaces.TryGetValue(attId, out var wornFaces))
             {
@@ -6398,6 +6672,7 @@ void fragment() {
         }
         visual.RiggedAttachments.Clear();
         visual.BomAttachments.Clear();
+        ApplyJellyDoll(visual);
         RecomputeMeshVisibility(visual);
     }
 
@@ -6405,12 +6680,20 @@ void fragment() {
     {
         if (!visual.IsReduced) return;
         visual.IsReduced = false;
+        visual.StateChangedAt = NowSeconds;
+        visual.ReducedAnimAccum = 0f;
 
-        if (visual.Skeleton != null && GodotObject.IsInstanceValid(visual.Skeleton))
+        // The bake materials first: the morph rebuild below and the UpdateVisual after it draw with them.
+        RestorePartMaterials(visual);
+
+        // A shape that arrived while reduced took the skeleton only; the vertex morphs are due now.
+        if (visual.PendingMorphWeights is { } pending)
         {
-            visual.AnimPlayer.SetSkeleton(visual.Skeleton);
+            ApplyShapeMorphs(visual, pending);
         }
 
+        // Bakes (LoadedTextures is behind), position and animations. The animation player kept its
+        // state while reduced, so nothing needs restarting.
         if (visual.EntityId != Guid.Empty)
         {
             UpdateVisual(visual.EntityId.ToString());
@@ -6424,46 +6707,95 @@ void fragment() {
         RecomputeMeshVisibility(visual);
     }
 
+    /// <summary>Moves one avatar between full and reduced, with the bookkeeping the log needs.</summary>
+    private void TransitionAvatar(AvatarVisual visual, bool toFull, float distance)
+    {
+        Logger.Debug($"[AvatarLimit] {visual.AgentId.ToString("N")[..8]} {(toFull ? "reduced->full" : "full->reduced")} dist={distance:0.0}");
+        _avatarLimitTransitions++;
+        if (toFull) SetAvatarFull(visual);
+        else SetAvatarReduced(visual);
+    }
+
     private void EvaluateAvatarLimit(Godot.Vector3 camPos)
     {
+        double now = NowSeconds;
+        _lastAvatarLimitEvaluation = now;
+        bool ignoreDwell = _avatarLimitIgnoreDwell;
+        _avatarLimitIgnoreDwell = false;
+
         int cap = RenderConfig.MaxFullyRenderedAvatars;
         var candidates = new List<AvatarLimitPolicy.Candidate>(_visuals.Count);
+        int pinnedFull = 0;
 
         foreach (var (entityId, visual) in _visuals)
         {
-            if (visual.IsControlAvatar || !visual.Shown) continue;
-            float dist = visual.GodotPos.DistanceTo(camPos);
-            bool isCurrentlyFull = !visual.IsReduced;
+            if (visual.IsControlAvatar) continue;
             bool isExempt = visual.IsSelf || _alwaysRenderFully.Contains(visual.AgentId);
-            candidates.Add(new AvatarLimitPolicy.Candidate(entityId, dist, isCurrentlyFull, isExempt));
+            float dist = visual.GodotPos.DistanceTo(camPos);
+
+            if (!visual.Shown)
+            {
+                // Outside the draw distance: no candidate (it takes no slot). One that stays out long
+                // enough lets go of its outfit. Not with an unlimited cap, where nobody is ever reduced.
+                if (cap > 0 && !isExempt && !visual.IsReduced && now - visual.HiddenSince > AvatarHiddenReduceSeconds)
+                    TransitionAvatar(visual, toFull: false, dist);
+                continue;
+            }
+
+            // Dwell: an avatar that switched moments ago keeps its state. A full one still holds a slot,
+            // so it comes off the cap rather than being counted twice; a reduced one stays out.
+            // A newly created avatar has never switched, so its first promotion is never held back.
+            if (cap > 0 && !isExempt && !ignoreDwell && now - visual.StateChangedAt < AvatarMinDwellSeconds)
+            {
+                if (!visual.IsReduced) pinnedFull++;
+                continue;
+            }
+
+            candidates.Add(new AvatarLimitPolicy.Candidate(entityId, dist, !visual.IsReduced, isExempt));
         }
 
-        var decisions = AvatarLimitPolicy.Evaluate(candidates, cap);
-        int fullCount = 0;
-        int reducedCount = 0;
+        Dictionary<Guid, bool> decisions;
+        int slots = cap > 0 ? cap - pinnedFull : cap;
+        if (cap > 0 && slots <= 0)
+        {
+            // Every slot is held by an avatar in its dwell time (the cap just went down, say). The
+            // policy reads a cap of zero as "unlimited", so this case is answered here.
+            decisions = new Dictionary<Guid, bool>(candidates.Count);
+            foreach (var c in candidates) decisions[c.Id] = c.IsExempt;
+        }
+        else
+        {
+            decisions = AvatarLimitPolicy.Evaluate(candidates, slots);
+        }
 
         foreach (var (entityId, shouldBeFull) in decisions)
         {
             if (!_visuals.TryGetValue(entityId, out var visual)) continue;
-            if (shouldBeFull) fullCount++;
-            else reducedCount++;
-
-            bool wantsReduced = !shouldBeFull;
-            if (visual.IsReduced != wantsReduced)
-            {
-                if (wantsReduced)
-                    SetAvatarReduced(visual);
-                else
-                    SetAvatarFull(visual);
-            }
+            if (visual.IsReduced == shouldBeFull)
+                TransitionAvatar(visual, shouldBeFull, visual.GodotPos.DistanceTo(camPos));
         }
 
-        if (_lastLoggedFull != fullCount || _lastLoggedReduced != reducedCount || _lastLoggedCap != cap)
+        // Counted at the end over everything shown, so the avatars the dwell held back are in it.
+        int fullCount = 0;
+        int reducedCount = 0;
+        foreach (var visual in _visuals.Values)
+        {
+            if (visual.IsControlAvatar || !visual.Shown) continue;
+            if (visual.IsReduced) reducedCount++;
+            else fullCount++;
+        }
+
+        bool countsChanged = _lastLoggedFull != fullCount || _lastLoggedReduced != reducedCount || _lastLoggedCap != cap;
+        bool swapsOnly = _avatarLimitTransitions > 0 && now - _lastAvatarLimitInfo >= AvatarLimitInfoIntervalSeconds;
+        if (countsChanged || swapsOnly)
         {
             _lastLoggedFull = fullCount;
             _lastLoggedReduced = reducedCount;
             _lastLoggedCap = cap;
-            Logger.Info($"[AvatarLimit] shown {fullCount} full, {reducedCount} reduced (cap {cap})");
+            _lastAvatarLimitInfo = now;
+            Logger.Info($"[AvatarLimit] shown {fullCount} full, {reducedCount} reduced (cap {cap}), " +
+                        $"{_avatarLimitTransitions} transitions since the last line");
+            _avatarLimitTransitions = 0;
         }
     }
 
@@ -6590,6 +6922,8 @@ void fragment() {
                 bool visible = visual.Root.Position.DistanceSquaredTo(agentPos) <= maxSq;
                 if (visual.Root.Visible != visible) visual.Root.Visible = visible;
                 visual.Shown = visible;
+                if (visible) visual.HiddenSince = double.PositiveInfinity;
+                else if (double.IsPositiveInfinity(visual.HiddenSince)) visual.HiddenSince = NowSeconds;
 
                 if (!visible && visual.TexturesPinned)
                 {
@@ -6657,14 +6991,31 @@ void fragment() {
                 }
             }
 
-            bool shouldAdvance = !visual.IsReduced && (visual.AnimPlayer.IsPlaying
+            bool shouldAdvance = visual.AnimPlayer.IsPlaying
                 || visual.AnimPlayer.HoldMode != AvatarHoldMode.None
                 || visual.AnimPlayer.IsFrozen
-                || (visual.IsSelf && (Mathf.Abs(visual.AnimPlayer.HeadGazeYaw) > 0.001f || Mathf.Abs(visual.AnimPlayer.HeadGazePitch) > 0.001f)));
+                || (visual.IsSelf && (Mathf.Abs(visual.AnimPlayer.HeadGazeYaw) > 0.001f || Mathf.Abs(visual.AnimPlayer.HeadGazePitch) > 0.001f));
 
             if (visual.Root.Visible && !_tposeActive && shouldAdvance)
             {
-                visual.AnimPlayer.Advance(dt);
+                float step = dt;
+                if (visual.IsReduced)
+                {
+                    // FEAT-PERF-08: a stand-in moves, but ~10 Hz is plenty for a flat-coloured doll and
+                    // the animation (bone poses through interop) is what costs. The time it missed is
+                    // handed to Advance in one go, so the cycle runs at the right speed.
+                    visual.ReducedAnimAccum += dt;
+                    if (visual.ReducedAnimAccum >= ReducedAnimationIntervalSeconds)
+                    {
+                        step = visual.ReducedAnimAccum;
+                        visual.ReducedAnimAccum = 0f;
+                    }
+                    else
+                    {
+                        step = 0f;
+                    }
+                }
+                if (step > 0f) visual.AnimPlayer.Advance(step);
             }
 
             // BUG-UI-16: the login screen too, not only the loading screen -- this layer draws above
@@ -6733,7 +7084,9 @@ void fragment() {
             }
         }
 
-        if ((doCull && haveAgent) || _avatarLimitEvaluationPending)
+        // FEAT-PERF-08: once a second on the cull tick; a cap change or a new avatar asks for it at once.
+        if (_avatarLimitEvaluationPending
+            || (doCull && haveAgent && NowSeconds - _lastAvatarLimitEvaluation >= AvatarLimitIntervalSeconds))
         {
             _avatarLimitEvaluationPending = false;
             EvaluateAvatarLimit(camPos ?? agentPos);

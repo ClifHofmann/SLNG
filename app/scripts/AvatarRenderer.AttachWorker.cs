@@ -135,8 +135,15 @@ public partial class AvatarRenderer
             arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
         prepared.Guard.Report(() => $"worn attachment entity={entityId:N} mesh={request.MeshId:N} avatar={avatarVisual.AgentId:N}");
 
+        // Where the item sits NOW: a duplicate update may have moved it while it was being prepared
+        // (ApplyAttachmentPose has no node to move yet and only records the pose).
         var slPos = request.Position;
         var slRot = request.Rotation;
+        if (_attachmentLocalPoses.TryGetValue(entityId, out var latest))
+        {
+            slPos = latest.Position;
+            slRot = latest.Rotation;
+        }
         var mi = new MeshInstance3D { Name = "AttachMesh", Mesh = arrayMesh };
         mi.Position = new Godot.Vector3(slPos.X, slPos.Z, -slPos.Y);
         mi.Quaternion = new Godot.Quaternion(slRot.X, slRot.Z, -slRot.Y, slRot.W);

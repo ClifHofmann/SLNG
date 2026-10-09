@@ -200,6 +200,7 @@ public partial class AvatarRenderer
         foreach (var primId in primIds)
         {
             _attachmentMeshIds.Remove(primId);
+            _attachmentPrimSignatures.TryRemove(primId, out _);
             CallDeferred(nameof(UpdateAttachment), primId.ToString());
         }
     }

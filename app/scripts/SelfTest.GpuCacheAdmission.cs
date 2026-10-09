@@ -209,18 +209,51 @@ public static partial class SelfTest
 
     /// <summary>
     /// FEAT-PERF-08: Verifies that reduced avatars have rigged and rigid attachments freed,
-    /// skins detached from Skeleton3D, animations stopped, and are restored when set full.
+    /// skins detached from Skeleton3D, are drawn in the jelly-doll colour, keep their pose, and are
+    /// restored (with their bake materials) when set full.
     /// </summary>
     private static Check CheckAvatarReduction()
     {
-        const string Name = "reduced avatars free attachments, detach skins, and stop animation";
+        const string Name = "reduced avatars free attachments, show the jelly doll, keep their pose";
         var problems = new List<string>();
         var renderer = new AvatarRenderer();
         var (passed, detail) = renderer.SelfTestAvatarReductionLifecycle();
         if (!passed) problems.Add(detail);
 
         return problems.Count == 0
-            ? new Check(Name, true, "avatar reduction frees attachments and detaches skins")
+            ? new Check(Name, true, detail)
             : new Check(Name, false, string.Join("; ", problems));
+    }
+
+    /// <summary>FEAT-PERF-08: the avatar cap neither flaps nor holds back a newcomer.</summary>
+    private static Check CheckAvatarLimitStability()
+    {
+        const string Name = "avatar cap holds still (absolute margin, dwell time, first promotion)";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            var (passed, detail) = renderer.SelfTestAvatarLimitStability();
+            return new Check(Name, passed, detail);
+        }
+        finally
+        {
+            renderer.Free();
+        }
+    }
+
+    /// <summary>FEAT-PERF-08: a prim or sculpt attachment is rebuilt only when its geometry or materials change.</summary>
+    private static Check CheckPrimAttachmentSignature()
+    {
+        const string Name = "prim attachment dedupe compares geometry and material inputs only";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            var (passed, detail) = renderer.SelfTestPrimAttachmentSignature();
+            return new Check(Name, passed, detail);
+        }
+        finally
+        {
+            renderer.Free();
+        }
     }
 }

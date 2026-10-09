@@ -12,6 +12,13 @@ public static class AvatarLimitPolicy
     public const float DefaultHysteresisFraction = 0.15f;
 
     /// <summary>
+    /// Absolute incumbent advantage in metres. The relative discount alone collapses to nothing
+    /// for a nearby crowd (15 % of 5 m is 0.75 m), so a camera orbiting inside a crowd swapped
+    /// avatars every evaluation; the larger of the two advantages applies.
+    /// </summary>
+    public const float DefaultAbsoluteMarginMetres = 2.0f;
+
+    /// <summary>
     /// Reference viewer preset values from <c>featuretable.txt</c>:
     /// Low 3 (:98), Mid 7 (:185), High 11 (:269), Ultra 16 (:351).
     /// </summary>
@@ -42,7 +49,7 @@ public static class AvatarLimitPolicy
     /// 2. If <paramref name="cap"/> &lt;= 0, all candidates are fully rendered (unlimited).
     /// 3. Non-exempt candidates are sorted by effective distance:
     ///    An incumbent full avatar receives a distance discount:
-    ///    <c>effectiveDistance = distance * (1.0f - hysteresisFraction)</c>,
+    ///    <c>effectiveDistance = distance - max(distance * hysteresisFraction, absoluteMarginMetres)</c>,
     ///    preventing rapid boundary flipping (thrashing).
     /// 4. The top <paramref name="cap"/> candidates are marked full (<c>true</c>); all remaining
     ///    candidates are marked reduced (<c>false</c>).
@@ -51,7 +58,8 @@ public static class AvatarLimitPolicy
     public static Dictionary<Guid, bool> Evaluate(
         IReadOnlyList<Candidate> candidates,
         int cap,
-        float hysteresisFraction = DefaultHysteresisFraction)
+        float hysteresisFraction = DefaultHysteresisFraction,
+        float absoluteMarginMetres = DefaultAbsoluteMarginMetres)
     {
         var result = new Dictionary<Guid, bool>(candidates.Count);
         if (candidates.Count == 0) return result;
@@ -73,8 +81,9 @@ public static class AvatarLimitPolicy
             }
             else
             {
+                float advantage = Math.Max(c.Distance * hysteresisFraction, absoluteMarginMetres);
                 float effDist = c.IsCurrentlyFull
-                    ? Math.Max(0f, c.Distance * (1.0f - hysteresisFraction))
+                    ? Math.Max(0f, c.Distance - advantage)
                     : Math.Max(0f, c.Distance);
                 nonExempt.Add((c, effDist));
             }

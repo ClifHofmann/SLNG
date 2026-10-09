@@ -5366,6 +5366,11 @@ public partial class ObjectRenderer : Node3D
                 if (s == surface && IsInstanceValid(node))
                     return node.GetSurfaceOverrideMaterial(0) as ShaderMaterial;
         }
+        // A surface index the CURRENT mesh no longer has: the mesh was swapped to a lower LOD with fewer
+        // surfaces while a caller (the planar mirror's per-frame SetMirrorTexture) still holds the old
+        // index. The engine answers GetSurfaceOverrideMaterial with an error and a backtrace -- 1,384 of
+        // them in one session -- so ask the count first (it equals the mesh's surface count).
+        if ((uint)surface >= (uint)state.MeshInstance.GetSurfaceOverrideMaterialCount()) return null;
         return state.MeshInstance.GetSurfaceOverrideMaterial(surface) as ShaderMaterial;
     }
 

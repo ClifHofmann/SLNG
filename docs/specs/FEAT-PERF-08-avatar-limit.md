@@ -23,6 +23,14 @@ The reference viewer (Second Life / Firestorm) addresses this with two knobs:
 
 This feature implements the first cut of FEAT-PERF-08: a cap on fully rendered avatars (nearest first with distance hysteresis), integrated into SLNG's graphics presets and user settings.
 
+### Revision (v0.27.28-alpha): jelly doll, stable cap, new avatars start reduced
+
+Measured in-world at a 76-avatar sim (cap 7): "no avatar body visible, only name tags, everything loads forever".
+- **The base body with its bakes was the wrong stand-in.** On a Bakes-on-Mesh avatar the bake's alpha is what hides the system body, so a reduced avatar rendered as nothing. A reduced avatar is now drawn as a **jelly doll** again: the system parts on one shared opaque material per colour (`MaterialOverride`, the bake material is stashed and put back on promotion). The colour is the reference viewer's muted-avatar colour (`LLVOAvatar::calcMutedAVColor`, llvoavatar.cpp:11948-11997; `SLNG.Core.JellyDollColor`). The text below is the original decision and is superseded on this point.
+- **The cap thrashed.** Avatars at similar camera distances swapped full/reduced every 0.25 s and every swap rebuilt the whole outfit. Now: an absolute 2 m incumbent margin in `AvatarLimitPolicy`, one evaluation per second (a cap change or a new avatar still triggers one at once), and a 5 s minimum dwell per avatar. Every transition is a Debug line; the Info line reports the transitions since the last one.
+- **New avatars start reduced** (not self, not pinned, not with an unlimited cap) and are promoted by the next evaluation, so a sim full of people no longer fetches and rigs every outfit on arrival. A reduced avatar still takes the skeleton's shape (its root height depends on it) and keeps animating at ~10 Hz; the vertex morphs, bakes and worn items are caught up by `SetAvatarFull`. A full avatar outside the draw distance for 10 s is reduced.
+- **Attachment rebuild loops:** the LOD dedupe accepts a level at or above the wanted one (the level only goes up), prim/sculpt attachments have a dedupe of their own (geometry and material inputs), and a duplicate update that only moved the item just moves its node.
+
 ### Choice & Justification of Cheap Stand-In
 
 Avatars beyond the cap receive a cheap stand-in rather than full worn mesh rigging.
