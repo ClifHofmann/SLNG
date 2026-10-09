@@ -810,8 +810,11 @@ public partial class ObjectRenderer : Node3D
                     // what pushed cull.scan's average from 0.78 ms back up to 3.22 ms. Coalesced on the
                     // same key as the ordinary update path, so a re-entering object cannot queue twice.
                     string reloadId = id.ToString();
+                    // BUG-PERF-10: its own label, so "the first look at an object that just came into
+                    // range" (where its assets are requested) is told apart from "the sim changed it".
+                    // visual.update + visual.reload is what visual.update alone used to be.
                     MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
-                                                () => UpdateVisual(reloadId), $"update:{reloadId}", "visual.update");
+                                                () => UpdateVisual(reloadId), $"update:{reloadId}", "visual.reload");
                 }
                 else if (viewDSq > releaseSq && !state.ResourcesReleased)
                 {
