@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-PERF-12`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` -- measures 1-2 merged (v0.27.17 with BUG-AVATAR-10); rest-fps target met in-world, load and per-second targets not (see In-world measurement)
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md) -- follows BUG-PERF-05, BUG-PERF-06, BUG-PERF-08 and BUG-PERF-11
 
@@ -55,7 +55,7 @@ Measured in-world at the same kind of place (a crowded one, >= 10 avatars), one 
 - [ ] `[WorkCost] avatar.rig` main-thread total per 5 s window at least halved (n x avg), or no window above ~500 ms.
 - [ ] `[PhaseCost] avatar-render` at rest <= 30 ms/s (was 66-69) and fps at rest >= 40 (was 29) with the queue empty.
 - [ ] fps during the load >= 30 in every window (was 17-20).
-- [ ] Visually identical to v0.27.12: BoM mesh bodies/heads, alpha layers, hair, clothing; toggling a layer with the
+- [x] Visually identical to v0.27.12: BoM mesh bodies/heads, alpha layers, hair, clothing; toggling a layer with the
       body HUD still shows and hides it; own avatar and others' attachments complete; no avatar left in a T-pose.
 - [ ] Unit / self test for every new rule; `/slng-verify` steps all green.
 
@@ -100,9 +100,26 @@ and `tests/SLNG.Assets.Tests`.
 
 ## Sub-tasks / Progress
 
-- [ ] Counters first: rigs with a normal map, faces hidden at request time, per-avatar skinned mesh count (`[AvatarCost]`)
-- [ ] Measure 1 (skip invisible submeshes) on the Millenium / crowded-place data above
-- [ ] Measure 2 (nearest avatar first)
+- [x] Counters first: rigs with a normal map, faces hidden at request time, per-avatar skinned mesh count (`[AvatarCost]`)
+- [x] Measure 1 (skip invisible submeshes)
+- [x] Measure 2 (nearest avatar first)
 - [ ] Measure 3 (tangents) -- only if the counter says it pays
 - [ ] Measure 4 (pose rate) -- only if rest fps is still below 40
-- [ ] In-world check by the owner, numbers back into the ROADMAP row
+- [x] In-world check by the owner, numbers back into the ROADMAP row
+
+## In-world measurement (2026-10-09)
+
+Same region (handle 499178279373312), same crowd, camera still; baseline = v0.27.15 (main + BUG-AVATAR-10, without this task), run = v0.27.16.
+
+| | baseline | v0.27.16 | target |
+|---|---|---|---|
+| avatars / skinned meshes | 17 / 3,841 | 15-16 / 1,926-2,019 | - |
+| fps during load | 16-22 | 24-28 | >= 30 (not met) |
+| fps at rest (low1%) | ~24 (7-20) | 42-47 (23-37) | >= 40 (met) |
+| avatar-render at rest | 60-70 ms/s (~2.7 ms/frame) | 80-97 ms/s (~1.9 ms/frame) | <= 30 ms/s (not met; restate per frame) |
+| worst 5 s window of avatar.rig | 687 ms | 1,286 ms (arrival), 706 ms (zoom) | <= 500 ms (not met) |
+| rigs per 5 s at rest | 20-100 | 1-3 | - |
+
+Visual check by the owner: every avatar complete, nothing missing, no T-pose.
+
+Still open: the rig work arrives as one burst (2,300+ rigs in a 5 s window on arrival; ~950 again when a zoom changes the attachment detail level), which is what keeps load fps under 30. Measures 3 (tangents) and 4 (pose rate) were not needed for the rest target.

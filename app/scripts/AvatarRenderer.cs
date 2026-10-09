@@ -36,6 +36,10 @@ public partial class AvatarRenderer : Node3D
         public float LastRootY { get; set; } = float.NaN;
         public float LastLoggedRootY { get; set; } = float.NaN;
         public double LastHeightLogTime { get; set; }
+        // BUG-PERF-12: managed copies of Root position and visibility so rig workers can evaluate
+        // distance/priority without touching Godot interop.
+        public Godot.Vector3 GodotPos { get; set; }
+        public bool Shown { get; set; } = true;
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         // Base (un-morphed) body-part data, keyed by part name. Kept so the body meshes can be
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
@@ -90,6 +94,7 @@ public partial class AvatarRenderer : Node3D
         // meshes whose face materials must be re-resolved when a new server bake arrives.
         public HashSet<int> AttachmentBakeChannels { get; } = new();
         public List<(MeshInstance3D Mi, int[] FaceIndices, FaceTexture[]? Faces, FaceTexture DefaultFace)> BomAttachments { get; } = new();
+        public Dictionary<Guid, (FaceTexture[]? Faces, FaceTexture DefaultFace)> WornAttachmentFaces { get; } = new();
         // Per-bone OWN scale (base + shape distortion), keyed by bone name — deliberately NOT
         // multiplied by any ancestor's scale. Verified against LLXformMatrix::update()/
         // LLMatrix4::initAll (indra/llmath/xform.cpp, m4math.cpp): a real SL joint's world matrix
@@ -249,6 +254,7 @@ public partial class AvatarRenderer : Node3D
     /// thread.</para>
     /// </remarks>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, PendingRig> _pendingRigs = new();
+    private Godot.Vector3 _lastCamPos = Godot.Vector3.Zero;
 
     /// <param name="Definition">The skeleton definition the node was built from: what the worker
     /// resolves the mesh's joint names against, since it must not touch the node itself.</param>
@@ -256,7 +262,41 @@ public partial class AvatarRenderer : Node3D
     /// their per-bone chunks too.</param>
     private sealed record PendingRig(
         MeshData MeshData, AvatarVisual Visual, Skeleton3D Skeleton, Guid MeshId,
-        FaceTexture[]? Faces, FaceTexture DefaultFace, AvatarSkeleton? Definition, bool WantPick);
+        FaceTexture[]? Faces, FaceTexture DefaultFace, AvatarSkeleton? Definition, bool WantPick)
+    {
+        public bool Equals(PendingRig? other)
+        {
+            if (other is null) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return MeshData == other.MeshData &&
+                   Visual == other.Visual &&
+                   Skeleton == other.Skeleton &&
+                   MeshId == other.MeshId &&
+                   DefaultFace.Equals(other.DefaultFace) &&
+                   Definition == other.Definition &&
+                   WantPick == other.WantPick &&
+                   ((Faces == null && other.Faces == null) ||
+                    (Faces != null && other.Faces != null && Faces.AsSpan().SequenceEqual(other.Faces.AsSpan())));
+        }
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(MeshData);
+            hash.Add(Visual);
+            hash.Add(Skeleton);
+            hash.Add(MeshId);
+            hash.Add(DefaultFace);
+            hash.Add(Definition);
+            hash.Add(WantPick);
+            if (Faces != null)
+            {
+                hash.Add(Faces.Length);
+                for (int i = 0; i < Faces.Length; i++) hash.Add(Faces[i]);
+            }
+            return hash.ToHashCode();
+        }
+    }
 
     // FEAT-UI-23: the bone-parented colliders that make a rigged worn item clickable -- one per
     // bone the item is weighted to. They live on the SKELETON, not under the item's own mesh
@@ -657,6 +697,8 @@ public partial class AvatarRenderer : Node3D
         // BUG-PERF-06: a rig still being prepared for it would otherwise be put on the skeleton
         // after it left.
         _pendingRigs.TryRemove(entityId, out _);
+        _preparedRigs.TryRemove(entityId, out _);
+        _rigsPreparing.TryRemove(entityId, out _);
         // BUG-PERF-08: likewise a non-rigged mesh still being prepared.
         _attachNewest.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
@@ -677,6 +719,7 @@ public partial class AvatarRenderer : Node3D
         if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
             && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
         {
+            ownerVisual.WornAttachmentFaces.Remove(entityId);
             // M4-7: a detached BoM mesh body/head must un-hide the system part it was covering.
             // QueueFree above is deferred, so drop the entry by reference here — RecomputeMesh-
             // Visibility's IsInstanceValid sweep would still see it live this frame.
@@ -1311,6 +1354,7 @@ public partial class AvatarRenderer : Node3D
             // (seated: HoverOffsetZ is already folded into rootPos.Y above, per llvoavatar.cpp:4729)
 
             visual.Root.Position = rootPos;
+            visual.GodotPos = rootPos;
 
             // A world-Z readout is only useful where the avatar actually IS, and a shape apply
             // happens once at login — so re-report it whenever the self avatar has SETTLED at a
@@ -2068,6 +2112,27 @@ public partial class AvatarRenderer : Node3D
             ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
             : default;
 
+        // BUG-PERF-12: a mesh attachment's faces count towards the system parts it hides even when the rig
+        // leaves its invisible submeshes out. Only when they CHANGED: this runs on every ObjectUpdate of every
+        // worn item, and the recompute is six interop writes plus a walk over the avatar's worn faces.
+        if (isMeshAttachment)
+        {
+            bool known = avatarVisual.WornAttachmentFaces.TryGetValue(entityId, out var worn);
+            bool same = known && worn.DefaultFace == defaultFace
+                        && (worn.Faces == prim!.Faces
+                            || (worn.Faces != null && prim.Faces != null && worn.Faces.AsSpan().SequenceEqual(prim.Faces)));
+            if (!same)
+            {
+                avatarVisual.WornAttachmentFaces[entityId] = (prim!.Faces, defaultFace);
+                RecomputeMeshVisibility(avatarVisual);
+            }
+        }
+        else
+        {
+            if (avatarVisual.WornAttachmentFaces.Remove(entityId))
+                RecomputeMeshVisibility(avatarVisual);
+        }
+
         // Skip a redundant reload: LibreMetaverse's ObjectUpdate can fire several times for the
         // same object during initial rez (observed 4x for one entity before the first async
         // mesh load even finished). Without this guard each overlapping call tears down +
@@ -2755,6 +2820,7 @@ public partial class AvatarRenderer : Node3D
         _riggedAttachments.Remove(entityId);
         ClearRiggedPickBodies(entityId);
         visual.RiggedAttachments.RemoveAll(r => r.Mi == existing);
+        visual.BomAttachments.RemoveAll(r => r.Mi == existing);
         if (IsInstanceValid(existing)) existing.QueueFree();
     }
 
@@ -2970,6 +3036,20 @@ public partial class AvatarRenderer : Node3D
         // draw calls and VRAM for the rest of the session. Measured on a busy sim:
         // 22,500 draw calls, 38M triangles, 9.5 GB VRAM.
         MainThreadWorkQueue.Measure("avatar.rig.discard", () => DiscardRiggedAttachment(entityId, req.Visual));
+
+        if (ready.Mesh.SurfaceArrays.Length == 0)
+        {
+            // BUG-PERF-12: all surfaces are invisible; previous attachment discarded and
+            // any joint-position overrides applied, but no Skin, ArrayMesh or scene node needed.
+            // Through ApplyWornJointOverrides like the drawn case below, so the overrides are
+            // recorded against this attachment and come off again when it is taken off (BUG-AVATAR-10).
+            if (req.MeshData.Skin != null)
+            {
+                MainThreadWorkQueue.Measure("avatar.rig.jointpos", () => ApplyWornJointOverrides(entityId, req));
+            }
+            RecomputeMeshVisibility(req.Visual);
+            return;
+        }
 
         // The mesh may be rigged to shifted joint positions (mesh bodies/heads).
         // Apply its joint-position overrides to the skeleton BEFORE binding, like the
@@ -3334,8 +3414,7 @@ public partial class AvatarRenderer : Node3D
         FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
         PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
     {
-        if (ft.TextureId == new Guid("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903")
-            || (ft.Color != default && ft.Color.W <= 0.001f))
+        if (ft.IsInvisible)
         {
             return new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
         }
@@ -3893,6 +3972,16 @@ public partial class AvatarRenderer : Node3D
             if (e.Faces != null) foreach (var f in e.Faces) Scan(f);
             Scan(e.DefaultFace);
         }
+        foreach (var (_, (faces, defaultFace)) in avatarVisual.WornAttachmentFaces)
+        {
+            void Scan(FaceTexture f)
+            {
+                if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(f.TextureId, out int b))
+                    ch.Add(b);
+            }
+            if (faces != null) foreach (var f in faces) Scan(f);
+            Scan(defaultFace);
+        }
 
         // Hide base parts per consumed channel (head bake also covers the eyelashes part, exactly
         // like MESH_ID_EYELASH in the viewer's updateMeshVisibility).
@@ -4114,6 +4203,8 @@ public partial class AvatarRenderer : Node3D
         }
         MeshInstance3D? hudMovedRigged = null;
         _pendingRigs.TryRemove(entityId, out _); // BUG-PERF-06: nor rigged onto the body later
+        _preparedRigs.TryRemove(entityId, out _);
+        _rigsPreparing.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
         {
@@ -4126,6 +4217,7 @@ public partial class AvatarRenderer : Node3D
         if (_attachmentMeshIds.TryGetValue(entityId, out var hudMovedMeshInfo)
             && _visuals.TryGetValue(hudMovedMeshInfo.AvatarEntityId, out var hudOwnerVisual))
         {
+            hudOwnerVisual.WornAttachmentFaces.Remove(entityId);
             // M4-7: same as detach — a mesh moved onto a HUD point no longer hides the body.
             if (hudMovedRigged != null) hudOwnerVisual.BomAttachments.RemoveAll(e => e.Mi == hudMovedRigged);
             RecomputeMeshVisibility(hudOwnerVisual);
@@ -6055,6 +6147,7 @@ void fragment() {
 
         int avatars = 0, shown = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0, boundBinds = 0;
         int surfaces = 0, hiddenSurfaces = 0;
+        int maxSkinned = 0;
         foreach (var visual in _visuals.Values)
         {
             if (visual.Skeleton == null || !IsInstanceValid(visual.Skeleton)) continue;
@@ -6062,20 +6155,25 @@ void fragment() {
             bool isShown = visual.Root.Visible;
             if (isShown) shown++;
             if (isShown && visual.AnimPlayer.IsPlaying) animating++;
+            int avSkinned = 0;
             foreach (var node in visual.Skeleton.GetChildren())
             {
-                CountSkin(node as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
+                CountSkin(node as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
                           ref boundBinds, ref surfaces, ref hiddenSurfaces);
                 foreach (var grandchild in node.GetChildren())
-                    CountSkin(grandchild as MeshInstance3D, isShown, ref skinned, ref drawn, ref binds, ref shownBinds,
+                    CountSkin(grandchild as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
                               ref boundBinds, ref surfaces, ref hiddenSurfaces);
             }
+            skinned += avSkinned;
+            if (avSkinned > maxSkinned) maxSkinned = avSkinned;
         }
 
         SLNG.App.UI.StatsOverlay.EmitPerfLine(
             $"[AvatarCost] avatars={avatars} shown={shown} animating={animating} skinnedMeshes={skinned} " +
             $"drawnSkinnedMeshes={drawn} surfaces={surfaces} hiddenSurfaces={hiddenSurfaces} " +
-            $"skinBinds={binds} shownSkinBinds={shownBinds} boundSkinBinds={boundBinds} controlAvatars={_controlAvatars.Count}");
+            $"skinBinds={binds} shownSkinBinds={shownBinds} boundSkinBinds={boundBinds} maxSkinned={maxSkinned} " +
+            $"rigNormal={_rigsWithNormalCount}/{_rigsPreparedCount} " +
+            $"reqHiddenSubmeshes={_submeshesHiddenCount}/{_submeshesTotalCount} controlAvatars={_controlAvatars.Count}");
 
         // Surfaces are counted on the instance that owns the face: a split child counts its one
         // surface, and the parent's Hidden stand-in for it is not counted again.
@@ -6132,6 +6230,10 @@ void fragment() {
         var viewport = GetViewport();
         var camera = viewport?.GetCamera3D();
         Godot.Vector3? camPos = camera?.GlobalPosition;
+        if (camPos.HasValue)
+            _lastCamPos = camPos.Value;
+        else if (haveAgent)
+            _lastCamPos = agentPos;
         float nameTagMaxDist = 20.0f;
         float nameTagFadeStart = 15.0f;
 
@@ -6141,6 +6243,7 @@ void fragment() {
             {
                 bool visible = visual.Root.Position.DistanceSquaredTo(agentPos) <= maxSq;
                 if (visual.Root.Visible != visible) visual.Root.Visible = visible;
+                visual.Shown = visible;
             }
 
             if (visual.IsSelf)

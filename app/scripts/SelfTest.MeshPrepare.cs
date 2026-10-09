@@ -71,6 +71,50 @@ public static partial class SelfTest
     }
 
     /// <summary>
+    /// BUG-PERF-12: submeshes with invisible faces (transparent texture id or zero alpha color)
+    /// are skipped at build time, eliminating useless draw calls, surfaces, and skinning cost.
+    /// </summary>
+    private static Check CheckInvisibleRiggedFacesSkipped()
+    {
+        const string Name = "invisible rigged faces skipped";
+        var problems = new List<string>();
+        try
+        {
+            var (mesh, slots, faces, defaultFace) = SyntheticRiggedMesh();
+            // SyntheticRiggedMesh has faces: [hair, hair, skin].
+            // Set hair (faces 0 and 1) to transparent:
+            var transparent = default(FaceTexture) with { TextureId = FaceTexture.TransparentTextureId };
+            var modifiedFaces = new[] { transparent, transparent, faces[2] };
+
+            var prepared = Task.Run(() => AvatarRenderer.PrepareRiggedMesh(mesh, slots, modifiedFaces, defaultFace))
+                .GetAwaiter().GetResult();
+            var legacy = LegacyRiggedSurfaceArrays(mesh, slots, modifiedFaces, defaultFace, out var legacyFaces);
+
+            if (prepared.SurfaceArrays.Length != 1)
+                problems.Add($"expected 1 surviving surface, got {prepared.SurfaceArrays.Length}");
+            if (prepared.Geometry.FaceIndices().Length != 1 || prepared.Geometry.FaceIndices()[0] != 2)
+                problems.Add($"expected face index [2], got [{string.Join(',', prepared.Geometry.FaceIndices())}]");
+            if (legacy.Count != 1)
+                problems.Add($"legacy build made {legacy.Count} surfaces, expected 1");
+
+            // Also test all invisible:
+            var allInvisibleFaces = new[] { transparent, transparent, transparent };
+            var preparedAll = Task.Run(() => AvatarRenderer.PrepareRiggedMesh(mesh, slots, allInvisibleFaces, defaultFace))
+                .GetAwaiter().GetResult();
+            if (preparedAll.SurfaceArrays.Length != 0)
+                problems.Add($"all-invisible mesh produced {preparedAll.SurfaceArrays.Length} surfaces, expected 0");
+
+            return problems.Count == 0
+                ? new Check(Name, true, "submeshes with transparent texture skipped, surviving faces preserved, all-invisible produces 0 surfaces")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// BUG-PERF-06: a HUD prim's mesh arrays and its click shape's faces are now built on a worker
     /// thread instead of a SurfaceTool commit per submesh plus <c>CreateTrimeshShape</c> on the main
     /// thread. Builds a HUD mesh both ways -- the new one on a thread-pool thread, the old one kept
@@ -707,6 +751,12 @@ public static partial class SelfTest
             if (sub.Indices.Length == 0 || sub.Weights == null) continue;
 
             var subFace = Resolve(sub.FaceIndex);
+            if (subFace.IsInvisible)
+            {
+                FlushRun();
+                continue;
+            }
+
             if (st == null || !subFace.Equals(runFace))
             {
                 FlushRun();

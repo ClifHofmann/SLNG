@@ -120,6 +120,12 @@ public static class RiggedMeshBuilder
             if (sub.Indices.Length == 0 || sub.Weights == null) continue;
 
             var subFace = faceFor(sub.FaceIndex);
+            if (subFace.IsInvisible)
+            {
+                FlushRun();
+                continue;
+            }
+
             if (run == null || !subFace.Equals(run.Face))
             {
                 FlushRun();
@@ -203,8 +209,16 @@ public static class RiggedMeshBuilder
         FlushRun();
 
         geo.RemappedInfluences = remapped;
-        geo.BindPoseMin = bpMin;
-        geo.BindPoseMax = bpMax;
+        if (geo.Surfaces.Count > 0)
+        {
+            geo.BindPoseMin = bpMin;
+            geo.BindPoseMax = bpMax;
+        }
+        else
+        {
+            geo.BindPoseMin = Vector3.Zero;
+            geo.BindPoseMax = Vector3.Zero;
+        }
         return geo;
     }
 
