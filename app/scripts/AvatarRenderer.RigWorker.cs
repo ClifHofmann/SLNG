@@ -138,6 +138,7 @@ public partial class AvatarRenderer
     {
         foreach (var (id, req) in _pendingRigs)
         {
+            if (req.Visual.IsReduced) continue;
             if (_rigsPreparing.ContainsKey(id)) continue;
             if (_preparedRigs.TryGetValue(id, out var ready) && ready.Request.Equals(req)) continue;
             return true;
@@ -159,6 +160,7 @@ public partial class AvatarRenderer
 
         foreach (var (id, req) in _pendingRigs)
         {
+            if (req.Visual.IsReduced) continue;
             if (_rigsPreparing.ContainsKey(id)) continue;
             if (_preparedRigs.TryGetValue(id, out var ready) && ready.Request.Equals(req)) continue;
 

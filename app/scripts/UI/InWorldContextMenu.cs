@@ -43,6 +43,8 @@ namespace SLNG.App.UI
         /// responsible for flipping the actual mute state (see <c>GridSession.IsAvatarMuted</c>/
         /// <c>SetAvatarMuted</c>).</summary>
         public Action<Guid, string>? OnAvatarMuteToggleClicked;
+        /// <summary>FEAT-PERF-08: toggle "always render fully" exemption for an avatar.</summary>
+        public Action<Guid, string>? OnAvatarAlwaysRenderToggleClicked;
 
         /// <summary>MVP2-1: right-click "Sit Here" on bare ground (see ShowGroundMenu) -- the
         /// world position that was right-clicked, same one OnCreatePrimClicked receives.</summary>
@@ -72,6 +74,7 @@ namespace SLNG.App.UI
         private Button _avatarTeleportButton = null!;
         private Button _avatarPayButton = null!;
         private Button _avatarMuteButton = null!;
+        private Button _avatarAlwaysRenderButton = null!;
         private VBoxContainer _createRoot = null!;
         private Button _sitButton = null!, _deleteButton = null!, _detachButton = null!, _buyButton = null!, _payButton = null!;
         private VBoxContainer _groundOnlyButtons = null!;
@@ -123,6 +126,7 @@ namespace SLNG.App.UI
             _avatarTeleportButton = AddMenuButton(_avatarButtons, "🚀 Offer Teleport", () => OnAvatarOfferTeleportClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarPayButton = AddMenuButton(_avatarButtons, "💰 " + L10n.Tr("ui.pay_avatar.menu"), () => OnAvatarPayClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarMuteButton = AddMenuButton(_avatarButtons, "🔇 Mute", () => OnAvatarMuteToggleClicked?.Invoke(_currentAvatarId, _currentAvatarName));
+            _avatarAlwaysRenderButton = AddMenuButton(_avatarButtons, "🌟 " + L10n.Tr("ui.context_menu.avatar_always_render"), () => OnAvatarAlwaysRenderToggleClicked?.Invoke(_currentAvatarId, _currentAvatarName));
 
             _objectButtons = new VBoxContainer();
             root.AddChild(_objectButtons);
@@ -314,7 +318,7 @@ namespace SLNG.App.UI
         /// which way the Mute/Unmute toggle currently reads; the caller (whoever tracks the mute
         /// list, e.g. <c>GridSession.IsAvatarMuted</c>) is the source of truth for it, not this
         /// menu.</summary>
-        public void ShowAvatarMenu(Vector2 position, Guid agentId, string name, bool isSelf, bool isMuted = false)
+        public void ShowAvatarMenu(Vector2 position, Guid agentId, string name, bool isSelf, bool isMuted = false, bool isAlwaysRender = false)
         {
             _currentAvatarId = agentId;
             _currentAvatarName = name ?? "";
@@ -328,6 +332,10 @@ namespace SLNG.App.UI
             _avatarPayButton.Visible = !isSelf;
             _avatarMuteButton.Visible = !isSelf;
             _avatarMuteButton.Text = isMuted ? "🔊 Unmute" : "🔇 Mute";
+            _avatarAlwaysRenderButton.Visible = !isSelf;
+            _avatarAlwaysRenderButton.Text = isAlwaysRender
+                ? "🌟 " + L10n.Tr("ui.context_menu.avatar_normal_render")
+                : "🌟 " + L10n.Tr("ui.context_menu.avatar_always_render");
 
             Position = position;
             Visible = true;

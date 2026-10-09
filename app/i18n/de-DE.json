@@ -310,6 +310,10 @@
       "moved_to_folder_toast": "In \"{0}\" verschoben.",
       "folder_created_toast": "Ordner \"{0}\" erstellt."
     },
+    "context_menu": {
+      "avatar_always_render": "Immer voll darstellen",
+      "avatar_normal_render": "Normal darstellen"
+    },
     "favorites_bar": {
       "label": "Favoriten",
       "open_landmarks_tooltip": "Landmarken-Fenster öffnen",
@@ -708,6 +712,8 @@
       "small_object_shadows": "Schatten für kleine Objekte",
       "object_detail_heading": "Objektdetails:",
       "object_detail_hint": "Wie fein Mesh-Objekte gezeichnet werden. Entspricht RenderVolumeLODFactor im offiziellen Viewer — 1,0 ist dessen Standard. Höher hält weit entfernte Objekte detailliert und kostet Leistung, niedriger spart Dreiecke. Wirkt über die nächste Sekunde, nicht sofort.",
+      "max_full_avatars_heading": "Max. voll dargestellte Avatare:",
+      "max_full_avatars_hint": "Begrenzt die Anzahl voll geriggerter Avatare zur Entlastung der CPU. Entferntere Avatare nutzen einen günstigen Ersatz.",
       "theme_heading": "Oberflächen-Design",
       "post_fx": "Nachbearbeitung",
       "post_fx_ssao": "Umgebungsverdeckung (SSAO)",

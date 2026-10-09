@@ -310,6 +310,10 @@
       "moved_to_folder_toast": "Moved to \"{0}\".",
       "folder_created_toast": "Folder \"{0}\" created."
     },
+    "context_menu": {
+      "avatar_always_render": "Always render fully",
+      "avatar_normal_render": "Render normally"
+    },
     "favorites_bar": {
       "label": "Favorites",
       "open_landmarks_tooltip": "Open Landmarks window",
@@ -708,6 +712,8 @@
       "small_object_shadows": "Shadows on Small Objects",
       "object_detail_heading": "Object detail:",
       "object_detail_hint": "How finely mesh objects are drawn. This is RenderVolumeLODFactor from the official viewer — 1.0 is its default. Higher keeps distant objects detailed and costs performance, lower saves triangles. Takes effect over the next second, not instantly.",
+      "max_full_avatars_heading": "Max fully rendered avatars:",
+      "max_full_avatars_hint": "Caps the number of fully rigged avatars to reduce CPU load. Distant avatars use a lightweight stand-in.",
       "theme_heading": "Interface Theme",
       "post_fx": "Post-processing",
       "post_fx_ssao": "Ambient Occlusion (SSAO)",

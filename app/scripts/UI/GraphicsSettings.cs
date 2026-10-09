@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using SLNG.Core;
 
 namespace SLNG.App.UI;
 
@@ -117,6 +118,12 @@ public sealed class GraphicsSettings
     /// Life's own default; the slider's range matches the viewer's own clamp.</summary>
     public float VolumeLodFactor { get; private set; } = RenderConfig.VolumeLodFactor;
 
+    /// <summary>FEAT-PERF-08: the viewer's <c>RenderAvatarMaxNonImpostors</c> ("Max. voll dargestellte Avatare").
+    /// Caps the number of fully rendered/rigged avatars (nearest first with distance hysteresis).
+    /// Avatars beyond the cap get cheap stand-ins (base body with baked textures, no worn meshes).
+    /// Low: 3, Mid: 7, High: 11, Ultra: 16 (featuretable.txt:98, 185, 269, 351). 0 means unlimited.</summary>
+    public int MaxFullyRenderedAvatars { get; private set; } = RenderConfig.MaxFullyRenderedAvatars;
+
     public void Load()
     {
         var cfg = new ConfigFile();
@@ -142,6 +149,8 @@ public sealed class GraphicsSettings
         ShadowSplits = (int)cfg.GetValue(Section, "shadow_splits", ShadowSplits);
         SmallObjectShadows = (bool)cfg.GetValue(Section, "small_object_shadows", SmallObjectShadows);
         VolumeLodFactor = (float)cfg.GetValue(Section, "volume_lod_factor", VolumeLodFactor);
+        MaxFullyRenderedAvatars = (int)cfg.GetValue(Section, "max_fully_rendered_avatars", MaxFullyRenderedAvatars);
+        RenderConfig.MaxFullyRenderedAvatars = MaxFullyRenderedAvatars;
     }
 
     private void Save()
@@ -168,6 +177,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "shadow_splits", ShadowSplits);
         cfg.SetValue(Section, "small_object_shadows", SmallObjectShadows);
         cfg.SetValue(Section, "volume_lod_factor", VolumeLodFactor);
+        cfg.SetValue(Section, "max_fully_rendered_avatars", MaxFullyRenderedAvatars);
         cfg.Save(ConfigPath);
     }
 
@@ -191,6 +201,13 @@ public sealed class GraphicsSettings
     public void SetShadowSplits(int splits) { ShadowSplits = splits; Save(); }
     public void SetSmallObjectShadows(bool on) { SmallObjectShadows = on; Save(); }
     public void SetVolumeLodFactor(float factor) { VolumeLodFactor = factor; Save(); }
+    public void SetMaxFullyRenderedAvatars(int count)
+    {
+        MaxFullyRenderedAvatars = count;
+        RenderConfig.MaxFullyRenderedAvatars = count;
+        Save();
+        AvatarRenderer.NotifySettingsChanged();
+    }
 
     public void ApplyPreset(GraphicsPreset preset)
     {
@@ -212,6 +229,7 @@ public sealed class GraphicsSettings
                 PostFxSsr = false;
                 PostFxHeroProbe = false;
                 VolumeLodFactor = 1.0f;
+                MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetLowCap;
                 break;
             case GraphicsPreset.Medium:
                 DrawDistance = 128f;
@@ -229,6 +247,7 @@ public sealed class GraphicsSettings
                 PostFxSsr = false;
                 PostFxHeroProbe = false;
                 VolumeLodFactor = 1.25f;
+                MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetMediumCap;
                 break;
             case GraphicsPreset.High:
                 DrawDistance = 176f;
@@ -246,6 +265,7 @@ public sealed class GraphicsSettings
                 PostFxSsr = true;
                 PostFxHeroProbe = true;
                 VolumeLodFactor = 2.0f;
+                MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetHighCap;
                 break;
             case GraphicsPreset.Ultra:
                 DrawDistance = 256f;
@@ -263,6 +283,7 @@ public sealed class GraphicsSettings
                 PostFxSsr = true;
                 PostFxHeroProbe = true;
                 VolumeLodFactor = 3.0f;
+                MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetUltraCap;
                 break;
         }
         Save();
@@ -295,7 +316,8 @@ public sealed class GraphicsSettings
                 !PostFxSsr &&
                 !PostFxHeroProbe &&
                 !SmallObjectShadows &&
-                Math.Abs(VolumeLodFactor - 1.0f) < 0.05f,
+                Math.Abs(VolumeLodFactor - 1.0f) < 0.05f &&
+                MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetLowCap,
             GraphicsPreset.Medium =>
                 Math.Abs(DrawDistance - 128f) < 1f &&
                 Msaa == (int)Viewport.Msaa.Msaa2X &&
@@ -309,7 +331,8 @@ public sealed class GraphicsSettings
                 !PostFxSsr &&
                 !PostFxHeroProbe &&
                 !SmallObjectShadows &&
-                Math.Abs(VolumeLodFactor - 1.25f) < 0.05f,
+                Math.Abs(VolumeLodFactor - 1.25f) < 0.05f &&
+                MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetMediumCap,
             GraphicsPreset.High =>
                 Math.Abs(DrawDistance - 176f) < 1f &&
                 Msaa == (int)Viewport.Msaa.Msaa4X &&
@@ -323,7 +346,8 @@ public sealed class GraphicsSettings
                 PostFxSsr &&
                 PostFxHeroProbe &&
                 !SmallObjectShadows &&
-                Math.Abs(VolumeLodFactor - 2.0f) < 0.05f,
+                Math.Abs(VolumeLodFactor - 2.0f) < 0.05f &&
+                MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetHighCap,
             GraphicsPreset.Ultra =>
                 Math.Abs(DrawDistance - 256f) < 1f &&
                 Msaa == (int)Viewport.Msaa.Msaa8X &&
@@ -337,7 +361,8 @@ public sealed class GraphicsSettings
                 PostFxSsr &&
                 PostFxHeroProbe &&
                 SmallObjectShadows &&
-                Math.Abs(VolumeLodFactor - 3.0f) < 0.05f,
+                Math.Abs(VolumeLodFactor - 3.0f) < 0.05f &&
+                MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetUltraCap,
             _ => false
         };
     }
@@ -389,6 +414,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "shadow_splits", ShadowSplits);
         cfg.SetValue(section, "small_object_shadows", SmallObjectShadows);
         cfg.SetValue(section, "volume_lod_factor", VolumeLodFactor);
+        cfg.SetValue(section, "max_fully_rendered_avatars", MaxFullyRenderedAvatars);
         bool ok = cfg.Save(ConfigPath) == Error.Ok;
         if (ok)
         {
@@ -427,6 +453,8 @@ public sealed class GraphicsSettings
         ShadowSplits = (int)cfg.GetValue(section, "shadow_splits", ShadowSplits);
         SmallObjectShadows = (bool)cfg.GetValue(section, "small_object_shadows", SmallObjectShadows);
         VolumeLodFactor = (float)cfg.GetValue(section, "volume_lod_factor", VolumeLodFactor);
+        MaxFullyRenderedAvatars = (int)cfg.GetValue(section, "max_fully_rendered_avatars", MaxFullyRenderedAvatars);
+        RenderConfig.MaxFullyRenderedAvatars = MaxFullyRenderedAvatars;
         Save();
         CurrentProfileName = name;
         Changed?.Invoke();
@@ -474,6 +502,8 @@ public sealed class GraphicsSettings
         // this slider re-levels the scene over the next second instead of re-meshing thousands of
         // objects inside one frame.
         RenderConfig.VolumeLodFactor = VolumeLodFactor;
+        RenderConfig.MaxFullyRenderedAvatars = MaxFullyRenderedAvatars;
+        AvatarRenderer.NotifySettingsChanged();
 
         if (viewport != null) viewport.Msaa3D = (Viewport.Msaa)Msaa;
 

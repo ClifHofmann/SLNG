@@ -40,6 +40,9 @@ public partial class AvatarRenderer : Node3D
         // distance/priority without touching Godot interop.
         public Godot.Vector3 GodotPos { get; set; }
         public bool Shown { get; set; } = true;
+        // FEAT-PERF-08: cheap stand-in beyond the avatar cap
+        public bool IsReduced { get; set; }
+        public HashSet<Guid> WornAttachmentEntities { get; } = new();
         // BUG-PERF-13: Texture tracking for distance LOD, re-sharpening, and refcount management.
         public HashSet<Guid> PinnedTextureIds { get; } = new();
         public HashSet<Guid> UsedTextureIds { get; } = new();
@@ -234,6 +237,30 @@ public partial class AvatarRenderer : Node3D
     private readonly Dictionary<Guid, BoneAttachment3D> _attachmentNodes = new();
     // attachment entity ID → Rigged mesh node parented to the avatar skeleton
     private readonly Dictionary<Guid, MeshInstance3D> _riggedAttachments = new();
+    // attachment entity ID → Avatar entity ID (for reverse lookup on detach/cull)
+    private readonly Dictionary<Guid, Guid> _attachmentToAvatar = new();
+
+    private static readonly HashSet<Guid> _alwaysRenderFully = new();
+    private static AvatarRenderer? _activeInstance;
+
+    public static bool IsAlwaysRenderFully(Guid agentId) => _alwaysRenderFully.Contains(agentId);
+
+    public static void ToggleAlwaysRenderFully(Guid agentId)
+    {
+        if (!_alwaysRenderFully.Add(agentId))
+        {
+            _alwaysRenderFully.Remove(agentId);
+        }
+        _activeInstance?.TriggerAvatarLimitEvaluation();
+    }
+
+    public static void NotifySettingsChanged()
+    {
+        _activeInstance?.TriggerAvatarLimitEvaluation();
+    }
+
+    private bool _avatarLimitEvaluationPending = true;
+    public void TriggerAvatarLimitEvaluation() => _avatarLimitEvaluationPending = true;
 
     /// <summary>The newest rig request per worn entity, waiting for its queued turn. BUG-PERF-01.</summary>
     /// <remarks>
@@ -389,6 +416,7 @@ public partial class AvatarRenderer : Node3D
     public void Initialize(World world, AssetService assetService, GpuCache gpuCache, SLNG.Net.GridSession? session = null)
     {
         // GD.Print($"[AvatarRenderer] BUILD MARKER: {BuildMarker}");
+        _activeInstance = this;
         _world = world;
         _assetService = assetService;
         _session = session;
@@ -434,6 +462,7 @@ public partial class AvatarRenderer : Node3D
             && !_riggedPickBodies.ContainsKey(id)
             && !_controlAvatarOfPrim.ContainsKey(id)
             && !_pendingControlParts.ContainsKey(id)
+            && !_attachmentToAvatar.ContainsKey(id)
             && id != _selfEntityId
             && _editPausedAvatars.Count == 0)   // RemoveVisual also releases an edit pause held for the entity
         {
@@ -691,6 +720,10 @@ public partial class AvatarRenderer : Node3D
         ReleaseControlAvatarMesh(entityId);
         if (_visuals.TryGetValue(entityId, out var visual))
         {
+            foreach (var attId in visual.WornAttachmentEntities)
+            {
+                _attachmentToAvatar.Remove(attId);
+            }
             if (visual.TexturesPinned && _gpuCache != null)
             {
                 foreach (var texId in visual.PinnedTextureIds)
@@ -735,6 +768,14 @@ public partial class AvatarRenderer : Node3D
         // this deferred call runs.
         _loggedAnimeshState.Remove(entityId);
         _wornAnimatedRootsSeen.Remove(entityId);
+        if (_attachmentToAvatar.TryGetValue(entityId, out var avEntityId))
+        {
+            _attachmentToAvatar.Remove(entityId);
+            if (_visuals.TryGetValue(avEntityId, out var avVis))
+            {
+                avVis.WornAttachmentEntities.Remove(entityId);
+            }
+        }
         if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
             && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
         {
@@ -2173,6 +2214,14 @@ public partial class AvatarRenderer : Node3D
         if (!_visuals.TryGetValue(attachment.AvatarEntityId, out var avatarVisual)) return;
         if (avatarVisual.Skeleton == null) return;
 
+        avatarVisual.WornAttachmentEntities.Add(entityId);
+        _attachmentToAvatar[entityId] = attachment.AvatarEntityId;
+
+        if (avatarVisual.IsReduced)
+        {
+            return;
+        }
+
         // BUG-AVATAR-10: the object's root may turn out to be an animated mesh only after its
         // overrides went in (the flag arrives with the root, which can be after a child's rig). The
         // viewer keeps those off the wearer, so they come back off here.
@@ -3092,6 +3141,12 @@ public partial class AvatarRenderer : Node3D
         var req = ready.Request;
         if (!_pendingRigs.TryRemove(new KeyValuePair<Guid, PendingRig>(entityId, req))) return;
         if (!IsInstanceValid(req.Skeleton)) return;
+
+        if (req.Visual.IsReduced)
+        {
+            DiscardRiggedAttachment(entityId, req.Visual);
+            return;
+        }
 
         MainThreadWorkQueue.RecordExternal("avatar.rig.prepare", ready.PrepareMs);
         MainThreadWorkQueue.RecordExternal("avatar.rig.verts", ready.Mesh.VertsMs);
@@ -4053,6 +4108,23 @@ public partial class AvatarRenderer : Node3D
     /// Main thread only (mutates node visibility).</summary>
     private void RecomputeMeshVisibility(AvatarVisual avatarVisual)
     {
+        void SetPartVisible(string part, bool visible)
+        {
+            if (avatarVisual.Parts.TryGetValue(part, out var pmi) && IsInstanceValid(pmi))
+                pmi.Visible = visible;
+        }
+
+        if (avatarVisual.IsReduced)
+        {
+            SetPartVisible("head", true);
+            SetPartVisible("eyelashes", true);
+            SetPartVisible("upper_body", true);
+            SetPartVisible("lower_body", true);
+            SetPartVisible("eye", true);
+            SetPartVisible("hair", true);
+            return;
+        }
+
         avatarVisual.BomAttachments.RemoveAll(e => !IsInstanceValid(e.Mi));
 
         var ch = avatarVisual.AttachmentBakeChannels;
@@ -4080,11 +4152,6 @@ public partial class AvatarRenderer : Node3D
 
         // Hide base parts per consumed channel (head bake also covers the eyelashes part, exactly
         // like MESH_ID_EYELASH in the viewer's updateMeshVisibility).
-        void SetPartVisible(string part, bool visible)
-        {
-            if (avatarVisual.Parts.TryGetValue(part, out var pmi) && IsInstanceValid(pmi))
-                pmi.Visible = visible;
-        }
         SetPartVisible("head", !ch.Contains(8));
         SetPartVisible("eyelashes", !ch.Contains(8));
         SetPartVisible("upper_body", !ch.Contains(9));
@@ -5848,6 +5915,7 @@ public partial class AvatarRenderer : Node3D
 
     public override void _ExitTree()
     {
+        if (_activeInstance == this) _activeInstance = null;
         SLNG.App.UI.UiScale.Changed -= OnHudUiScaleChanged;
         if (_hudMainViewport != null && IsInstanceValid(_hudMainViewport)) _hudMainViewport.SizeChanged -= SyncHudContainer;
         if (_world != null)
@@ -5874,6 +5942,7 @@ public partial class AvatarRenderer : Node3D
     public override void _EnterTree()
     {
         base._EnterTree();
+        _activeInstance = this;
         var keys = KeyDispatcher.Instance;
         if (keys == null) return;
         keys.Register(this, SLNG.Core.Input.KeyActionIds.DevAvatarShadows, ToggleAvatarShadowCasting);
@@ -6221,6 +6290,123 @@ void fragment() {
 
     private double _cullAccum = 0;
 
+    private int _lastLoggedFull = -1;
+    private int _lastLoggedReduced = -1;
+    private int _lastLoggedCap = -1;
+
+    private void SetAvatarReduced(AvatarVisual visual)
+    {
+        if (visual.IsReduced) return;
+        visual.IsReduced = true;
+
+        foreach (var attId in visual.WornAttachmentEntities)
+        {
+            _pendingRigs.TryRemove(attId, out _);
+            _preparedRigs.TryRemove(attId, out _);
+            _rigsPreparing.TryRemove(attId, out _);
+            _attachNewest.TryRemove(attId, out _);
+
+            if (_riggedAttachments.TryGetValue(attId, out _))
+            {
+                DiscardRiggedAttachment(attId, visual);
+                ReleaseWornJointOverrides(visual, attId);
+                ReleaseControlAvatarMesh(attId);
+            }
+
+            if (_attachmentNodes.TryGetValue(attId, out var attachNode) && GodotObject.IsInstanceValid(attachNode))
+            {
+                attachNode.Visible = false;
+            }
+
+            _attachmentMeshIds.Remove(attId);
+
+            if (visual.WornAttachmentFaces.TryGetValue(attId, out var wornFaces))
+            {
+                if (_gpuCache != null)
+                {
+                    if (wornFaces.Faces != null)
+                    {
+                        foreach (var f in wornFaces.Faces)
+                        {
+                            if (f.TextureId != Guid.Empty && visual.PinnedTextureIds.Remove(f.TextureId))
+                            {
+                                if (visual.TexturesPinned) _gpuCache.ReleaseRef(f.TextureId);
+                            }
+                        }
+                    }
+                    if (wornFaces.DefaultFace.TextureId != Guid.Empty && visual.PinnedTextureIds.Remove(wornFaces.DefaultFace.TextureId))
+                    {
+                        if (visual.TexturesPinned) _gpuCache.ReleaseRef(wornFaces.DefaultFace.TextureId);
+                    }
+                }
+            }
+        }
+
+        visual.BomAttachments.Clear();
+        RecomputeMeshVisibility(visual);
+    }
+
+    private void SetAvatarFull(AvatarVisual visual)
+    {
+        if (!visual.IsReduced) return;
+        visual.IsReduced = false;
+
+        foreach (var attId in visual.WornAttachmentEntities)
+        {
+            if (_attachmentNodes.TryGetValue(attId, out var attachNode) && GodotObject.IsInstanceValid(attachNode))
+            {
+                attachNode.Visible = true;
+            }
+
+            CallDeferred(nameof(UpdateAttachment), attId.ToString());
+        }
+
+        RecomputeMeshVisibility(visual);
+    }
+
+    private void EvaluateAvatarLimit(Godot.Vector3 camPos)
+    {
+        int cap = RenderConfig.MaxFullyRenderedAvatars;
+        var candidates = new List<AvatarLimitPolicy.Candidate>(_visuals.Count);
+
+        foreach (var (entityId, visual) in _visuals)
+        {
+            if (visual.IsControlAvatar || !visual.Shown) continue;
+            float dist = visual.GodotPos.DistanceTo(camPos);
+            bool isCurrentlyFull = !visual.IsReduced;
+            bool isExempt = visual.IsSelf || _alwaysRenderFully.Contains(visual.AgentId);
+            candidates.Add(new AvatarLimitPolicy.Candidate(entityId, dist, isCurrentlyFull, isExempt));
+        }
+
+        var decisions = AvatarLimitPolicy.Evaluate(candidates, cap);
+        int fullCount = 0;
+        int reducedCount = 0;
+
+        foreach (var (entityId, shouldBeFull) in decisions)
+        {
+            if (!_visuals.TryGetValue(entityId, out var visual)) continue;
+            if (shouldBeFull) fullCount++;
+            else reducedCount++;
+
+            bool wantsReduced = !shouldBeFull;
+            if (visual.IsReduced != wantsReduced)
+            {
+                if (wantsReduced)
+                    SetAvatarReduced(visual);
+                else
+                    SetAvatarFull(visual);
+            }
+        }
+
+        if (_lastLoggedFull != fullCount || _lastLoggedReduced != reducedCount || _lastLoggedCap != cap)
+        {
+            _lastLoggedFull = fullCount;
+            _lastLoggedReduced = reducedCount;
+            _lastLoggedCap = cap;
+            Logger.Info($"[AvatarLimit] shown {fullCount} full, {reducedCount} reduced (cap {cap})");
+        }
+    }
+
     /// <summary>BUG-PERF-05: how often <see cref="ReportAvatarCost"/> writes its line.</summary>
     private const double AvatarCostIntervalSeconds = 5.0;
     private double _avatarCostAccum;
@@ -6240,7 +6426,7 @@ void fragment() {
         if (_avatarCostAccum < AvatarCostIntervalSeconds) return;
         _avatarCostAccum = 0;
 
-        int avatars = 0, shown = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0, boundBinds = 0;
+        int avatars = 0, shown = 0, reduced = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0, boundBinds = 0;
         int surfaces = 0, hiddenSurfaces = 0;
         int maxSkinned = 0;
         foreach (var visual in _visuals.Values)
@@ -6249,6 +6435,7 @@ void fragment() {
             avatars++;
             bool isShown = visual.Root.Visible;
             if (isShown) shown++;
+            if (visual.IsReduced) reduced++;
             if (isShown && visual.AnimPlayer.IsPlaying) animating++;
             int avSkinned = 0;
             foreach (var node in visual.Skeleton.GetChildren())
@@ -6264,7 +6451,7 @@ void fragment() {
         }
 
         SLNG.App.UI.StatsOverlay.EmitPerfLine(
-            $"[AvatarCost] avatars={avatars} shown={shown} animating={animating} skinnedMeshes={skinned} " +
+            $"[AvatarCost] avatars={avatars} shown={shown} reduced={reduced} animating={animating} skinnedMeshes={skinned} " +
             $"drawnSkinnedMeshes={drawn} surfaces={surfaces} hiddenSurfaces={hiddenSurfaces} " +
             $"skinBinds={binds} shownSkinBinds={shownBinds} boundSkinBinds={boundBinds} maxSkinned={maxSkinned} " +
             $"rigNormal={_rigsWithNormalCount}/{_rigsPreparedCount} " +
@@ -6480,6 +6667,12 @@ void fragment() {
                     }
                 }
             }
+        }
+
+        if ((doCull && haveAgent) || _avatarLimitEvaluationPending)
+        {
+            _avatarLimitEvaluationPending = false;
+            EvaluateAvatarLimit(camPos ?? agentPos);
         }
 
         // BUG-PERF-13: Protect self and nearest N other avatars in GpuCache from being shrunk.

@@ -17,6 +17,14 @@ public static class RenderConfig
     /// </summary>
     public static float DrawDistance = 96f;
 
+    /// <summary>
+    /// FEAT-PERF-08: Max number of non-exempt avatars to fully render with all worn meshes and attachments.
+    /// Avatars beyond this cap are rendered as cheap stand-ins (base body with bake textures).
+    /// Matches RenderAvatarMaxNonImpostors in the reference viewer (Low: 3, Mid: 7, High: 11, Ultra: 16).
+    /// 0 means unlimited.
+    /// </summary>
+    public static int MaxFullyRenderedAvatars = SLNG.Core.AvatarLimitPolicy.PresetUltraCap;
+
     /// <summary>BUG-RENDER-43: the visual layer water planes sit on, so the follow reflection
     /// probe can leave them out of its <c>ReflectionMask</c>. That probe is a 256 x 256 m box
     /// around the camera; water lit by it reflects the capture inside the box and the plain sky

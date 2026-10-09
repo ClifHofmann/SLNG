@@ -35,6 +35,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private Label _drawDistanceValue = null!;
     private HSlider _lodSlider = null!;
     private Label _lodValue = null!;
+    private HSlider _avatarCapSlider = null!;
+    private Label _avatarCapValue = null!;
     private CheckBox _shadowsCheck = null!;
     private VBoxContainer _shadowControls = null!;
     private OptionButton _shadowSplitsOption = null!;
@@ -308,6 +310,45 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             UpdatePresetIndicator();
         };
         AddHint(_panelGeneral, L10n.Tr("ui.preferences.object_detail_hint"));
+
+        // Avatar cap (FEAT-PERF-08)
+        AddHeading(_panelGeneral, L10n.Tr("ui.preferences.max_full_avatars_heading"));
+        var avatarCapRow = new HBoxContainer();
+        avatarCapRow.AddThemeConstantOverride("separation", 12);
+        _panelGeneral.AddChild(avatarCapRow);
+
+        _avatarCapSlider = new HSlider
+        {
+            MinValue = 1,
+            MaxValue = 51,
+            Step = 1,
+            Value = _settings.MaxFullyRenderedAvatars <= 0 ? 51 : _settings.MaxFullyRenderedAvatars,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(200, 0),
+            FocusMode = FocusModeEnum.None,
+        };
+        avatarCapRow.AddChild(_avatarCapSlider);
+
+        _avatarCapValue = new Label
+        {
+            Text = _settings.MaxFullyRenderedAvatars <= 0
+                ? L10n.Tr("ui.preferences.fps_unlimited")
+                : $"{_settings.MaxFullyRenderedAvatars}",
+            CustomMinimumSize = new Vector2(56, 0),
+        };
+        _avatarCapValue.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        avatarCapRow.AddChild(_avatarCapValue);
+
+        _avatarCapSlider.ValueChanged += val =>
+        {
+            int cap = (int)val >= 51 ? 0 : (int)val;
+            _avatarCapValue.Text = cap == 0 ? L10n.Tr("ui.preferences.fps_unlimited") : $"{cap}";
+            if (_refreshing) return;
+            _settings.SetMaxFullyRenderedAvatars(cap);
+            _apply();
+            UpdatePresetIndicator();
+        };
+        AddHint(_panelGeneral, L10n.Tr("ui.preferences.max_full_avatars_hint"));
 
         _panelGeneral.AddChild(new HSeparator());
 
@@ -832,6 +873,10 @@ public partial class GraphicsPreferencesPage : VBoxContainer
 
             _lodSlider.Value = _settings.VolumeLodFactor;
             _lodValue.Text = $"{_settings.VolumeLodFactor:0.###}";
+
+            int cap = _settings.MaxFullyRenderedAvatars;
+            _avatarCapSlider.Value = cap <= 0 ? 51 : cap;
+            _avatarCapValue.Text = cap <= 0 ? L10n.Tr("ui.preferences.fps_unlimited") : $"{cap}";
 
             _shadowsCheck.ButtonPressed = _settings.Shadows;
             _shadowControls.Visible = _settings.Shadows;

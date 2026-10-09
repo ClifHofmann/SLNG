@@ -431,7 +431,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.24-alpha";
+    public const string AppVersion = "v0.27.25-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1243,6 +1243,8 @@ public partial class Boot : Control
         _inWorldContextMenu.OnAvatarPayClicked = (agentId, name) => ShowPayAvatarWindow(agentId, name);
         _inWorldContextMenu.OnAvatarMuteToggleClicked = (agentId, name) =>
             _session?.SetAvatarMuted(agentId, name, !_session.IsAvatarMuted(agentId));
+        _inWorldContextMenu.OnAvatarAlwaysRenderToggleClicked = (agentId, name) =>
+            AvatarRenderer.ToggleAlwaysRenderFully(agentId);
         _inWorldContextMenu.OnCreatePrimClicked = (godotPos, type) =>
         {
             if (_session == null) return;
@@ -1322,7 +1324,7 @@ public partial class Boot : Control
         // shows -- never self (the roster excludes the local avatar by construction).
         _minimapOverlay.OnFocusAvatarRequested = (agentId, pos, forward) => _avatarController?.FocusOnAvatarFrontal(agentId, pos, forward);
         _minimapOverlay.OnAvatarContextMenuRequested = (screenPos, agentId, name) =>
-            _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf: false, _session?.IsAvatarMuted(agentId) ?? false);
+            _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf: false, _session?.IsAvatarMuted(agentId) ?? false, AvatarRenderer.IsAlwaysRenderFully(agentId));
         // FEAT-UI-39: double-click on the radar teleports. Fire-and-forget on purpose -- the teleport
         // overlay is driven by GridSession.TeleportProgress, so progress and failure show there.
         // _session is read at call time, so this survives the session being replaced on re-login.
