@@ -101,11 +101,8 @@ public partial class AvatarRenderer
     {
         try
         {
-            while (true)
+            while (TryClaimNextRig(out var entityId, out var request))
             {
-                if (!TryClaimNextRig(out var entityId, out var request))
-                    break;
-
                 try
                 {
                     var ready = await PrepareOnWorkerAsync(request).ConfigureAwait(false);
@@ -129,8 +126,6 @@ public partial class AvatarRenderer
         finally
         {
             Interlocked.Decrement(ref _activeRigWorkers);
-            if (!_pendingRigs.IsEmpty && _activeRigWorkers < MaxRigWorkers)
-                EnsureRigWorkers();
         }
     }
 
@@ -141,51 +136,56 @@ public partial class AvatarRenderer
         bestEntityId = Guid.Empty;
         bestRequest = null!;
 
-        while (true)
+        float bestDistSq = float.MaxValue;
+        Guid candidateId = Guid.Empty;
+        PendingRig? candidateReq = null;
+        var camPos = _lastCamPos;
+
+        foreach (var (id, req) in _pendingRigs)
         {
-            float bestDistSq = float.MaxValue;
-            Guid candidateId = Guid.Empty;
-            PendingRig? candidateReq = null;
-            var camPos = _lastCamPos;
+            if (_rigsPreparing.ContainsKey(id)) continue;
+            if (_preparedRigs.TryGetValue(id, out var ready) && ready.Request.Equals(req)) continue;
 
-            foreach (var (id, req) in _pendingRigs)
+            float distSq;
+            if (req.Visual.IsSelf)
             {
-                if (_rigsPreparing.ContainsKey(id)) continue;
-
-                float distSq;
-                if (req.Visual.IsSelf)
-                {
-                    distSq = 0f;
-                }
-                else
-                {
-                    distSq = 1f + req.Visual.GodotPos.DistanceSquaredTo(camPos);
-                    if (!req.Visual.Shown) distSq += 1_000_000f;
-                }
-
-                if (distSq < bestDistSq)
-                {
-                    bestDistSq = distSq;
-                    candidateId = id;
-                    candidateReq = req;
-                    if (distSq == 0f) break;
-                }
+                distSq = 0f;
+            }
+            else
+            {
+                distSq = 1f + req.Visual.GodotPos.DistanceSquaredTo(camPos);
+                if (!req.Visual.Shown) distSq += 1_000_000f;
             }
 
-            if (candidateId == Guid.Empty || candidateReq == null)
-                return false;
-
-            if (_rigsPreparing.TryAdd(candidateId, 0))
+            if (distSq < bestDistSq)
             {
-                if (_pendingRigs.TryGetValue(candidateId, out var newest))
-                {
-                    bestEntityId = candidateId;
-                    bestRequest = newest;
-                    return true;
-                }
-                _rigsPreparing.TryRemove(candidateId, out _);
+                bestDistSq = distSq;
+                candidateId = id;
+                candidateReq = req;
+                if (distSq == 0f) break;
             }
         }
+
+        if (candidateId == Guid.Empty || candidateReq == null)
+            return false;
+
+        if (_rigsPreparing.TryAdd(candidateId, 0))
+        {
+            if (_pendingRigs.TryGetValue(candidateId, out var newest))
+            {
+                if (_preparedRigs.TryGetValue(candidateId, out var already) && already.Request.Equals(newest))
+                {
+                    _rigsPreparing.TryRemove(candidateId, out _);
+                    return false;
+                }
+                bestEntityId = candidateId;
+                bestRequest = newest;
+                return true;
+            }
+            _rigsPreparing.TryRemove(candidateId, out _);
+        }
+
+        return false;
     }
 
     private static async Task<PreparedRig?> PrepareOnWorkerAsync(PendingRig request)

@@ -655,6 +655,8 @@ public partial class AvatarRenderer : Node3D
         // BUG-PERF-06: a rig still being prepared for it would otherwise be put on the skeleton
         // after it left.
         _pendingRigs.TryRemove(entityId, out _);
+        _preparedRigs.TryRemove(entityId, out _);
+        _rigsPreparing.TryRemove(entityId, out _);
         // BUG-PERF-08: likewise a non-rigged mesh still being prepared.
         _attachNewest.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
@@ -4091,6 +4093,8 @@ public partial class AvatarRenderer : Node3D
         }
         MeshInstance3D? hudMovedRigged = null;
         _pendingRigs.TryRemove(entityId, out _); // BUG-PERF-06: nor rigged onto the body later
+        _preparedRigs.TryRemove(entityId, out _);
+        _rigsPreparing.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
         {
