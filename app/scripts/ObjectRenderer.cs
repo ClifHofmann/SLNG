@@ -153,6 +153,11 @@ public partial class ObjectRenderer : Node3D
         // CollisionShape.Shape (an interop call) for every object on every visit.
         public bool CollisionDeferred;
 
+        // BUG-PERF-11: distance margin beyond draw distance when this object was last confirmed
+        // dormant (resources released, hidden, no deferred collision). Used with the sweep anchor to skip
+        // distant dormant objects instantly without distance math.
+        public float DormantMargin;
+
         // BUG-PERF-11: when and from where the cull sweep last offered this object's texture size to the
         // GpuCache, and the next time (Stopwatch seconds) a prim that instancing turned away is worth
         // re-examining. See TexOfferRefreshSeconds / InstanceRetrySeconds.
@@ -405,6 +410,9 @@ public partial class ObjectRenderer : Node3D
     /// count, so it is a slow leak rather than an unbounded one -- worth fixing with the same sweep
     /// that fixes _meshFaceIndices, not before.</summary>
     private readonly Dictionary<Guid, ConcavePolygonShape3D> _meshCollisionShapes = new();
+    /// <summary>BUG-PERF-11: "Erste Form behalten" - caches collision shape by mesh asset id,
+    /// so subsequent LOD switches keep the first shape built and do not build duplicate trimeshes.</summary>
+    private readonly Dictionary<Guid, ConcavePolygonShape3D> _meshAssetCollisionShapes = new();
 
     // glTF metallicRoughness maps that have been reported as "now actually sampled" (see the
     // ORM branch in BuildFaceMaterialAsync). Main-thread only.
@@ -592,9 +600,17 @@ public partial class ObjectRenderer : Node3D
                                     () => CreateVisual(id), $"create:{id}", "visual.create");
     }
 
+    private readonly Queue<Guid> _pendingRemovals = new();
+    private readonly HashSet<Guid> _pendingRemovalSet = new();
+
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
-        CallDeferred(nameof(RemoveVisual), e.Entity.Id.ToString());
+        var id = e.Entity.Id;
+        if (!_visuals.ContainsKey(id)) return;
+        if (_pendingRemovalSet.Add(id))
+        {
+            _pendingRemovals.Enqueue(id);
+        }
     }
 
     private void OnEntityRekeyed(object? sender, EntityRekeyedEventArgs e)
@@ -627,7 +643,11 @@ public partial class ObjectRenderer : Node3D
         else if (e.Component is AttachmentComponent)
         {
             // If an object becomes an attachment, remove its standalone visual.
-            CallDeferred(nameof(RemoveVisual), e.Entity.Id.ToString());
+            var id = e.Entity.Id;
+            if (_visuals.ContainsKey(id) && _pendingRemovalSet.Add(id))
+            {
+                _pendingRemovals.Enqueue(id);
+            }
         }
     }
 
@@ -637,6 +657,38 @@ public partial class ObjectRenderer : Node3D
 
     /// <summary>BUG-PERF-11: one visit in this many is timed section by section. A power of two.</summary>
     private const int CullSampleEvery = 16;
+
+    /// <summary>BUG-PERF-11: the slice deadline clock is checked every this many visits. A power of two,
+    /// smaller than CullSampleEvery so an expensive visit stops the slice sooner.</summary>
+    private const int CullClockEvery = 4;
+
+    /// <summary>BUG-PERF-11: anchor position for distant dormant object culling. Distant released objects
+    /// skip distance math as long as the viewpoint stays within their distance margin from this anchor.</summary>
+    private Godot.Vector3 _dormantViewAnchor;
+    private bool _dormantAnchorInit;
+
+    /// <summary>BUG-PERF-11: drains pending entity removals under a frame time budget,
+    /// spreading large region-disconnect bursts across frames instead of freezing the main thread.</summary>
+    private void ProcessPendingRemovals(double maxBudgetMs = 2.0)
+    {
+        if (_pendingRemovals.Count == 0) return;
+
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        long budgetTicks = (long)(maxBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+        int processed = 0;
+
+        while (_pendingRemovals.TryDequeue(out var id))
+        {
+            if (!_pendingRemovalSet.Remove(id)) continue;
+            RemoveVisual(id);
+            processed++;
+
+            if ((processed & 31) == 0 && (System.Diagnostics.Stopwatch.GetTimestamp() - start) > budgetTicks)
+            {
+                break;
+            }
+        }
+    }
 
     /// <summary>BUG-PERF-11: the longest an object goes without its texture size being offered to the
     /// GpuCache while the camera stands still. It still happens sooner when the camera has moved a few
@@ -685,6 +737,10 @@ public partial class ObjectRenderer : Node3D
         // count itself; this attacks the spike, which is what is actually hurting.
         if (_world == null) return;
 
+        // BUG-PERF-11: drain pending entity removals and realise instancing groups under controlled budgets.
+        ProcessPendingRemovals(maxBudgetMs: 2.0);
+        _instanceGroups?.TickRealise(maxGroups: 2, maxMs: 1.0);
+
         // Ahead of the cull sweep: that sweep returns early whenever the agent position is not
         // known yet or its per-frame budget rounds to zero, and an animated texture must keep
         // running through both.
@@ -712,6 +768,19 @@ public partial class ObjectRenderer : Node3D
         // your body, not near your camera.)
         var camNode = GetViewport()?.GetCamera3D();
         Vector3 viewPos = camNode != null && IsInstanceValid(camNode) ? camNode.GlobalPosition : agentPos;
+
+        // BUG-PERF-11: view anchor for skipping dormant objects during cull sweeps
+        if (!_dormantAnchorInit)
+        {
+            _dormantViewAnchor = viewPos;
+            _dormantAnchorInit = true;
+        }
+        float viewMovedFromAnchor = viewPos.DistanceTo(_dormantViewAnchor);
+        if (viewMovedFromAnchor > 32.0f)
+        {
+            _dormantViewAnchor = viewPos;
+            viewMovedFromAnchor = 0f;
+        }
 
         if (_cullCursor >= _cullOrder.Count)
         {
@@ -799,8 +868,8 @@ public partial class ObjectRenderer : Node3D
             int end = Math.Min(_cullCursor + budget, _cullOrder.Count);
             for (int ci = _cullCursor; ci < end; ci++)
             {
-                // BUG-PERF-11: the clock is read every CullSampleEvery visits, as the sampled sections are.
-                if (ci > first && (ci & (CullSampleEvery - 1)) == 0
+                // BUG-PERF-11: the clock is read every CullClockEvery visits, bounded independently from sampling.
+                if (ci > first && (ci & (CullClockEvery - 1)) == 0
                     && System.Diagnostics.Stopwatch.GetTimestamp() - sliceStart > sliceBudgetTicks)
                 {
                     end = ci;
@@ -811,6 +880,15 @@ public partial class ObjectRenderer : Node3D
                 var id = _cullOrder[ci];
                 if (!_visuals.TryGetValue(id, out var state)) continue; // removed since the snapshot
                 if (!IsInstanceValid(state.MeshInstance)) continue;
+
+                // BUG-PERF-11: Fast skip for completely dormant objects (resources released, hidden, no deferred collision).
+                // If the viewpoint hasn't moved close enough to cross this object's distance margin from when it was last
+                // evaluated, it cannot possibly enter draw distance.
+                if (state.ResourcesReleased && !state.Shown && !state.CollisionDeferred
+                    && state.DormantMargin > viewMovedFromAnchor)
+                {
+                    continue;
+                }
 
                 bool sample = (ci & (CullSampleEvery - 1)) == 0;
                 long mark = sample ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
@@ -884,7 +962,8 @@ public partial class ObjectRenderer : Node3D
                 {
                     float collisionReach = RenderConfig.CollisionUrgentDistance + EffectiveBoundingRadius(state);
                     if (dSq <= collisionReach * collisionReach
-                        && _meshCollisionShapes.TryGetValue(state.LoadedGeometryKey, out var readyShape))
+                        && (_meshCollisionShapes.TryGetValue(state.LoadedGeometryKey, out var readyShape)
+                            || (state.LoadedMeshId != Guid.Empty && _meshAssetCollisionShapes.TryGetValue(state.LoadedMeshId, out readyShape))))
                     {
                         if (state.CollisionShape.Shape == null) state.CollisionShape.Shape = readyShape;
                         state.CollisionDeferred = false;
@@ -896,6 +975,7 @@ public partial class ObjectRenderer : Node3D
                 if (viewDSq <= showSq && state.ResourcesReleased)
                 {
                     state.ResourcesReleased = false;
+                    state.DormantMargin = 0f;
                     // Queued, not called inline. Running it here put a full mesh+material reload inside
                     // the sweep, and the sweep is walked in slices sized for cheap distance maths -- one
                     // slice that happened to contain several returning objects took 346.9 ms, which is
@@ -934,8 +1014,8 @@ public partial class ObjectRenderer : Node3D
                     // fetched back by the next offer), so it is asked again then, or every
                     // TexOfferRefreshSeconds.
                     bool offerDue = nowSec - state.LastOfferAt >= TexOfferRefreshSeconds
-                                    || viewPos.DistanceSquaredTo(state.LastOfferView)
-                                       > Math.Max(TexOfferMoveFraction * TexOfferMoveFraction * camDSq, TexOfferMinMoveSq);
+                                     || viewPos.DistanceSquaredTo(state.LastOfferView)
+                                        > Math.Max(TexOfferMoveFraction * TexOfferMoveFraction * camDSq, TexOfferMinMoveSq);
                     if (offerDue)
                     {
                         state.LastOfferAt = nowSec;
@@ -954,6 +1034,17 @@ public partial class ObjectRenderer : Node3D
                         texLodMs += (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0
                                     / System.Diagnostics.Stopwatch.Frequency;
                     }
+                }
+
+                // BUG-PERF-11: if now released and hidden, establish distance margin so next visits can skip distance math
+                if (state.ResourcesReleased && !state.Shown)
+                {
+                    float viewDist = Mathf.Sqrt(viewDSq);
+                    state.DormantMargin = (viewDist - draw) + viewMovedFromAnchor;
+                }
+                else
+                {
+                    state.DormantMargin = 0f;
                 }
 
                 if (sample) { long now3 = System.Diagnostics.Stopwatch.GetTimestamp(); tRes += now3 - mark; mark = now3; }
@@ -1256,6 +1347,10 @@ public partial class ObjectRenderer : Node3D
     private void CreateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        if (_pendingRemovalSet.Remove(entityId))
+        {
+            RemoveVisual(entityId);
+        }
         if (_world == null) return;
         var entity = _world.GetEntity(entityId);
         if (entity == null) return;
@@ -2173,9 +2268,17 @@ public partial class ObjectRenderer : Node3D
 
     private void RemoveVisual(string entityIdStr)
     {
-        if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        if (Guid.TryParse(entityIdStr, out var entityId))
+            RemoveVisual(entityId);
+    }
+
+    private void RemoveVisual(Guid entityId)
+    {
+        _pendingRemovalSet.Remove(entityId);
         if (_visuals.TryGetValue(entityId, out var state))
         {
+            // BUG-PERF-11: Leave instancing group if member of one
+            _instanceGroups?.Leave(entityId);
             // FEAT-ANIMESH-01: derez, region change and teleport all arrive here through the
             // world's EntityRemoved. The skeleton goes with the prim that was its last mesh.
             ReleaseControlAvatar(state);
@@ -2797,6 +2900,7 @@ public partial class ObjectRenderer : Node3D
                         if (state.LoadedMeshId != prim.MeshId)
                         {
                             state.LoadedMeshId = prim.MeshId;
+                            state.CollisionShape.Shape = null;
                             state.LoadedPrimShape = null;
                             state.LoadedPrimDetailLevel = null;
                             var meshLod = PickMeshDetailLevel(entity, prim.Scale);
@@ -2810,6 +2914,7 @@ public partial class ObjectRenderer : Node3D
                         if (state.LoadedMeshId != prim.SculptId || state.LoadedSculptType != prim.SculptType)
                         {
                             state.LoadedMeshId = prim.SculptId;
+                            state.CollisionShape.Shape = null;
                             state.LoadedSculptType = prim.SculptType;
                             state.LoadedPrimShape = null;
                             state.LoadedPrimDetailLevel = null;
@@ -5550,6 +5655,24 @@ public partial class ObjectRenderer : Node3D
         {
             state.CollisionShape.Shape = cached;
             state.CollisionDeferred = false;
+            if (state.LoadedMeshId != Guid.Empty)
+                _meshAssetCollisionShapes[state.LoadedMeshId] = cached;
+            return;
+        }
+
+        // BUG-PERF-11: "Erste Form behalten" -- keep the first collision shape across LOD changes.
+        // A visual that already has a shape retains it instead of rebuilding a trimesh per LOD level.
+        if (state.CollisionShape.Shape is ConcavePolygonShape3D existingShape && state.LoadedMeshId != Guid.Empty)
+        {
+            state.CollisionDeferred = false;
+            _meshAssetCollisionShapes.TryAdd(state.LoadedMeshId, existingShape);
+            return;
+        }
+
+        if (state.LoadedMeshId != Guid.Empty && _meshAssetCollisionShapes.TryGetValue(state.LoadedMeshId, out var assetCached))
+        {
+            state.CollisionShape.Shape = assetCached;
+            state.CollisionDeferred = false;
             return;
         }
 
@@ -5581,6 +5704,8 @@ public partial class ObjectRenderer : Node3D
                     var urgent = BuildUrgentShape(key, data, preparedFaces);
                     state.CollisionShape.Shape = urgent;
                     state.CollisionDeferred = false;
+                    if (state.LoadedMeshId != Guid.Empty)
+                        _meshAssetCollisionShapes[state.LoadedMeshId] = urgent;
                 });
                 return;
             }
@@ -5651,6 +5776,8 @@ public partial class ObjectRenderer : Node3D
                     // cached under (BUG-RENDER-16) -- LoadedMeshKey also encodes the
                     // surface-merge pattern, which collision does not care about.
                     if (w.LoadedGeometryKey != key) continue;
+                    if (w.LoadedMeshId != Guid.Empty)
+                        _meshAssetCollisionShapes[w.LoadedMeshId] = shape;
                     w.CollisionShape.Shape = shape;
                     w.CollisionDeferred = false;
                 }
@@ -5777,12 +5904,16 @@ public partial class ObjectRenderer : Node3D
                     // The first assignment builds the tree - the other half of the cost.
                     first.CollisionShape.Shape = shape;
                     first.CollisionDeferred = false;
+                    if (first.LoadedMeshId != Guid.Empty)
+                        _meshAssetCollisionShapes[first.LoadedMeshId] = shape;
                 });
                 built++;
             }
 
             foreach (var w in pending.Waiters)
             {
+                if (w.LoadedMeshId != Guid.Empty && shape != null)
+                    _meshAssetCollisionShapes[w.LoadedMeshId] = shape;
                 if (w.CollisionShape.Shape == shape) continue;
                 w.CollisionShape.Shape = shape;
                 w.CollisionDeferred = false;

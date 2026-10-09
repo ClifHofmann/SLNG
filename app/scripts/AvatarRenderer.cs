@@ -360,9 +360,28 @@ public partial class AvatarRenderer : Node3D
         CallDeferred(nameof(CreateVisual), e.Entity.Id.ToString());
     }
 
+    private readonly Queue<Guid> _pendingRemovals = new();
+
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
-        CallDeferred(nameof(RemoveVisual), e.Entity.Id.ToString());
+        var id = e.Entity.Id;
+        // BUG-PERF-11: Fast pre-filter: skip if this entity is not tracked by AvatarRenderer.
+        // Avoids allocating strings, variants and CallDeferred for 99.9% of world prims during region unload.
+        if (!_visuals.ContainsKey(id)
+            && !_attachmentNodes.ContainsKey(id)
+            && !_riggedAttachments.ContainsKey(id)
+            && !_attachmentMeshIds.ContainsKey(id)
+            && !_pendingRigs.ContainsKey(id)
+            && !_attachNewest.ContainsKey(id)
+            && !_hudNodes.ContainsKey(id)
+            && !_hudPlacements.ContainsKey(id)
+            && !_controlAvatarOfPrim.ContainsKey(id)
+            && !_pendingControlParts.ContainsKey(id))
+        {
+            return;
+        }
+
+        _pendingRemovals.Enqueue(id);
     }
 
     private void OnEntityRekeyed(object? sender, EntityRekeyedEventArgs e)
@@ -599,7 +618,12 @@ public partial class AvatarRenderer : Node3D
 
     private void RemoveVisual(string entityIdStr)
     {
-        if (!Guid.TryParse(entityIdStr, out var entityId)) return;
+        if (Guid.TryParse(entityIdStr, out var entityId))
+            RemoveVisual(entityId);
+    }
+
+    private void RemoveVisual(Guid entityId)
+    {
         // FEAT-ANIMESH-01: an animated-mesh prim that leaves the world takes its share of the
         // control avatar with it (and the skeleton itself when it was the last one). Idempotent --
         // ObjectRenderer's own RemoveVisual releases the same part.
@@ -1959,7 +1983,7 @@ public partial class AvatarRenderer : Node3D
     /// <summary>The object is not worn any more (detached, dropped, re-parented into a world
     /// linkset): drop everything this renderer built for it, so the object renderer can draw it
     /// as the ordinary world prim it now is.</summary>
-    public void DropWornVisuals(Guid entityId) => CallDeferred(nameof(RemoveVisual), entityId.ToString());
+    public void DropWornVisuals(Guid entityId) => RemoveVisual(entityId);
 
     private void UpdateAttachment(string entityIdStr)
     {
@@ -5960,6 +5984,11 @@ void fragment() {
     public override void _Process(double delta)
     {
         using var _phase = MainThreadPhase.Enter("avatar-render");
+
+        while (_pendingRemovals.TryDequeue(out var removeId))
+        {
+            RemoveVisual(removeId);
+        }
 
         float dt = (float)delta;
         ReportAvatarCost(delta);

@@ -672,13 +672,13 @@ public partial class ObjectRenderer
             Expect(_cullCursor > 0 && _cullCursor <= (int)(total * CullMaxDeltaSeconds / CullSweepSeconds) + 1,
                    $"a 10 s frame visited {_cullCursor} of {total} (expected about {total * CullMaxDeltaSeconds / CullSweepSeconds:0})");
 
-            // No time at all: a slice stops at the first clock check (every CullSampleEvery visits) but always moves.
+            // No time at all: a slice stops at the first clock check (every CullClockEvery visits) but always moves.
             RenderConfig.CullSliceBudgetMs = 0;
             _cullCursor = 0;
             _cullCarry = 0;
             _Process(10.0);
-            Expect(_cullCursor >= 1 && _cullCursor <= 2 * CullSampleEvery,
-                   $"a slice with no budget visited {_cullCursor} (expected 1 to {2 * CullSampleEvery})");
+            Expect(_cullCursor >= 1 && _cullCursor <= 2 * CullClockEvery,
+                   $"a slice with no budget visited {_cullCursor} (expected 1 to {2 * CullClockEvery})");
 
             int frames = 0;
             while (_cullCursor < _cullOrder.Count && frames++ < 500) _Process(10.0);
@@ -699,6 +699,128 @@ public partial class ObjectRenderer
 
         return failures.Count == 0
             ? (true, "a long frame no longer makes a long slice, a slice without time stops early and the pass still completes")
+            : (false, string.Join("; ", failures));
+    }
+
+    /// <summary>
+    /// BUG-PERF-11: verifies that:
+    /// 1. LOD changes retain the first collision shape built for a mesh asset via _meshAssetCollisionShapes.
+    /// 2. Entity removals are queued in _pendingRemovals and drained under a frame budget rather than freezing inline.
+    /// 3. ObjectInstanceGroups batches group realisation via TickRealise outside the cull sweep.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestMeshAssetCollisionAndRemovals(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        var made = new List<Entity>();
+        try
+        {
+            var agent = world.GetOrCreateEntity(SelfTestRegion, 1);
+            agent.SetComponent(new AvatarComponent(Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+            agent.SetComponent(new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity));
+            _agentPos = new Godot.Vector3(128f, 128f, 25f);
+            _agentPosKnown = true;
+
+            var dataLow = SelfTestStaticMesh();
+            var dataHigh = SelfTestStaticMesh();
+            var meshId = Guid.NewGuid();
+
+            // 1. First collision shape retained across LOD changes
+            var e1 = SelfTestAddPrim(world, 3100, 0, animated: false);
+            made.Add(e1);
+            var st1 = _visuals[e1.Id];
+            st1.Pos = _agentPos + new Godot.Vector3(1f, 0f, 0f);
+            st1.MeshInstance.Position = st1.Pos;
+            st1.LoadedMeshId = meshId;
+            st1.LoadedMeshDetailLevel = MeshDetailLevel.Low;
+            ApplyArrivedMesh(st1, meshId, MeshDetailLevel.Low, dataLow);
+            Settle();
+
+            var shape1 = st1.CollisionShape.Shape as ConcavePolygonShape3D;
+            Expect(shape1 != null, "prim 1 has no collision shape after initial arrival");
+            Expect(_meshAssetCollisionShapes.ContainsKey(meshId) && _meshAssetCollisionShapes[meshId] == shape1,
+                   "initial shape was not recorded in _meshAssetCollisionShapes");
+
+            // Switch LOD to Highest with different data: shape must be retained
+            st1.LoadedMeshDetailLevel = MeshDetailLevel.Highest;
+            ApplyArrivedMesh(st1, meshId, MeshDetailLevel.Highest, dataHigh);
+            Settle();
+            Expect(st1.CollisionShape.Shape == shape1,
+                   "prim 1 replaced its collision shape on LOD change instead of retaining the first one");
+
+            // A second prim with the same meshId also reuses the asset shape
+            var e2 = SelfTestAddPrim(world, 3101, 0, animated: false);
+            made.Add(e2);
+            var st2 = _visuals[e2.Id];
+            st2.Pos = _agentPos + new Godot.Vector3(2f, 0f, 0f);
+            st2.MeshInstance.Position = st2.Pos;
+            st2.LoadedMeshId = meshId;
+            st2.LoadedMeshDetailLevel = MeshDetailLevel.Highest;
+            ApplyArrivedMesh(st2, meshId, MeshDetailLevel.Highest, dataHigh);
+            Settle();
+            Expect(st2.CollisionShape.Shape == shape1,
+                   "prim 2 did not reuse the existing asset collision shape");
+
+            // 2. Pending removals are queued and drained under budget
+            var e3 = SelfTestAddPrim(world, 3102, 0, animated: false);
+            made.Add(e3);
+            Settle();
+            Expect(_visuals.ContainsKey(e3.Id), "prim 3 was not created");
+
+            OnEntityRemoved(this, new EntityEventArgs(e3));
+            Expect(_pendingRemovalSet.Contains(e3.Id), "prim 3 was not queued in _pendingRemovalSet");
+            Expect(_visuals.ContainsKey(e3.Id), "prim 3 was removed synchronously instead of being deferred");
+
+            ProcessPendingRemovals(maxBudgetMs: 5.0);
+            Expect(!_visuals.ContainsKey(e3.Id), "prim 3 visual was not removed by ProcessPendingRemovals");
+            Expect(!_pendingRemovalSet.Contains(e3.Id), "prim 3 remains in _pendingRemovalSet after processing");
+
+            // 3. ObjectInstanceGroups batches group realisation via TickRealise
+            if (_instanceGroups != null)
+            {
+                var sharedMesh = new BoxMesh();
+                var sharedMat = new StandardMaterial3D();
+                var key = new InstanceGroupKey(Guid.NewGuid(), "test_mat", true);
+
+                var e4 = SelfTestAddPrim(world, 3103, 0, animated: false);
+                var e5 = SelfTestAddPrim(world, 3104, 0, animated: false);
+                made.Add(e4);
+                made.Add(e5);
+                Settle();
+
+                _instanceGroups.Join(e4.Id, key, sharedMesh, sharedMat, Transform3D.Identity);
+                _instanceGroups.Join(e5.Id, key, sharedMesh, sharedMat, Transform3D.Identity);
+
+                Expect(!_instanceGroups.IsInstanced(e4.Id),
+                       "group was realised inline in Join instead of waiting for TickRealise");
+
+                _instanceGroups.TickRealise(maxGroups: 2, maxMs: 5.0);
+                Expect(_instanceGroups.IsInstanced(e4.Id) && _instanceGroups.IsInstanced(e5.Id),
+                       "group was not realised by TickRealise");
+
+                _instanceGroups.Leave(e4.Id);
+                _instanceGroups.Leave(e5.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            _agentPosKnown = false;
+            foreach (var e in made)
+            {
+                if (_pendingRemovalSet.Contains(e.Id)) _pendingRemovalSet.Remove(e.Id);
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id);
+            }
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "mesh asset collision shapes retained over LODs, entity removals deferred, instance groups realised under budget")
             : (false, string.Join("; ", failures));
     }
 
