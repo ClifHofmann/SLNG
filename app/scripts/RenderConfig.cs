@@ -311,6 +311,19 @@ public static class RenderConfig
     /// </summary>
     public static float CollisionUrgentDistance = 24f;
 
+    /// <summary>
+    /// BUG-PERF-11: inside <see cref="CollisionUrgentDistance"/>, the part of it (past the object's own
+    /// extent) in which the shape is still built on the spot. Further out, the shape is queued and built
+    /// nearest first within <see cref="CollisionUrgentFrameBudgetMs"/> a frame. A shape costs about 1 us per
+    /// triangle (4 ms for a typical 3,000-triangle mesh, 230 ms for the biggest seen), and a login in a
+    /// built-up place asked for 500 of them inside one 5 s window - 3.5 s of the main thread.
+    /// </summary>
+    public static float CollisionImmediateDistance = 2f;
+
+    /// <summary>BUG-PERF-11: main-thread time per frame for the queued urgent collision shapes. At least
+    /// one shape is built per frame whatever its cost, so the queue always moves.</summary>
+    public static double CollisionUrgentFrameBudgetMs = 4.0;
+
     // Floating origin: the global metre coordinates of the region we render relative to.
     // OSGrid regions sit at global coordinates in the millions; rendering at those raw
     // coordinates blows float32 precision (objects jitter / Z-fight / look shattered). We
@@ -361,17 +374,15 @@ public static class RenderConfig
     public static bool TryGetLocalAgentGodotPos(World world, out Vector3 pos)
     {
         pos = Vector3.Zero;
-        foreach (var e in world.GetAllEntities())
-        {
-            var avatar = e.GetComponent<AvatarComponent>();
-            if (avatar == null || !avatar.IsLocalAgent) continue;
+        // BUG-PERF-11: the world finds the agent through a validated cache; this used to walk every
+        // entity, and the object renderer asks once per frame.
+        var agent = world.FindLocalAgent();
+        if (agent == null) return false;
 
-            var t = e.GetComponent<TransformComponent>();
-            if (t == null) return false;
+        var t = agent.GetComponent<TransformComponent>();
+        if (t == null) return false;
 
-            pos = ToGodot(e.RegionHandle, t.Position);
-            return true;
-        }
-        return false;
+        pos = ToGodot(agent.RegionHandle, t.Position);
+        return true;
     }
 }

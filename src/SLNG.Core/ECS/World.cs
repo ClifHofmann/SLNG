@@ -56,6 +56,12 @@ public class World
 {
     private readonly Dictionary<Guid, Entity> _entities = new();
     private readonly Dictionary<(ulong, uint), Guid> _entityIndex = new();
+
+    /// <summary>BUG-PERF-11: the entities of each region, so unloading a region walks that region and
+    /// not the whole world (RemoveRegion did several passes over every entity: ~40 ms per region left
+    /// at 45,000 entities, a share of it in these scans). Kept in step with <see cref="_entities"/> by
+    /// every method that adds, removes or re-keys an entity.</summary>
+    private readonly Dictionary<ulong, HashSet<Guid>> _byRegion = new();
     private readonly Dictionary<ulong, RegionTerrain> _terrains = new();
 
     public IReadOnlyDictionary<ulong, RegionTerrain> Terrains => _terrains;
@@ -97,6 +103,7 @@ public class World
         entity = new Entity(regionHandle, localId);
         _entities[entity.Id] = entity;
         _entityIndex[key] = entity.Id;
+        IndexRegion(regionHandle, entity.Id);
         EntityAdded?.Invoke(this, new EntityEventArgs(entity));
 
         return entity;
@@ -133,6 +140,7 @@ public class World
         {
             _entities.Remove(id);
             _entityIndex.Remove(key);
+            UnindexRegion(regionHandle, id);
             EntityRemoved?.Invoke(this, new EntityEventArgs(entity));
             return true;
         }
@@ -159,8 +167,10 @@ public class World
         }
 
         _entityIndex.Remove(oldKey);
+        UnindexRegion(oldKey.Item1, entity.Id);
         entity.Rekey(newRegionHandle, newLocalId);
         _entityIndex[newKey] = entity.Id;
+        IndexRegion(newRegionHandle, entity.Id);
 
         EntityRekeyed?.Invoke(this, new EntityRekeyedEventArgs(entity, oldKey.Item1, oldKey.Item2, newRegionHandle, newLocalId));
         return true;
@@ -175,45 +185,47 @@ public class World
         // (worn items, HUDs, and their child prims) as a side effect of unloading a region.
         // The local agent and worn attachments move with the agent, not with the sim.
         // We preserve them and mark attachments as awaiting re-confirmation.
-        var localAgent = _entities.Values.FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
+        //
+        // BUG-PERF-11: everything below concerns only the entities OF this region - an attachment or a
+        // child that lives in another region is neither removed nor marked here - so it walks that
+        // region's set, once, and finds the agent through a validated cache.
+        _byRegion.TryGetValue(regionHandle, out var inRegion);
         var preservedIds = new HashSet<Guid>();
-        if (localAgent != null)
+        var localAgent = FindLocalAgent();
+        if (localAgent != null && inRegion != null)
         {
-            preservedIds.Add(localAgent.Id);
-
-            foreach (var e in _entities.Values)
+            // Roots: the agent itself (if it is here) and everything here worn by it. Children are
+            // found by their parent's local id, which only means anything within one region.
+            var roots = new List<Entity>();
+            var childrenOf = new Dictionary<uint, List<Entity>>();
+            foreach (var id in inRegion)
             {
-                if (e.GetComponent<AttachmentComponent>()?.AvatarEntityId == localAgent.Id)
+                if (!_entities.TryGetValue(id, out var e)) continue;
+                if (e.Id == localAgent.Id || e.GetComponent<AttachmentComponent>()?.AvatarEntityId == localAgent.Id)
+                    roots.Add(e);
+                var parent = e.GetComponent<TransformComponent>()?.ParentLocalId ?? 0;
+                if (parent != 0)
                 {
-                    preservedIds.Add(e.Id);
+                    if (!childrenOf.TryGetValue(parent, out var list)) childrenOf[parent] = list = new List<Entity>();
+                    list.Add(e);
                 }
             }
 
-            bool expanded = true;
-            while (expanded)
+            var queue = new Queue<Entity>();
+            foreach (var root in roots)
+                if (preservedIds.Add(root.Id)) queue.Enqueue(root);
+            while (queue.Count > 0)
             {
-                expanded = false;
-                foreach (var e in _entities.Values)
-                {
-                    if (preservedIds.Contains(e.Id)) continue;
-                    if (e.RegionHandle != regionHandle) continue;
-                    var t = e.GetComponent<TransformComponent>();
-                    if (t != null && t.ParentLocalId != 0)
-                    {
-                        if (_entityIndex.TryGetValue((regionHandle, t.ParentLocalId), out var parentId)
-                            && preservedIds.Contains(parentId))
-                        {
-                            preservedIds.Add(e.Id);
-                            expanded = true;
-                        }
-                    }
-                }
+                var parent = queue.Dequeue();
+                if (!childrenOf.TryGetValue(parent.LocalId, out var children)) continue;
+                foreach (var child in children)
+                    if (preservedIds.Add(child.Id)) queue.Enqueue(child);
             }
 
             foreach (var id in preservedIds)
             {
                 if (id == localAgent.Id) continue;
-                if (_entities.TryGetValue(id, out var entity) && entity.RegionHandle == regionHandle)
+                if (_entities.TryGetValue(id, out var entity))
                 {
                     var att = entity.GetComponent<AttachmentComponent>();
                     if (att != null)
@@ -228,20 +240,59 @@ public class World
             }
         }
 
-        var toRemove = _entities.Values
-            .Where(e => e.RegionHandle == regionHandle && !preservedIds.Contains(e.Id))
-            .ToList();
-        foreach (var entity in toRemove)
+        if (inRegion != null)
         {
-            _entities.Remove(entity.Id);
-            _entityIndex.Remove((regionHandle, entity.LocalId));
-            EntityRemoved?.Invoke(this, new EntityEventArgs(entity));
+            var toRemove = new List<Entity>(inRegion.Count);
+            foreach (var id in inRegion)
+                if (!preservedIds.Contains(id) && _entities.TryGetValue(id, out var e)) toRemove.Add(e);
+            foreach (var entity in toRemove)
+            {
+                _entities.Remove(entity.Id);
+                _entityIndex.Remove((regionHandle, entity.LocalId));
+                inRegion.Remove(entity.Id);
+                EntityRemoved?.Invoke(this, new EntityEventArgs(entity));
+            }
+            if (inRegion.Count == 0) _byRegion.Remove(regionHandle);
         }
 
         if (_terrains.Remove(regionHandle))
         {
             NotifyTerrainUpdated(regionHandle);
         }
+    }
+
+    private void IndexRegion(ulong regionHandle, Guid id)
+    {
+        if (!_byRegion.TryGetValue(regionHandle, out var set)) _byRegion[regionHandle] = set = new HashSet<Guid>();
+        set.Add(id);
+    }
+
+    private void UnindexRegion(ulong regionHandle, Guid id)
+    {
+        if (!_byRegion.TryGetValue(regionHandle, out var set)) return;
+        set.Remove(id);
+        if (set.Count == 0) _byRegion.Remove(regionHandle);
+    }
+
+    private Entity? _localAgentCache;
+
+    /// <summary>
+    /// The local agent, or null while there is none. BUG-PERF-11: found through a cached entity that is
+    /// checked on every call (still in the world, still flagged) instead of a walk over the whole world -
+    /// the renderer asked for the agent's position every frame, and a walk costs ~1 ms at 45,000
+    /// entities when the agent was added after them. Only a cache miss walks (and counts a full scan).
+    /// </summary>
+    public Entity? FindLocalAgent()
+    {
+        var cached = _localAgentCache;
+        if (cached != null
+            && _entities.TryGetValue(cached.Id, out var live) && ReferenceEquals(live, cached)
+            && cached.GetComponent<AvatarComponent>()?.IsLocalAgent == true)
+        {
+            return cached;
+        }
+        return _localAgentCache = GetAllEntities()
+            .FirstOrDefault(e => e.GetComponent<AvatarComponent>()?.IsLocalAgent == true);
     }
 
     /// <summary>
