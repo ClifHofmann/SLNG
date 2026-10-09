@@ -153,6 +153,7 @@ public partial class AvatarRenderer
         var world = AttachedControlAvatarTransform(frame, transform.Position, transform.Rotation);
         if (!world.Origin.IsFinite() || !world.Basis.X.IsFinite() || !world.Basis.Y.IsFinite() || !world.Basis.Z.IsFinite())
             return false;
+        if (Diagnostics.Enabled) LogAttachedPlacement(ca, root, transform, frame, world);
 
         if (ca.Placed && world == ca.LastAttachedTransform) return true;
         if (IsInstanceValid(ca.Visual.Root) && ca.Visual.Root.IsInsideTree())
@@ -255,6 +256,51 @@ public partial class AvatarRenderer
     }
 
     // ---- diagnostics ----------------------------------------------------------------------------------
+
+    /// <summary>--diag: every input of an attached control avatar's placement, in SL axes, so a placement
+    /// that disagrees with another viewer can be replayed by hand: the attachment point as decoded and the
+    /// State byte it came from (the decode is a nibble swap, ATTACHMENT_ID_FROM_STATE), the root prim's
+    /// local position and rotation exactly as received, the attachment frame from the skeleton's pose and
+    /// from the scene node, and the resulting root. Printed when the point or the root's local transform
+    /// change -- not every frame, which would drown the log while the wearer walks.</summary>
+    private void LogAttachedPlacement(ControlAvatar ca, Entity root, TransformComponent transform,
+        Transform3D frame, Transform3D world)
+    {
+        var key = (ca.AttachmentPoint, transform.Position, transform.Rotation);
+        if (ca.PlacementLogged && ca.LastPlacementKey.Equals(key)) return;
+        ca.PlacementLogged = true;
+        ca.LastPlacementKey = key;
+
+        ulong region = root.RegionHandle;
+        string Pos(Godot.Vector3 v)
+        {
+            var sl = RenderConfig.FromGodot(region, v);
+            return $"({sl.X:0.###}, {sl.Y:0.###}, {sl.Z:0.###})";
+        }
+        string Rot(Basis b)
+        {
+            var q = b.GetRotationQuaternion();
+            var e = ControlAvatarPlacement.EulerDegrees(new System.Numerics.Quaternion(q.X, -q.Z, q.Y, q.W));
+            return $"({e.X:0.#}, {e.Y:0.#}, {e.Z:0.#})deg";
+        }
+        string Frame(bool ok, Transform3D f) => ok ? $"pos={Pos(f.Origin)} rot={Rot(f.Basis)}" : "n/a";
+
+        var posed = Transform3D.Identity;
+        bool posedOk = ca.WearerVisual != null && TryGetPosedAttachmentFrame(ca.WearerVisual, ca.RootEntityId, out posed);
+        bool nodeOk = TryGetAttachmentFrame(ca.RootEntityId, out var node);
+
+        byte point = ca.AttachmentPoint;
+        byte state = (byte)(((point & 0x0F) << 4) | (point >> 4));
+        var apRot = AttachmentPointMap.GetPoint(point) is { } ap ? ap.RotationDeg : default;
+        var local = transform.Rotation;
+        var localEuler = ControlAvatarPlacement.EulerDegrees(local);
+        GD.Print($"[AttachAnimesh] placement root={ObjectIdLabel(ca.RootEntityId)} wearer={WearerLabel(ca)} " +
+                 $"point={point} ({AttachmentPointMap.GetBoneName(point) ?? "?"}, state=0x{state:X2}, pointRot=({apRot.X:0.#}, {apRot.Y:0.#}, {apRot.Z:0.#})deg) " +
+                 $"local pos=({transform.Position.X:0.###}, {transform.Position.Y:0.###}, {transform.Position.Z:0.###}) " +
+                 $"rot=({local.X:0.####}, {local.Y:0.####}, {local.Z:0.####}, {local.W:0.####}) = ({localEuler.X:0.#}, {localEuler.Y:0.#}, {localEuler.Z:0.#})deg " +
+                 $"frame[posed] {Frame(posedOk, posed)} frame[node] {Frame(nodeOk, node)} " +
+                 $"-> root pos={Pos(world.Origin)} rot={Rot(world.Basis)}");
+    }
 
     private string WearerLabel(ControlAvatar ca) =>
         ca.WearerVisual == null ? "?" : ca.WearerVisual.IsSelf ? "SELF" : ca.WearerVisual.AgentId.ToString()[..8];

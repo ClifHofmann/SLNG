@@ -2840,8 +2840,14 @@ public partial class AvatarRenderer : Node3D
         if (visual != null && visual.BoneOwnScale.TryGetValue(boneName, out var jointScale))
             apPos *= jointScale;
 
+        // BUG-AVATAR-10: NOT SlEulerDegToGodotBasis. A joint's rotation is built with mayaQ(XYZ) (X first,
+        // then Y, then Z), an attachment point's with LLQuaternion::setQuat(roll, pitch, yaw) (Z first,
+        // then Y, then X; llvoavatar.cpp:7198-7205). They agree for one axis and are 120 degrees apart for
+        // Chest ("0 90 90") and Spine ("0 -90 90"), the only two points that turn about two. See
+        // AttachmentPointRotation. SL -> Godot is the same (x, z, -y, w) as every other rotation here.
+        var rotation = AttachmentPointRotation.FromEulerDegrees(apPoint.RotationDeg);
         return new Transform3D(
-            SkeletonBuilder.SlEulerDegToGodotBasis(apPoint.RotationDeg),
+            new Basis(new Godot.Quaternion(rotation.X, rotation.Z, -rotation.Y, rotation.W)),
             new Godot.Vector3(apPos.X, apPos.Z, -apPos.Y));
     }
 

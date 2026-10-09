@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-10`
 - **Track:** `render`
-- **Status:** `🧪 Review` — implemented (part 1 v0.27.13, part 2 v0.27.14) and covered by unit tests and `--selftest` checks; part 1 confirmed in-world (wearer no longer deformed), part 2 not yet.
+- **Status:** `🧪 Review` — implemented (part 1 v0.27.13, part 2 v0.27.14, part 3 v0.27.15) and covered by unit tests and `--selftest` checks; part 1 confirmed in-world (wearer no longer deformed), part 2 not yet.
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -142,15 +142,17 @@ non-control avatars, like `[ScaleLock]`) reports each revert.
    **without a relog** — a `[JointOverride] … taken off` line appears and the avatar's height and feet are
    re-measured.
 3. Swap one fitted mesh for another (an applier): no leftover from the first.
-4. (Part 2) The pet is **outside the body, at the attachment point**, in its own shape (the 0.35 m creature,
+4. (Parts 2 and 3) The pet is **outside the body, at the attachment point**, in its own shape (the 0.35 m creature,
    not squashed into the wearer), playing **its own animation** (the `ObjectAnimation` stream for the root),
    and moves with the wearer's animation. Hide the wearer (draw distance) and the pet goes too; detach it and
    the skeleton goes (`[AttachAnimesh] control avatar released …` under `--diag`); a relog or a fresh attach
-   brings it back (`… created …`).
+   brings it back (`… created …`). It stands where Firestorm draws it for the same avatar and moment, with the
+   same orientation. Anything else worn on Chest or Spine with a non-zero position or rotation now sits where it
+   does in Firestorm too. `--diag` prints the `[AttachAnimesh] placement` numbers to compare.
 
 ## Technical Specs & Affected Files
 
-- `src/SLNG.Core/JointOverrideSet.cs` (new), `src/SLNG.Core/AnimatedMeshLinkset.cs`
+- `src/SLNG.Core/JointOverrideSet.cs` (new), `src/SLNG.Core/AnimatedMeshLinkset.cs`, `src/SLNG.Core/AttachmentPointRotation.cs` (new, part 3)
 - `app/scripts/AvatarRenderer.cs` — `AvatarVisual.JointOverrides`/`OverrideContributors`,
   `ApplyJointPositionOverrides`, `ApplyWornJointOverrides`, `ReleaseWornJointOverrides`,
   `RemoveVisual`, `UpdateAttachment`, `UpdateHudAttachment`
@@ -222,6 +224,53 @@ is wasted for these meshes (two per pet); the commit simply does not use it.
   compare with Firestorm.
 - Per frame, the animesh update-rate reduction for distance (FEAT-ANIMESH-03) does not exist for worn ones either.
 
+## Part 3: the attachment point's own frame was wrong for Chest and Spine (v0.27.15)
+
+In-world with part 2 the pet had its own shape and animation but stood in the wrong place and turned:
+Firestorm (same avatar, same moment) drew the dragon at the wearer's right hand at hip height, wings
+hanging; SLNG drew it at the right shoulder / behind the head about 0.5 m higher, wings spread flat, "turned
+by roughly 90 degrees". The log gave the inputs: `point=1` (Chest, `mChest`), root a plain prim, mesh a child.
+
+**Cause: the rotation of the Chest attachment point.** A worn item's position and rotation are expressed in
+the attachment point's frame: the joint, then the point's own offset and rotation from `avatar_lad.xml`
+(`AttachPointOffset`). The viewer builds that rotation with `LLQuaternion::setQuat(roll, pitch, yaw)`
+(llvoavatar.cpp:7198-7205; the formula is llquaternion.cpp:295-311), which is `qx * qy * qz` in Hamilton
+terms, i.e. as a rotation **Z first, then Y, then X**. SLNG built it with `SlEulerDegToGodotBasis`, the
+order for a *joint*'s rotation, `mayaQ(x, y, z, XYZ)` = **X first, then Y, then Z** (llavatarappearance.cpp:642).
+The two agree for a rotation about one axis and disagree for two. Of the 55 points in `avatar_lad.xml` exactly two
+turn about more than one axis, both on the torso: **Chest (id 1, `0 90 90`) and Spine (id 9, `0 -90 90`)**.
+For those the frame was **120 degrees off** (the viewer's Chest frame is `(0.5, 0.5, 0.5, 0.5)`, a third of a turn about the diagonal; the old order produced another one), which
+turns everything worn there and moves it by the distance it sits from the point: an offset of (0.3, -0.3, -0.5)
+lands 1.1 m from where the viewer puts it. Nothing showed it before because every point checked was
+single-axis (Skull, shoulders, wrists) and rigged mesh clothing ignores the point entirely.
+
+Each input of the pet's placement was checked against the viewer:
+
+| Input | Result |
+|---|---|
+| Point id | `LibreMetaverse` `PrimData.AttachmentPoint = SwapWords(State)`, the nibble swap of `ATTACHMENT_ID_FROM_STATE`: same as the viewer. State byte of Chest = `0x10` |
+| Chest's offset and rotation | Transcribed correctly: `position="0.15 0 -0.1" rotation="0 90 90"` |
+| `AttachPointOffset` applying that rotation | Applied, **with the joint Euler order**: the defect |
+| Root prim transform | Attach-point-local, not world: `WorldSimulation.ResolveWorldTransform` leaves an avatar attachment's `Position`/`Rotation` at the received local values |
+| SL → Godot of the control avatar's frame | The same `(x, z, -y, w)` that `ApplyControlAvatarPlacement` (region: `bind_rot * obj_rot`) and the static attachment path use; composing `attachFrame * local` is the conjugation of the viewer's `obj_rot * joint_rot` and nothing is skipped. Replayed in the selftest in SL terms |
+| The static path | Uses the same `AttachPointOffset`, so a static attachment on Chest or Spine was displaced and turned the same way |
+
+**Fix:** `SLNG.Core.AttachmentPointRotation.FromEulerDegrees` is `setQuat(roll, pitch, yaw)` line for line, and
+`AttachPointOffset` uses it. This changes **every** attachment worn on Chest or Spine, static prims and meshes
+included, and the edit gizmo's frame (`TryGetAttachmentFrame`), which share the function.
+
+**Diagnostics:** `[AttachAnimesh] placement root=… point=<id> (<bone>, state=0x.., pointRot=(..)) local pos=… rot=…
+frame[posed] … frame[node] … -> root pos=… rot=…`, once per change of the point or the root's local transform
+(not every frame): the attachment point as decoded and the State byte it came from, the root prim's local
+transform as received, the attachment frame from the skeleton's pose and from the scene node, and the resulting
+root, all in SL axes.
+
+**Tests:** `AttachmentPointRotationTests` pins the formula (Chest = `(0.5, 0.5, 0.5, 0.5)`, Spine = `(-0.5, -0.5,
+0.5, 0.5)`, Z-then-Y-then-X read off three single-axis turns, and that it is not the joint order). The `worn
+animesh` selftest gained a check that the Chest point's frame maps the point's axes onto the joint's as the viewer
+does; it fails with the old order restored. (The placement check there takes the attachment frame as given, which
+is why it passed while the frame itself was wrong.)
+
 ### Merge with `fix/BUG-PERF-12-crowded-avatar-load` (not merged here)
 
 That branch (v0.27.13 to v0.27.16, unmerged) also changed `CommitPreparedRig`:
@@ -234,7 +283,7 @@ That branch (v0.27.13 to v0.27.16, unmerged) also changed `CommitPreparedRig`:
    invisible-surface rig of an animated object puts its overrides on the wearer again, and the overrides of
    an ordinary one are never registered as contributed (and so never given back on detach).
 2. `AppVersion` has to be **renumbered**: both branches claim `v0.27.13-alpha` (this one is now
-   `v0.27.14-alpha`, so it also collides with PERF-12's `v0.27.14`). Whichever merges second takes the next
+   `v0.27.15-alpha`, so it also collides with PERF-12's `v0.27.15`). Whichever merges second takes the next
    free patch number.
 
 ## Sub-tasks / Progress
@@ -250,4 +299,5 @@ That branch (v0.27.13 to v0.27.16, unmerged) also changed `CommitPreparedRig`:
 - [x] `--selftest` check `worn animesh` (wearer unchanged; pet skeleton carries the overrides; placement against
       the viewer's formula; follows the wearer; own animation; hides with the wearer; freed on rebuild, detach and
       wearer loss) — fails with the routing hook, the placement or the visibility rule removed (verified)
+- [x] Part 3: the attachment point's Euler order (`AttachmentPointRotation`), `[AttachAnimesh] placement` diagnostics, selftest regression check
 - [ ] In-world confirmation

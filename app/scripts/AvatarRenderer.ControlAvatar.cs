@@ -99,6 +99,10 @@ public partial class AvatarRenderer
         public Transform3D LastAttachedTransform;
         /// <summary>--diag: the "created" line was printed (with the first part).</summary>
         public bool CreatedLogged;
+        /// <summary>--diag: what the last "placement" line was printed for (point, local position and
+        /// rotation), so it is printed again only when one of them changes.</summary>
+        public bool PlacementLogged;
+        public (byte Point, System.Numerics.Vector3 Position, System.Numerics.Quaternion Rotation) LastPlacementKey;
 
         public ControlAvatar(Guid rootEntityId, AvatarVisual visual)
         {

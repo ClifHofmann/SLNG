@@ -355,6 +355,23 @@ public partial class AvatarRenderer
             }
             else Expect(false, "no attachment frame to place against");
 
+            // 4b. The attachment point's own frame is the viewer's. Chest turns about two axes (0 90 90), and a
+            //     point's Euler angles are combined by LLQuaternion::setQuat (Z first, then Y, then X) -- NOT the
+            //     way a joint's are (X first). For Chest that is a third of a turn about the diagonal: the
+            //     point's x lies along the joint's y, its y along z, its z along x (SL axes; Godot is (x, z, -y)).
+            //     Everything above is blind to this: it takes the frame as given.
+            var chestPoint = AttachmentPointMap.GetPoint(1);
+            if (chestPoint is { } chest)
+            {
+                var chestBasis = AttachPointOffset(chest, null, "mChest").Basis;
+                bool chestFrame =
+                    (chestBasis * new Godot.Vector3(1f, 0f, 0f)).IsEqualApprox(new Godot.Vector3(0f, 0f, -1f))
+                    && (chestBasis * new Godot.Vector3(0f, 0f, -1f)).IsEqualApprox(new Godot.Vector3(0f, 1f, 0f))
+                    && (chestBasis * new Godot.Vector3(0f, 1f, 0f)).IsEqualApprox(new Godot.Vector3(1f, 0f, 0f));
+                Expect(chestFrame, "the Chest attachment point's frame is not the viewer's (setQuat order)");
+            }
+            else Expect(false, "no Chest attachment point");
+
             // 5. It follows the wearer's animation and movement: the attachment point moves, so does the pet.
             var before = ca?.Visual.Root.GlobalTransform.Origin ?? default;
             visual.Root.Position += new Godot.Vector3(2f, 0f, 1f);
