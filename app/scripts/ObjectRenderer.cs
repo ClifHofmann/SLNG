@@ -5812,6 +5812,11 @@ public partial class ObjectRenderer : Node3D
     private readonly List<Guid> _urgentOrder = new();
     private int _urgentCursor;
     private bool _urgentResort;
+
+    /// <summary>Milliseconds the last urgent tick ran over its budget by (one shape is always built, however
+    /// big), to be paid back out of the next ticks: a 10 ms shape against a 4 ms budget pauses the drain for
+    /// the next frame or two, so the budget holds on average and not only for the small shapes.</summary>
+    private double _urgentDebtMs;
     private double _urgentSortedAt = double.NegativeInfinity;
     private Godot.Vector3 _urgentSortedFrom;
     private readonly List<(float Distance, Guid Key)> _urgentSortScratch = new();
@@ -5877,8 +5882,19 @@ public partial class ObjectRenderer : Node3D
             SortUrgentShapes(now);
         }
 
+        // BUG-PERF-11: at least one shape per tick kept the queue moving but not the budget: a login where the
+        // shapes averaged 10 ms (max 208) spent 364 ms/s here against a 4 ms budget, 18-22 fps. What a tick
+        // ran over by is now paid back by the ticks after it (capped at five budgets, so one huge shape
+        // pauses the queue for five frames, not for a second).
         long frameStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        double budgetMs = RenderConfig.CollisionUrgentFrameBudgetMs;
+        double frameBudgetMs = RenderConfig.CollisionUrgentFrameBudgetMs;
+        double budgetMs = frameBudgetMs - _urgentDebtMs;
+        if (frameBudgetMs > 0 && budgetMs <= 0)
+        {
+            _urgentDebtMs -= frameBudgetMs;
+            return;
+        }
+        _urgentDebtMs = 0;
         int built = 0;
         while (_urgentCursor < _urgentOrder.Count)
         {
@@ -5931,6 +5947,10 @@ public partial class ObjectRenderer : Node3D
             _urgentShapes.Remove(key);
             _urgentCursor++;
         }
+
+        double spentMs = (System.Diagnostics.Stopwatch.GetTimestamp() - frameStart) * 1000.0
+                         / System.Diagnostics.Stopwatch.Frequency;
+        if (spentMs > budgetMs) _urgentDebtMs = Math.Min(spentMs - budgetMs, 5 * frameBudgetMs);
     }
 
     private static int CountTriangles(MeshData mesh)

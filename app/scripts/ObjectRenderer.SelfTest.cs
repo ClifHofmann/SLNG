@@ -601,6 +601,34 @@ public partial class ObjectRenderer
                 }
             }
             Expect(_urgentShapes.Count == 0, "the queue is not empty after every shape was built");
+
+            // A shape much bigger than the budget is paid back: the next ticks build nothing, then the queue goes on.
+            RenderConfig.CollisionUrgentFrameBudgetMs = 4;
+            _urgentDebtMs = 0;
+            var big = new MeshData(new[] { SelfTestHugeSubmesh(60000) });
+            var bigA = SelfTestAddPrim(world, 960, 0, animated: false);
+            var bigB = SelfTestAddPrim(world, 961, 0, animated: false);
+            made.Add(bigA);
+            made.Add(bigB);
+            var sA = _visuals[bigA.Id];
+            var sB = _visuals[bigB.Id];
+            foreach (var (st, dist) in new[] { (sA, 6f), (sB, 7f) })
+            {
+                st.Pos = origin + new Godot.Vector3(dist, 0f, 0f);
+                st.MeshInstance.Position = st.Pos;
+            }
+            SelfTestArrive(bigA, big);
+            SelfTestArrive(bigB, SelfTestHugeCopy(big));
+            Expect(sA.CollisionShape.Shape == null && sB.CollisionShape.Shape == null, "a big shape was built on the spot");
+            TickUrgentShapes();
+            Expect(sA.CollisionShape.Shape != null, "the nearest big shape was not built");
+            Expect(sB.CollisionShape.Shape == null, "a second big shape was built in the same tick");
+            Expect(_urgentDebtMs > 0, "a shape far over the budget left no debt");
+            TickUrgentShapes();
+            Expect(sB.CollisionShape.Shape == null, "the tick after a big shape built another instead of paying the debt back");
+            for (int i = 0; i < 12 && sB.CollisionShape.Shape == null; i++) TickUrgentShapes();
+            Expect(sB.CollisionShape.Shape != null, "the queue did not go on after the debt was paid");
+            RenderConfig.CollisionUrgentFrameBudgetMs = 0;
             var built = states[2].CollisionShape.Shape as ConcavePolygonShape3D;
             Expect(built != null && built.Data.AsSpan().SequenceEqual(BuildTrimeshFaces(data)),
                    "a queued shape is not the trimesh faces of its mesh");
@@ -940,6 +968,26 @@ public partial class ObjectRenderer
             ? (true, "a released object comes back by walking, by a jump and by a longer draw distance; sculpts with other flags keep their own shape")
             : (false, string.Join("; ", failures));
     }
+
+    /// <summary>A single submesh of <paramref name="triangles"/> triangles - a trimesh shape that costs tens of ms.</summary>
+    private static MeshSubmesh SelfTestHugeSubmesh(int triangles)
+    {
+        var rng = new Random(11);
+        var pos = new System.Numerics.Vector3[triangles * 3];
+        var idx = new int[triangles * 3];
+        for (int i = 0; i < pos.Length; i++)
+        {
+            pos[i] = new System.Numerics.Vector3((float)rng.NextDouble(), (float)rng.NextDouble(), (float)rng.NextDouble());
+            idx[i] = i;
+        }
+        var nrm = Enumerable.Repeat(System.Numerics.Vector3.UnitZ, pos.Length).ToArray();
+        var uv = new System.Numerics.Vector2[pos.Length];
+        return new MeshSubmesh(pos, nrm, uv, idx, 0);
+    }
+
+    /// <summary>The same geometry as another object (another mesh asset, so another shape).</summary>
+    private static MeshData SelfTestHugeCopy(MeshData source)
+        => new(source.Submeshes.Select(sm => sm with { Positions = (System.Numerics.Vector3[])sm.Positions.Clone() }).ToList());
 
     /// <summary>Four submeshes: faces 0 and 1 (same record, so merged), an empty one, face 2.</summary>
     private static MeshData SelfTestStaticMesh()
