@@ -40,6 +40,12 @@ public partial class AvatarRenderer : Node3D
         // distance/priority without touching Godot interop.
         public Godot.Vector3 GodotPos { get; set; }
         public bool Shown { get; set; } = true;
+        // BUG-PERF-13: Texture tracking for distance LOD, re-sharpening, and refcount management.
+        public HashSet<Guid> PinnedTextureIds { get; } = new();
+        public HashSet<Guid> UsedTextureIds { get; } = new();
+        public bool TexturesPinned { get; set; } = true;
+        public float LastRefreshedArea { get; set; }
+        public Guid EntityId { get; set; }
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         // Base (un-morphed) body-part data, keyed by part name. Kept so the body meshes can be
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
@@ -492,7 +498,7 @@ public partial class AvatarRenderer : Node3D
         if (entity == null || entity.GetComponent<AvatarComponent>() == null) return;
 
         var avatar = entity.GetComponent<AvatarComponent>()!;
-        var visual = new AvatarVisual { AgentId = avatar.AgentId };
+        var visual = new AvatarVisual { AgentId = avatar.AgentId, EntityId = entityId };
 
         // FEAT-ANIM-01: warm the animation cache with the built-in locomotion set the moment the
         // self avatar appears, so the first local walk/turn/fly prediction is a cache hit, not a
@@ -682,6 +688,16 @@ public partial class AvatarRenderer : Node3D
         ReleaseControlAvatarMesh(entityId);
         if (_visuals.TryGetValue(entityId, out var visual))
         {
+            if (visual.TexturesPinned && _gpuCache != null)
+            {
+                foreach (var texId in visual.PinnedTextureIds)
+                {
+                    _gpuCache.ReleaseRef(texId);
+                }
+                visual.TexturesPinned = false;
+            }
+            visual.PinnedTextureIds.Clear();
+            visual.UsedTextureIds.Clear();
             visual.QueueFree();
             _visuals.Remove(entityId);
         }
@@ -719,7 +735,31 @@ public partial class AvatarRenderer : Node3D
         if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
             && _visuals.TryGetValue(removedMeshInfo.AvatarEntityId, out var ownerVisual))
         {
-            ownerVisual.WornAttachmentFaces.Remove(entityId);
+            if (ownerVisual.WornAttachmentFaces.TryGetValue(entityId, out var wornFaces))
+            {
+                ownerVisual.WornAttachmentFaces.Remove(entityId);
+                if (_gpuCache != null)
+                {
+                    if (wornFaces.Faces != null)
+                    {
+                        foreach (var f in wornFaces.Faces)
+                        {
+                            if (f.TextureId != Guid.Empty && ownerVisual.PinnedTextureIds.Remove(f.TextureId))
+                            {
+                                if (ownerVisual.TexturesPinned) _gpuCache.ReleaseRef(f.TextureId);
+                            }
+                        }
+                    }
+                    if (wornFaces.DefaultFace.TextureId != Guid.Empty && ownerVisual.PinnedTextureIds.Remove(wornFaces.DefaultFace.TextureId))
+                    {
+                        if (ownerVisual.TexturesPinned) _gpuCache.ReleaseRef(wornFaces.DefaultFace.TextureId);
+                    }
+                }
+            }
+            else
+            {
+                ownerVisual.WornAttachmentFaces.Remove(entityId);
+            }
             // M4-7: a detached BoM mesh body/head must un-hide the system part it was covering.
             // QueueFree above is deferred, so drop the entry by reference here — RecomputeMesh-
             // Visibility's IsInstanceValid sweep would still see it live this frame.
@@ -1202,6 +1242,7 @@ public partial class AvatarRenderer : Node3D
         // Keep AgentId current -- CreateVisual sets it too, but AvatarComponent can be added before
         // its AgentId is populated; the bake-texture CDN URL depends on this being right.
         if (visual.AgentId == Guid.Empty) visual.AgentId = avatar.AgentId;
+        if (visual.EntityId == Guid.Empty) visual.EntityId = entityId;
         visual.IsSelf = avatar.IsLocalAgent;
 
         if (visual.NameTag is Godot.PanelContainer panel)
@@ -1501,9 +1542,10 @@ public partial class AvatarRenderer : Node3D
                 if (textureId == Guid.Empty) continue;
                 if (!visual.LoadedTextures.TryGetValue(bakeIndex, out var currentId) || currentId != textureId)
                 {
+                    var oldTexId = currentId;
                     visual.LoadedTextures[bakeIndex] = textureId;
                     anyBakeChanged = true;
-                    _ = LoadAndApplyTextureAsync(visual, bakeIndex, textureId);
+                    _ = LoadAndApplyTextureAsync(visual, bakeIndex, textureId, oldTexId);
                 }
             }
 
@@ -1933,29 +1975,44 @@ public partial class AvatarRenderer : Node3D
         return scaleXform * bind;
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId)
+    /// <summary>
+    /// BUG-PERF-13: Computes projected on-screen pixel area for an avatar based on its distance
+    /// to the camera and height/radius. Used to size remote avatar textures for distance LOD.
+    /// </summary>
+    private float ComputeAvatarScreenPixelArea(AvatarVisual visual)
+    {
+        var viewport = GetViewport();
+        var camera = viewport?.GetCamera3D();
+        float dist = 20f;
+        if (camera != null && GodotObject.IsInstanceValid(camera))
+        {
+            dist = Math.Max(0.5f, camera.GlobalPosition.DistanceTo(visual.Root != null && GodotObject.IsInstanceValid(visual.Root) ? visual.Root.GlobalPosition : visual.GodotPos));
+        }
+        else
+        {
+            dist = Math.Max(0.5f, _lastCamPos.DistanceTo(visual.GodotPos));
+        }
+
+        float wearerHeight = visual.BodySizeZ > 0.1f ? visual.BodySizeZ : 1.90f;
+        float radius = wearerHeight * 0.5f;
+        float fovDegrees = camera != null && GodotObject.IsInstanceValid(camera) ? camera.Fov : 60f;
+        float vpHeight = viewport != null ? viewport.GetVisibleRect().Size.Y : 1080f;
+        if (vpHeight <= 0f) vpHeight = 1080f;
+
+        return SLNG.Assets.TextureLod.ScreenPixelAreaForSphere(dist, radius, fovDegrees, vpHeight);
+    }
+
+    private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId, Guid oldTextureId = default)
     {
         if (_assetService == null || _gpuCache == null) return;
 
-        // initialRefCount: 1 -- pins this bake texture so GpuCache.EvictIfNeeded can never select
-        // it (RefCount<=0 is the eviction condition), unlike ObjectRenderer (which properly
-        // AddRef/ReleaseRefs per-visual via SetTexturesForVisual). AvatarRenderer has no
-        // equivalent per-avatar ref-counting yet, so an unpinned (RefCount 0) bake texture was
-        // eligible for eviction the moment the shared cache went over its 1.5 GB budget -- e.g.
-        // right after a teleport, when the new region's terrain/objects/other-avatar textures
-        // arrive in a burst. Since GpuCache disposes an evicted Resource's native RID immediately
-        // (not just drops it from the cache dict), evicting a bake texture still assigned to a
-        // LIVE MeshInstance3D's material destroyed it out from under the renderer -- exactly the
-        // "RenderingServer::get_singleton() is null" error reported right after teleporting.
-        // Trade-off: pinned avatar textures are never reclaimed for the app's lifetime (a slow,
-        // bounded-by-avatars-seen leak) rather than a real dispose-tracked lifecycle; safe default
-        // until AvatarRenderer gets proper AddRef/ReleaseRef bookkeeping like ObjectRenderer's.
-        // bakeChannel: bakeIndex -- BUG-AVATAR-02: a bake texture needs SL's dedicated
-        // bake-texture host, not the generic per-face fetch every other texture uses. See
-        // GridSession.FetchBakeTextureDataAsync's doc comment for why. bakeAgentId: this visual's
-        // own avatar -- the CDN URL keys on the WEARING avatar, so a remote avatar's system bake
-        // 403s if we send our own id (BUG-AVATAR-02 follow-up, found live on Agni 2026-09-02).
-        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true, bakeChannel: bakeIndex, bakeAgentId: visual.AgentId);
+        // BUG-PERF-13: own avatar stays full-res (screenPixelArea 0), while remote avatars obey
+        // distance LOD based on screen pixel area. Distant textures count toward VRAM budget.
+        float screenPixelArea = visual.IsSelf ? 0f : ComputeAvatarScreenPixelArea(visual);
+        var godotTexture = await _gpuCache.GetOrUploadTextureAsync(
+            textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
+            bakeChannel: bakeIndex, bakeAgentId: visual.AgentId,
+            screenPixelArea: screenPixelArea, isAvatar: true, isSelf: visual.IsSelf);
 
         if (godotTexture == null)
         {
@@ -1965,6 +2022,21 @@ public partial class AvatarRenderer : Node3D
             // bake never arrived yet" but actually a decode/fetch failure that will never retry.
             GD.PrintErr($"[AvatarRenderer] bake {bakeIndex} texture {textureId} fetch/decode returned null -- part stays on placeholder material");
             return;
+        }
+
+        if (oldTextureId != Guid.Empty && oldTextureId != textureId)
+        {
+            if (visual.PinnedTextureIds.Remove(oldTextureId) && visual.TexturesPinned)
+            {
+                _gpuCache.ReleaseRef(oldTextureId);
+            }
+            visual.UsedTextureIds.Remove(oldTextureId);
+        }
+        visual.PinnedTextureIds.Add(textureId);
+        visual.UsedTextureIds.Add(textureId);
+        if (!visual.TexturesPinned)
+        {
+            _gpuCache.ReleaseRef(textureId);
         }
         // Map SL bake indices (AvatarTextureIndex) to which mesh parts they cover.
         // 8=HeadBaked, 9=UpperBaked, 10=LowerBaked, 11=EyesBaked, 19=SkirtBaked, 20=HairBaked —
@@ -3568,10 +3640,26 @@ public partial class AvatarRenderer : Node3D
         // BUG-PERF-07: avatar.material.* -- the parts of avatar.rig.materials, filed only when they
         // run on the main thread (a texture that is already cached completes this await inline).
         long texStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var builtTask = _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded, bakeChannel: wasBom ? bomIndex : null, bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default);
+        bool isSelf = avatarVisual != null && avatarVisual.IsSelf;
+        bool isHud = surface == PrimShaderFamily.Surface.Hud;
+        float screenPixelArea = (isSelf || isHud) ? 0f : (avatarVisual != null ? ComputeAvatarScreenPixelArea(avatarVisual) : 0f);
+        var builtTask = _gpuCache.GetOrUploadTextureAsync(
+            texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded,
+            bakeChannel: wasBom ? bomIndex : null,
+            bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default,
+            screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf);
         MainThreadWorkQueue.RecordIfMainThread("avatar.material.texture",
             System.Diagnostics.Stopwatch.GetElapsedTime(texStart).TotalMilliseconds);
         var built = await builtTask.ConfigureAwait(false);
+        if (avatarVisual != null && texId != Guid.Empty)
+        {
+            avatarVisual.PinnedTextureIds.Add(texId);
+            avatarVisual.UsedTextureIds.Add(texId);
+            if (!avatarVisual.TexturesPinned)
+            {
+                _gpuCache.ReleaseRef(texId);
+            }
+        }
         if (built == null)
         {
             // Not silent: an untextured face renders as flat AlbedoColor (usually white), which
@@ -6244,6 +6332,35 @@ void fragment() {
                 bool visible = visual.Root.Position.DistanceSquaredTo(agentPos) <= maxSq;
                 if (visual.Root.Visible != visible) visual.Root.Visible = visible;
                 visual.Shown = visible;
+
+                if (!visible && visual.TexturesPinned)
+                {
+                    if (_gpuCache != null)
+                    {
+                        foreach (var texId in visual.PinnedTextureIds)
+                        {
+                            _gpuCache.ReleaseRef(texId);
+                        }
+                    }
+                    visual.TexturesPinned = false;
+                }
+                else if (visible && !visual.TexturesPinned)
+                {
+                    bool anyEvicted = false;
+                    if (_gpuCache != null)
+                    {
+                        foreach (var texId in visual.PinnedTextureIds)
+                        {
+                            _gpuCache.AddRef(texId);
+                            if (!_gpuCache.IsResident(texId)) anyEvicted = true;
+                        }
+                    }
+                    visual.TexturesPinned = true;
+                    if (anyEvicted && visual.EntityId != Guid.Empty)
+                    {
+                        UpdateVisual(visual.EntityId.ToString());
+                    }
+                }
             }
 
             if (visual.IsSelf)
@@ -6253,6 +6370,31 @@ void fragment() {
             else if (doCull)
             {
                 ReconsiderAttachmentDetail(avatarEntityId, visual);
+
+                // BUG-PERF-13: Check distance band movement and re-sharpen when approaching
+                if (visual.Shown)
+                {
+                    float curArea = ComputeAvatarScreenPixelArea(visual);
+                    if (visual.LastRefreshedArea <= 0f)
+                    {
+                        visual.LastRefreshedArea = curArea;
+                    }
+                    else if (curArea >= visual.LastRefreshedArea * 2.0f)
+                    {
+                        visual.LastRefreshedArea = curArea;
+                        if (_gpuCache != null && _assetService != null)
+                        {
+                            foreach (var texId in visual.UsedTextureIds)
+                            {
+                                _gpuCache.TryUpgradeTexture(texId, _assetService, generateMipmaps: true, screenPixelArea: curArea);
+                            }
+                        }
+                    }
+                    else if (curArea < visual.LastRefreshedArea * 0.5f)
+                    {
+                        visual.LastRefreshedArea = curArea;
+                    }
+                }
             }
 
             bool shouldAdvance = visual.AnimPlayer.IsPlaying
@@ -6329,6 +6471,33 @@ void fragment() {
                     }
                 }
             }
+        }
+
+        // BUG-PERF-13: Protect self and nearest N other avatars in GpuCache from being shrunk.
+        // Distant avatars' textures beyond the nearest N remain eligible for shrinking when over budget.
+        if (doCull && _gpuCache != null)
+        {
+            var camRefPos = camPos ?? agentPos;
+            var protectedIds = new HashSet<Guid>();
+            foreach (var v in _visuals.Values)
+            {
+                if (v.IsSelf)
+                {
+                    foreach (var id in v.UsedTextureIds) protectedIds.Add(id);
+                }
+            }
+
+            var otherAvatars = _visuals.Values
+                .Where(v => !v.IsSelf && v.Shown && v.Root != null && GodotObject.IsInstanceValid(v.Root))
+                .OrderBy(v => v.Root.GlobalPosition.DistanceSquaredTo(camRefPos))
+                .Take(3);
+
+            foreach (var other in otherAvatars)
+            {
+                foreach (var id in other.UsedTextureIds) protectedIds.Add(id);
+            }
+
+            _gpuCache.UpdateProtectedAvatarTextures(protectedIds);
         }
 
         // FEAT-ANIMESH-01: animated-mesh skeletons follow their root prim, and (FEAT-ANIMESH-02)

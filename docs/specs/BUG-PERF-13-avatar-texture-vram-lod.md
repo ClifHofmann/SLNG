@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-PERF-13`
 - **Track:** `render`
-- **Status:** `🚧 In Progress`
+- **Status:** `🧪 Review`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
@@ -52,6 +52,6 @@ This feature implements:
 7. `[GpuCache]` stats log extended with `avatarMB` and `reducibleMB`.
 
 ## Acceptance Criteria
-- [ ] Pure arithmetic in `TextureLod` for sphere screen area and discard level.
-- [ ] Unit tests for discard/budget arithmetic passing.
+- [x] Pure arithmetic in `TextureLod` for sphere screen area and discard level.
+- [x] Unit tests for discard/budget arithmetic passing.
 - [ ] In-world (unverified): At a 15-avatar spot, `[GpuCache] sizeMB` stays at or under budget, dedicated VRAM stays below card size, and GPU time returns to ~10 ms baseline while near avatars stay sharp.

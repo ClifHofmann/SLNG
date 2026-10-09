@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -59,6 +59,10 @@ public class GpuCache
     // faces and bake channels (rejectDegraded / bakeChannel callers). A parcel full of scenery
     // filling the cache must not soften someone's face at conversation distance.
     private readonly ConcurrentDictionary<Guid, byte> _noShrink = new();
+
+    // BUG-PERF-13: all avatar textures (worn meshes and bakes). Distant avatar textures are reducible
+    // and can be shrunk when over budget; only self and the nearest N avatars are protected in _noShrink.
+    private readonly ConcurrentDictionary<Guid, byte> _avatarTextures = new();
 
     // BUG-PERF-09: textures with a shrink in flight, and the bytes each is expected to give back.
     // The shrink now prepares on a worker, so several can be pending at once; Tick has to count what
@@ -277,14 +281,24 @@ public class GpuCache
         float priority = 0f,
         bool rejectDegraded = false,
         int? bakeChannel = null,
-        Guid bakeAgentId = default)
+        Guid bakeAgentId = default,
+        bool isAvatar = false,
+        bool isSelf = false)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
         if (assetService != null && !ReferenceEquals(_assets, assetService)) _assets = assetService;
 
-        // FEAT-PERF-04: an avatar face (rejectDegraded) or a bake channel is never a shrink
-        // candidate -- see _noShrink.
-        if (rejectDegraded || bakeChannel.HasValue) _noShrink.TryAdd(textureId, 0);
+        // BUG-PERF-13: Track avatar textures in _avatarTextures. Only self avatar textures
+        // are unconditionally in _noShrink; remote avatar textures obey the VRAM budget and
+        // can be shrunk when under pressure, keeping the nearest N protected via UpdateProtectedAvatarTextures.
+        if (isAvatar || bakeChannel.HasValue)
+        {
+            _avatarTextures.TryAdd(textureId, 0);
+            if (isSelf)
+            {
+                _noShrink.TryAdd(textureId, 0);
+            }
+        }
 
         // A rejectDegraded caller (the avatar) must not be handed an upload that some OTHER
         // caller produced from a gap-filled decode -- but only a DEGRADED upload is a problem.
@@ -371,26 +385,25 @@ public class GpuCache
         if (now < due) return;
         // Claim the slot so a burst of concurrent gets emits one line, not one per thread.
         if (System.Threading.Interlocked.CompareExchange(ref _gpuStatsNextMs, now + GpuStatsIntervalMs, due) != due) return;
-        int entries, degraded, pinned; long sizeMb, pinnedMb, exemptBytes = 0;
+        int entries, degraded, pinned; long sizeMb, pinnedMb, exemptBytes = 0, avatarBytes = 0, reducibleBytes = 0;
         lock (_cache)
         {
             entries = _cache.Count;
             sizeMb = _currentSize >> 20;
-            // pinned = entries EvictIfNeeded can never reclaim (RefCount > 0). AvatarRenderer has
-            // no AddRef/ReleaseRef bookkeeping and Puts every avatar face texture with
-            // initialRefCount: 1 at FULL resolution, so this number is the whole question: if
-            // pinnedMB approaches the budget, the cache has no room left for object textures, they
-            // are evicted the moment they land, and ObjectRenderer's 4 Hz texture re-offer
-            // re-decodes them forever -- which is what [TexPipe] req=8800 on a static scene looks
-            // like. See docs/specs/BUG-NET-11-*.md.
+            // pinned = entries EvictIfNeeded can never reclaim (RefCount > 0).
             pinned = 0; long pinnedBytes = 0;
             foreach (var e in _cache.Values)
             {
                 if (e.RefCount > 0) { pinned++; pinnedBytes += e.Size; }
-                // BUG-PERF-09: avatar and bake textures are never shrunk and are uploaded in full.
-                // If they alone fill the budget there is nothing left for the shrink pass to take,
-                // and every world texture is admitted at the cheapest level.
                 if (_noShrink.ContainsKey(e.Id)) exemptBytes += e.Size;
+                if (_avatarTextures.ContainsKey(e.Id))
+                {
+                    avatarBytes += e.Size;
+                    if (!_noShrink.ContainsKey(e.Id) && e.Size > ShrinkFloorBytes)
+                    {
+                        reducibleBytes += e.Size;
+                    }
+                }
             }
             pinnedMb = pinnedBytes >> 20;
         }
@@ -420,7 +433,7 @@ public class GpuCache
         if (!Diagnostics.Enabled) return;
         Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
             $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} inFlightMB={reserved >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
-            $"noShrinkMB={exemptBytes >> 20} " +
+            $"noShrinkMB={exemptBytes >> 20} avatarMB={avatarBytes >> 20} reducibleMB={reducibleBytes >> 20} " +
             $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth}");
     }
 
@@ -584,6 +597,50 @@ public class GpuCache
                 GD.PrintErr($"[GpuCache] texture {textureId} sharpen failed: {ex.Message}");
             }
         });
+    }
+
+    /// <summary>
+    /// BUG-PERF-13: Checks whether a texture is currently resident in GpuCache.
+    /// </summary>
+    public bool IsResident(Guid textureId)
+    {
+        lock (_cache) return _cache.ContainsKey(textureId);
+    }
+
+    /// <summary>
+    /// BUG-PERF-13: Updates the set of protected avatar textures (self + nearest N avatars).
+    /// Avatar textures not in protectedIds are allowed to be shrunk by the VRAM shrink pass.
+    /// </summary>
+    public void UpdateProtectedAvatarTextures(ISet<Guid> protectedIds)
+    {
+        foreach (var id in _avatarTextures.Keys)
+        {
+            if (protectedIds.Contains(id))
+            {
+                _noShrink.TryAdd(id, 0);
+            }
+            else
+            {
+                _noShrink.TryRemove(id, out _);
+            }
+        }
+    }
+
+    /// <summary>
+    /// BUG-PERF-13: Re-offers an avatar texture for sharpening when its screen pixel area increases.
+    /// </summary>
+    public void TryUpgradeTexture(Guid textureId, SLNG.Assets.AssetService? assetService, bool generateMipmaps, float screenPixelArea, float priority = 0.5f)
+    {
+        if (assetService == null || screenPixelArea <= 0f) return;
+        ImageTexture? tex;
+        lock (_cache)
+        {
+            tex = _cache.TryGetValue(textureId, out var e) ? e.Res as ImageTexture : null;
+        }
+        if (tex != null)
+        {
+            TryUpgradeCachedTexture(textureId, tex, assetService, generateMipmaps, screenPixelArea, priority);
+        }
     }
 
     /// <summary>The real viewer's texel-to-screen-pixel discard criterion -- see the call site in
@@ -1475,6 +1532,8 @@ public class GpuCache
                 _lruList.Remove(node);
                 _cache.Remove(entry.Id);
                 _uploadFromDegraded.TryRemove(entry.Id, out _);
+                _avatarTextures.TryRemove(entry.Id, out _);
+                _noShrink.TryRemove(entry.Id, out _);
                 _currentSize -= entry.Size;
                 // Explicitly dispose the C# wrapper so its finalizer won't run later (e.g. after RenderingServer is gone)
                 if (GodotObject.IsInstanceValid(entry.Res))

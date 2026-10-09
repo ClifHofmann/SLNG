@@ -42,6 +42,26 @@ public static class TextureLod
     }
 
     /// <summary>
+    /// BUG-PERF-13: Pure arithmetic: screen pixel area covered by a sphere of <paramref name="radius"/>
+    /// at <paramref name="distance"/> given camera <paramref name="fovDegrees"/> and
+    /// <paramref name="viewportHeightPixels"/>. Used by AvatarRenderer to determine screen-area-based
+    /// texture discard for remote avatars.
+    /// </summary>
+    public static float ScreenPixelAreaForSphere(
+        float distance, float radius, float fovDegrees = 70f, float viewportHeightPixels = 1080f)
+    {
+        if (distance <= 0f || radius <= 0f || viewportHeightPixels <= 0f || fovDegrees <= 0.001f)
+            return 0f;
+        float fovRadians = fovDegrees * ((float)System.Math.PI / 180f);
+        float pixelsPerRadian = viewportHeightPixels / fovRadians;
+        float nearDistance = System.Math.Max(distance - radius, 0.001f);
+        float appAngle = (float)System.Math.Atan(radius / nearDistance);
+        float radiusPixels = appAngle * pixelsPerRadian;
+        return radiusPixels * radiusPixels * (float)System.Math.PI;
+    }
+
+
+    /// <summary>
     /// Converts a discard level into a JPEG-2000 decoder resolution step — how many halvings of
     /// each dimension to leave out of the reconstruction.
     /// </summary>
