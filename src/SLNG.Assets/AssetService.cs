@@ -681,8 +681,13 @@ public class AssetService
         // Keyed by id only, not (id, level): GpuCache already single-flights per texture id, so two
         // levels racing here is not a normal case, and if it happens both results are valid images
         // -- the renderer records the upload as reduced and TryUpgradeCachedTexture sharpens it.
+        // BUG-PERF-10: started on the pool, never inline on the caller. The disk-cache branch of
+        // FetchAndDecodeTextureAsync is a stat, a read of the .j2c, the decoded-cache read and an LZ4
+        // decompress, and with the files in the OS cache none of those awaits ever yields -- so a warm
+        // start ran 2-6 ms of it per texture inside the Godot main thread's frame (ObjectRenderer asks
+        // from queue items and from the cull sweep). Same trap as BUG-PERF-07, one layer down.
         var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
-            () => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority, rejectDegraded, effectiveArea), LazyThreadSafetyMode.ExecutionAndPublication));
+            () => Task.Run(() => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority, rejectDegraded, effectiveArea)), LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
