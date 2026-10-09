@@ -91,6 +91,93 @@ public class AnimatedMeshLinksetTests
         Assert.Null(found);
     }
 
+    private static Entity Avatar(World world, uint localId)
+    {
+        var avatar = world.GetOrCreateEntity(Region, localId);
+        avatar.SetComponent(new AvatarComponent(System.Guid.NewGuid(), "Test", "Avatar", false));
+        return avatar;
+    }
+
+    // BUG-AVATAR-10: the worn half of the question. A pet attached to an avatar is an animated
+    // object whose joint overrides belong to ITS skeleton, not to the avatar wearing it.
+
+    [Fact]
+    public void AnAnimatedRootAttachedToAnAvatarIsAnAnimatedAttachment()
+    {
+        var world = new World();
+        Avatar(world, 9);
+        var root = Prim(world, 10, parentLocalId: 9, animated: true);
+
+        Assert.True(AnimatedMeshLinkset.IsAnimatedAttachment(world, root, out var found));
+        Assert.Same(root, found);
+    }
+
+    [Fact]
+    public void AWornChildFollowsTheAttachmentRootsFlagNotItsOwn()
+    {
+        var world = new World();
+        Avatar(world, 9);
+        var root = Prim(world, 10, parentLocalId: 9, animated: true);
+        var child = Prim(world, 11, parentLocalId: 10, animated: false);
+
+        Assert.True(AnimatedMeshLinkset.IsAnimatedAttachment(world, child, out var found));
+        Assert.Same(root, found);
+    }
+
+    [Fact]
+    public void AWornChildOfAnUnflaggedRootIsOrdinaryWhateverItsOwnBlockSays()
+    {
+        var world = new World();
+        Avatar(world, 9);
+        var root = Prim(world, 10, parentLocalId: 9, animated: false);
+        var child = Prim(world, 11, parentLocalId: 10, animated: true);
+
+        Assert.False(AnimatedMeshLinkset.IsAnimatedAttachment(world, child, out var found));
+        Assert.Same(root, found);
+    }
+
+    [Fact]
+    public void AnOrdinaryWornMeshIsNotAnAnimatedAttachment()
+    {
+        var world = new World();
+        Avatar(world, 9);
+        var body = Prim(world, 10, parentLocalId: 9, animated: false);
+
+        Assert.False(AnimatedMeshLinkset.IsAnimatedAttachment(world, body, out var found));
+        Assert.Same(body, found);
+    }
+
+    [Fact]
+    public void AWorldObjectHasNoAttachmentRoot()
+    {
+        var world = new World();
+        var root = Prim(world, 1, animated: true);
+        var child = Prim(world, 2, parentLocalId: 1);
+
+        Assert.Null(AnimatedMeshLinkset.AttachedRootOf(world, root));
+        Assert.Null(AnimatedMeshLinkset.AttachedRootOf(world, child));
+        Assert.False(AnimatedMeshLinkset.IsAnimatedAttachment(world, child, out _));
+    }
+
+    [Fact]
+    public void AWornChildWhoseRootHasNotArrivedHasNoAttachmentRootYet()
+    {
+        var world = new World();
+        var child = Prim(world, 11, parentLocalId: 10, animated: true);
+
+        Assert.Null(AnimatedMeshLinkset.AttachedRootOf(world, child));
+    }
+
+    [Fact]
+    public void ACycleAmongWornPrimsDoesNotHang()
+    {
+        var world = new World();
+        var a = Prim(world, 1, parentLocalId: 2);
+        Prim(world, 2, parentLocalId: 1);
+
+        Assert.Null(AnimatedMeshLinkset.AttachedRootOf(world, a));
+    }
+
     [Fact]
     public void ACycleDoesNotHangAndAnswersNo()
     {
