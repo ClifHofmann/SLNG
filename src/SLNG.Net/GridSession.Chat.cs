@@ -930,7 +930,11 @@ public sealed partial class GridSession
                 $"[Chat] IM from {e.IM.FromAgentName} ({imFrom}) carries session {sessionId}, which is not the 1:1 id " +
                 $"{SessionIds.PeerToPeer(imSelf, imFrom)}: dialog={e.IM.Dialog} groupFlag={e.IM.GroupIM} offline={e.IM.Offline} " +
                 $"to={e.IM.ToAgentID} lmvKnowsSession={lmvKnowsSession} conferenceTracked={_conferenceSessions.ContainsKey(sessionId)} " +
-                $"groupMember={IsGroupMember(sessionId)} bucketBytes={e.IM.BinaryBucket?.Length ?? 0} -- shown as a 1:1 IM");
+                $"groupMember={IsGroupMember(sessionId)} bucketBytes={e.IM.BinaryBucket?.Length ?? 0} " +
+                // The bucket of a group or conference line carries the session's NAME (never the message text) --
+                // the one field that says which group or conference the line belonged to.
+                $"bucketName=\"{DecodeSessionName(e.IM.BinaryBucket)}\" region={e.IM.RegionID} estate={e.IM.ParentEstateID} " +
+                "-- shown as a 1:1 IM");
         }
 
         InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
