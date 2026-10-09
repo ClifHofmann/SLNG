@@ -164,7 +164,8 @@ public class GroupChatNamingAndMuteTests
         public readonly List<GroupChatMessageEvent> Groups = new();
         public readonly List<ConferenceChatMessageEvent> Conferences = new();
         public readonly List<InstantMessageEvent> Ims = new();
-        public int Total => Groups.Count + Conferences.Count + Ims.Count;
+        public readonly List<ChatMessageEvent> Chats = new();
+        public int Total => Groups.Count + Conferences.Count + Ims.Count + Chats.Count;
     }
 
     private static Collected Listen(GridSession session)
@@ -173,6 +174,7 @@ public class GroupChatNamingAndMuteTests
         session.GroupChatMessageReceived += (s, e) => c.Groups.Add(e);
         session.ConferenceChatMessageReceived += (s, e) => c.Conferences.Add(e);
         session.InstantMessageReceived += (s, e) => c.Ims.Add(e);
+        session.ChatMessageReceived += (s, e) => c.Chats.Add(e);
         return c;
     }
 
@@ -595,4 +597,56 @@ public class GroupChatNamingAndMuteTests
 
         Assert.Equal("audible", Assert.Single(c.Groups).Message);
     }
+
+    [Theory]
+    [InlineData(InstantMessageDialog.MessageFromObject)]
+    [InlineData(InstantMessageDialog.FromTaskAsAlert)]
+    [InlineData(InstantMessageDialog.ConsoleAndChatHistory)]
+    [InlineData(InstantMessageDialog.MessageBox)]
+    public void Object_and_sim_messages_route_to_local_chat_instead_of_conference_or_im(InstantMessageDialog dialog)
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        var objectId = UUID.Random();
+        var bucket = Bytes("Millenium/124/129/24\0");
+
+        Invoke(session, "OnInstantMessage",
+            Im(dialog, objectId, "Visitor found: Cecelia Levee", groupIM: false, bucket: bucket, fromName: "Azure Haven"));
+
+        Assert.Empty(c.Groups);
+        Assert.Empty(c.Conferences);
+        Assert.Empty(c.Ims);
+        var chat = Assert.Single(c.Chats);
+        Assert.Equal("Azure Haven", chat.FromName);
+        Assert.Equal("Visitor found: Cecelia Levee", chat.Message);
+        Assert.False(chat.FromAgent);
+    }
+
+    [Fact]
+    public void System_message_with_null_from_id_routes_to_local_chat()
+    {
+        using var session = new GridSession();
+        var c = Listen(session);
+        var im = new InstantMessage
+        {
+            Dialog = InstantMessageDialog.MessageFromAgent,
+            IMSessionID = UUID.Random(),
+            FromAgentID = UUID.Zero,
+            FromAgentName = "",
+            Message = "Simulator restart in 5 minutes",
+            GroupIM = false,
+            BinaryBucket = Array.Empty<byte>(),
+        };
+
+        Invoke(session, "OnInstantMessage", new InstantMessageEventArgs(im, null));
+
+        Assert.Empty(c.Groups);
+        Assert.Empty(c.Conferences);
+        Assert.Empty(c.Ims);
+        var chat = Assert.Single(c.Chats);
+        Assert.Equal("System", chat.FromName);
+        Assert.Equal("Simulator restart in 5 minutes", chat.Message);
+        Assert.False(chat.FromAgent);
+    }
 }
+

@@ -842,6 +842,31 @@ public sealed partial class GridSession
         Guid imSelf = _client.Self.AgentID.Guid;
         bool hasText = !string.IsNullOrEmpty(e.IM.Message);
 
+        // An object IM (IM_FROM_TASK = 19, IM_FROM_TASK_AS_ALERT = 31, IM_CONSOLE_AND_CHAT_HISTORY = 21,
+        // IM_MESSAGEBOX = 1) or a simulator message from null sender does not open an IM session or conference:
+        // the reference viewer explicitly routes it to Nearby Chat (llimprocessing.cpp:1007-1065, "Note: lie
+        // to Nearby Chat, pretending that this is NOT an IM, because IMs from objects don't open IM sessions").
+        if (e.IM.Dialog is InstantMessageDialog.MessageFromObject
+            or InstantMessageDialog.FromTaskAsAlert
+            or InstantMessageDialog.ConsoleAndChatHistory
+            or InstantMessageDialog.MessageBox
+            || imFrom == Guid.Empty)
+        {
+            if (!hasText) return;
+
+            string fromName = !string.IsNullOrWhiteSpace(e.IM.FromAgentName)
+                ? e.IM.FromAgentName
+                : "System";
+
+            ChatMessageReceived?.Invoke(this, new ChatMessageEvent(
+                fromName,
+                e.IM.Message,
+                (byte)ChatType.Normal,
+                imFrom,
+                FromAgent: false));
+            return;
+        }
+
         bool isForeign = SessionIds.IsForeign(sessionId, imSelf, imFrom);
 
         // Keep the 1:1 XOR id path unchanged: non-foreign session and not marked as group chat.
@@ -919,6 +944,9 @@ public sealed partial class GridSession
         if (imFrom == imSelf && e.IM.Dialog == InstantMessageDialog.MessageFromAgent) return;
 
         if (!hasText || IsDuplicateSessionLine(e.IM)) return;
+
+        // A conference line must carry a session line dialog (SessionSend, SessionAdd, SessionGroupStart, or MessageFromAgent).
+        if (!GroupChatSessionLogic.IsSessionLineDialog(e.IM.Dialog)) return;
 
         // Who to address replies to: the viewer sends a session line to the session's "other participant",
         // which for an invited session is whoever invited us (llimview.cpp addMessage -> target_id).
