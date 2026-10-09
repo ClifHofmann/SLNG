@@ -24,6 +24,18 @@ public sealed class SessionIdsTests
     }
 
     [Fact]
+    public void A_session_of_neither_party_is_foreign_and_every_one_to_one_spelling_is_not()
+    {
+        var self = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        Assert.True(SessionIds.IsForeign(Guid.NewGuid(), self, other));
+        Assert.False(SessionIds.IsForeign(Guid.Empty, self, other));
+        Assert.False(SessionIds.IsForeign(self, self, other));
+        Assert.False(SessionIds.IsForeign(other, self, other));
+        Assert.False(SessionIds.IsForeign(SessionIds.PeerToPeer(self, other), self, other));
+    }
+
+    [Fact]
     public void The_session_id_is_the_bytewise_xor_of_the_two_ids()
     {
         var a = Guid.Parse("11111111-2222-3333-4444-555555555555");
