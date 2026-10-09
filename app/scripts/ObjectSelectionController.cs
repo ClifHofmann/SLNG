@@ -65,6 +65,7 @@ namespace SLNG.App
         /// </remarks>
         private void SelectFamily(Entity entity, uint localId)
         {
+            if (_session == null) return;
             if (SelectionSettings.EditLinkedParts)
             {
                 _session.SelectObject(entity.RegionHandle, localId);
@@ -85,6 +86,32 @@ namespace SLNG.App
             }
             // A linkset cannot span regions, so the root's region is every part's.
             _session.SelectObjects(entity.RegionHandle, ids);
+        }
+
+        /// <summary>BUG-UI-39: Deselects the whole object or its parts from the simulator,
+        /// matching SelectFamily.</summary>
+        private void DeselectFamily(Entity entity, uint localId)
+        {
+            if (_session == null) return;
+            if (SelectionSettings.EditLinkedParts)
+            {
+                _session.DeselectObject(entity.RegionHandle, localId);
+                return;
+            }
+
+            var parts = LinksetParts?.Invoke(entity);
+            if (parts == null || parts.Count == 0)
+            {
+                _session.DeselectObject(entity.RegionHandle, localId);
+                return;
+            }
+
+            var ids = new System.Collections.Generic.List<uint>(parts.Count + 1) { localId };
+            foreach (var part in parts)
+            {
+                if (part.LocalId != localId) ids.Add(part.LocalId);
+            }
+            _session.DeselectObjects(entity.RegionHandle, ids);
         }
 
         /// <summary>Is this collider one of the LOCAL agent's worn items? Only those carry one at
@@ -248,10 +275,35 @@ namespace SLNG.App
             if (_lastClicked != null && _lastClicked.Id != entity.Id)
             {
                 _world.DeselectEntity(_lastClicked);
+                DeselectFamily(_lastClicked, _lastClicked.LocalId);
             }
             _world.SelectEntity(entity);
             SelectFamily(entity, localId);
             _lastClicked = entity;
+        }
+
+        /// <summary>BUG-UI-39: Expose most recently clicked entity for testing and status checks.</summary>
+        public Entity? LastClicked => _lastClicked;
+
+        internal void MarkRightClickedForTesting(Entity entity, uint localId) => MarkRightClicked(entity, localId);
+
+        /// <summary>
+        /// BUG-UI-39: Outside an edit session, a right-click selection is transient (anchoring the
+        /// context menu). Clear it when sitting, clicking away, or dismissing the menu.
+        /// Inside an edit session, selection is persistent and preserved.
+        /// </summary>
+        public void ClearTransientSelection()
+        {
+            if (_editSessionOpen) return;
+
+            if (_lastClicked != null)
+            {
+                var target = _lastClicked;
+                _lastClicked = null;
+                _world?.DeselectEntity(target);
+                DeselectFamily(target, target.LocalId);
+                _gizmo?.Detach();
+            }
         }
 
         /// <summary>A click on one of your worn HUDs: select it like any object. Right opens its menu (Edit,
@@ -285,6 +337,7 @@ namespace SLNG.App
             _session = session;
             _camera = camera;
             _contextMenu = contextMenu;
+            _contextMenu.OnClosedWithoutEdit += ClearTransientSelection;
             SetProcessUnhandledInput(true);
         }
 
@@ -320,6 +373,22 @@ namespace SLNG.App
                          && !IsClickBlockedByUi(down.Position)
                          && _gizmo.TryBeginDrag(down.Position))
                 {
+                    GetViewport().SetInputAsHandled();
+                    return;
+                }
+            }
+
+            if (@event is InputEventKey key && key.Pressed && !key.Echo && key.Keycode == Key.Escape)
+            {
+                if (_editSessionOpen)
+                {
+                    DeselectAll();
+                    GetViewport().SetInputAsHandled();
+                    return;
+                }
+                else if (_lastClicked != null)
+                {
+                    ClearTransientSelection();
                     GetViewport().SetInputAsHandled();
                     return;
                 }
@@ -470,10 +539,28 @@ namespace SLNG.App
 
                         // Right-click on terrain (or anything untagged) offers "Create" instead
                         // of the object menu -- there's no entity here to Edit/Touch/Inspect.
-                        if (!isTaggedObject && mouseBtn.ButtonIndex == MouseButton.Right)
+                        // Left-click on terrain / bare ground deselects (clears transient selection,
+                        // or in build mode deselects all, matching the reference viewer).
+                        if (!isTaggedObject)
                         {
-                            _contextMenu.ShowGroundMenu(mouseBtn.Position, RezPointFrom(result));
-                            GetViewport().SetInputAsHandled();
+                            if (mouseBtn.ButtonIndex == MouseButton.Right)
+                            {
+                                _contextMenu.ShowGroundMenu(mouseBtn.Position, RezPointFrom(result));
+                                GetViewport().SetInputAsHandled();
+                                return;
+                            }
+
+                            if (mouseBtn.ButtonIndex == MouseButton.Left && !mouseBtn.ShiftPressed)
+                            {
+                                if (_editSessionOpen)
+                                {
+                                    DeselectAll();
+                                }
+                                else
+                                {
+                                    ClearTransientSelection();
+                                }
+                            }
                             return;
                         }
 
@@ -483,7 +570,7 @@ namespace SLNG.App
                             if (uint.TryParse(localIdStr, out uint rawLocalId))
                             {
                                 var entityIdStr = staticBody.GetMeta("EntityId").AsString();
-                                
+
                                 if (System.Guid.TryParse(entityIdStr, out var guid))
                                 {
                                     var rawEntity = _world.GetEntity(guid);
@@ -523,12 +610,7 @@ namespace SLNG.App
                                                 return;
                                             }
 
-                                            if (_lastClicked != null)
-                                            {
-                                                _world.DeselectEntity(_lastClicked);
-                                                _lastClicked = null;
-                                                _gizmo?.Detach();
-                                            }
+                                            ClearTransientSelection();
 
                                             // MVP2-1: a plain left-click executes the object's ClickAction (Sit vs. Touch).
                                             // Parity rule: if the avatar is ALREADY sitting on this object / linkset,
@@ -609,7 +691,7 @@ namespace SLNG.App
                                         _contextMenu.ShowMenu(mouseBtn.Position, entity, localId,
                                             RezPointFrom(result));
                                         GetViewport().SetInputAsHandled();
-                                        
+
                                         return;
                                     }
                                 }
@@ -640,10 +722,9 @@ namespace SLNG.App
                             {
                                 DeselectAll();
                             }
-                            else if (_lastClicked != null)
+                            else
                             {
-                                _world.DeselectEntity(_lastClicked);
-                                _lastClicked = null;
+                                ClearTransientSelection();
                             }
                         }
                     }

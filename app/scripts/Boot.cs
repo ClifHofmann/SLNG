@@ -431,7 +431,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.19-alpha";
+    public const string AppVersion = "v0.27.20-alpha";
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -1219,7 +1219,11 @@ public partial class Boot : Control
         _inWorldContextMenu.OnTouchClicked = (entity, localId) => { /* Touch logic later */ };
         _inWorldContextMenu.OnInspectClicked = (entity, localId) => { /* Inspect logic later */ };
         _inWorldContextMenu.OnDeleteClicked = (entity, localId) => { /* Delete logic later */ };
-        _inWorldContextMenu.OnSitClicked = (entity, localId) => _session?.RequestSit(localId);
+        _inWorldContextMenu.OnSitClicked = (entity, localId) =>
+        {
+            _objectSelectionController?.ClearTransientSelection();
+            _session?.RequestSit(localId);
+        };
         // FEAT-UI-23: take a worn item off from the 3D view. DetachByLocalId already handles the
         // Current-Outfit write-back (FEAT-INV-03), so the change survives a relog.
         _inWorldContextMenu.OnDetachClicked = (entity, localId) => _session?.DetachByLocalId(localId);
@@ -1227,7 +1231,11 @@ public partial class Boot : Control
         // the simulator's own answer, taken from the entity rather than recomputed here.
         _inWorldContextMenu.OnBuyClicked = (entity, localId) => ShowBuyWindow(entity, localId);
         _inWorldContextMenu.OnPayClicked = (entity, localId) => ShowPayWindow(entity);
-        _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) => _session?.SitOnGround();
+        _inWorldContextMenu.OnSitOnGroundClicked = (godotPos) =>
+        {
+            _objectSelectionController?.ClearTransientSelection();
+            _session?.SitOnGround();
+        };
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
         _inWorldContextMenu.OnAvatarImClicked = (agentId, name) => _chatWindow.OpenOrFocusImTab(agentId, name);
@@ -3157,6 +3165,10 @@ public partial class Boot : Control
                     {
                         if (Diagnostics.Enabled) GD.Print($"[HUD] Toggling StandUp button. SittingOnLocalId={avatarComp.SittingOnLocalId}");
                         container.Visible = isSitting;
+                        if (isSitting)
+                        {
+                            _objectSelectionController?.ClearTransientSelection();
+                        }
                     }
                 }
             }

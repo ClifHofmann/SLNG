@@ -1,8 +1,8 @@
+using System;
 using Godot;
 using SLNG.Core;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
-using System;
 
 namespace SLNG.App.UI
 {
@@ -53,6 +53,9 @@ namespace SLNG.App.UI
         /// the chosen basic shape.</summary>
         public Action<Vector3, BasicPrimType>? OnCreatePrimClicked;
 
+        /// <summary>Fired when the menu closes without entering Edit mode (e.g. click-off, Esc, or non-edit action chosen).</summary>
+        public Action? OnClosedWithoutEdit;
+
         private Entity? _currentEntity;
 
         /// <summary>The object the menu is currently open on, for an owner that needs to notice
@@ -91,7 +94,10 @@ namespace SLNG.App.UI
                 CornerRadiusTopRight = 8,
                 CornerRadiusBottomLeft = 8,
                 CornerRadiusBottomRight = 8,
-                BorderWidthBottom = 1, BorderWidthTop = 1, BorderWidthLeft = 1, BorderWidthRight = 1,
+                BorderWidthBottom = 1,
+                BorderWidthTop = 1,
+                BorderWidthLeft = 1,
+                BorderWidthRight = 1,
                 BorderColor = new Color(1, 1, 1, 0.15f),
                 ShadowColor = new Color(0, 0, 0, 0.5f),
                 ShadowSize = 8,
@@ -118,10 +124,9 @@ namespace SLNG.App.UI
             _avatarPayButton = AddMenuButton(_avatarButtons, "💰 " + L10n.Tr("ui.pay_avatar.menu"), () => OnAvatarPayClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarMuteButton = AddMenuButton(_avatarButtons, "🔇 Mute", () => OnAvatarMuteToggleClicked?.Invoke(_currentAvatarId, _currentAvatarName));
 
-
             _objectButtons = new VBoxContainer();
             root.AddChild(_objectButtons);
-            AddMenuButton(_objectButtons, "✏️ Edit", () => OnEditClicked?.Invoke(_currentEntity!, _currentLocalId));
+            AddMenuButton(_objectButtons, "✏️ Edit", () => OnEditClicked?.Invoke(_currentEntity!, _currentLocalId), isEdit: true);
             AddMenuButton(_objectButtons, "✋ Touch", () => OnTouchClicked?.Invoke(_currentEntity!, _currentLocalId));
             _sitButton = AddMenuButton(_objectButtons, "🪑 Sit", () => OnSitClicked?.Invoke(_currentEntity!, _currentLocalId));
             AddMenuButton(_objectButtons, "🔍 Inspect", () => OnInspectClicked?.Invoke(_currentEntity!, _currentLocalId));
@@ -195,6 +200,8 @@ namespace SLNG.App.UI
         /// </remarks>
         private void ClampIntoViewport()
         {
+            if (!IsInsideTree()) return;
+
             // Let it shrink first. Assigning Position pins the control's rect -- Godot writes it
             // out as offsets -- and from then on the control keeps its width and height instead
             // of following a minimum that has got smaller. So once "Create" had been expanded
@@ -216,10 +223,18 @@ namespace SLNG.App.UI
             Position = new Vector2(Mathf.Max(0f, position.X), Mathf.Max(0f, position.Y));
         }
 
-        private Button AddMenuButton(VBoxContainer container, string text, Action onClick)
+        private Button AddMenuButton(VBoxContainer container, string text, Action onClick, bool isEdit = false)
         {
             var btn = new Button { Text = text, Flat = true, Alignment = HorizontalAlignment.Left };
-            btn.Pressed += () => { onClick(); Hide(); };
+            btn.Pressed += () =>
+            {
+                onClick();
+                Hide();
+                if (!isEdit)
+                {
+                    OnClosedWithoutEdit?.Invoke();
+                }
+            };
             container.AddChild(btn);
             return btn;
         }
@@ -338,15 +353,29 @@ namespace SLNG.App.UI
             CallDeferred(nameof(ClampIntoViewport));
         }
 
+        public void Dismiss()
+        {
+            if (!Visible) return;
+            Visible = false;
+            OnClosedWithoutEdit?.Invoke();
+        }
+
         public override void _UnhandledInput(InputEvent @event)
         {
-            if (Visible && @event is InputEventMouseButton mouseBtn && mouseBtn.Pressed)
+            if (!Visible) return;
+
+            if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed)
             {
                 var localMousePos = GetLocalMousePosition();
                 if (localMousePos.X < 0 || localMousePos.Y < 0 || localMousePos.X > Size.X || localMousePos.Y > Size.Y)
                 {
-                    Visible = false;
+                    Dismiss();
                 }
+            }
+            else if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo && keyEvent.Keycode == Key.Escape)
+            {
+                Dismiss();
+                GetViewport().SetInputAsHandled();
             }
         }
     }

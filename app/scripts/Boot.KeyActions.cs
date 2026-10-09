@@ -206,7 +206,11 @@ public partial class Boot
         if (avatar == null) return false;
 
         if (avatar.SittingOnLocalId != 0) _standUpButton.EmitSignal(BaseButton.SignalName.Pressed);
-        else _session.SitOnGround();
+        else
+        {
+            _objectSelectionController?.ClearTransientSelection();
+            _session.SitOnGround();
+        }
         return true;
     }
 }

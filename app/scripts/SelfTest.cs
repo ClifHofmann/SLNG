@@ -4,6 +4,8 @@ using System.Linq;
 using Godot;
 using SLNG.Assets;
 using SLNG.Core;
+using SLNG.Core.Components;
+using SLNG.Core.ECS;
 
 namespace SLNG.App;
 
@@ -269,6 +271,7 @@ public static partial class SelfTest
         results.Add(CheckWindowTopInsetClamping(tree));
         results.Add(CheckChatWindowLogLayout(tree)); // BUG-UI-35
         results.Add(CheckChatWindowTypingIndicatorOpensTab(tree)); // BUG-UI-36
+        results.Add(CheckTransientSelectionClear(tree)); // BUG-UI-39
         results.Add(CheckUiScale(tree));
         results.Add(CheckTooltipStyle());
         results.Add(CheckPerGridPaths());
@@ -637,8 +640,12 @@ public static partial class SelfTest
             var guid = Guid.NewGuid();
             var groupLand = publicLand with
             {
-                ParcelId = guid, OwnerId = group, IsGroupOwned = true, GroupId = group,
-                Ownership = ParcelOwnership.LeasePending, Dwell = 0f,
+                ParcelId = guid,
+                OwnerId = group,
+                IsGroupOwned = true,
+                GroupId = group,
+                Ownership = ParcelOwnership.LeasePending,
+                Dwell = 0f,
                 ClaimDateUtc = new DateTime(2006, 8, 15, 20, 47, 25, DateTimeKind.Utc),
             };
             win.OnParcelInfoReceived(null, groupLand); win._Process(0);
@@ -653,8 +660,13 @@ public static partial class SelfTest
             // 3. For sale to one avatar, at auction; fractional traffic rounds like %.0f.
             var forSale = publicLand with
             {
-                OwnerId = owner, ForSale = true, SalePriceL = 1500, AuthorizedBuyerId = buyer,
-                SellWithObjects = true, AuctionId = 77, Dwell = 12.4f,
+                OwnerId = owner,
+                ForSale = true,
+                SalePriceL = 1500,
+                AuthorizedBuyerId = buyer,
+                SellWithObjects = true,
+                AuctionId = 77,
+                Dwell = 12.4f,
             };
             win.OnParcelInfoReceived(null, forSale); win._Process(0);
             Expect(Row(UI.LandRow.Owner) == "Resident One", $"avatar owner '{Row(UI.LandRow.Owner)}'");
@@ -760,8 +772,15 @@ public static partial class SelfTest
         // 1. The counts. Total = owner + group + other + selected; capacity = allowance x bonus.
         var counts = new SLNG.Core.ParcelPrimCounts
         {
-            OwnerPrims = 10, GroupPrims = 20, OtherPrims = 30, SelectedPrims = 4, MaxPrims = 100, ParcelPrimBonus = 1.5f,
-            SimWideMaxPrims = 400, SimWideTotalPrims = 120, AutoReturnMinutes = 15,
+            OwnerPrims = 10,
+            GroupPrims = 20,
+            OtherPrims = 30,
+            SelectedPrims = 4,
+            MaxPrims = 100,
+            ParcelPrimBonus = 1.5f,
+            SimWideMaxPrims = 400,
+            SimWideTotalPrims = 120,
+            AutoReturnMinutes = 15,
         };
         Push(P(3, counts));
         string N(int n) => UI.LandInfoFormat.Count(n);
@@ -925,8 +944,12 @@ public static partial class SelfTest
         var stamp = new DateTime(2023, 11, 14, 22, 13, 20, DateTimeKind.Utc);
         var header = new SLNG.Core.CovenantInfo
         {
-            RegionHandle = Region, EstateName = "My Estate", EstateOwnerId = owner, CovenantId = covId,
-            TimestampUtc = stamp, TextState = SLNG.Core.CovenantTextState.Loading,
+            RegionHandle = Region,
+            EstateName = "My Estate",
+            EstateOwnerId = owner,
+            CovenantId = covId,
+            TimestampUtc = stamp,
+            TextState = SLNG.Core.CovenantTextState.Loading,
         };
         System.Threading.Tasks.Task.Run(() => view.OnCovenantReceived(null, header)).Wait();
         expect(view.EstateText == "–", "a covenant pushed off-thread reached the UI before the main thread drained it");
@@ -1044,9 +1067,12 @@ public static partial class SelfTest
             | SLNG.Core.ParcelOptions.MaturePublish | SLNG.Core.ParcelOptions.SeeAvatars;
         Push(baseParcel with
         {
-            Options = o, Rating = MaturityLevel.Moderate, SnapshotId = snapshot,
+            Options = o,
+            Rating = MaturityLevel.Moderate,
+            SnapshotId = snapshot,
             TeleportRouting = SLNG.Core.ParcelLandingType.LandingPoint,
-            LandingPoint = new System.Numerics.Vector3(10.4f, 20.5f, 30.6f), LandingLookAt = new System.Numerics.Vector3(1, 0, 0),
+            LandingPoint = new System.Numerics.Vector3(10.4f, 20.5f, 30.6f),
+            LandingLookAt = new System.Numerics.Vector3(1, 0, 0),
         });
         expect(opt.Check(UI.LandOption.Safe).Value == false, "Safe ticked while damage is allowed");
         expect(opt.Check(UI.LandOption.NoPushing).Value == true && opt.Check(UI.LandOption.NoPushing).Label == T("ui.land.opt_no_push_override"), "region push override not shown ticked and relabelled");
@@ -1096,7 +1122,9 @@ public static partial class SelfTest
         Push(baseParcel with
         {
             Options = SLNG.Core.ParcelOptions.SoundLocal | SLNG.Core.ParcelOptions.AvatarSoundsEveryone | SLNG.Core.ParcelOptions.AllowVoice,
-            MusicUrl = "http://radio.example/stream", RegionVoiceEnabled = null, ObscureMoap = null,
+            MusicUrl = "http://radio.example/stream",
+            RegionVoiceEnabled = null,
+            ObscureMoap = null,
         });
         expect(sound.MusicUrlText == "http://radio.example/stream", "music URL");
         expect(sound.SoundLocal.Value == true, "sound-local not ticked");
@@ -1328,54 +1356,54 @@ public static partial class SelfTest
         float restoreScale = UI.UiScale.Current;
         try
         {
-        foreach (float uiScale in new[] { 1.0f, 1.25f, 2.0f })
-        {
-        UI.UiScale.Apply(uiScale);
-        var windows = Build();
-        windowCount = windows.Length;
-        foreach (var (win, init) in windows)
-        {
-            try
+            foreach (float uiScale in new[] { 1.0f, 1.25f, 2.0f })
             {
-                tree.Root.AddChild(win); init(); win.Visible = true;
-                var want = win.Size; // the default the window gave itself
-                for (int pass = 0; pass < 3; pass++) { win.Size = want; Layout(win); } // 3: wrapped text settles once it has a width
-                var frame = win.ContentContainer.GetGlobalRect();
-                float[] got = { 1e9f, 1e9f, 1e9f, 1e9f }; // nearest content: left, right, top, bottom
-                void Walk(Node n)
+                UI.UiScale.Apply(uiScale);
+                var windows = Build();
+                windowCount = windows.Length;
+                foreach (var (win, init) in windows)
                 {
-                    foreach (var c in n.GetChildren().OfType<Control>().Where(x => x.Visible && x is not Separator))
+                    try
                     {
-                        bool box = c is ScrollContainer or TabContainer || (c is PanelContainer or Panel && c.HasThemeStyleboxOverride("panel"));
-                        if (!box && (c is Container || c.GetType() == typeof(Control))) { Walk(c); continue; } // pure layout
-                        var g = c.GetGlobalTransform() * new Rect2(Vector2.Zero, c.Size);
-                        if (g.Size.X < 1 || g.Size.Y < 1) continue;
-                        got[0] = Math.Min(got[0], g.Position.X - frame.Position.X); got[1] = Math.Min(got[1], frame.End.X - g.End.X);
-                        got[2] = Math.Min(got[2], g.Position.Y - frame.Position.Y); got[3] = Math.Min(got[3], frame.End.Y - g.End.Y);
+                        tree.Root.AddChild(win); init(); win.Visible = true;
+                        var want = win.Size; // the default the window gave itself
+                        for (int pass = 0; pass < 3; pass++) { win.Size = want; Layout(win); } // 3: wrapped text settles once it has a width
+                        var frame = win.ContentContainer.GetGlobalRect();
+                        float[] got = { 1e9f, 1e9f, 1e9f, 1e9f }; // nearest content: left, right, top, bottom
+                        void Walk(Node n)
+                        {
+                            foreach (var c in n.GetChildren().OfType<Control>().Where(x => x.Visible && x is not Separator))
+                            {
+                                bool box = c is ScrollContainer or TabContainer || (c is PanelContainer or Panel && c.HasThemeStyleboxOverride("panel"));
+                                if (!box && (c is Container || c.GetType() == typeof(Control))) { Walk(c); continue; } // pure layout
+                                var g = c.GetGlobalTransform() * new Rect2(Vector2.Zero, c.Size);
+                                if (g.Size.X < 1 || g.Size.Y < 1) continue;
+                                got[0] = Math.Min(got[0], g.Position.X - frame.Position.X); got[1] = Math.Min(got[1], frame.End.X - g.End.X);
+                                got[2] = Math.Min(got[2], g.Position.Y - frame.Position.Y); got[3] = Math.Min(got[3], frame.End.Y - g.End.Y);
+                            }
+                        }
+                        Walk(win.ContentContainer);
+                        // An autowrap Label with no width floor is measured at ~0 px and makes its window hundreds of
+                        // pixels too tall on first show (reported 2026-10-03: the hover height window). No window
+                        // legitimately needs this much height at its default width.
+                        float needsHeight = win.GetCombinedMinimumSize().Y;
+                        if (needsHeight > MaxSaneWindowMinHeight)
+                            failures.Add($"{win.GetType().Name} needs {needsHeight:0} px of height (an autowrap label without a width floor?)");
+                        float h = win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH, v = UI.SLNGWindow.DefaultContentMarginV; // radar: map is full-bleed
+                        if (new[] { h, h, v, v }.Zip(got).Any(p => Math.Abs(p.First - p.Second) > 2))
+                            failures.Add($"{win.GetType().Name} @{uiScale:0.##} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
+                        if (win.Scale != Vector2.One)
+                            failures.Add($"{win.GetType().Name} @{uiScale:0.##} carries its own Scale {win.Scale} on top of the root's content scale (scales twice)");
+                    }
+                    catch (Exception ex) { failures.Add($"{win.GetType().Name} threw {ex.GetType().Name}: {ex.Message}"); }
+                    finally
+                    {
+                        // Out of the tree at once, not queued: a window still in the tree when the next scale is
+                        // applied would hear the viewport resize and could re-clamp and SAVE its geometry.
+                        if (GodotObject.IsInstanceValid(win)) { win.GetParent()?.RemoveChild(win); win.QueueFree(); }
                     }
                 }
-                Walk(win.ContentContainer);
-                // An autowrap Label with no width floor is measured at ~0 px and makes its window hundreds of
-                // pixels too tall on first show (reported 2026-10-03: the hover height window). No window
-                // legitimately needs this much height at its default width.
-                float needsHeight = win.GetCombinedMinimumSize().Y;
-                if (needsHeight > MaxSaneWindowMinHeight)
-                    failures.Add($"{win.GetType().Name} needs {needsHeight:0} px of height (an autowrap label without a width floor?)");
-                float h = win is UI.MinimapOverlay ? 0 : UI.SLNGWindow.DefaultContentMarginH, v = UI.SLNGWindow.DefaultContentMarginV; // radar: map is full-bleed
-                if (new[] { h, h, v, v }.Zip(got).Any(p => Math.Abs(p.First - p.Second) > 2))
-                    failures.Add($"{win.GetType().Name} @{uiScale:0.##} L/R/T/B = {got[0]:0.#}/{got[1]:0.#}/{got[2]:0.#}/{got[3]:0.#}");
-                if (win.Scale != Vector2.One)
-                    failures.Add($"{win.GetType().Name} @{uiScale:0.##} carries its own Scale {win.Scale} on top of the root's content scale (scales twice)");
             }
-            catch (Exception ex) { failures.Add($"{win.GetType().Name} threw {ex.GetType().Name}: {ex.Message}"); }
-            finally
-            {
-                // Out of the tree at once, not queued: a window still in the tree when the next scale is
-                // applied would hear the viewport resize and could re-clamp and SAVE its geometry.
-                if (GodotObject.IsInstanceValid(win)) { win.GetParent()?.RemoveChild(win); win.QueueFree(); }
-            }
-        }
-        }
         }
         finally { UI.UiScale.Apply(restoreScale); }
         return failures.Count == 0
@@ -1528,6 +1556,101 @@ public static partial class SelfTest
             {
                 chat.GetParent()?.RemoveChild(chat);
                 chat.QueueFree();
+            }
+        }
+    }
+
+    /// <summary>
+    /// BUG-UI-39: right-click transient selection is cleared when sitting, clicking away,
+    /// or dismissing the context menu, but preserved during an active Edit session.
+    /// </summary>
+    private static Check CheckTransientSelectionClear(SceneTree tree)
+    {
+        const string Name = "transient selection cleared on sit or click-off";
+        var problems = new List<string>();
+
+        var world = new World();
+        var entity = world.GetOrCreateEntity(1001, 100);
+        entity.SetComponent(new TransformComponent());
+        entity.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0));
+
+        var menu = new UI.InWorldContextMenu();
+        var controller = new ObjectSelectionController();
+        var camera = new Camera3D();
+
+        try
+        {
+            tree.Root.AddChild(menu);
+            tree.Root.AddChild(controller);
+            tree.Root.AddChild(camera);
+
+            controller.Initialize(world, null!, camera, menu);
+
+            // 1. Right-click marks object outside edit session and shows menu
+            menu.ShowMenu(Vector2.Zero, entity, entity.LocalId, Vector3.Zero);
+            controller.MarkRightClickedForTesting(entity, entity.LocalId);
+            if (controller.LastClicked != entity)
+                problems.Add($"LastClicked was not set to entity (got {controller.LastClicked?.Id})");
+            if (!world.IsSelected(entity))
+                problems.Add("entity was not selected in World");
+
+            // 2. Dismissing context menu clears transient selection
+            menu.Dismiss();
+            if (controller.LastClicked != null)
+                problems.Add($"LastClicked was not cleared after menu Dismiss (got {controller.LastClicked.Id})");
+            if (world.IsSelected(entity))
+                problems.Add("entity was not deselected in World after menu Dismiss");
+
+            // 3. Right-click again, then ClearTransientSelection() directly (simulating sit or click-off)
+            controller.MarkRightClickedForTesting(entity, entity.LocalId);
+            controller.ClearTransientSelection();
+            if (controller.LastClicked != null)
+                problems.Add("LastClicked was not cleared after ClearTransientSelection");
+            if (world.IsSelected(entity))
+                problems.Add("entity was not deselected in World after ClearTransientSelection");
+
+            // 4. In an active Edit session, selection must be preserved
+            controller.BeginEditSession(entity, entity.LocalId);
+            if (!controller.EditSessionOpen)
+                problems.Add("EditSessionOpen was not true after BeginEditSession");
+            if (!world.IsSelected(entity))
+                problems.Add("entity was not selected in World in edit session");
+
+            // ClearTransientSelection should NOT clear during an edit session
+            controller.ClearTransientSelection();
+            if (!world.IsSelected(entity))
+                problems.Add("entity was incorrectly deselected during active Edit session");
+
+            // End edit session clears selection
+            controller.EndEditSession();
+            if (world.IsSelected(entity))
+                problems.Add("entity was not deselected after EndEditSession");
+
+            return new Check(Name, problems.Count == 0,
+                problems.Count == 0
+                    ? "transient right-click selection cleared on dismiss/sit/click-off and preserved in edit session"
+                    : string.Join("; ", problems));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(menu))
+            {
+                menu.GetParent()?.RemoveChild(menu);
+                menu.QueueFree();
+            }
+            if (GodotObject.IsInstanceValid(controller))
+            {
+                controller.GetParent()?.RemoveChild(controller);
+                controller.QueueFree();
+            }
+            if (GodotObject.IsInstanceValid(camera))
+            {
+                camera.GetParent()?.RemoveChild(camera);
+                camera.QueueFree();
             }
         }
     }
