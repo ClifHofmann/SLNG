@@ -639,6 +639,69 @@ public partial class ObjectRenderer
             : (false, string.Join("; ", failures));
     }
 
+    /// <summary>
+    /// BUG-PERF-11: the cull sweep's slice. One frame after a stall must not be answered with a slice that is
+    /// most of the pass (the frame time it is sized from is capped), and a slice that has run out of time stops
+    /// and leaves the rest to the next frames - which still get through the whole pass.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestCullSlice(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+
+        double savedBudget = RenderConfig.CullSliceBudgetMs;
+        var made = new List<Entity>();
+        try
+        {
+            var agent = world.GetOrCreateEntity(SelfTestRegion, 1);
+            agent.SetComponent(new AvatarComponent(Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+            agent.SetComponent(new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity));
+            const int Count = 400;
+            for (int i = 0; i < Count; i++) made.Add(SelfTestAddPrim(world, 2000 + (uint)i, 0, animated: false));
+            Settle();
+            int total = _visuals.Count;
+
+            // A 10 s frame: a slice of 0.1 s worth (40% of the pass), not 40 passes.
+            _cullOrder.Clear();
+            _cullCursor = 0;
+            _cullCarry = 0;
+            _cullOrder.AddRange(_visuals.Keys);
+            _cullCursor = 0;
+            _Process(10.0);
+            Expect(_cullCursor > 0 && _cullCursor <= (int)(total * CullMaxDeltaSeconds / CullSweepSeconds) + 1,
+                   $"a 10 s frame visited {_cullCursor} of {total} (expected about {total * CullMaxDeltaSeconds / CullSweepSeconds:0})");
+
+            // No time at all: a slice stops at the first clock check (every CullSampleEvery visits) but always moves.
+            RenderConfig.CullSliceBudgetMs = 0;
+            _cullCursor = 0;
+            _cullCarry = 0;
+            _Process(10.0);
+            Expect(_cullCursor >= 1 && _cullCursor <= 2 * CullSampleEvery,
+                   $"a slice with no budget visited {_cullCursor} (expected 1 to {2 * CullSampleEvery})");
+
+            int frames = 0;
+            while (_cullCursor < _cullOrder.Count && frames++ < 500) _Process(10.0);
+            Expect(_cullCursor >= _cullOrder.Count, $"the pass did not finish in {frames} frames of an empty budget (at {_cullCursor} of {_cullOrder.Count})");
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RenderConfig.CullSliceBudgetMs = savedBudget;
+            _agentPosKnown = false;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id.ToString());
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "a long frame no longer makes a long slice, a slice without time stops early and the pass still completes")
+            : (false, string.Join("; ", failures));
+    }
+
     /// <summary>Four submeshes: faces 0 and 1 (same record, so merged), an empty one, face 2.</summary>
     private static MeshData SelfTestStaticMesh()
     {

@@ -498,10 +498,13 @@ public class GpuCache
         // Claim the upgrade so concurrent faces of the same object don't all start one.
         if (!_uploadedForPixelArea.TryUpdate(textureId, screenPixelArea, builtFor)) return;
 
-        Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} {builtFor:0} -> {screenPixelArea:0} px^2 -- re-decoding");
-
         _ = Task.Run(async () =>
         {
+            // BUG-PERF-11: logged from the worker. This is reached from the cull sweep, and a teleport
+            // starts over a thousand of these in one 5 s window (1,523 at Millenium); a GD.Print takes the
+            // engine's log lock and the main thread queued behind the workers' own prints there
+            // (frame/tex.upgrade: 1,014 ms in the window, one call 249 ms).
+            Logger.Info($"[GpuSharpen] {textureId.ToString()[..8]} {builtFor:0} -> {screenPixelArea:0} px^2 -- re-decoding");
             try
             {
                 // Pass the NEW (larger) screenPixelArea, not 0: this is a re-decode for a closer

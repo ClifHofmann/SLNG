@@ -324,6 +324,15 @@ public static class RenderConfig
     /// one shape is built per frame whatever its cost, so the queue always moves.</summary>
     public static double CollisionUrgentFrameBudgetMs = 4.0;
 
+    /// <summary>
+    /// BUG-PERF-11: the most one frame's slice of the object cull sweep may run. A slice is sized from the
+    /// last frame's duration (a pass takes a quarter of a second), so after a teleport one long frame made
+    /// the next slice most of the pass - and every visit then reloads, releases or re-offers textures: one
+    /// slice took 952 ms. The slice stops at the budget and the next frame carries on from the cursor; a
+    /// pass that takes longer costs a later visibility change, not a frozen frame.
+    /// </summary>
+    public static double CullSliceBudgetMs = 4.0;
+
     // Floating origin: the global metre coordinates of the region we render relative to.
     // OSGrid regions sit at global coordinates in the millions; rendering at those raw
     // coordinates blows float32 precision (objects jitter / Z-fight / look shattered). We

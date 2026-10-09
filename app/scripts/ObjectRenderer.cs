@@ -651,6 +651,10 @@ public partial class ObjectRenderer : Node3D
     /// through interop) is what made a rejected prim cost more per visit than any other.</summary>
     private const double InstanceRetrySeconds = 1.0;
 
+    /// <summary>BUG-PERF-11: the frame time the slice size is derived from is capped here, so a stall is not
+    /// answered with an even longer slice.</summary>
+    private const double CullMaxDeltaSeconds = 0.1;
+
     private static double NowSeconds()
         => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
 
@@ -765,7 +769,7 @@ public partial class ObjectRenderer : Node3D
 
         // Entries to visit this frame so one full pass still completes in CullSweepSeconds. The carry
         // keeps the fractional remainder, so a small set does not stall on truncation to zero.
-        _cullCarry += _cullOrder.Count * delta / CullSweepSeconds;
+        _cullCarry += _cullOrder.Count * Math.Min(delta, CullMaxDeltaSeconds) / CullSweepSeconds;
         int budget = (int)_cullCarry;
         _cullCarry -= budget;
         if (budget <= 0) return;
@@ -786,11 +790,24 @@ public partial class ObjectRenderer : Node3D
         // and the texture re-offer; lod = prim/mesh detail; inst = instancing; mirror = mirror candidate.
         long tVis = 0, tColl = 0, tRes = 0, tMirror = 0, tLod = 0, tInst = 0;
         double nowSec = NowSeconds();
+        long sliceStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        long sliceBudgetTicks = (long)(RenderConfig.CullSliceBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+        bool capped = false;
         MainThreadWorkQueue.Measure("cull.scan", () =>
         {
+            int first = _cullCursor;
             int end = Math.Min(_cullCursor + budget, _cullOrder.Count);
             for (int ci = _cullCursor; ci < end; ci++)
             {
+                // BUG-PERF-11: the clock is read every CullSampleEvery visits, as the sampled sections are.
+                if (ci > first && (ci & (CullSampleEvery - 1)) == 0
+                    && System.Diagnostics.Stopwatch.GetTimestamp() - sliceStart > sliceBudgetTicks)
+                {
+                    end = ci;
+                    capped = true;
+                    break;
+                }
+
                 var id = _cullOrder[ci];
                 if (!_visuals.TryGetValue(id, out var state)) continue; // removed since the snapshot
                 if (!IsInstanceValid(state.MeshInstance)) continue;
@@ -1060,6 +1077,9 @@ public partial class ObjectRenderer : Node3D
         // Reported apart from the scan so the two possible culprits are separable: walking the
         // dictionary and doing distance maths, versus the texture re-offer inside it.
         MainThreadWorkQueue.RecordExternal("cull.texlod", texLodMs);
+        if (capped)   // n = slices the budget cut short, total = what they cost
+            MainThreadWorkQueue.RecordExternal("cull.capped",
+                (System.Diagnostics.Stopwatch.GetTimestamp() - sliceStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
 
         // BUG-PERF-11: the sampled sections, scaled back up (see where the ticks are taken). Filed under
         // cull.scan, so the log reads cull.scan/vis, /coll, /res, /mirror, /lod, /inst.
