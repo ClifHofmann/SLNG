@@ -62,51 +62,146 @@ public partial class AvatarRenderer
         public double PickMs { get; init; }
     }
 
-    /// <summary>Records the newest rig request for a worn entity and makes sure a worker is on it.
+    // BUG-PERF-12 counters for [AvatarCost]:
+    private static long _rigsPreparedCount;
+    private static long _rigsWithNormalCount;
+    private static long _submeshesTotalCount;
+    private static long _submeshesHiddenCount;
+
+    private static readonly int MaxRigWorkers = Math.Max(2, System.Environment.ProcessorCount / 2);
+    private int _activeRigWorkers;
+
+    /// <summary>Records the newest rig request for a worn entity and makes sure workers are on it.
     /// Called from the mesh-load threads.</summary>
     private void RequestRig(Guid entityId, PendingRig request)
     {
         _pendingRigs[entityId] = request;
-        // Unconditional hop: the caller may well be the main thread (a cached mesh completes its
-        // task synchronously), and the whole point is that this work never runs there.
-        if (_rigsPreparing.TryAdd(entityId, 0))
-            _ = Task.Run(() => PrepareRigsAsync(entityId));
+        EnsureRigWorkers();
     }
 
-    /// <summary>Prepares the newest request for <paramref name="entityId"/>, queues its commit, and
-    /// repeats while a newer request arrived in the meantime.</summary>
-    private async Task PrepareRigsAsync(Guid entityId)
+    private void EnsureRigWorkers()
     {
-        while (true)
+        while (_activeRigWorkers < MaxRigWorkers && !_pendingRigs.IsEmpty)
         {
-            PendingRig? prepared = null;
-            if (_pendingRigs.TryGetValue(entityId, out var request))
+            if (Interlocked.Increment(ref _activeRigWorkers) <= MaxRigWorkers)
             {
-                prepared = request;
-                var ready = await PrepareOnWorkerAsync(request).ConfigureAwait(false);
-                if (ready != null)
+                _ = Task.Run(RunRigWorkerLoopAsync);
+            }
+            else
+            {
+                Interlocked.Decrement(ref _activeRigWorkers);
+                break;
+            }
+        }
+    }
+
+    /// <summary>BUG-PERF-12: worker loop that continuously claims the closest pending rig to the
+    /// camera/avatar (self first), prepares it off the main thread, and enqueues its commit.</summary>
+    private async Task RunRigWorkerLoopAsync()
+    {
+        try
+        {
+            while (TryClaimNextRig(out var entityId, out var request))
+            {
+                try
                 {
-                    // Stored BEFORE the enqueue, so a commit item that is already waiting for this
-                    // entity -- the queue then drops this enqueue as a repeat -- finds it.
-                    _preparedRigs[entityId] = ready;
-                    MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => CommitPreparedRig(entityId),
-                        coalesceKey: $"avatar.rig:{entityId}", label: "avatar.rig");
+                    var ready = await PrepareOnWorkerAsync(request).ConfigureAwait(false);
+                    if (ready != null)
+                    {
+                        _preparedRigs[entityId] = ready;
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => CommitPreparedRig(entityId),
+                            coalesceKey: $"avatar.rig:{entityId}", label: "avatar.rig");
+                    }
+                    else
+                    {
+                        _pendingRigs.TryRemove(new System.Collections.Generic.KeyValuePair<Guid, PendingRig>(entityId, request));
+                    }
                 }
-                else
+                finally
                 {
-                    // Nothing to commit (it threw, or the client is quitting): let the request go
-                    // unless a newer one has replaced it.
-                    _pendingRigs.TryRemove(new System.Collections.Generic.KeyValuePair<Guid, PendingRig>(entityId, request));
+                    _rigsPreparing.TryRemove(entityId, out _);
                 }
             }
-
-            _rigsPreparing.TryRemove(entityId, out _);
-            // A request that came in while this one was being prepared found the flag taken and
-            // left the work to this worker. Released first and checked second, so a request in
-            // between either sees the flag gone and starts its own worker, or is seen here.
-            if (!_pendingRigs.TryGetValue(entityId, out var newest) || newest.Equals(prepared)) return;
-            if (!_rigsPreparing.TryAdd(entityId, 0)) return;
         }
+        finally
+        {
+            Interlocked.Decrement(ref _activeRigWorkers);
+            // A request that arrived after this worker's last claim but before the decrement found the pool
+            // full and started nobody: without this look it would wait for the next request to come along.
+            if (HasClaimableRig()) EnsureRigWorkers();
+        }
+    }
+
+    /// <summary>True when some pending rig is neither being prepared nor already prepared for exactly its
+    /// current request - i.e. a worker has something to claim.</summary>
+    private bool HasClaimableRig()
+    {
+        foreach (var (id, req) in _pendingRigs)
+        {
+            if (_rigsPreparing.ContainsKey(id)) continue;
+            if (_preparedRigs.TryGetValue(id, out var ready) && ready.Request.Equals(req)) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Picks the highest priority pending rig: self avatar always 0, then distance from
+    /// camera squared, with culled/far avatars pushed to the end.</summary>
+    private bool TryClaimNextRig(out Guid bestEntityId, out PendingRig bestRequest)
+    {
+        bestEntityId = Guid.Empty;
+        bestRequest = null!;
+
+        float bestDistSq = float.MaxValue;
+        Guid candidateId = Guid.Empty;
+        PendingRig? candidateReq = null;
+        var camPos = _lastCamPos;
+
+        foreach (var (id, req) in _pendingRigs)
+        {
+            if (_rigsPreparing.ContainsKey(id)) continue;
+            if (_preparedRigs.TryGetValue(id, out var ready) && ready.Request.Equals(req)) continue;
+
+            float distSq;
+            if (req.Visual.IsSelf)
+            {
+                distSq = 0f;
+            }
+            else
+            {
+                distSq = 1f + req.Visual.GodotPos.DistanceSquaredTo(camPos);
+                if (!req.Visual.Shown) distSq += 1_000_000f;
+            }
+
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                candidateId = id;
+                candidateReq = req;
+                if (distSq == 0f) break;
+            }
+        }
+
+        if (candidateId == Guid.Empty || candidateReq == null)
+            return false;
+
+        if (_rigsPreparing.TryAdd(candidateId, 0))
+        {
+            if (_pendingRigs.TryGetValue(candidateId, out var newest))
+            {
+                if (_preparedRigs.TryGetValue(candidateId, out var already) && already.Request.Equals(newest))
+                {
+                    _rigsPreparing.TryRemove(candidateId, out _);
+                    return false;
+                }
+                bestEntityId = candidateId;
+                bestRequest = newest;
+                return true;
+            }
+            _rigsPreparing.TryRemove(candidateId, out _);
+        }
+
+        return false;
     }
 
     private static async Task<PreparedRig?> PrepareOnWorkerAsync(PendingRig request)
@@ -249,6 +344,34 @@ public partial class AvatarRenderer
     internal static PreparedRiggedMesh PrepareRiggedMesh(
         MeshData meshData, int[] slotForJoint, FaceTexture[]? faces, FaceTexture defaultFace, bool wantPickChunks = false)
     {
+        Interlocked.Increment(ref _rigsPreparedCount);
+        bool hasNormal = false;
+        if (faces != null)
+        {
+            for (int f = 0; f < faces.Length; f++)
+            {
+                if (faces[f].RenderMaterialId != Guid.Empty || faces[f].LegacyMaterialId != Guid.Empty)
+                {
+                    hasNormal = true;
+                    break;
+                }
+            }
+        }
+        if (!hasNormal && (defaultFace.RenderMaterialId != Guid.Empty || defaultFace.LegacyMaterialId != Guid.Empty))
+            hasNormal = true;
+        if (hasNormal)
+            Interlocked.Increment(ref _rigsWithNormalCount);
+
+        for (int i = 0; i < meshData.Submeshes.Count; i++)
+        {
+            var sub = meshData.Submeshes[i];
+            if (sub.Indices.Length == 0 || sub.Weights == null) continue;
+            Interlocked.Increment(ref _submeshesTotalCount);
+            var subFace = ResolveFaceTexture(faces, defaultFace, sub.FaceIndex);
+            if (subFace.IsInvisible)
+                Interlocked.Increment(ref _submeshesHiddenCount);
+        }
+
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var geometry = RiggedMeshBuilder.Build(meshData, slotForJoint, fi => ResolveFaceTexture(faces, defaultFace, fi));
         double vertsMs = clock.Elapsed.TotalMilliseconds;
