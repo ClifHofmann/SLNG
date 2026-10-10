@@ -306,6 +306,7 @@ public partial class ChatWindow : SLNGWindow
     /// through the new one.</summary>
     public void ResetForNewSession()
     {
+        ResetFriends();
         AttachRecentList(); // the logger now points at the new account's folder
         var main = _chatTabs.Find(t => t.Id == "main");
         if (main == null) return;
@@ -332,6 +333,18 @@ public partial class ChatWindow : SLNGWindow
         {
             SelectChatTab(main);
         }
+    }
+
+    /// <summary>BUG-UI-41: Initializes the Friends panel categories and view state for the active account.</summary>
+    public void InitializeFriends(string gridSlug, string agentId)
+    {
+        _friendsPanel?.InitializeAccount(gridSlug, agentId);
+    }
+
+    /// <summary>BUG-UI-41: Resets the Friends panel state on logout or session reset.</summary>
+    public void ResetFriends()
+    {
+        _friendsPanel?.Reset();
     }
 
     /// <summary>Called by Boot after each successful login (session is a fresh instance per

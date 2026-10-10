@@ -888,6 +888,12 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// <summary>Agent UUID of the logged-in avatar, or empty until connected.</summary>
     public string AgentId => _client.Self.AgentID.ToString();
 
+    /// <summary>The URI this session logged into, or null before login.</summary>
+    public string? GridLoginUri { get; private set; }
+
+    /// <summary>The grid slug for this session (e.g. "agni", "osgrid"), or an empty slug before login.</summary>
+    public string GridSlug => SLNG.Core.GridIdentity.Slug(GridLoginUri);
+
     /// <summary>Display name ("First Last") of the logged-in avatar -- used to tell the local
     /// user's own chat lines apart from everyone else's without threading a separate flag
     /// through ChatMessageEvent.</summary>

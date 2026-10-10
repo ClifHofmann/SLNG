@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.34-alpha";
+    public const string AppVersion = "v0.27.35-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -4428,6 +4428,7 @@ public partial class Boot : Control
             // BUG-UI-33: Favorites bar is initialized once login succeeds with the real Agent ID and grid.
             string gridSlug = GridIdentity.Slug(_sessionGridUri);
             _topMenu.FavoritesBar.Initialize(gridSlug, _myAgentId.ToString());
+            _chatWindow.InitializeFriends(gridSlug, _myAgentId.ToString());
             var favIds = _topMenu.FavoritesBar.FavoritesList.Items
                 .Select(i => i.ItemId != System.Guid.Empty ? i.ItemId : i.AssetId)
                 .ToHashSet();
@@ -5773,6 +5774,7 @@ public partial class Boot : Control
                 _topMenu.ClearLocation();
                 _topMenu.FavoritesBar.Reset();
             }
+            _chatWindow?.ResetFriends();
 
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;
@@ -5887,6 +5889,7 @@ public partial class Boot : Control
                 _topMenu.ClearLocation();
                 _topMenu.FavoritesBar.Reset();
             }
+            _chatWindow?.ResetFriends();
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;
             if (_chatWindow != null) _chatWindow.Visible = false;

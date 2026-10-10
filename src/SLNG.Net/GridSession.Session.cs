@@ -714,6 +714,7 @@ public sealed partial class GridSession
         // Known before the handshake even starts -- see _isLindenGrid's doc comment. Set
         // regardless of outcome: a failed attempt still needs the dump gate armed for whatever
         // bake diagnostics run before the next successful login.
+        GridLoginUri = credentials.GridLoginUri;
         _isLindenGrid = IsLindenLabUri(credentials.GridLoginUri);
         _lindenGridShortName = ParseLindenGridShortName(credentials.GridLoginUri);
 

@@ -33,7 +33,8 @@ public partial class FriendsPanel : Control
     private Label _emptyLabel = null!;
     private Label _countLabel = null!;
     private FriendCategoryBook _book = new();
-    private string _agentId = "";
+    private string? _gridSlug;
+    private string? _agentId;
     private CheckBox _onlyOnlineCheck = null!;
     private bool _onlyOnline;
     private CheckBox _showCategoriesCheck = null!;
@@ -176,7 +177,8 @@ public partial class FriendsPanel : Control
         _onlyOnlineCheck.Toggled += on =>
         {
             _onlyOnline = on;
-            if (_agentId.Length > 0) FriendCategoryStore.SaveOnlyOnline(_agentId, on);
+            if (!string.IsNullOrWhiteSpace(_gridSlug) && !string.IsNullOrWhiteSpace(_agentId))
+                FriendCategoryStore.SaveOnlyOnline(_gridSlug, _agentId, on);
             Refresh();
         };
         viewRow.AddChild(_onlyOnlineCheck);
@@ -248,17 +250,57 @@ public partial class FriendsPanel : Control
         }
 
         _session = session;
-        _agentId = session.AgentId;
-        _book = FriendCategoryStore.Load(_agentId);
-        _onlyOnline = FriendCategoryStore.LoadOnlyOnline(_agentId);
-        _onlyOnlineCheck.SetPressedNoSignal(_onlyOnline);
-        _showCategories = FriendCategoryStore.LoadShowCategories(_agentId);
-        _showCategoriesCheck.SetPressedNoSignal(_showCategories);
         _session.FriendStatusChanged += OnFriendStatusChanged;
         _session.FriendListChanged += OnFriendListChanged;
         _session.NameResolved += OnNameResolved;
         _session.DisplayNameResolved += OnNameResolved; // the list shows Display Names
 
+        if (!string.IsNullOrWhiteSpace(_session.AgentId) &&
+            Guid.TryParse(_session.AgentId, out var guid) && guid != Guid.Empty)
+        {
+            InitializeAccount(_session.GridSlug, _session.AgentId);
+        }
+        else
+        {
+            Reset();
+        }
+    }
+
+    /// <summary>BUG-UI-41: Initializes categories and view state for a specific grid and agent id.</summary>
+    public void InitializeAccount(string? gridSlug, string? agentId)
+    {
+        _gridSlug = gridSlug;
+        _agentId = agentId;
+
+        if (!string.IsNullOrWhiteSpace(_gridSlug) && !string.IsNullOrWhiteSpace(_agentId) &&
+            (!Guid.TryParse(_agentId, out var guid) || guid != Guid.Empty))
+        {
+            _book = FriendCategoryStore.Load(_gridSlug, _agentId);
+            _onlyOnline = FriendCategoryStore.LoadOnlyOnline(_gridSlug, _agentId);
+            _showCategories = FriendCategoryStore.LoadShowCategories(_gridSlug, _agentId);
+        }
+        else
+        {
+            _book = new FriendCategoryBook();
+            _onlyOnline = false;
+            _showCategories = true;
+        }
+
+        _onlyOnlineCheck?.SetPressedNoSignal(_onlyOnline);
+        _showCategoriesCheck?.SetPressedNoSignal(_showCategories);
+        Refresh();
+    }
+
+    /// <summary>BUG-UI-41: Resets state, clearing categories and view toggles when logging out or switching sessions.</summary>
+    public void Reset()
+    {
+        _gridSlug = null;
+        _agentId = null;
+        _book = new FriendCategoryBook();
+        _onlyOnline = false;
+        _showCategories = true;
+        _onlyOnlineCheck?.SetPressedNoSignal(false);
+        _showCategoriesCheck?.SetPressedNoSignal(true);
         Refresh();
     }
 
@@ -297,7 +339,17 @@ public partial class FriendsPanel : Control
     private void OnFriendStatusChanged(object? sender, FriendStatusEvent e) => RefreshSoon();
 
     // BUG-NET-28: a friendship accepted (by us or by them) adds a row no presence event announces.
-    private void OnFriendListChanged(object? sender, EventArgs e) => RefreshSoon();
+    private void OnFriendListChanged(object? sender, EventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_agentId) && _session != null &&
+            !string.IsNullOrWhiteSpace(_session.AgentId) &&
+            Guid.TryParse(_session.AgentId, out var guid) && guid != Guid.Empty)
+        {
+            InitializeAccount(_session.GridSlug, _session.AgentId);
+            return;
+        }
+        RefreshSoon();
+    }
 
     // A name resolving could be for anything (object owner, group, ...) -- Refresh() is a cheap
     // full rebuild from GetFriends(), so there's no need to filter to friend ids here.
@@ -386,14 +438,16 @@ public partial class FriendsPanel : Control
     {
         _showCategories = show;
         _showCategoriesCheck.SetPressedNoSignal(show);
-        if (_agentId.Length > 0) FriendCategoryStore.SaveShowCategories(_agentId, show);
+        if (!string.IsNullOrWhiteSpace(_gridSlug) && !string.IsNullOrWhiteSpace(_agentId))
+            FriendCategoryStore.SaveShowCategories(_gridSlug, _agentId, show);
         Refresh();
     }
 
     // No account yet (nobody is logged in) means no section to write to.
     private void SaveBook()
     {
-        if (_agentId.Length > 0) FriendCategoryStore.Save(_agentId, _book);
+        if (!string.IsNullOrWhiteSpace(_gridSlug) && !string.IsNullOrWhiteSpace(_agentId))
+            FriendCategoryStore.Save(_gridSlug, _agentId, _book);
     }
 
     /// <summary>The line above a block of friends: fold arrow, name and "online/total". Click folds or opens it;
