@@ -58,7 +58,12 @@ three ways, and today every millisecond cut anywhere counts in full.
 4. **Match the reference viewer's cheap defaults.** Mirrors are off in every preset
    (`scratch/slviewer/indra/newview/featuretable.txt:120,163,206,248,290,332,374`). Sun
    shadows start at High (`RenderShadowDetail`, `:283`).
-5. **One writer at a time.** `E:/Git/SLNG` is a single shared checkout with no worktrees, so a
+5. **Low-VRAM cards are first-class (maintainer, 2026-10-10).** Not everyone has a 12 GB card.
+   Every performance measurement also runs with the VRAM budget forced to 3.5 GB. At the crowded
+   spot that run must not page: `renderGpuMs` stays stable, no shrink/sharpen churn. Run
+   comparisons with no other viewer open: Firestorm running alongside took 2.1 GB and dropped Puris
+   from 24 to ~12 fps.
+6. **One writer at a time.** `E:/Git/SLNG` is a single shared checkout with no worktrees, so a
    coding session (Claude or agy) owns it until it has committed. The queue below is the order.
 
 ## Plan
