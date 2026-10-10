@@ -109,12 +109,19 @@ public sealed partial class GridSession
             answered.Clear();
 
             var shown = new List<uint>(candidates.Count);
+            var untrusted = new List<uint>();
             for (int i = 0; i < candidates.Count; i += RestoreChunkSize)
             {
                 if (!StillHere(sim)) return;
                 var blocks = new List<LibreMetaverse.Packets.ObjectUpdateCompressedPacket.ObjectDataBlock>();
                 for (int j = i; j < Math.Min(i + RestoreChunkSize, candidates.Count); j++)
                 {
+                    if (CompressedObjectBlock.IsUntrustedShape(candidates[j].Block))
+                    {
+                        _objectCache.Remove(key, candidates[j].LocalId);
+                        untrusted.Add(candidates[j].LocalId);
+                        continue;
+                    }
                     blocks.Add(new LibreMetaverse.Packets.ObjectUpdateCompressedPacket.ObjectDataBlock
                     {
                         UpdateFlags = candidates[j].UpdateFlags,
@@ -122,11 +129,12 @@ public sealed partial class GridSession
                     });
                     shown.Add(candidates[j].LocalId);
                 }
-                Replay(sim, blocks);
+                if (blocks.Count > 0) Replay(sim, blocks);
                 await Task.Delay(10).ConfigureAwait(false);
             }
 
-            foreach (var chunk in ObjectRecoveryPlan.Chunk(shown.ToArray(), RestoreChunkSize))
+            var toRequest = shown.Concat(untrusted).ToArray();
+            foreach (var chunk in ObjectRecoveryPlan.Chunk(toRequest, RestoreChunkSize))
             {
                 if (!StillHere(sim)) return;
                 _client.Objects.RequestObjects(sim, chunk.ToList());

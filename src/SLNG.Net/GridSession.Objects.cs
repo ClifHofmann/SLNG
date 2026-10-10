@@ -31,6 +31,12 @@ public sealed partial class GridSession
     {
         if (e.Packet is not ObjectUpdatePacket update) return;
 
+        // BUG-RENDER-47: an uncompressed update supersedes any cached compressed state.
+        foreach (var block in update.ObjectData)
+        {
+            InvalidateCachedObject(e.Simulator.Handle, block.ID);
+        }
+
         // BUG-NET-25 / FEAT-ANIMESH-01: this callback runs AFTER LibreMetaverse's own handler has
         // queued the event for these same blocks (its handler sits ahead of ours in the same
         // invocation list, and the event itself goes out on a thread-pool work item), so that event
@@ -370,7 +376,11 @@ public sealed partial class GridSession
             _client.Self.ReplyToScriptDialog(channel, buttonIndex, buttonLabel, new UUID(objectId));
     }
 
-    private void OnObjectUpdate(object? sender, PrimEventArgs e) => RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
+    private void OnObjectUpdate(object? sender, PrimEventArgs e)
+    {
+        InvalidateCachedObject(e.Simulator.Handle, e.Prim.LocalID);
+        RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
+    }
 
     /// <summary>FEAT-ANIMESH-02. The sim's <c>ObjectAnimation</c> message for one prim -- see
     /// <see cref="ObjectAnimationConverter"/>. Every region's, not just the current one: a
@@ -815,7 +825,7 @@ public sealed partial class GridSession
             resolvedPosition,
             resolvedRotation,
             new System.Numerics.Vector3(prim.Scale.X, prim.Scale.Y, prim.Scale.Z),
-            (byte)prim.PrimData.ProfileCurve,
+            shape.ProfileCurve,
             isMesh,
             meshId,
             textureId,

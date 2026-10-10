@@ -80,6 +80,24 @@ internal sealed class ObjectCacheStore
         }
     }
 
+    /// <summary>Removes an object by its local id, for when an uncompressed update or invalidation
+    /// shows what was held is stale or untrusted.</summary>
+    public bool Remove(RegionKey key, uint localId)
+    {
+        lock (_lock)
+        {
+            if (_regions.TryGetValue(key, out var region) && region.Objects.Remove(localId, out var old))
+            {
+                region.Bytes -= old.Block.Length;
+                _totalBytes -= old.Block.Length;
+                region.LastUsed = ++_clock;
+                region.Dirty = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>What is held under this local id, whatever its CRC: for the caller that has reason to
     /// believe the simulator would say the same (an object it has not withdrawn).</summary>
     public bool TryGet(RegionKey key, uint localId, out CachedObject held)

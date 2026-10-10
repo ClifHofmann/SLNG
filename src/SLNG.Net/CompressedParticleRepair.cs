@@ -220,36 +220,18 @@ internal static class CompressedParticleRepair
         offset = 0;
         length = 0;
 
-        if (!TryFindExtraParams(data, out int at))
+        if (!TryFindVolumeParams(data, out int at))
+        {
+            return false;
+        }
+
+        at += VolumeParamsSize;
+        if (!TrySkipSized(data, ref at))
         {
             return false;
         }
 
         uint flags = ReadFlags(data);
-
-        var extraParams = ExtraParamsScan.Read(data.AsSpan(at));
-        if (!extraParams.Complete || extraParams.Length < 1)
-        {
-            return false;
-        }
-        at += extraParams.Length;
-
-        if ((flags & HasSound) != 0 && !TryAdvance(data, ref at, SoundSize))
-        {
-            return false;
-        }
-
-        if ((flags & HasNameValues) != 0 && !TrySkipString(data, ref at))
-        {
-            return false;
-        }
-
-        // The shape, then the texture entry.
-        if (!TryAdvance(data, ref at, VolumeParamsSize) || !TrySkipSized(data, ref at))
-        {
-            return false;
-        }
-
         if ((flags & HasTextureAnimation) != 0 && !TrySkipSized(data, ref at))
         {
             return false;
@@ -303,6 +285,47 @@ internal static class CompressedParticleRepair
         }
 
         offset += 4 + size;
+        return true;
+    }
+
+    /// <summary>
+    /// Finds where the VolumeParams (the 23-byte shape description: 16 path bytes and 7 profile bytes)
+    /// begin inside an ObjectUpdateCompressed block, or false when the layout cannot be established
+    /// with confidence.
+    /// </summary>
+    internal static bool TryFindVolumeParams(byte[]? data, out int offset)
+    {
+        offset = 0;
+        if (data is null || !TryFindExtraParams(data, out int at))
+        {
+            return false;
+        }
+
+        uint flags = ReadFlags(data);
+
+        var extraParams = ExtraParamsScan.Read(data.AsSpan(at));
+        if (!extraParams.Complete || extraParams.Length < 1)
+        {
+            return false;
+        }
+        at += extraParams.Length;
+
+        if ((flags & HasSound) != 0 && !TryAdvance(data, ref at, SoundSize))
+        {
+            return false;
+        }
+
+        if ((flags & HasNameValues) != 0 && !TrySkipString(data, ref at))
+        {
+            return false;
+        }
+
+        if (data.Length - at < VolumeParamsSize)
+        {
+            return false;
+        }
+
+        offset = at;
         return true;
     }
 

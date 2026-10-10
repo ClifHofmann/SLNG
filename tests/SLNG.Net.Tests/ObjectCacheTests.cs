@@ -269,6 +269,23 @@ public class ObjectCacheStoreDiskSupportTests
         Assert.Equal(7u, held.LocalId);
         Assert.False(store.TryGet(Here, 8, out _));
     }
+
+    [Fact]
+    public void Remove_drops_object_updates_bytes_and_marks_region_dirty()
+    {
+        var store = new ObjectCacheStore();
+        store.Put(Here, Object(1));
+        store.Put(Here, Object(2));
+        store.TakeDirty();
+
+        long bytesBefore = store.TotalBytes;
+        Assert.True(store.Remove(Here, 1));
+        Assert.Equal(1, store.Count(Here));
+        Assert.True(store.TotalBytes < bytesBefore);
+        Assert.Equal(new[] { Here }, store.TakeDirty());
+
+        Assert.False(store.Remove(Here, 99));
+    }
 }
 
 // FEAT-NET-04, phase 3. A simulator that does not probe (no Agni region tried so far, while the

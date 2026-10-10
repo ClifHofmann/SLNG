@@ -261,6 +261,7 @@ public sealed partial class GridSession
             if (!CompressedObjectBlock.TryRead(block.Data, out var head)) continue;
             if (!IsCacheablePCode(head.PCode)) continue;
             if (CompressedObjectBlock.IsAttachment(block.Data)) continue; // belongs to its avatar, not the region
+            if (CompressedObjectBlock.IsUntrustedShape(block.Data)) continue; // BUG-RENDER-47: never persist incomplete shapes
 
             _objectCache.Put(key, new CachedObject(head.LocalId, head.Crc, block.UpdateFlags, block.Data));
             Interlocked.Increment(ref _cacheStored);
@@ -271,6 +272,17 @@ public sealed partial class GridSession
     private static bool IsCacheablePCode(byte pcode)
         => pcode == (byte)PCode.Prim || pcode == (byte)PCode.Grass
            || pcode == (byte)PCode.Tree || pcode == (byte)PCode.NewTree;
+
+    /// <summary>BUG-RENDER-47: Invalidates a cached object when a fresh uncompressed update arrives.</summary>
+    internal void InvalidateCachedObject(ulong regionHandle, uint localId)
+    {
+        RegionKey key;
+        lock (_cacheKeyByHandle)
+        {
+            if (!_cacheKeyByHandle.TryGetValue(regionHandle, out key)) return;
+        }
+        _objectCache.Remove(key, localId);
+    }
 
     /// <summary>The simulator says which objects it would send and what state they are in. Build the
     /// ones we hold in exactly that state, ask for the rest.</summary>
@@ -289,7 +301,14 @@ public sealed partial class GridSession
         foreach (var block in probe.ObjectData)
         {
             var verdict = _objectCache.Probe(key, block.ID, block.CRC, out var held);
-            if (verdict == CacheProbe.Hit && ReplayBroken) verdict = CacheProbe.TotalMiss; // cannot build from the cache: ask
+            if (verdict == CacheProbe.Hit)
+            {
+                if (ReplayBroken || CompressedObjectBlock.IsUntrustedShape(held.Block))
+                {
+                    _objectCache.Remove(key, block.ID);
+                    verdict = CacheProbe.TotalMiss; // BUG-RENDER-47: untrusted cached shape; request full update
+                }
+            }
             switch (verdict)
             {
                 case CacheProbe.Hit:

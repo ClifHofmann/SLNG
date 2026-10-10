@@ -54,6 +54,17 @@ namespace SLNG.App
         /// WorldSimulation keeps the parent index.</summary>
         public System.Func<Entity, System.Collections.Generic.IReadOnlyList<Entity>>? LinksetParts;
 
+        private readonly System.Collections.Generic.Dictionary<(ulong RegionHandle, uint LocalId), (PrimShape Shape, byte ProfileCurve, bool IsMesh, System.Guid MeshId)> _shapesBeforeSelect = new();
+
+        private void RecordShapeBeforeSelect(Entity e)
+        {
+            var prim = e.GetComponent<PrimitiveComponent>();
+            if (prim != null)
+            {
+                _shapesBeforeSelect[(e.RegionHandle, e.LocalId)] = (prim.Shape, prim.ProfileCurve, prim.IsMesh, prim.MeshId);
+            }
+        }
+
         /// <summary>Tells the simulator what is selected: the whole object, or one prim of it
         /// when "edit linked parts" is on.</summary>
         /// <remarks>
@@ -66,6 +77,7 @@ namespace SLNG.App
         private void SelectFamily(Entity entity, uint localId)
         {
             if (_session == null) return;
+            RecordShapeBeforeSelect(entity);
             if (SelectionSettings.EditLinkedParts)
             {
                 _session.SelectObject(entity.RegionHandle, localId);
@@ -82,6 +94,7 @@ namespace SLNG.App
             var ids = new System.Collections.Generic.List<uint>(parts.Count + 1) { localId };
             foreach (var part in parts)
             {
+                RecordShapeBeforeSelect(part);
                 if (part.LocalId != localId) ids.Add(part.LocalId);
             }
             // A linkset cannot span regions, so the root's region is every part's.
@@ -337,8 +350,49 @@ namespace SLNG.App
             _session = session;
             _camera = camera;
             _contextMenu = contextMenu;
-            _contextMenu.OnClosedWithoutEdit += ClearTransientSelection;
+            if (_contextMenu != null)
+            {
+                _contextMenu.OnClosedWithoutEdit += ClearTransientSelection;
+            }
+            if (_session != null)
+            {
+                _session.ObjectUpdateReceived += OnObjectUpdateDiagnostics;
+            }
             SetProcessUnhandledInput(true);
+        }
+
+        public override void _ExitTree()
+        {
+            if (_session != null)
+            {
+                _session.ObjectUpdateReceived -= OnObjectUpdateDiagnostics;
+            }
+            if (_contextMenu != null)
+            {
+                _contextMenu.OnClosedWithoutEdit -= ClearTransientSelection;
+            }
+            base._ExitTree();
+        }
+
+        private void OnObjectUpdateDiagnostics(object? sender, ObjectUpdateEvent e)
+        {
+            if (!_shapesBeforeSelect.Remove((e.RegionHandle, e.LocalId), out var before)) return;
+            if (!Diagnostics.Enabled && !SLNG.Core.Diag.Verbose) return;
+
+            bool shapeChanged = before.Shape != e.Shape
+                || before.ProfileCurve != e.ProfileCurve
+                || before.IsMesh != e.IsMesh
+                || before.MeshId != e.MeshId;
+
+            GD.Print($"[SelectDiagnostic] LocalID={e.LocalId} Region={e.RegionHandle} ShapeChanged={shapeChanged}\n" +
+                     $"  Before: Profile=0x{before.Shape.ProfileCurve:X2} (PrimData=0x{before.ProfileCurve:X2}) Path={before.Shape.PathCurve} " +
+                     $"ProfCut=({before.Shape.ProfileBegin:F3}..{before.Shape.ProfileEnd:F3}) PathCut=({before.Shape.PathBegin:F3}..{before.Shape.PathEnd:F3}) " +
+                     $"Hollow={before.Shape.ProfileHollow:F3} Twist=({before.Shape.PathTwistBegin:F2}..{before.Shape.PathTwist:F2}) Taper=({before.Shape.PathTaperX:F2},{before.Shape.PathTaperY:F2}) " +
+                     $"Shear=({before.Shape.PathShearX:F2},{before.Shape.PathShearY:F2}) IsMesh={before.IsMesh} MeshId={before.MeshId}\n" +
+                     $"  After:  Profile=0x{e.Shape.ProfileCurve:X2} (PrimData=0x{e.ProfileCurve:X2}) Path={e.Shape.PathCurve} " +
+                     $"ProfCut=({e.Shape.ProfileBegin:F3}..{e.Shape.ProfileEnd:F3}) PathCut=({e.Shape.PathBegin:F3}..{e.Shape.PathEnd:F3}) " +
+                     $"Hollow={e.Shape.ProfileHollow:F3} Twist=({e.Shape.PathTwistBegin:F2}..{e.Shape.PathTwist:F2}) Taper=({e.Shape.PathTaperX:F2},{e.Shape.PathTaperY:F2}) " +
+                     $"Shear=({e.Shape.PathShearX:F2},{e.Shape.PathShearY:F2}) IsMesh={e.IsMesh} MeshId={e.MeshId}");
         }
 
         public override void _UnhandledInput(InputEvent @event)

@@ -102,4 +102,29 @@ public class PrimMeshServiceHoleTypeTests
         // hole, so the vertex counts alone should differ when the hole type is actually honored.
         Assert.NotEqual(roundHoleVertexCount, sameHoleVertexCount);
     }
+
+    [Fact]
+    public void ChalkboardGlyph_ShapeGeneration()
+    {
+        var shape = new PrimShape(
+            ProfileCurve: 0x23, // Triangle with square hole
+            PathCurve: 16,      // Line
+            PathBegin: 0f, PathEnd: 1f,
+            PathScaleX: 1f, PathScaleY: 1f,
+            PathShearX: 0f, PathShearY: 0f,
+            PathTaperX: 0f, PathTaperY: 0f,
+            PathTwist: 0f, PathTwistBegin: 0f,
+            PathRadiusOffset: 0f, PathSkew: 0f, PathRevolutions: 1f,
+            ProfileBegin: 0.2f, ProfileEnd: 0.8f, ProfileHollow: 0.3f, PCode: 9);
+
+        var mesh = PrimMeshService.Generate(shape);
+        Assert.NotNull(mesh);
+        Assert.NotEmpty(mesh!.Submeshes);
+        foreach (var sub in mesh.Submeshes)
+        {
+            Assert.NotEmpty(sub.Positions);
+            Assert.NotEmpty(sub.Indices);
+            Assert.All(sub.Indices, i => Assert.InRange(i, 0, sub.Positions.Length - 1));
+        }
+    }
 }
