@@ -14,6 +14,19 @@ cannot have: a separate render thread, culling in C++, GPU-compressed textures a
 We use almost none of them today. This plan orders the work by gain per effort, measured on a
 fixed test spot.
 
+## Direction (2026-10-10): [ADR 0004](../adr/0004-performance-architecture.md)
+
+**We build on the more modern architecture; we do not rebuild Firestorm.** The ADR groups all
+work into five pillars:
+
+- **P1: the main thread only applies.**
+- **P2: draw the world from the ECS through RenderingServer instances, not 57k scene nodes.**
+- **P3: an avatar is one merged character, and over-cap avatars are parked, not thrown away.**
+- **P4: one importance scheduler and a GPU-ready cache for every asset.**
+- **P5: per-frame animation on the GPU.**
+
+The phase tables below stay as the task inventory. The **order** now follows the ADR.
+
 ## Baseline (2026-10-09, v0.27.28, Sirens Beach on Agni, 58 avatars, cap 7, RTX 4070 12 GB)
 
 | Measure | Value |
@@ -92,8 +105,23 @@ three ways, and today every millisecond cut anywhere counts in full.
 
 ## Order (one writer at a time)
 
-Merge v0.27.28 → FEAT-PERF-12 → FEAT-PERF-13 → FEAT-PERF-15 → FEAT-PERF-14 → FEAT-PERF-16 →
-FEAT-PERF-17 → FEAT-PERF-18 → FEAT-PERF-19 → FEAT-PERF-20 → FEAT-PERF-21 → FEAT-PERF-22.
+**Superseded on 2026-10-10 by ADR 0004.** The order follows the pillars:
+
+1. **Done:** FEAT-PERF-13 (render thread), BUG-AVATAR-11.
+2. **P1:** BUG-PERF-15 (no read-backs on hot paths), then the remaining `avatar.rig.*` and
+   `avatar.split_sorted` main-thread work moves to workers.
+3. **P3:** BUG-PERF-16 (park instead of unload), then the outfit merge (one skinned mesh per
+   avatar).
+4. **P4:** BUG-PERF-14 (importance order for meshes, own avatar first), then the unified
+   scheduler, then FEAT-PERF-17 (block-compressed textures, GPU-ready cache).
+5. **P2:** FEAT-PERF-14 (engine visibility ranges), then ECS→RenderingServer instances for static
+   prims, then FEAT-PERF-20 (merged cells), then FEAT-PERF-21 (occluders).
+6. **P5, alongside:** FEAT-PERF-16 (texture animation in the shader), FEAT-PERF-18.
+7. **Free parity defaults whenever convenient:** FEAT-PERF-15 (mirrors setting). FEAT-PERF-19
+   (auto-tune) and FEAT-PERF-22 (impostors) come after P2 and P3.
+
+Original order, kept for reference: merge v0.27.28 → 12 → 13 → 15 → 14 → 16 → 17 → 18 → 19 →
+20 → 21 → 22.
 
 - **Why FEAT-PERF-13 comes early:** with a separate render thread the frame becomes max(main,
   render) instead of their sum. Which side then dominates decides whether C# savings (16, 18)
