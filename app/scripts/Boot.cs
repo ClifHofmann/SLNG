@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.34-alpha";
+    public const string AppVersion = "v0.27.35-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -441,6 +441,8 @@ public partial class Boot : Control
     private double _timeSinceLastVramRise = 100.0;
     private long _lastVramBudget;
     private readonly SLNG.Core.RollingMinimum _osBudgetWindow = new(30.0);
+    private long _vramBudgetPeak;
+    private bool _vramBudgetFallReported;
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -2408,6 +2410,18 @@ public partial class Boot : Control
         var camera = GetViewport()?.GetCamera3D();
         var mirror = _objectRenderer.MirrorPosition;
 
+        // FEAT-PERF-25: off on a small card -- a second scene render with render buffers of up to
+        // 1920 px per side, kept allocated while idle; Release gives those back.
+        if (!_graphicsSettings.PlanarMirrorAllowed)
+        {
+            _mirrorReflection.Release();
+            // The mirror surface keeps its shader; without a texture it shows the shader's
+            // "no reflection" default rather than the last frame the viewport rendered.
+            _objectRenderer.SetMirrorTexture(null);
+            _planarMirrorWasActive = false;
+            return;
+        }
+
         bool rendered = camera != null
                         && mirror.HasValue
                         && _objectRenderer.PlanarMirrorActive
@@ -2449,7 +2463,7 @@ public partial class Boot : Control
         if (_heroProbe == null || _objectRenderer == null || _avatarController == null) return;
 
         var mirror = _objectRenderer.MirrorPosition;
-        bool want = _graphicsSettings.PostFxHeroProbe
+        bool want = _graphicsSettings.HeroProbeAllowed
                     && mirror.HasValue
                     && mirror.Value.DistanceTo(_avatarController.GlobalPosition) <= HeroProbeMaxDistanceMeters
                     // BUG-RENDER-32: not while the planar mirror has the same surface. Its
@@ -2894,6 +2908,8 @@ public partial class Boot : Control
         // at all while a mirror-grade surface is actually in range.
         UpdatePlanarMirror();
         UpdateHeroProbe();
+        // FEAT-PERF-25: the reflection atlas cap and the one-shot [VramBreakdown].
+        UpdateVramCapsFrame();
 
         // Drain the region-environment event buffered off-thread (see _pendingRegionEnvironment).
         // FEAT-ENV-01 Phase D: region-scoped -- crossing into a neighbor region with its own
@@ -3100,6 +3116,7 @@ public partial class Boot : Control
     private void ApplyGraphicsSettings()
     {
         _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun, _reflectionProbe);
+        ReportVramCaps();
         // FEAT-PERF-17: when probe or flag is active, run VramBudgetPolicy so the automatic
         // budget is not overwritten by the slider and user adjustments apply at once.
         if (_dxgiProbe != null || _cmdlineVramBudgetMb.HasValue)
@@ -3175,6 +3192,8 @@ public partial class Boot : Control
             // The OS budget wobbles by hundreds of MB between readings while another program uses
             // the card; the policy gets the lowest reading of the last 30 s (see RollingMinimum).
             osBudget = _osBudgetWindow.Add(Time.GetTicksMsec() / 1000.0, osBudget);
+            // FEAT-PERF-25: small card -> cap the render buffers before they eat the texture budget.
+            UpdateLowVramTier(osBudget);
             _gpuCache.ReportOsMemory(osBudget, osUsage, _graphicsSettings.TextureMemoryAuto);
             long? manualCap = _graphicsSettings.TextureMemoryAuto ? null : ((long)_graphicsSettings.TextureMemoryMb << 20);
             long prevBudget = force ? 0 : _lastVramBudget;
@@ -3196,6 +3215,13 @@ public partial class Boot : Control
             {
                 _lastVramBudget = newBudget;
                 _gpuCache.SetBudget(newBudget);
+                // FEAT-PERF-25: a texture budget that collapsed is exactly when the breakdown is wanted.
+                _vramBudgetPeak = Math.Max(_vramBudgetPeak, newBudget);
+                if (!_vramBudgetFallReported && newBudget < _vramBudgetPeak * 0.6)
+                {
+                    _vramBudgetFallReported = true;
+                    ScheduleVramBreakdown($"texture budget fell to {newBudget >> 20} MB from {_vramBudgetPeak >> 20} MB", 2);
+                }
             }
         }
         else
@@ -3972,6 +3998,8 @@ public partial class Boot : Control
         _lastVramBudget = 0;
         _timeSinceLastVramRise = VramBudgetPolicy.RiseIntervalSeconds;
         UpdateVramBudget(force: true);
+        // FEAT-PERF-25: once the region has had a minute to load, where the video memory went.
+        ScheduleVramBreakdown("60 s after login", 60);
 
         // FEAT-INV-07 inventory cache and the Display Names remembered from earlier sessions. This
         // only tells the session where they live: it opens them itself while it processes the

@@ -6,6 +6,9 @@ namespace SLNG.Assets.Tests;
 /// <summary>
 /// BUG-PERF-13: Pure arithmetic tests for avatar texture distance LOD and VRAM budget.
 /// </summary>
+// FEAT-PERF-25: TextureLod.GlobalLodBias is static; every class that reads or sets it shares one
+// collection, so xUnit never runs them in parallel.
+[Collection("TextureLod.GlobalLodBias")]
 public class AvatarTextureLodTests
 {
     private const float AvatarRadius = 0.95f; // half of 1.9m humanoid height

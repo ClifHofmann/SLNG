@@ -67,6 +67,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private HSlider _textureMemSlider = null!;
     private Label _textureMemValue = null!;
     private Label _textureMemUsage = null!;
+    private CheckBox _lowVramCapsCheck = null!;
+    private Label _lowVramCapsState = null!;
 
     // Depth of Field sub-tab controls
     private CheckBox _dofEnableCheck = null!;
@@ -585,6 +587,19 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _textureMemUsage.AddThemeColorOverride("font_color", new Color(0.65f, 0.65f, 0.65f));
         _textureMemUsage.AddThemeFontSizeOverride("font_size", 12);
         _panelHardware.AddChild(_textureMemUsage);
+
+        // FEAT-PERF-25: the low-VRAM caps, and what they are doing right now.
+        _lowVramCapsCheck = AddCheck(_panelHardware, L10n.Tr("ui.preferences.low_vram_caps"), _settings.LowVramCaps, on =>
+        {
+            if (_refreshing) return;
+            _settings.SetLowVramCaps(on);
+            _apply();
+        });
+        AddHint(_panelHardware, L10n.Tr("ui.preferences.low_vram_caps_hint"));
+        _lowVramCapsState = new Label { Text = "", AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        _lowVramCapsState.AddThemeColorOverride("font_color", new Color(0.65f, 0.65f, 0.65f));
+        _lowVramCapsState.AddThemeFontSizeOverride("font_size", 12);
+        _panelHardware.AddChild(_lowVramCapsState);
     }
 
     private void UpdateTextureMemControls()
@@ -928,6 +943,13 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             ? $"Cache: {cacheMb} MB   ·   GPU gesamt: {gpuMb} MB"
             : $"GPU gesamt: {gpuMb} MB";
 
+        if (_lowVramCapsState != null)
+        {
+            _lowVramCapsState.Text = _settings.CapChanges.Count > 0
+                ? L10n.Tr("ui.preferences.low_vram_caps_active") + " " + string.Join(", ", _settings.CapChanges)
+                : "";
+        }
+
         if (_settings.TextureMemoryAuto && _textureMemValue != null && _textureMemSlider != null)
         {
             long currentBudgetMb = (_budgetBytes?.Invoke() ?? ((long)_settings.TextureMemoryMb << 20)) >> 20;
@@ -985,6 +1007,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             _shadowResOption.Select(resIdx < 0 ? 2 : resIdx);
 
             _textureMemAutoCheck.ButtonPressed = _settings.TextureMemoryAuto;
+            _lowVramCapsCheck.ButtonPressed = _settings.LowVramCaps;
             UpdateTextureMemControls();
 
             // Depth of Field

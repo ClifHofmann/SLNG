@@ -204,6 +204,20 @@ public partial class MirrorReflection : Node
         }
     }
 
+    /// <summary>FEAT-PERF-25: <see cref="Idle"/>, and give the render buffers back. An idle viewport keeps
+    /// the buffers of its last size (up to <see cref="MaxDimension"/> per side, with every post effect the
+    /// world environment has); a 2x2 viewport holds next to nothing. The next <see cref="UpdateFor"/>
+    /// sizes it again.</summary>
+    public void Release()
+    {
+        Idle();
+        if (_viewport != null && _size != new Vector2I(2, 2))
+        {
+            _size = new Vector2I(2, 2);
+            _viewport.Size = _size;
+        }
+    }
+
     /// <summary>Resumes rendering after <see cref="Idle"/>.</summary>
     public void Resume()
     {

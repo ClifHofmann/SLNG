@@ -22,6 +22,9 @@ namespace SLNG.Assets.Tests;
 ///    decode degraded when it comes out smaller than the SIZ marker declares, and the disk-cache
 ///    path DELETES the .j2c that produced a degraded decode.
 /// </summary>
+// FEAT-PERF-25: TextureLod.GlobalLodBias is static; every class that reads or sets it shares one
+// collection, so xUnit never runs them in parallel.
+[Collection("TextureLod.GlobalLodBias")]
 public class ReduceLevelDecodeTests
 {
     private static byte[] EncodeJ2c(int size)
@@ -194,15 +197,72 @@ public class ReduceLevelDecodeTests
     public void DiscardLevelFollowsTheTexelToPixelRatio(int w, int h, float area, int expected)
         => Assert.Equal(expected, TextureLod.DiscardLevelFor(w, h, area));
 
-    // FEAT-PERF-04: the VRAM back-pressure bias adds discard levels to a world-texture upload...
+    // FEAT-PERF-04: the VRAM back-pressure bias adds discard levels to a world-texture upload that is
+    // small on screen (FEAT-PERF-25: a texture from BiasExemptAreaPx up is exempt, see below)...
     [Fact]
-    public void GlobalLodBias_adds_discard_levels_for_a_real_screen_area()
+    public void GlobalLodBias_adds_discard_levels_for_a_small_screen_area()
     {
-        int baseline = TextureLod.DiscardLevelFor(1024, 1024, 262_144f); // = 1
+        // 256x256 = 65,536 texels over 4,096 px: 16x the texels, two discard levels.
+        Assert.True(4_096f < TextureLod.BiasExemptAreaPx, "the area must be below the exemption for this test to mean anything");
+        int baseline = TextureLod.DiscardLevelFor(256, 256, 4_096f);
+        Assert.Equal(2, baseline);
         try
         {
             TextureLod.GlobalLodBias = 2;
-            Assert.Equal(baseline + 2, TextureLod.DiscardLevelFor(1024, 1024, 262_144f));
+            Assert.Equal(baseline + 2, TextureLod.DiscardLevelFor(256, 256, 4_096f));
+            Assert.Equal(4, TextureLod.DiscardLevelFor(256, 256, 4_096f));
+        }
+        finally { TextureLod.GlobalLodBias = 0; }
+    }
+
+    // FEAT-PERF-25: ...but not for a texture that is big on screen. The bias used to land on the wall
+    // in front of the camera and leave it two levels blurry for the whole session.
+    [Fact]
+    public void GlobalLodBias_does_not_touch_a_large_screen_area()
+    {
+        int baseline = TextureLod.DiscardLevelFor(1024, 1024, 262_144f); // = 1
+        Assert.Equal(1, baseline);
+        try
+        {
+            TextureLod.GlobalLodBias = 2;
+            Assert.Equal(1, TextureLod.DiscardLevelFor(1024, 1024, 262_144f));
+        }
+        finally { TextureLod.GlobalLodBias = 0; }
+    }
+
+    [Theory]
+    [InlineData(16_384f)]     // exactly the threshold
+    [InlineData(65_536f)]
+    [InlineData(262_144f)]
+    [InlineData(1_048_576f)]  // covers a whole 1024 x 1024 texture
+    public void GlobalLodBias_is_ignored_from_BiasExemptAreaPx_up(float area)
+    {
+        int baseline = TextureLod.DiscardLevelFor(1024, 1024, area);
+        try
+        {
+            TextureLod.GlobalLodBias = 3;
+            Assert.Equal(baseline, TextureLod.DiscardLevelFor(1024, 1024, area));
+        }
+        finally { TextureLod.GlobalLodBias = 0; }
+    }
+
+    [Fact]
+    public void GlobalLodBias_exemption_starts_exactly_at_BiasExemptAreaPx()
+    {
+        Assert.Equal(16_384f, TextureLod.BiasExemptAreaPx); // an object ~128 px across
+
+        float justBelow = System.MathF.BitDecrement(TextureLod.BiasExemptAreaPx);
+        Assert.True(justBelow < TextureLod.BiasExemptAreaPx);
+
+        // 1024x1024 over 16,384 px is 64x the texels: baseline 3, and just below the threshold the
+        // same (the area differs by far less than a level).
+        Assert.Equal(3, TextureLod.DiscardLevelFor(1024, 1024, TextureLod.BiasExemptAreaPx));
+        Assert.Equal(3, TextureLod.DiscardLevelFor(1024, 1024, justBelow));
+        try
+        {
+            TextureLod.GlobalLodBias = 1;
+            Assert.Equal(3, TextureLod.DiscardLevelFor(1024, 1024, TextureLod.BiasExemptAreaPx));
+            Assert.Equal(4, TextureLod.DiscardLevelFor(1024, 1024, justBelow));
         }
         finally { TextureLod.GlobalLodBias = 0; }
     }
@@ -260,5 +320,63 @@ public class ReduceLevelDecodeTests
 
         Assert.True(AssetService.TryReadJ2kDecompositionLevels(bytes, out int levels));
         Assert.InRange(levels, 1, 32);
+    }
+
+    // FEAT-PERF-25: the largest decoder reduce level whose output still holds a GPU-side shrink.
+    [Theory]
+    [InlineData(1024, 1024, 512, 512, 1)]
+    [InlineData(1024, 1024, 128, 128, 3)]
+    [InlineData(1024, 1024, 1024, 1024, 0)]
+    // The shorter side limits it: 1024x512 can halve once and stay at 256 tall, twice would be 128.
+    [InlineData(1024, 512, 256, 256, 1)]
+    [InlineData(512, 1024, 256, 256, 1)]
+    // Non-power-of-two sizes halve with rounding down, as the decoder does.
+    [InlineData(1000, 1000, 250, 250, 2)]
+    // An unknown source size is the safe answer: decode everything.
+    [InlineData(0, 0, 256, 256, 0)]
+    [InlineData(0, 1024, 256, 256, 0)]
+    [InlineData(1024, 0, 256, 256, 0)]
+    [InlineData(-1, -1, 256, 256, 0)]
+    // The source is already smaller than the minimum: nothing to reduce.
+    [InlineData(512, 512, 1024, 1024, 0)]
+    // Never past MaxDiscardLevel, however small the minimum.
+    [InlineData(4096, 4096, 8, 8, TextureLod.MaxDiscardLevel)]
+    [InlineData(1024, 1024, 0, 0, TextureLod.MaxDiscardLevel)]
+    public void ReduceLevelForAtLeastPicksTheDeepestLevelThatStillCoversTheMinimum(
+        int srcW, int srcH, int minW, int minH, int expected)
+        => Assert.Equal(expected, TextureLod.ReduceLevelForAtLeast(srcW, srcH, minW, minH));
+
+    [Fact]
+    public void ReduceLevelForAtLeastIsExactlyTheDeepestLevelThatKeepsTheMinimum()
+    {
+        // The defining property, across sizes: the chosen level's output still covers the minimum,
+        // and one level deeper would not (unless the cap stopped it).
+        int[] sizes = { 16, 100, 256, 1000, 1024, 3000, 4096 };
+        int[] minimums = { 8, 64, 250, 512 };
+
+        foreach (int w in sizes)
+        {
+            foreach (int h in sizes)
+            {
+                foreach (int min in minimums)
+                {
+                    int level = TextureLod.ReduceLevelForAtLeast(w, h, min, min);
+
+                    Assert.InRange(level, 0, TextureLod.MaxDiscardLevel);
+                    if (level > 0)
+                    {
+                        Assert.True(
+                            TextureLod.ReducedDimension(w, level) >= min && TextureLod.ReducedDimension(h, level) >= min,
+                            $"{w}x{h} reduced {level} must still cover {min}x{min}");
+                    }
+                    if (level < TextureLod.MaxDiscardLevel)
+                    {
+                        Assert.True(
+                            TextureLod.ReducedDimension(w, level + 1) < min || TextureLod.ReducedDimension(h, level + 1) < min,
+                            $"{w}x{h} reduced {level + 1} would still cover {min}x{min}, so {level} is not the deepest");
+                    }
+                }
+            }
+        }
     }
 }

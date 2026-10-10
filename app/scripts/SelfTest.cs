@@ -258,6 +258,7 @@ public static partial class SelfTest
         results.Add(CheckPrimAttachmentSignature()); // FEAT-PERF-08
         results.Add(CheckPendingWornItems()); // BUG-AVATAR-11
         results.Add(CheckShrinkWithoutReadBack());
+        results.Add(CheckShrinkCandidateRanking()); // FEAT-PERF-25
         results.Add(CheckNonFiniteSceneScan(tree));
         results.Add(CheckWorkQueueOnceThePumpIsGone());
         results.Add(CheckWorkQueuePartsAddUp());
