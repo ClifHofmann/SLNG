@@ -21,7 +21,23 @@ public class GpuCache
         public long Size;
         public LinkedListNode<CacheEntry>? Node;
         public int RefCount;
+
+        // FEAT-PERF-25: what the shrink pass ranks on, kept here so its scan never calls into Godot.
+        public int Width, Height;              // the texture's pixels now (0: not a texture)
+        public int SourceWidth, SourceHeight;  // the asset's own size, when the upload knew it
+        public bool Mipmaps;
+        public bool EverHadArea;               // some caller gave a screen area: the texture has LOD information
+        public long LastSeenMs;                // the last request for it
+        public float RecentArea;               // largest screen area asked for within AreaWindowMs...
+        public long RecentAreaMs;              // ...and when it was last asked for
+        public long ShrinkBlockedUntilMs;      // a shrink that could not be done is not tried again before this
+        public long LastSharpenMs;
+        public long LastShrinkMs;
+        public long SharpenGuardUntilMs;       // shrunk from the visible tier: no sharpen-for-room before this
     }
+
+    /// <summary>FEAT-PERF-25: the shape of a texture going into the cache (see <see cref="CacheEntry"/>).</summary>
+    private readonly record struct TextureShape(int Width, int Height, int SourceWidth, int SourceHeight, bool Mipmaps, float ScreenPixelArea);
 
     private readonly Dictionary<Guid, CacheEntry> _cache = new();
     private readonly LinkedList<CacheEntry> _lruList = new();
@@ -68,7 +84,17 @@ public class GpuCache
     // BUG-PERF-09: textures with a shrink in flight, and the bytes each is expected to give back.
     // The shrink now prepares on a worker, so several can be pending at once; Tick has to count what
     // they will free or it keeps picking more than the budget needs.
-    private readonly ConcurrentDictionary<Guid, long> _shrinkPending = new();
+    private readonly ConcurrentDictionary<Guid, PendingShrink> _shrinkPending = new();
+    private readonly record struct PendingShrink(long Saving, long StartedMs, bool Visible = false);
+
+    // FEAT-PERF-25: bake textures of the protected (self + nearest full) avatars. Kept apart from
+    // _noShrink, which only ever holds the own avatar's bakes (BUG-PERF-13's contract); a remote bake is
+    // spared by the shrink pass while its wearer is one of the nearest, and is shrinkable again once not.
+    private readonly ConcurrentDictionary<Guid, byte> _protectedBakes = new();
+
+    // FEAT-PERF-25: where a bake came from, so a shrunk bake can be fetched sharp again (bakes come from
+    // the bake host, not the per-face texture path) and a shrink can find its pixels.
+    private readonly ConcurrentDictionary<Guid, (int Channel, Guid Agent)> _bakeSource = new();
 
     private const double LowWater = 0.85;              // hysteresis: only relax below this fraction of budget
     private const int MaxLodBias = 2;                  // at most 2 extra discard levels (16x) from back-pressure; also the cap on the per-upload admission discard
@@ -76,6 +102,19 @@ public class GpuCache
     private const int ShrinkPerTick = 2;              // mirrors MainThreadWorkQueue's Refine-lane 2/frame cap
     private const int MaxShrinksInFlight = 16;        // prepared-on-a-worker shrinks waiting for the Refine lane
     private const long BiasChangeCooldownMs = 3000;   // don't pump the bias
+
+    // FEAT-PERF-25: the shrink pass ranks what it gives back, instead of taking the first two entries
+    // at the head of the LRU list -- see RebuildShrinkCandidates.
+    private const long AreaWindowMs = 6000;            // ObjectRenderer offers every 2 s, AvatarRenderer every 1 s
+    private const long ScanIntervalMs = 500;           // a ranked candidate list lasts this long...
+    private const long ScanRefreshMs = 2000;           // ...or this long when it is not used up
+    private const int MaxCandidates = 96;
+    private const long ShrinkTimeoutMs = 20_000;       // an in-flight shrink older than this is given up
+    private const long ShrinkBlockedMs = 60_000;       // a texture that could not be shrunk is left alone this long
+    private const long SharpenShrinkGuardMs = 30_000;  // never shrink what was sharpened this recently
+    private const double VisibleShrinkOver = 1.05;     // right-sized small textures are shrunk only this far over budget
+    private const long NearOvershootMinBytes = 32L << 20;
+    private const long ShrinkStatsIntervalMs = 10_000;
     private static readonly System.Diagnostics.Stopwatch _biasClock = System.Diagnostics.Stopwatch.StartNew();
     private long _nextBiasChangeMs;
 
@@ -97,6 +136,32 @@ public class GpuCache
     // Bytes the most recent sharpen that the camera's approach asked for was short of. Tick turns it
     // into shrinks of the least recently used textures, so near textures can sharpen in a full cache.
     private long _roomWanted;
+
+    // FEAT-PERF-25: the ranked shrink candidates of the last scan, best first, and how far Tick has got
+    // through them. Main thread, under _cache's lock.
+    private readonly List<CacheEntry> _shrinkCandidates = new();
+    private int _candidateCursor;
+    private long _lastScanMs = long.MinValue / 2;
+    private readonly PriorityQueue<CacheEntry, double> _scanFree = new();
+    private readonly PriorityQueue<CacheEntry, double> _scanVisible = new();
+    private readonly List<(CacheEntry entry, ImageTexture tex)> _toShrink = new();
+
+    // FEAT-PERF-25: bytes the last scan found it could give back without a visible loss (cold, or more
+    // texels than the screen shows). A NEAR texture may be admitted that far over the budget -- it is
+    // what the user is looking at, and the shrink pass pays the overshoot back from those bytes.
+    private long _reclaimableBytes;
+
+    // FEAT-PERF-25: what the shrink pass did, for the [GpuShrink] line. Counters are reset per line;
+    // the skip table is the last scan's. Workers touch the counters, so Interlocked.
+    private enum Skip { Mesh, Unreferenced, Small, NoLod, Protected, Pending, Blocked, Sharpened, Undersized, Count }
+    private readonly long[] _scanSkipBytes = new long[(int)Skip.Count];
+    private readonly int[] _scanSkipCount = new int[(int)Skip.Count];
+    private int _scanSeen, _scanFreeCount, _scanVisibleCount;
+    private long _scanVisibleBytes;
+    private int _statScans, _statStarted, _statDone, _statNoSource, _statTimedOut, _statRaced, _statFailed;
+    private long _statFreedBytes, _statOverMs, _statRoomWantedMax;
+    private long _nextShrinkStatsMs = ShrinkStatsIntervalMs;
+    private long _lastTickMs;
 
     // A sharpen that ended without uploading anything (no room after all, or it failed) is not retried
     // until this time (ms on _biasClock). Without it such a texture was re-decoded at every 4 Hz
@@ -238,24 +303,61 @@ public class GpuCache
         else _pendingRefDelta[id] = delta;
     }
 
-    public Resource? Get(Guid id)
+    public Resource? Get(Guid id) => Lookup(id, 0f);
+
+    /// <summary><see cref="Get"/>, plus FEAT-PERF-25's bookkeeping: when the texture was last asked for
+    /// and the largest screen area it was asked for lately -- what the shrink pass ranks on.</summary>
+    private Resource? Lookup(Guid id, float screenPixelArea)
     {
         lock (_cache)
         {
-            if (_cache.TryGetValue(id, out var entry))
+            if (!_cache.TryGetValue(id, out var entry)) return null;
+            if (entry.Node != null)
             {
-                if (entry.Node != null)
-                {
-                    _lruList.Remove(entry.Node);
-                    _lruList.AddLast(entry.Node);
-                }
-                return entry.Res;
+                _lruList.Remove(entry.Node);
+                _lruList.AddLast(entry.Node);
             }
-            return null;
+            long now = _biasClock.ElapsedMilliseconds;
+            entry.LastSeenMs = now;
+            NoteArea(entry, screenPixelArea, now);
+            return entry.Res;
         }
     }
 
-    public void Put(Guid id, Resource res, long size, int initialRefCount = 0)
+    /// <summary>The largest area within <see cref="AreaWindowMs"/>: a texture shared by a near and a far
+    /// object is as near as its nearest user, and an area that stops being asked for ages out.</summary>
+    private static void NoteArea(CacheEntry entry, float screenPixelArea, long now)
+    {
+        if (screenPixelArea <= 0f) return;
+        entry.EverHadArea = true;
+        if (screenPixelArea >= entry.RecentArea || now - entry.RecentAreaMs > AreaWindowMs)
+        {
+            entry.RecentArea = screenPixelArea;
+            entry.RecentAreaMs = now;
+        }
+    }
+
+    /// <summary>FEAT-PERF-25: AvatarRenderer's report of how large an avatar is on screen, for all of the
+    /// textures it wears (avatar textures are not re-offered the way world textures are). Once a second
+    /// per shown avatar.</summary>
+    public void NoteAreas(HashSet<Guid> textureIds, float screenPixelArea)
+    {
+        if (screenPixelArea <= 0f || textureIds.Count == 0) return;
+        long now = _biasClock.ElapsedMilliseconds;
+        lock (_cache)
+        {
+            foreach (var id in textureIds)
+            {
+                if (!_cache.TryGetValue(id, out var entry)) continue;
+                entry.LastSeenMs = now;
+                NoteArea(entry, screenPixelArea, now);
+            }
+        }
+    }
+
+    public void Put(Guid id, Resource res, long size, int initialRefCount = 0) => Put(id, res, size, initialRefCount, default);
+
+    private void Put(Guid id, Resource res, long size, int initialRefCount, TextureShape shape)
     {
         lock (_cache)
         {
@@ -275,7 +377,21 @@ public class GpuCache
             // assigned to a node) pin it before EvictIfNeeded runs, so a tight budget can't
             // evict the entry on the same call that added it.
             int startRefCount = Math.Max(0, initialRefCount + pending);
-            var entry = new CacheEntry { Id = id, Res = res, Size = size, RefCount = startRefCount };
+            long now = _biasClock.ElapsedMilliseconds;
+            var entry = new CacheEntry
+            {
+                Id = id,
+                Res = res,
+                Size = size,
+                RefCount = startRefCount,
+                Width = shape.Width,
+                Height = shape.Height,
+                SourceWidth = shape.SourceWidth,
+                SourceHeight = shape.SourceHeight,
+                Mipmaps = shape.Mipmaps,
+                LastSeenMs = now,
+            };
+            NoteArea(entry, shape.ScreenPixelArea, now);
             entry.Node = _lruList.AddLast(entry);
             _cache[id] = entry;
             _currentSize += size;
@@ -338,6 +454,7 @@ public class GpuCache
             screenPixelArea = 0f;
             _avatarTextures.TryAdd(textureId, 0);
             _bakeTextures.TryAdd(textureId, 0);
+            _bakeSource[textureId] = (bakeChannel.Value, bakeAgentId);
             if (isSelf)
             {
                 _noShrink.TryAdd(textureId, 0);
@@ -367,7 +484,7 @@ public class GpuCache
         bool bypassedDegraded;
         using (MainThreadWorkQueue.Part("tex.lookup"))
         {
-            cached = Get(textureId) as ImageTexture;
+            cached = Lookup(textureId, screenPixelArea) as ImageTexture;
             bypassedDegraded = cached != null && rejectDegraded && _uploadFromDegraded.ContainsKey(textureId);
             if (bypassedDegraded) cached = null;
             MaybeDumpGpuCacheStats(cached != null, bypassedDegraded);
@@ -447,11 +564,11 @@ public class GpuCache
             foreach (var e in _cache.Values)
             {
                 if (e.RefCount > 0) { pinned++; pinnedBytes += e.Size; }
-                if (_noShrink.ContainsKey(e.Id)) exemptBytes += e.Size;
+                if (_noShrink.ContainsKey(e.Id) || _protectedBakes.ContainsKey(e.Id)) exemptBytes += e.Size;
                 if (_avatarTextures.ContainsKey(e.Id))
                 {
                     avatarBytes += e.Size;
-                    if (!_noShrink.ContainsKey(e.Id) && e.Size > ShrinkFloorBytes)
+                    if (!_noShrink.ContainsKey(e.Id) && !_protectedBakes.ContainsKey(e.Id) && e.Size > ShrinkFloorBytes)
                     {
                         reducibleBytes += e.Size;
                     }
@@ -495,7 +612,7 @@ public class GpuCache
 
     /// <summary>BUG-PERF-09: records that a resident texture's pixels were replaced in place, so the
     /// cache's total follows what the card holds. Main thread (it follows a SetImage).</summary>
-    private void SetResidentSize(Guid id, Resource res, long newSize)
+    private void SetResidentSize(Guid id, Resource res, long newSize, int width, int height, bool sharpened)
     {
         lock (_cache)
         {
@@ -503,6 +620,11 @@ public class GpuCache
             {
                 _currentSize += newSize - live.Size;
                 live.Size = newSize;
+                live.Width = width;
+                live.Height = height;
+                long now = _biasClock.ElapsedMilliseconds;
+                if (sharpened) live.LastSharpenMs = now;
+                else live.LastShrinkMs = now;
             }
         }
     }
@@ -543,24 +665,41 @@ public class GpuCache
         long projected = Interlocked.Read(ref _currentSize) + ReservedBytesSnapshot();
         // Two reasons a texture can be eligible. The camera came closer than the area it was
         // requested for: that is someone looking at it, and the least recently used textures give up
-        // bytes for it (Tick). Or it was only cut at upload and the request has not changed: that
-        // waits for the cache to fall back below the low-water mark and asks for nothing -- thousands
-        // of those, all asking, would keep the shrink pass running for ever, and a sharpen that fills
-        // the cache to the brim would only be shrunk again.
+        // bytes for it (Tick). Or it was only cut at upload (or shrunk) and the request has not changed:
+        // a FAR one of those waits for the cache to fall back below the low-water mark and asks for
+        // nothing -- thousands of those, all asking, would keep the shrink pass running for ever, and a
+        // sharpen that fills the cache to the brim would only be shrunk again.
+        //
+        // FEAT-PERF-25: a NEAR one does not wait. It was cut because the cache was full of something
+        // else, and with the shrink pass holding the cache at its budget "below low water" never came:
+        // the wall in front of the camera stayed blurry for the session. It asks for room like a camera
+        // approach, and may go over the budget by what the shrink pass can give back without a visible
+        // loss (NearCeiling) -- the far and the cold pay for what the user is looking at.
         bool cutAtUpload = _admissionRequestedArea.TryGetValue(textureId, out float requestedFor)
                            && screenPixelArea < requestedFor * 4f;
-        long limit = cutAtUpload ? (long)(budget * LowWater) : budget;
-        if (cutAtUpload && projected >= limit) return; // the common blocked case, answered without a lock
+        bool near = screenPixelArea >= SLNG.Assets.TextureLod.BiasExemptAreaPx;
+        bool waitsForRoom = cutAtUpload && !near;
+        long limit = waitsForRoom ? (long)(budget * LowWater) : near ? NearCeiling(budget) : budget;
+        if (waitsForRoom && projected >= limit) return; // the common blocked case, answered without a lock
 
         long replaced;
-        lock (_cache) replaced = _cache.TryGetValue(textureId, out var resident) ? resident.Size : 0;
+        long guardUntil;
+        lock (_cache)
+        {
+            bool found = _cache.TryGetValue(textureId, out var resident);
+            replaced = found ? resident!.Size : 0;
+            guardUntil = found ? resident!.SharpenGuardUntilMs : 0;
+        }
         if (replaced <= 0) return;
+        // FEAT-PERF-25: shrunk from the visible tier a moment ago -- only a real approach sharpens it now.
+        if (cutAtUpload && _biasClock.ElapsedMilliseconds < guardUntil) return;
         // One level up is 4x the bytes. If not even that fits, the decode would be thrown away; if it
         // fits, admission in PrepareImage cuts a bigger jump down to whatever does.
         long shortBy = projected + replaced * 3 - limit;
         if (shortBy > 0)
         {
-            if (!cutAtUpload) NoteRoomWanted(shortBy);
+            // The growth, not the shortfall: Tick frees until resident + in flight + this fits the budget.
+            if (!waitsForRoom) NoteRoomWanted(replaced * 3);
             return;
         }
 
@@ -580,8 +719,17 @@ public class GpuCache
                 // view, and the decoder should still skip the levels even that closer view cannot
                 // show. Sharpening a distant texture by one step should not cost a full 47.6 ms
                 // decode when 13.1 ms buys everything the screen can display.
-                var textureData = await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, screenPixelArea: screenPixelArea).ConfigureAwait(false);
-                if (textureData == null) return;
+                // FEAT-PERF-25: a bake comes from the bake host (BUG-AVATAR-02); a shrunk far bake is
+                // sharpened again from there, or from the memory cache that path fills.
+                var textureData = _bakeSource.TryGetValue(textureId, out var bake)
+                    ? await assetService.GetBakeTextureAsync(textureId, bake.Channel, priority, bake.Agent).ConfigureAwait(false)
+                    : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, screenPixelArea: screenPixelArea).ConfigureAwait(false);
+                if (textureData == null)
+                {
+                    _uploadedForPixelArea.TryUpdate(textureId, builtFor, screenPixelArea);
+                    _sharpenRetryAtMs[textureId] = _biasClock.ElapsedMilliseconds + SharpenRetryCooldownMs;
+                    return;
+                }
 
                 // BUG-NET-11: same split as FetchAndUploadTextureAsync -- the image build happens
                 // here on the worker, the queued main-thread item does nothing but hand the
@@ -590,7 +738,13 @@ public class GpuCache
                     .ConfigureAwait(false);
                 if (prepared.Image == null)
                 {
-                    if (!prepared.NothingSharper)
+                    // FEAT-PERF-25: "nothing sharper" only stands when the LOD bias played no part. Under a
+                    // raised bias the level the area asks for is the bias's, and letting the claim stand
+                    // left the texture waiting for the camera to come 4x closer again after the bias was
+                    // long gone -- the "stays blurry for a long time" of the 3.5 GB run.
+                    bool biasInvolved = SLNG.Assets.TextureLod.GlobalLodBias > 0
+                                        && screenPixelArea < SLNG.Assets.TextureLod.BiasExemptAreaPx;
+                    if (!prepared.NothingSharper || biasInvolved)
                     {
                         // Nothing was uploaded because admission found no room (or the build failed):
                         // the texture is still as small as it was, so it stays a sharpen candidate --
@@ -620,7 +774,7 @@ public class GpuCache
                         // BUG-PERF-09: the pixels changed, so the entry's size did. It used to stay at
                         // the downsampled size for ever, and the budget never saw a sharpened texture.
                         SetResidentSize(textureId, cached,
-                            SLNG.Assets.TextureAdmission.TextureBytes(finalW, finalH, generateMipmaps));
+                            SLNG.Assets.TextureAdmission.TextureBytes(finalW, finalH, generateMipmaps), finalW, finalH, sharpened: true);
 
                         // UploadedForPixelArea is 0 exactly when the re-decode came out at full
                         // resolution, i.e. there is nothing left to sharpen -- drop the entry so
@@ -671,7 +825,22 @@ public class GpuCache
     {
         foreach (var id in _avatarTextures.Keys)
         {
-            if (_bakeTextures.ContainsKey(id)) continue;
+            if (_bakeTextures.ContainsKey(id))
+            {
+                // FEAT-PERF-25: a bake of a protected avatar is spared too (a remote bake used to be
+                // shrinkable at conversation distance, and nothing ever sharpened it again). One that was
+                // shrunk while its wearer was far is restored once the wearer is among the nearest.
+                if (protectedIds.Contains(id))
+                {
+                    _protectedBakes.TryAdd(id, 0);
+                    if (_uploadedForPixelArea.ContainsKey(id)) RestoreBake(id);
+                }
+                else
+                {
+                    _protectedBakes.TryRemove(id, out _);
+                }
+                continue;
+            }
             if (protectedIds.Contains(id))
             {
                 _noShrink.TryAdd(id, 0);
@@ -682,6 +851,24 @@ public class GpuCache
             }
         }
     }
+
+    /// <summary>FEAT-PERF-25: sharpen a shrunk bake back to full size (its wearer became one of the
+    /// nearest). Through the sharpen path, so it waits for room exactly like any near texture.</summary>
+    private void RestoreBake(Guid textureId)
+    {
+        ImageTexture? tex;
+        bool mips;
+        lock (_cache)
+        {
+            if (!_cache.TryGetValue(textureId, out var e) || e.Res is not ImageTexture t) return;
+            tex = t;
+            mips = e.Mipmaps;
+        }
+        TryUpgradeCachedTexture(textureId, tex, _assets, mips, RestoreArea, priority: 1f);
+    }
+
+    // Larger than any texture's texel count: "the full asset".
+    private const float RestoreArea = 1e12f;
 
     /// <summary>
     /// BUG-PERF-13: Unregisters avatar texture ids from avatar-specific tracking tables
@@ -694,6 +881,7 @@ public class GpuCache
         bool wasBake = _bakeTextures.TryRemove(textureId, out _);
         _avatarTextures.TryRemove(textureId, out _);
         _noShrink.TryRemove(textureId, out _);
+        _protectedBakes.TryRemove(textureId, out _);
 
         if (evictIfUnreferenced || wasBake)
         {
@@ -721,7 +909,8 @@ public class GpuCache
     public void TryUpgradeTexture(Guid textureId, SLNG.Assets.AssetService? assetService, bool generateMipmaps, float screenPixelArea, float priority = 0.5f)
     {
         if (assetService == null || screenPixelArea <= 0f) return;
-        if (_bakeTextures.ContainsKey(textureId)) return;
+        // FEAT-PERF-25: a bake is uploaded whole and is only a candidate once a shrink made it smaller
+        // (TryUpgradeCachedTexture returns at once for one that was not); it is fetched from the bake host.
         ImageTexture? tex;
         lock (_cache)
         {
@@ -909,7 +1098,8 @@ public class GpuCache
     /// <param name="NothingSharper">...and, for a re-upload that returned no image, that this is
     /// because the level the area asks for is no larger than the texture already is (the area is below
     /// the 5-level floor, or the asset is small) -- as opposed to admission finding no room.</param>
-    private readonly record struct PreparedImage(Image? Image, float UploadedForPixelArea, long ReservedBytes, int ExtraDiscard = 0, bool NothingSharper = false);
+    private readonly record struct PreparedImage(Image? Image, float UploadedForPixelArea, long ReservedBytes, int ExtraDiscard = 0, bool NothingSharper = false,
+        int SourceWidth = 0, int SourceHeight = 0);
 
     /// <summary>Bounds the concurrent CPU image work the same way AssetService bounds J2K decode.
     /// An unbounded <c>Task.Run</c> per texture is what made the decode path's measured "91 ms"
@@ -1042,12 +1232,14 @@ public class GpuCache
                     return new PreparedImage(null, 0f, 0, 0, NothingSharper: true);
                 }
 
-                bool admit = screenPixelArea > 0f && !_noShrink.ContainsKey(textureId);
+                bool admit = screenPixelArea > 0f && !_noShrink.ContainsKey(textureId) && !_protectedBakes.ContainsKey(textureId);
                 int maxExtra = admit ? Math.Min(MaxLodBias, SLNG.Assets.TextureLod.MaxDiscardLevel - discard) : 0;
+                // FEAT-PERF-25: a near texture is not cut for the far ones already resident (NearCeiling).
+                bool near = admit && screenPixelArea >= SLNG.Assets.TextureLod.BiasExemptAreaPx;
                 extra = AdmitAndReserve(
                     SLNG.Assets.TextureLod.DimensionAfterDiscard(w, discard),
                     SLNG.Assets.TextureLod.DimensionAfterDiscard(h, discard),
-                    generateMipmaps, Math.Max(0, maxExtra), replacedBytes, out long finalBytes, out reserved);
+                    generateMipmaps, Math.Max(0, maxExtra), replacedBytes, near, out long finalBytes, out reserved);
 
                 if (replacedBytes > 0 && finalBytes <= replacedBytes)
                 {
@@ -1102,7 +1294,9 @@ public class GpuCache
             reserved = 0;
             extra = 0;
         }
-        return new PreparedImage(image, uploadedFor, reserved, extra);
+        return new PreparedImage(image, uploadedFor, reserved, extra,
+            SourceWidth: textureData.SourceWidth > 0 ? textureData.SourceWidth : textureData.Width,
+            SourceHeight: textureData.SourceHeight > 0 ? textureData.SourceHeight : textureData.Height);
     }
 
     /// <summary>BUG-PERF-09: picks the admission level for one texture and reserves its bytes, in one
@@ -1112,15 +1306,20 @@ public class GpuCache
     /// the result are reserved whatever the answer (an exempt texture is still part of the projected
     /// size), minus <paramref name="replacedBytes"/> for an in-place re-upload.</summary>
     private int AdmitAndReserve(
-        int width, int height, bool mipmaps, int maxExtra, long replacedBytes,
+        int width, int height, bool mipmaps, int maxExtra, long replacedBytes, bool near,
         out long finalBytes, out long reserved)
     {
+        long wanted;
+        int extra;
         lock (_admitLock)
         {
             long budget = Interlocked.Read(ref _maxSize);
             long projected = Interlocked.Read(ref _currentSize) - replacedBytes + _reservedBytes;
-            int extra = maxExtra > 0
-                ? SLNG.Assets.TextureAdmission.ExtraDiscardFor(projected, budget, width, height, mipmaps, maxExtra)
+            // FEAT-PERF-25: judged against the near ceiling, not the budget, for a texture the user is
+            // close to -- see NearCeiling. The far one in the corner still takes the cut.
+            long ceiling = near ? NearCeiling(budget) : budget;
+            extra = maxExtra > 0
+                ? SLNG.Assets.TextureAdmission.ExtraDiscardFor(projected, ceiling, width, height, mipmaps, maxExtra)
                 : 0;
             finalBytes = SLNG.Assets.TextureAdmission.TextureBytes(
                 SLNG.Assets.TextureLod.DimensionAfterDiscard(width, extra),
@@ -1128,13 +1327,18 @@ public class GpuCache
             reserved = Math.Max(0, finalBytes - replacedBytes);
             _reservedBytes += reserved;
 
+            long requestedBytes = SLNG.Assets.TextureAdmission.TextureBytes(width, height, mipmaps);
+            wanted = near && extra > 0 ? requestedBytes - finalBytes : 0;
             if (extra > 0)
             {
                 _admitCut++;
-                _admitSavedBytes += SLNG.Assets.TextureAdmission.TextureBytes(width, height, mipmaps) - finalBytes;
+                _admitSavedBytes += requestedBytes - finalBytes;
             }
-            return extra;
         }
+        // A near texture that still had to be cut asks for the room its sharpen will need, so the shrink
+        // pass makes it before the next offer instead of the texture waiting for low water.
+        if (wanted > 0) NoteRoomWanted(wanted);
+        return extra;
     }
 
     private long ReservedBytesSnapshot() => Interlocked.Read(ref _reservedBytes);
@@ -1144,7 +1348,16 @@ public class GpuCache
         long seen;
         do { seen = Interlocked.Read(ref _roomWanted); }
         while (bytes > seen && Interlocked.CompareExchange(ref _roomWanted, bytes, seen) != seen);
+        do { seen = Interlocked.Read(ref _statRoomWantedMax); }
+        while (bytes > seen && Interlocked.CompareExchange(ref _statRoomWantedMax, bytes, seen) != seen);
     }
+
+    /// <summary>FEAT-PERF-25: how far over the budget a NEAR texture may be admitted or sharpened: by what
+    /// the last scan found it could give back without a visible loss, at most an eighth of the budget
+    /// (at least 32 MB when the scan found that much). Bounded, so a burst of near textures cannot run the card into paging
+    /// before the shrink pass has paid the overshoot back.</summary>
+    private long NearCeiling(long budget)
+        => budget + Math.Min(Interlocked.Read(ref _reclaimableBytes), Math.Max(NearOvershootMinBytes, budget / 8));
 
     private void ReleaseReservation(long bytes)
     {
@@ -1192,8 +1405,10 @@ public class GpuCache
 
                     // BUG-PERF-09: with its mip chain -- the base level alone is 25% under
                     // what the card holds, and the budget is compared with the card.
-                    long size = SLNG.Assets.TextureAdmission.TextureBytes(tex.GetWidth(), tex.GetHeight(), generateMipmaps);
-                    Put(textureId, tex, size, initialRefCount);
+                    int texW = tex.GetWidth(), texH = tex.GetHeight();
+                    long size = SLNG.Assets.TextureAdmission.TextureBytes(texW, texH, generateMipmaps);
+                    Put(textureId, tex, size, initialRefCount,
+                        new TextureShape(texW, texH, prepared.SourceWidth, prepared.SourceHeight, generateMipmaps, screenPixelArea));
                 }
             }
         }
@@ -1373,22 +1588,28 @@ public class GpuCache
     /// reclaimable. Two levers that act on what is resident / what goes in next:
     /// <list type="number">
     /// <item>a global LOD bias (<see cref="SLNG.Assets.TextureLod.GlobalLodBias"/>) added to every
-    ///   NEW world-texture upload, raised above budget and lowered (with hysteresis) below
-    ///   <see cref="LowWater"/>;</item>
-    /// <item>a shrink pass: re-halve the largest, least-recently-used resident textures in place
-    ///   (<c>ImageTexture.SetImage</c>), <see cref="ShrinkPerTick"/> per frame, until back under
-    ///   <see cref="LowWater"/>. Avatar / bake textures (<see cref="_noShrink"/>) are exempt.</item>
+    ///   NEW upload of something small on screen, raised above budget and lowered (with hysteresis)
+    ///   below <see cref="LowWater"/>;</item>
+    /// <item>a shrink pass: re-halve resident textures in place (<c>ImageTexture.SetImage</c>),
+    ///   <see cref="ShrinkPerTick"/> per frame, until back under <see cref="LowWater"/>.</item>
     /// </list>
     /// <para>BUG-PERF-09: neither lever can keep up with a burst, so the first line of defence is
     /// admission at upload time (<see cref="AdmitAndReserve"/>), which sizes each arriving texture
     /// against resident + in-flight bytes. This pass is what remains: it starts from the PROJECTED
     /// size, counts what shrinks already in flight will give back, and also makes room for a near
     /// texture that is waiting to sharpen (<see cref="_roomWanted"/>).</para>
+    /// <para>FEAT-PERF-25: which textures give back is ranked (<see cref="RebuildShrinkCandidates"/>),
+    /// a shrink that cannot be done is remembered instead of retried every frame, and one that never
+    /// finishes is given up -- in the 3.5 GB run the pass did not shrink a single texture.</para>
     /// Call once per frame from the main thread.</summary>
     public void Tick()
     {
         long now = _biasClock.ElapsedMilliseconds;
-        List<(CacheEntry entry, ImageTexture tex)> toShrink = new();
+        long frameMs = _lastTickMs == 0 ? 0 : Math.Min(now - _lastTickMs, 1000);
+        _lastTickMs = now;
+        var toShrink = _toShrink;
+        toShrink.Clear();
+        long projected;
 
         lock (_cache)
         {
@@ -1415,89 +1636,242 @@ public class GpuCache
             // BUG-PERF-09: shrinks are in flight on workers now, so "over" has to mean over AFTER
             // what they are about to give back, or every frame picks the same excess again.
             //
+            // FEAT-PERF-25: and one that never comes back is given up. A shrink parked for ever (its
+            // decode never got a slot) used to hold its place under MaxShrinksInFlight for the session.
+            long pendingSavings = 0;
+            foreach (var kv in _shrinkPending)
+            {
+                if (now - kv.Value.StartedMs > ShrinkTimeoutMs)
+                {
+                    if (_shrinkPending.TryRemove(kv.Key, out _))
+                    {
+                        Interlocked.Increment(ref _statTimedOut);
+                        if (_cache.TryGetValue(kv.Key, out var stale)) stale.ShrinkBlockedUntilMs = now + ShrinkBlockedMs;
+                    }
+                    continue;
+                }
+                pendingSavings += kv.Value.Saving;
+            }
+
             // The projected size also counts what is admitted and not uploaded yet: a burst of
             // admissions that hit the cap overshoots in reserved bytes first, and that is the signal
             // to start giving back, not the later moment those uploads land.
-            long pendingSavings = 0;
-            foreach (var kv in _shrinkPending) pendingSavings += kv.Value;
             long wanted = Interlocked.Exchange(ref _roomWanted, 0);   // a near texture waiting for room
-            long projected = _currentSize + ReservedBytesSnapshot() - pendingSavings;
+            projected = _currentSize + ReservedBytesSnapshot() - pendingSavings;
             long effective = projected + wanted;
             // Over the budget: fall to the low-water mark. Only making room for a sharpen: just that.
             long target = projected > _maxSize ? (long)(_maxSize * LowWater) : _maxSize;
+            if (projected > _maxSize) _statOverMs += frameMs;
 
-            if (effective > _maxSize)
+            bool needRoom = effective > _maxSize;
+            bool candidatesUsedUp = _candidateCursor >= _shrinkCandidates.Count;
+            // Ranked again when the list is used up, or has grown stale; and, while the cache is close to
+            // its budget, once a second anyway -- admission's near ceiling lives on the reclaimable figure.
+            bool rescan = needRoom
+                ? (candidatesUsedUp && now - _lastScanMs >= ScanIntervalMs) || now - _lastScanMs >= ScanRefreshMs
+                : projected > (long)(_maxSize * LowWater) && now - _lastScanMs >= 1000;
+            if (rescan) RebuildShrinkCandidates(now, allowVisible: projected > (long)(_maxSize * VisibleShrinkOver));
+
+            if (needRoom)
             {
-                for (var node = _lruList.First;
-                     node != null && toShrink.Count < ShrinkPerTick
-                        && _shrinkPending.Count + toShrink.Count < MaxShrinksInFlight
-                        && effective > target;
-                     node = node.Next)
+                // _shrinkPending already holds the ones picked in this loop (TryAdd below).
+                while (toShrink.Count < ShrinkPerTick
+                       && _shrinkPending.Count < MaxShrinksInFlight
+                       && effective > target
+                       && _candidateCursor < _shrinkCandidates.Count)
                 {
-                    var e = node.Value;
-                    if (e.Res is not ImageTexture tex) continue;             // meshes can't be downsampled here
-                    if (e.RefCount <= 0) continue;                            // eviction will take these anyway
-                    if (e.Size <= ShrinkFloorBytes) continue;
-                    if (_noShrink.ContainsKey(e.Id)) continue;
+                    var e = _shrinkCandidates[_candidateCursor++];
+                    // Ranked up to ScanRefreshMs ago: still the same live entry, still in use, still allowed?
+                    if (!_cache.TryGetValue(e.Id, out var live) || !ReferenceEquals(live, e)) continue;
+                    if (e.RefCount <= 0 || e.ShrinkBlockedUntilMs > now || e.Res is not ImageTexture tex) continue;
+                    if (_noShrink.ContainsKey(e.Id) || _protectedBakes.ContainsKey(e.Id)) continue;
                     long saving = e.Size - e.Size / 4;                        // one halving of each side
-                    if (!_shrinkPending.TryAdd(e.Id, saving)) continue;
+                    if (!_shrinkPending.TryAdd(e.Id, new PendingShrink(saving, now, IsVisibleTier(e, now)))) continue;
                     toShrink.Add((e, tex));
                     effective -= saving;
                 }
             }
         }
 
-        foreach (var (entry, tex) in toShrink) StartShrink(entry, tex);
+        foreach (var (entry, tex) in toShrink) StartShrink(entry, tex, now);
+        toShrink.Clear();
+
+        if (now >= _nextShrinkStatsMs)
+        {
+            _nextShrinkStatsMs = now + ShrinkStatsIntervalMs;
+            EmitShrinkStats(projected);
+        }
     }
 
-    /// <summary>BUG-PERF-09: starts re-halving one resident texture. The pixels come from the decoded
-    /// copy that is already on this machine (memory cache, or the decoded-texture disk cache from
-    /// FEAT-PERF-11), and the resize, the alpha numbers and the mip chain are built on a worker; the
-    /// main thread only does the <c>SetImage</c> (<see cref="ApplyShrink"/>). The old way read the
-    /// whole texture back out of VRAM first -- a GPU stall per texture, on the thread that is already
-    /// the bottleneck when the budget is blown. A texture with no local decode (or without an
-    /// AssetService yet) falls back to that read-back (<see cref="ShrinkOne"/>).
+    /// <summary>FEAT-PERF-25: ranks what the shrink pass may give back. Under <c>_cache</c>'s lock.
+    ///
+    /// <para>The pass used to walk the LRU list from its head and take the first two textures that were
+    /// big enough, in use and not exempt. Every offer moves a texture to the tail, and ObjectRenderer
+    /// offers every shown object every 2 s whether it is 3 m or 150 m away -- so the order said nothing
+    /// about distance, and what came first was as likely the floor under the avatar as a roof across the
+    /// sim. Now every entry is looked at (every 0.5 s while over budget, not per frame) and the best
+    /// <see cref="MaxCandidates"/> are kept:</para>
+    /// <list type="bullet">
+    /// <item><b>free</b>: not asked for within <see cref="AreaWindowMs"/> (out of draw distance, a parked
+    ///   avatar's outfit) or carrying at least 4x the texels its largest recent screen area can show --
+    ///   halving those costs nothing visible, and the area it serves stays below the sharpen threshold,
+    ///   so it does not come straight back;</item>
+    /// <item><b>visible</b>: right-sized for what the screen shows, near ones last. Only when nothing is
+    ///   free and the cache is <see cref="VisibleShrinkOver"/> over -- the budget fell under what is in
+    ///   view (another program took video memory) and paging would cost more than one level. Such a
+    ///   texture does not ask for room to sharpen again for <see cref="SharpenShrinkGuardMs"/>, so two of
+    ///   them cannot trade places every frame;</item>
+    /// <item>never: textures already smaller than their screen area asks, protected avatars (self + the
+    ///   nearest full ones, their bakes too), textures with no LOD information (terrain, UI -- nobody can
+    ///   say how large they are on screen), anything sharpened in the last 30 s or blocked after a failed
+    ///   shrink.</item>
+    /// </list>
+    /// <para>Within a tier: bytes x texels-per-screen-pixel x time since last asked for -- large, far and
+    /// stale first.</para></summary>
+    private void RebuildShrinkCandidates(long now, bool allowVisible)
+    {
+        _lastScanMs = now;
+        _shrinkCandidates.Clear();
+        _candidateCursor = 0;
+        _scanFree.Clear();
+        _scanVisible.Clear();
+        Array.Clear(_scanSkipBytes);
+        Array.Clear(_scanSkipCount);
+        int seen = 0, freeCount = 0, visibleCount = 0;
+        long reclaimable = 0, visibleBytes = 0;
+
+        foreach (var e in _cache.Values)
+        {
+            seen++;
+            Skip? skip = null;
+            if (e.Width <= 0 || e.Res is not ImageTexture) skip = Skip.Mesh;
+            else if (e.RefCount <= 0) skip = Skip.Unreferenced;
+            else if (e.Size <= ShrinkFloorBytes || (e.Width <= 8 && e.Height <= 8)) skip = Skip.Small;
+            else if (_shrinkPending.ContainsKey(e.Id)) skip = Skip.Pending;
+            else if (e.ShrinkBlockedUntilMs > now) skip = Skip.Blocked;
+            else if (e.LastSharpenMs > 0 && now - e.LastSharpenMs < SharpenShrinkGuardMs) skip = Skip.Sharpened;
+            else if (_noShrink.ContainsKey(e.Id) || _protectedBakes.ContainsKey(e.Id)) skip = Skip.Protected;
+            else if (!e.EverHadArea && !_avatarTextures.ContainsKey(e.Id)) skip = Skip.NoLod;
+            if (skip is { } s0)
+            {
+                _scanSkipBytes[(int)s0] += e.Size;
+                _scanSkipCount[(int)s0]++;
+                continue;
+            }
+
+            double excess = Excess(e, now);
+            if (excess < 1.0)
+            {
+                // Already smaller than its screen area asks for: halving it is a loss the user sees.
+                _scanSkipBytes[(int)Skip.Undersized] += e.Size;
+                _scanSkipCount[(int)Skip.Undersized]++;
+                continue;
+            }
+
+            double ageSeconds = Math.Clamp((now - e.LastSeenMs) / 1000.0, 0.0, 120.0);
+            double score = e.Size * Math.Min(excess, 256.0) * (1.0 + ageSeconds / 10.0);
+            if (excess >= 4.0)
+            {
+                freeCount++;
+                reclaimable += e.Size - e.Size / 4;
+                OfferCandidate(_scanFree, e, score);
+            }
+            else
+            {
+                // Right-sized for what the screen shows. Near ones last of all.
+                if (e.RecentArea >= SLNG.Assets.TextureLod.BiasExemptAreaPx) score /= 16.0;
+                visibleCount++;
+                visibleBytes += e.Size;
+                OfferCandidate(_scanVisible, e, score);
+            }
+        }
+
+        var source = _scanFree.Count > 0 ? _scanFree : allowVisible ? _scanVisible : null;
+        if (source != null)
+        {
+            // The heap pops the lowest score first; the list wants the best first.
+            while (source.TryDequeue(out var e, out _)) _shrinkCandidates.Add(e);
+            _shrinkCandidates.Reverse();
+        }
+        _scanFree.Clear();
+        _scanVisible.Clear();
+
+        _scanSeen = seen;
+        _scanFreeCount = freeCount;
+        _scanVisibleCount = visibleCount;
+        _scanVisibleBytes = visibleBytes;
+        _statScans++;
+        Interlocked.Exchange(ref _reclaimableBytes, reclaimable);
+    }
+
+    /// <summary>Texels per pixel of the largest screen area the texture was asked for within
+    /// <see cref="AreaWindowMs"/>; one not asked for within it (off screen, out of draw distance, a parked
+    /// outfit) counts as 64 -- unseen, so as free to shrink as anything.</summary>
+    private static double Excess(CacheEntry e, long now)
+    {
+        bool fresh = e.RecentArea > 0f && now - e.RecentAreaMs <= AreaWindowMs;
+        return fresh ? (double)e.Width * e.Height / Math.Max(e.RecentArea, 16f) : 64.0;
+    }
+
+    private static bool IsVisibleTier(CacheEntry e, long now) => Excess(e, now) < 4.0;
+
+    /// <summary>Keeps the <see cref="MaxCandidates"/> highest scores in a min-heap.</summary>
+    private static void OfferCandidate(PriorityQueue<CacheEntry, double> heap, CacheEntry e, double score)
+    {
+        if (heap.Count < MaxCandidates) heap.Enqueue(e, score);
+        else if (heap.TryPeek(out _, out double lowest) && score > lowest) heap.EnqueueDequeue(e, score);
+    }
+
+    /// <summary>BUG-PERF-09: starts re-halving one resident texture. The pixels come from what is
+    /// already on this machine and the resize, the alpha numbers and the mip chain are built on a
+    /// worker; the main thread only does the <c>SetImage</c> (<see cref="ApplyShrink"/>). Reading the
+    /// texture back out of VRAM is banned on this path (BUG-PERF-15).
+    ///
+    /// <para>FEAT-PERF-25: the pixels are asked for at the size the shrink needs, not the full asset --
+    /// a reduced decode of the cached .j2c when the decoded caches do not have it (<see
+    /// cref="SLNG.Assets.AssetService.GetShrinkSourceAsync"/>, its own worker slots, never behind the load
+    /// path), and for a bake the bake host as a last resort. A texture that still has no pixels is left
+    /// alone for <see cref="ShrinkBlockedMs"/> so the next scan picks something else.</para>
     ///
     /// <para>The Refine lane's cap of 2 items per frame is NOT lifted for these. The cap exists
     /// because <c>SetImage</c> with a new size frees and recreates the texture's GPU storage, and
     /// doing that to too many in-use <see cref="ImageTexture"/>s in one frame crashed the Vulkan
     /// backend (Signal 11, see <see cref="MainThreadWorkQueue.Pump"/>). A shrink is exactly that
-    /// operation, and nothing here has shown the crash to be gone. What the worker path buys is a
-    /// cheaper item: SetImage alone, no read-back, no resize.</para></summary>
-    private void StartShrink(CacheEntry entry, ImageTexture tex)
+    /// operation, and nothing here has shown the crash to be gone.</para></summary>
+    private void StartShrink(CacheEntry entry, ImageTexture tex, long now)
     {
         var assets = _assets;
-        if (assets == null || !GodotObject.IsInstanceValid(tex))
-        {
-            QueueReadBackShrink(entry, tex);
-            return;
-        }
-
-        int w = tex.GetWidth(), h = tex.GetHeight();
+        int w = entry.Width, h = entry.Height;
         int nw = Math.Max(8, w >> 1), nh = Math.Max(8, h >> 1);
-        if (nw >= w && nh >= h)
+        if (assets == null || !GodotObject.IsInstanceValid(tex) || (nw >= w && nh >= h))
         {
+            lock (_cache) entry.ShrinkBlockedUntilMs = now + ShrinkBlockedMs;
             _shrinkPending.TryRemove(entry.Id, out _);
             return;
         }
-        // The size was recorded with a mip chain exactly when it is more than the base level.
-        bool mips = entry.Size > (long)w * h * 4;
+        bool mips = entry.Mipmaps;
         Guid id = entry.Id;
+        int sourceW = entry.SourceWidth, sourceH = entry.SourceHeight;
+        float priority = entry.Size / (1024f * 1024f);   // the larger saving first
+        bool isBake = _bakeSource.TryGetValue(id, out var bake);
+        Interlocked.Increment(ref _statStarted);
 
         _ = Task.Run(async () =>
         {
             try
             {
-                var decoded = await assets.TryGetLocalDecodedAsync(id).ConfigureAwait(false);
+                var decoded = await assets.GetShrinkSourceAsync(id, nw, nh, sourceW, sourceH, priority).ConfigureAwait(false);
+                if (decoded == null && isBake)
+                    decoded = await assets.GetBakeTextureAsync(id, bake.Channel, 0f, bake.Agent).ConfigureAwait(false);
                 var prepared = decoded != null && decoded.Width >= nw && decoded.Height >= nh
                     ? await RunOnImageWorker(() => PrepareShrinkImage(decoded, nw, nh, mips), default(PreparedShrink)).ConfigureAwait(false)
                     : default;
                 if (prepared.Image == null)
                 {
-                    // BUG-PERF-15: VRAM read-backs on hot paths are banned. Under the separate render
-                    // thread (FEAT-PERF-13), tex.GetImage() causes a full stall.
-                    Logger.Info($"[GpuCache] shrink {id.ToString()[..8]} skipped: no local decoded copy available ({w}x{h} kept, no readback stall)");
+                    Interlocked.Increment(ref _statNoSource);
+                    lock (_cache) entry.ShrinkBlockedUntilMs = _biasClock.ElapsedMilliseconds + ShrinkBlockedMs;
                     _shrinkPending.TryRemove(id, out _);
+                    Logger.Info($"[GpuCache] shrink {id.ToString()[..8]} skipped: no local pixels ({w}x{h} kept, retried in {ShrinkBlockedMs / 1000} s)");
                     return;
                 }
                 MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine,
@@ -1505,14 +1879,13 @@ public class GpuCache
             }
             catch (Exception ex)
             {
+                Interlocked.Increment(ref _statFailed);
                 GD.PrintErr($"[GpuCache] shrink {id} failed: {ex.Message}");
+                lock (_cache) entry.ShrinkBlockedUntilMs = _biasClock.ElapsedMilliseconds + ShrinkBlockedMs;
                 _shrinkPending.TryRemove(id, out _);
             }
         });
     }
-
-    private void QueueReadBackShrink(CacheEntry entry, ImageTexture tex)
-        => MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () => ShrinkOne(entry, tex), label: "texture.shrink.readback");
 
     private readonly record struct PreparedShrink(Image? Image, AlphaStats Stats);
 
@@ -1547,23 +1920,31 @@ public class GpuCache
         var img = prepared.Image!;
         try
         {
-            if (!GodotObject.IsInstanceValid(tex)) return;
+            if (!GodotObject.IsInstanceValid(tex)) { Interlocked.Increment(ref _statRaced); return; }
             // Evicted, or evicted and replaced, since the shrink was picked.
             bool resident;
             lock (_cache) resident = _cache.TryGetValue(entry.Id, out var live) && ReferenceEquals(live.Res, tex);
-            if (!resident) return;
-            // Something else (a read-back shrink, a sharpen that ended smaller) got there first.
-            if (tex.GetWidth() <= nw && tex.GetHeight() <= nh) return;
+            if (!resident) { Interlocked.Increment(ref _statRaced); return; }
+            // Something else (a sharpen that ended smaller) got there first.
+            if (tex.GetWidth() <= nw && tex.GetHeight() <= nh) { Interlocked.Increment(ref _statRaced); return; }
 
+            long before;
+            lock (_cache) before = entry.Size;
             tex.SetImage(img);
             // BUG-PERF-07: the texture's pixels change here, so its alpha numbers do too.
             _alphaStats[entry.Id] = prepared.Stats;
-            SetResidentSize(entry.Id, tex, SLNG.Assets.TextureAdmission.TextureBytes(nw, nh, mips));
+            long after = SLNG.Assets.TextureAdmission.TextureBytes(nw, nh, mips);
+            SetResidentSize(entry.Id, tex, after, nw, nh, sharpened: false);
             MarkShrunk(entry.Id, nw, nh);
+            if (_shrinkPending.TryGetValue(entry.Id, out var pending) && pending.Visible)
+                lock (_cache) entry.SharpenGuardUntilMs = _biasClock.ElapsedMilliseconds + SharpenShrinkGuardMs;
+            Interlocked.Increment(ref _statDone);
+            Interlocked.Add(ref _statFreedBytes, Math.Max(0, before - after));
             Logger.Info($"[GpuCache] shrank {entry.Id.ToString()[..8]} {w}x{h} -> {nw}x{nh}");
         }
         catch (Exception ex)
         {
+            Interlocked.Increment(ref _statFailed);
             GD.PrintErr($"[GpuCache] shrink {entry.Id} failed: {ex.Message}");
         }
         finally
@@ -1576,25 +1957,151 @@ public class GpuCache
     /// <summary>Mark a shrunk texture improvable, but only on a genuine close-up:
     /// <see cref="TryUpgradeCachedTexture"/> requires screenPixelArea >= 4x this, i.e. the object must
     /// fill roughly its full (shrunk) texel count on screen before it pays for a re-decode --
-    /// otherwise a shrink while over budget would immediately trigger a re-sharpen and churn.</summary>
+    /// otherwise a shrink while over budget would immediately trigger a re-sharpen and churn.
+    ///
+    /// <para>FEAT-PERF-25: and recorded as REQUESTED for that same area, so a re-offer that has not come
+    /// 4x closer is treated like an admission cut: a far one waits for the cache to fall below low water
+    /// and asks for nothing, a near one asks for room. Without it a texture shrunk from the visible tier
+    /// counted as "the camera came closer" at its very next offer and made the pass shrink another one
+    /// for it.</para></summary>
     private void MarkShrunk(Guid id, int nw, int nh)
     {
         _uploadedForPixelArea[id] = (float)nw * nh / 4f;
-        _admissionRequestedArea.TryRemove(id, out _);   // a shrink is a new "built for"; the old request is moot
+        _admissionRequestedArea[id] = (float)nw * nh;
     }
 
-    /// <summary>Re-halves one resident texture in place on the main thread (Refine lane, capped at
-    /// 2/frame -- see <see cref="MainThreadWorkQueue"/>'s Signal-11 note). Reads the image back from
-    /// the GPU, downsamples, and pushes it into the SAME <see cref="ImageTexture"/> so every
-    /// material keeps working with no re-wiring; then makes the id an upgrade candidate so
-    /// <see cref="TryUpgradeCachedTexture"/> re-sharpens it if the user walks up to it and the
-    /// budget has room again. BUG-PERF-09: only the fallback now, for a texture that has no decoded
-    /// copy on this machine -- see <see cref="StartShrink"/>.</summary>
-    private void ShrinkOne(CacheEntry entry, ImageTexture tex)
+    /// <summary>FEAT-PERF-25: one line per 10 s while the cache is over its budget or the pass did
+    /// anything -- to the perf sidecar always, to godot.log under --diag. What it says: how long the
+    /// cache was over, what the pass gave back and why it gave back no more (the last scan's skip
+    /// table, in MB per reason).</summary>
+    private void EmitShrinkStats(long projected)
     {
-        // BUG-PERF-15: VRAM read-backs on hot paths are banned (RenderThread stall).
-        _shrinkPending.TryRemove(entry.Id, out _);
-        Logger.Info($"[GpuCache] read-back shrink for {entry.Id.ToString()[..8]} skipped (readback banned on hot path)");
+        long overMs = _statOverMs;
+        int scans = _statScans;
+        _statOverMs = 0;
+        _statScans = 0;
+        int started = Interlocked.Exchange(ref _statStarted, 0);
+        int done = Interlocked.Exchange(ref _statDone, 0);
+        int noSource = Interlocked.Exchange(ref _statNoSource, 0);
+        int timedOut = Interlocked.Exchange(ref _statTimedOut, 0);
+        int raced = Interlocked.Exchange(ref _statRaced, 0);
+        int failed = Interlocked.Exchange(ref _statFailed, 0);
+        long freed = Interlocked.Exchange(ref _statFreedBytes, 0);
+        long roomWanted = Interlocked.Exchange(ref _statRoomWantedMax, 0);
+        if (overMs == 0 && started == 0 && done == 0 && noSource == 0 && timedOut == 0) return;
+
+        long oldestMs = 0;
+        long now = _biasClock.ElapsedMilliseconds;
+        foreach (var kv in _shrinkPending) oldestMs = Math.Max(oldestMs, now - kv.Value.StartedMs);
+
+        var skips = new System.Text.StringBuilder();
+        for (int i = 0; i < (int)Skip.Count; i++)
+        {
+            if (_scanSkipCount[i] == 0) continue;
+            if (skips.Length > 0) skips.Append(' ');
+            skips.Append(((Skip)i).ToString().ToLowerInvariant()).Append('=').Append(_scanSkipBytes[i] >> 20)
+                 .Append(" MB/").Append(_scanSkipCount[i]);
+        }
+
+        UI.StatsOverlay.EmitPerfLine(
+            $"[GpuShrink] last {ShrinkStatsIntervalMs / 1000} s: over budget {overMs / 1000.0:0.0} s, projected {projected >> 20} of {Interlocked.Read(ref _maxSize) >> 20} MB, " +
+            $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} | started={started} done={done} freed={freed >> 20} MB noSource={noSource} " +
+            $"timedOut={timedOut} raced={raced} failed={failed} inFlight={_shrinkPending.Count} oldest={oldestMs} ms roomWanted={roomWanted >> 20} MB | " +
+            $"scans={scans} last scan: seen={_scanSeen} free={_scanFreeCount} visible={_scanVisibleCount} ({_scanVisibleBytes >> 20} MB) " +
+            $"reclaimable={Interlocked.Read(ref _reclaimableBytes) >> 20} MB, skipped {skips}");
+    }
+
+    /// <summary>FEAT-PERF-25 self test seam: rank the shrink candidates now, as Tick would over budget,
+    /// and return them best first. <paramref name="allowVisible"/> as if the cache were far over.</summary>
+    internal List<Guid> SelfTestShrinkCandidates(bool allowVisible)
+    {
+        lock (_cache)
+        {
+            RebuildShrinkCandidates(_biasClock.ElapsedMilliseconds, allowVisible);
+            var ids = new List<Guid>(_shrinkCandidates.Count);
+            foreach (var e in _shrinkCandidates) ids.Add(e.Id);
+            return ids;
+        }
+    }
+
+    /// <summary>Self test seam: pretend a texture was last asked for <paramref name="msAgo"/> ago, at
+    /// <paramref name="screenPixelArea"/> (0: no area within the window).</summary>
+    internal void SelfTestSetSeen(Guid textureId, long msAgo, float screenPixelArea)
+    {
+        lock (_cache)
+        {
+            if (!_cache.TryGetValue(textureId, out var e)) return;
+            long now = _biasClock.ElapsedMilliseconds;
+            e.LastSeenMs = now - msAgo;
+            e.RecentArea = screenPixelArea;
+            e.RecentAreaMs = screenPixelArea > 0f ? now - msAgo : now - 10 * AreaWindowMs;
+            e.EverHadArea |= screenPixelArea > 0f;
+        }
+    }
+
+    internal void SelfTestBlockShrink(Guid textureId)
+    {
+        lock (_cache)
+            if (_cache.TryGetValue(textureId, out var e)) e.ShrinkBlockedUntilMs = _biasClock.ElapsedMilliseconds + ShrinkBlockedMs;
+    }
+
+    internal long SelfTestReclaimableBytes => Interlocked.Read(ref _reclaimableBytes);
+
+    /// <summary>Self test seam: the whole shrink of one resident texture, synchronously -- the worker half
+    /// from <paramref name="decoded"/>, then the main-thread half. Returns the new size, or (0, 0).</summary>
+    internal (int Width, int Height) SelfTestShrinkNow(Guid textureId, SLNG.Assets.TextureData decoded)
+    {
+        CacheEntry? entry;
+        ImageTexture? tex;
+        lock (_cache)
+        {
+            if (!_cache.TryGetValue(textureId, out entry) || entry.Res is not ImageTexture t) return (0, 0);
+            tex = t;
+        }
+        int w = entry.Width, h = entry.Height, nw = Math.Max(8, w >> 1), nh = Math.Max(8, h >> 1);
+        long now = _biasClock.ElapsedMilliseconds;
+        if (!_shrinkPending.TryAdd(textureId, new PendingShrink(entry.Size - entry.Size / 4, now, IsVisibleTier(entry, now)))) return (0, 0);
+        var prepared = PrepareShrinkImage(decoded, nw, nh, entry.Mipmaps);
+        if (prepared.Image == null) { _shrinkPending.TryRemove(textureId, out _); return (0, 0); }
+        ApplyShrink(entry, tex, prepared, w, h, nw, nh, entry.Mipmaps);
+        return (tex.GetWidth(), tex.GetHeight());
+    }
+
+    /// <summary>Self test seam: what a shrink left behind for the sharpen rule -- the area the upload is
+    /// now built for, the area it counts as requested for, and whether the sharpen guard is up.</summary>
+    internal (float BuiltFor, float RequestedFor, bool Guarded) SelfTestSharpenState(Guid textureId)
+    {
+        _uploadedForPixelArea.TryGetValue(textureId, out float builtFor);
+        _admissionRequestedArea.TryGetValue(textureId, out float requestedFor);
+        bool guarded;
+        lock (_cache) guarded = _cache.TryGetValue(textureId, out var e) && e.SharpenGuardUntilMs > _biasClock.ElapsedMilliseconds;
+        return (builtFor, requestedFor, guarded);
+    }
+
+    /// <summary>FEAT-PERF-25: the cache's bytes by kind, for the one-shot [VramBreakdown] line.</summary>
+    public (long TextureBytes, int Textures, long MeshBytes, int Meshes, long AvatarBytes, long ProtectedBytes) SizeBreakdown()
+    {
+        long texBytes = 0, meshBytes = 0, avatarBytes = 0, protectedBytes = 0;
+        int textures = 0, meshes = 0;
+        lock (_cache)
+        {
+            foreach (var e in _cache.Values)
+            {
+                if (e.Res is ImageTexture)
+                {
+                    texBytes += e.Size;
+                    textures++;
+                    if (_avatarTextures.ContainsKey(e.Id)) avatarBytes += e.Size;
+                    if (_noShrink.ContainsKey(e.Id) || _protectedBakes.ContainsKey(e.Id)) protectedBytes += e.Size;
+                }
+                else
+                {
+                    meshBytes += e.Size;
+                    meshes++;
+                }
+            }
+        }
+        return (texBytes, textures, meshBytes, meshes, avatarBytes, protectedBytes);
     }
 
     private void EvictIfNeeded()
@@ -1615,6 +2122,8 @@ public class GpuCache
                 _avatarTextures.TryRemove(entry.Id, out _);
                 _bakeTextures.TryRemove(entry.Id, out _);
                 _noShrink.TryRemove(entry.Id, out _);
+                _protectedBakes.TryRemove(entry.Id, out _);
+                _bakeSource.TryRemove(entry.Id, out _);
                 _currentSize -= entry.Size;
                 // Explicitly dispose the C# wrapper so its finalizer won't run later (e.g. after RenderingServer is gone)
                 if (GodotObject.IsInstanceValid(entry.Res))
@@ -1647,6 +2156,8 @@ public class GpuCache
             }
             _cache.Clear();
             _lruList.Clear();
+            _shrinkCandidates.Clear();
+            _candidateCursor = 0;
             _currentSize = 0;
         }
     }

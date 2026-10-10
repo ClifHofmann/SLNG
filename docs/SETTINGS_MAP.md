@@ -22,6 +22,7 @@ Dieses Dokument listet alle geplanten und bereits vorhandenen Viewer-Einstellung
 | | | Wasser-Reflektionen | ⏸️ Pending | |
 | | | Anti-Aliasing (MSAA) | ✅ Done | In `Hardware / Qualität` |
 | | | Render-Thread (Haupt / eigener Thread) | 🧪 Review | In `Hardware`, wirkt erst nach Neustart; Standard: Haupt-Thread. Engine-Einstellung, deshalb nicht in `preferences.cfg`, sondern in `user://engine_overrides.cfg` (FEAT-PERF-13) |
+| | | Teure Effekte bei kleinen Grafikkarten begrenzen | 🧪 Review | In `Hardware`, unter dem Texturspeicher; Standard an. Unter 6 GB Grafikspeicher-Budget: MSAA höchstens 2x (unter 4,5 GB aus), kein SSIL, Schattenatlas höchstens 2048, Reflection-Atlas 256 (für die Sitzung), kein Planarspiegel, keine Spiegel-Probe. `preferences.cfg` `low_vram_caps` (FEAT-PERF-25) |
 | | Post-FX | Depth of Field (DoF) | ⏸️ Pending | |
 | | | Umgebungsverdeckung (SSAO) | ⏸️ Pending | |
 | | | Glow / Bloom | ⏸️ Pending | |

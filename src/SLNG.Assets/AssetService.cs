@@ -691,42 +691,78 @@ public class AssetService
         return lazy.Value;
     }
 
-    /// <summary>BUG-PERF-09: the decoded pixels of a texture that is already on this machine -- the
-    /// memory cache or the decoded-texture disk cache -- and nothing else. Never the network, never a
-    /// J2K decode, so it is safe to ask for a texture that has no business being fetched again (a
-    /// shrink of one already uploaded). Null when neither cache has it.
+    /// <summary>FEAT-PERF-25: pixels for a GPU-side shrink of a texture that is already uploaded -- at
+    /// least <paramref name="minWidth"/> x <paramref name="minHeight"/>, from what is on this machine:
+    /// the memory cache, the decoded-texture disk cache at the reduce level that size needs, or a reduced
+    /// decode of the cached .j2c (stored back into the decoded cache). Never the network. Null when none
+    /// of those has it.
     ///
-    /// <para>The result is the full-resolution decode; the caller reduces it. It shares the decode
-    /// slots (the disk read is the same cost as a decode-cache hit on the load path) at the lowest
-    /// priority, so a shrink never queues ahead of a texture someone is waiting to see.</para></summary>
-    public async Task<TextureData?> TryGetLocalDecodedAsync(Guid textureId)
+    /// <para>Its own two slots, not the shared decode gate. BUG-PERF-09 queued this at priority -1000
+    /// behind every texture request, so "a shrink never queues ahead of a texture someone is waiting
+    /// to see" -- and on a busy region that queue never emptied: the first shrinks never got a slot, and
+    /// with the in-flight cap reached the shrink pass never picked another texture. Over budget, a shrink
+    /// IS what a waiting texture needs (it makes the room the near texture is admitted into), so it runs
+    /// beside the load path at a bounded rate instead of after it.</para>
+    ///
+    /// <para><paramref name="sourceWidth"/> x <paramref name="sourceHeight"/> is the asset's own size when
+    /// the caller knows it (0 otherwise; the .j2c header is read then).</para></summary>
+    public async Task<TextureData?> GetShrinkSourceAsync(
+        Guid textureId, int minWidth, int minHeight, int sourceWidth = 0, int sourceHeight = 0, float priority = 0f)
     {
-        if (_memCache.TryGetValue(textureId, out TextureData? cached)) return cached;
+        static bool BigEnough(TextureData? d, int w, int h) => d is { IsDegraded: false } && d.Width >= w && d.Height >= h;
+
+        if (_memCache.TryGetValue(textureId, out TextureData? cached) && BigEnough(cached, minWidth, minHeight)) return cached;
 
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v5.j2c");
-        await _textureDecodeThrottle.WaitAsync(LocalDecodePriority).ConfigureAwait(false);
+        await _shrinkSourceGate.WaitAsync(priority).ConfigureAwait(false);
         try
         {
-            var decoded = await DecodedCache.TryGetAsync(textureId, 0, cacheFile).ConfigureAwait(false);
-            if (decoded is { IsDegraded: false }) return decoded;
-
-            // BUG-PERF-15: If decoded cache missed but local .j2c exists on disk, decode on worker pool
-            if (cacheFile != null && File.Exists(cacheFile))
+            if (sourceWidth > 0 && sourceHeight > 0)
             {
-                byte[] cachedBytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false);
-                var decodedFromCache = await Task.Run(() => DecodeTexture(cachedBytes, false)).ConfigureAwait(false);
-                if (decodedFromCache is { IsDegraded: false })
+                int known = TextureLod.ReduceLevelForAtLeast(sourceWidth, sourceHeight, minWidth, minHeight);
+                var fromDecodedCache = await DecodedCache.TryGetAsync(textureId, known, cacheFile).ConfigureAwait(false);
+                if (BigEnough(fromDecodedCache, minWidth, minHeight)) return fromDecodedCache;
+            }
+
+            if (cacheFile == null || !File.Exists(cacheFile)) return null;
+            byte[] bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false);
+            if (bytes.Length == 0) return null;
+
+            int reduce = 0;
+            if (TryReadJ2kSize(bytes, out int w, out int h, out _))
+            {
+                reduce = TextureLod.ReduceLevelForAtLeast(w, h, minWidth, minHeight);
+                if (sourceWidth <= 0 || sourceHeight <= 0)
                 {
-                    _ = Task.Run(() => DecodedCache.PutAsync(textureId, 0, decodedFromCache));
-                    return decodedFromCache;
+                    var fromDecodedCache = await DecodedCache.TryGetAsync(textureId, reduce, cacheFile).ConfigureAwait(false);
+                    if (BigEnough(fromDecodedCache, minWidth, minHeight)) return fromDecodedCache;
                 }
             }
+
+            var decoded = await Task.Run(() => DecodeTexture(bytes, isSculpt: false, reduce)).ConfigureAwait(false);
+            if (!BigEnough(decoded, minWidth, minHeight) && reduce > 0)
+            {
+                // Same rule as the load path: a reduced decode that comes back wrong is confirmed at full
+                // resolution before anything is believed about the bytes.
+                reduce = 0;
+                decoded = await Task.Run(() => DecodeTexture(bytes, isSculpt: false)).ConfigureAwait(false);
+            }
+            if (!BigEnough(decoded, minWidth, minHeight)) return null;
+
+            int storedReduce = reduce;
+            _ = Task.Run(() => DecodedCache.PutAsync(textureId, storedReduce, decoded!));
+            return decoded;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
             return null;
         }
-        finally { _textureDecodeThrottle.Release(); }
+        finally { _shrinkSourceGate.Release(); }
     }
 
-    private const float LocalDecodePriority = -1000f;
+    // FEAT-PERF-25: see GetShrinkSourceAsync. Two slots: a reduced decode is 4-13 ms, and the shrinks
+    // themselves are applied at most two per frame (MainThreadWorkQueue's Refine lane).
+    private static readonly PriorityGate _shrinkSourceGate = new PriorityGate(2);
 
     /// <summary>BUG-AVATAR-02: fetches and decodes an avatar BAKE texture through SL's dedicated
     /// bake-texture host, not the generic per-face path <see cref="GetTextureAsync"/> uses --

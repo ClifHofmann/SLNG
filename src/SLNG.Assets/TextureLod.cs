@@ -23,6 +23,14 @@ public static class TextureLod
     /// read on decode workers.</summary>
     public static volatile int GlobalLodBias;
 
+    /// <summary>FEAT-PERF-25: screen areas from this size up (an object ~128 px across) never take the
+    /// <see cref="GlobalLodBias"/>. The bias is back-pressure against a cache that is over its budget,
+    /// and it used to land on everything that arrived while it was raised -- including the wall in front
+    /// of the camera, which then sat two levels blurry because the cache was full of textures from far
+    /// away (in-world 2026-10-10, 3.5 GB budget: bias 2 for the whole session). Near textures get room
+    /// from the shrink pass instead; the bias stays for the small, distant ones it costs nothing to see.</summary>
+    public const float BiasExemptAreaPx = 128f * 128f;
+
     /// <summary>
     /// The real viewer's texel-to-screen-pixel criterion: how many halvings of each dimension a
     /// texture can take before it stops carrying more detail than the screen can show. One discard
@@ -37,8 +45,27 @@ public static class TextureLod
         double texels = (double)width * height;
         int discard = (int)System.Math.Floor(System.Math.Log(texels / System.Math.Max(screenPixelArea, 1f)) / System.Math.Log(4.0));
         // FEAT-PERF-04: fold in the VRAM back-pressure bias. After the screenPixelArea guard above,
-        // so a caller with no LOD info (avatar / bake, screenPixelArea 0) is never affected.
-        return System.Math.Clamp(discard + GlobalLodBias, 0, MaxDiscardLevel);
+        // so a caller with no LOD info (avatar / bake, screenPixelArea 0) is never affected, and
+        // (FEAT-PERF-25) only for what is small on screen.
+        int bias = screenPixelArea < BiasExemptAreaPx ? GlobalLodBias : 0;
+        return System.Math.Clamp(discard + bias, 0, MaxDiscardLevel);
+    }
+
+    /// <summary>FEAT-PERF-25: the largest decoder reduce level (0..<see cref="MaxDiscardLevel"/>) whose
+    /// output is still at least <paramref name="minWidth"/> x <paramref name="minHeight"/> for an asset of
+    /// <paramref name="sourceWidth"/> x <paramref name="sourceHeight"/>. A GPU-side shrink to half its
+    /// current size needs no more pixels than that, and a reduced decode is a fraction of a full one
+    /// (13.1 ms at a quarter, 3.8 ms at a sixteenth, against 47.6 ms -- BUG-NET-11). 0 when the source
+    /// size is unknown.</summary>
+    public static int ReduceLevelForAtLeast(int sourceWidth, int sourceHeight, int minWidth, int minHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0) return 0;
+        int reduce = 0;
+        while (reduce < MaxDiscardLevel
+               && ReducedDimension(sourceWidth, reduce + 1) >= minWidth
+               && ReducedDimension(sourceHeight, reduce + 1) >= minHeight)
+            reduce++;
+        return reduce;
     }
 
     /// <summary>

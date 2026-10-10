@@ -60,6 +60,34 @@ public sealed class GraphicsSettings
     public int TextureMemoryMb { get; private set; } = 1536;
     public bool TextureMemoryAuto { get; private set; } = true;
 
+    /// <summary>FEAT-PERF-25: on a card with a small video-memory budget (<see cref="LowVramPolicy"/>),
+    /// cap the render buffers that cost the same at every distance -- MSAA, SSIL, the shadow and
+    /// reflection atlases, the planar mirror -- so the texture budget keeps near objects sharp. On by
+    /// default; off means the options below apply exactly as set, whatever the card.</summary>
+    public bool LowVramCaps { get; private set; } = true;
+
+    /// <summary>FEAT-PERF-25: the <see cref="LowVramPolicy"/> tier Boot chose from the OS budget. Not
+    /// saved: it is a property of the card and the session, not a preference.</summary>
+    public int VramTier { get; set; }
+
+    /// <summary>FEAT-PERF-25: the options <see cref="Apply"/> actually put into the engine -- the ones
+    /// above, after the low-VRAM caps -- and what the caps changed ("MSAA 4x -> off", ...).</summary>
+    public LowVramPolicy.Request Effective { get; private set; }
+    public IReadOnlyList<string> CapChanges { get; private set; } = Array.Empty<string>();
+
+    /// <summary>Whether the planar mirror (BUG-RENDER-32) may render: it has no switch of its own, only
+    /// the low-VRAM cap.</summary>
+    public bool PlanarMirrorAllowed => !_applied || Effective.PlanarMirror;
+
+    /// <summary><see cref="PostFxHeroProbe"/> after the low-VRAM cap.</summary>
+    public bool HeroProbeAllowed => _applied ? Effective.HeroProbe : PostFxHeroProbe;
+
+    private bool _applied;
+
+    /// <summary>True when the cap wants the scenario's reflection atlas smaller than project.godot made
+    /// it. Boot does the resize (Godot has no direct call for it, see LowVramPolicy.CappedReflectionSize).</summary>
+    public bool ReflectionAtlasCapped => _applied && Effective.ReflectionSize < ProjectReflectionSize;
+
     public bool PostFxSsao { get; private set; } = true;
     public bool PostFxSsil { get; private set; } = true;
     public bool PostFxGlow { get; private set; } = true;
@@ -136,6 +164,7 @@ public sealed class GraphicsSettings
         Msaa = (int)cfg.GetValue(Section, "msaa", Msaa);
         TextureMemoryMb = (int)cfg.GetValue(Section, "texture_memory_mb", TextureMemoryMb);
         TextureMemoryAuto = (bool)cfg.GetValue(Section, "texture_memory_auto", TextureMemoryAuto);
+        LowVramCaps = (bool)cfg.GetValue(Section, "low_vram_caps", LowVramCaps);
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
@@ -165,6 +194,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "msaa", Msaa);
         cfg.SetValue(Section, "texture_memory_mb", TextureMemoryMb);
         cfg.SetValue(Section, "texture_memory_auto", TextureMemoryAuto);
+        cfg.SetValue(Section, "low_vram_caps", LowVramCaps);
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
@@ -190,6 +220,7 @@ public sealed class GraphicsSettings
     public void SetMsaa(int msaa) { Msaa = msaa; Save(); }
     public void SetTextureMemoryMb(int mb) { TextureMemoryMb = mb; Save(); }
     public void SetTextureMemoryAuto(bool auto) { TextureMemoryAuto = auto; Save(); }
+    public void SetLowVramCaps(bool on) { LowVramCaps = on; Save(); }
     public void SetPostFxSsao(bool on) { PostFxSsao = on; Save(); }
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
     public void SetPostFxGlow(bool on) { PostFxGlow = on; Save(); }
@@ -404,6 +435,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "msaa", Msaa);
         cfg.SetValue(section, "texture_memory_mb", TextureMemoryMb);
         cfg.SetValue(section, "texture_memory_auto", TextureMemoryAuto);
+        cfg.SetValue(section, "low_vram_caps", LowVramCaps);
         cfg.SetValue(section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(section, "post_fx_glow", PostFxGlow);
@@ -444,6 +476,7 @@ public sealed class GraphicsSettings
         Msaa = (int)cfg.GetValue(section, "msaa", Msaa);
         TextureMemoryMb = (int)cfg.GetValue(section, "texture_memory_mb", TextureMemoryMb);
         TextureMemoryAuto = (bool)cfg.GetValue(section, "texture_memory_auto", TextureMemoryAuto);
+        LowVramCaps = (bool)cfg.GetValue(section, "low_vram_caps", LowVramCaps);
         PostFxSsao = (bool)cfg.GetValue(section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(section, "post_fx_glow", PostFxGlow);
@@ -491,6 +524,14 @@ public sealed class GraphicsSettings
     /// startup the environment and sun do not exist yet, and the window-level settings should still
     /// take effect.
     /// </summary>
+    private static int ProjectReflectionSize
+        => (int)ProjectSettings.GetSetting("rendering/reflections/reflection_atlas/reflection_size", 256);
+
+    private static bool ProjectSsaoHalfSize
+        => (bool)ProjectSettings.GetSetting("rendering/environment/ssao/half_size", true);
+
+    private bool _appliedSsaoHalfSize = ProjectSsaoHalfSize;
+
     public void Apply(Viewport? viewport, WorldEnvironment? worldEnvironment, DirectionalLight3D? sun,
                        ReflectionProbe? reflectionProbe = null)
     {
@@ -511,16 +552,39 @@ public sealed class GraphicsSettings
         RenderConfig.MaxFullyRenderedAvatars = MaxFullyRenderedAvatars;
         AvatarRenderer.NotifySettingsChanged();
 
-        if (viewport != null) viewport.Msaa3D = (Viewport.Msaa)Msaa;
+        // FEAT-PERF-25: the options as set, then the low-VRAM caps on top (when allowed).
+        var requested = new LowVramPolicy.Request(
+            Msaa, PostFxSsao, ProjectSsaoHalfSize, PostFxSsil, ShadowResolution, ProjectReflectionSize,
+            PlanarMirror: true, HeroProbe: PostFxHeroProbe);
+        var changes = new List<string>();
+        Effective = LowVramCaps ? LowVramPolicy.Cap(requested, VramTier, changes) : requested;
+        CapChanges = changes;
+        _applied = true;
 
-        RenderingServer.DirectionalShadowAtlasSetSize(ShadowResolution, true);
+        if (viewport != null) viewport.Msaa3D = (Viewport.Msaa)Effective.Msaa;
+
+        RenderingServer.DirectionalShadowAtlasSetSize(Effective.ShadowAtlasSize, true);
 
         if (worldEnvironment?.Environment is { } env)
         {
-            env.SsaoEnabled = PostFxSsao;
-            env.SsilEnabled = PostFxSsil;
+            env.SsaoEnabled = Effective.Ssao;
+            env.SsilEnabled = Effective.Ssil;
             env.SsrEnabled = PostFxSsr;
             env.GlowEnabled = PostFxGlow;
+        }
+
+        // SSAO resolution is a global quality setting, not an Environment property. project.godot keeps
+        // Godot's default (half size), so this only ever acts if that default changes.
+        if (Effective.SsaoHalfSize != _appliedSsaoHalfSize)
+        {
+            _appliedSsaoHalfSize = Effective.SsaoHalfSize;
+            RenderingServer.EnvironmentSetSsaoQuality(
+                (RenderingServer.EnvironmentSsaoQuality)(int)ProjectSettings.GetSetting("rendering/environment/ssao/quality", 2),
+                Effective.SsaoHalfSize,
+                (float)ProjectSettings.GetSetting("rendering/environment/ssao/adaptive_target", 0.5f),
+                (int)ProjectSettings.GetSetting("rendering/environment/ssao/blur_passes", 2),
+                (float)ProjectSettings.GetSetting("rendering/environment/ssao/fadeout_from", 50f),
+                (float)ProjectSettings.GetSetting("rendering/environment/ssao/fadeout_to", 300f));
         }
 
         // Visible, not QueueFree/re-create: toggling back on must resume from wherever Boot's own

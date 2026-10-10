@@ -110,6 +110,137 @@ public static partial class SelfTest
     }
 
     /// <summary>
+    /// FEAT-PERF-25: the shrink pass ranks what it gives back. In the 3.5 GB run it gave back nothing at
+    /// all; the ranking is what decides it now, so it is held to the rules here: unseen and far textures
+    /// (more texels than the screen shows) first, the longest unseen before the merely far; never what is
+    /// protected, smaller than its screen area, without LOD information, unreferenced or blocked after a
+    /// failed shrink; right-sized textures only when the cache is far over and nothing is free. Then the
+    /// two halves that pay for it: a NEAR texture is admitted whole into a full cache that has bytes to
+    /// give back (a far one still takes the cut), and a shrink leaves the bookkeeping that stops it from
+    /// coming straight back.
+    /// </summary>
+    private static Check CheckShrinkCandidateRanking()
+    {
+        const string Name = "shrink pass ranks far/unseen first, spares near and protected, admits near whole";
+        var problems = new List<string>();
+        const int S = 512;
+        var rgba = new byte[S * S * 4];
+        for (int i = 0; i < S * S; i++)
+        {
+            rgba[i * 4] = (byte)(i * 7);
+            rgba[i * 4 + 1] = (byte)(i * 3);
+            rgba[i * 4 + 2] = (byte)(i * 5);
+            rgba[i * 4 + 3] = 255;
+        }
+        var data = new TextureData(S, S, rgba, false, S, S);
+        float full = S * S;
+        long size = TextureAdmission.TextureBytes(S, S, true);
+        long saving = size - size / 4;
+
+        var cache = new GpuCache(1L << 30);
+        var small = new GpuCache(3 * size);
+        var onlyNear = new GpuCache(1L << 30);
+        try
+        {
+            Guid Up(GpuCache c, float area, int refs = 1, bool protect = false)
+            {
+                var id = Guid.NewGuid();
+                if (protect) c.SelfTestMarkNoShrink(id);
+                var up = c.SelfTestUpload(id, data, area, generateMipmaps: true, initialRefCount: refs);
+                if (up.Texture?.GetWidth() != S) problems.Add($"setup: a texture came out {up.Texture?.GetWidth()} px wide");
+                return id;
+            }
+
+            var near = Up(cache, full);
+            var far = Up(cache, full);
+            var unseen = Up(cache, full);
+            var guarded = Up(cache, full, protect: true);
+            var undersized = Up(cache, full);
+            var blocked = Up(cache, full);
+            var noLod = Up(cache, 0f);
+            var unreferenced = Up(cache, full, refs: 0);
+            cache.SelfTestSetSeen(near, 0, full);            // right-sized and large on screen
+            cache.SelfTestSetSeen(far, 0, 4096f);            // 64 texels per pixel
+            cache.SelfTestSetSeen(unseen, 30_000, 0f);       // not asked for in 30 s
+            cache.SelfTestSetSeen(guarded, 30_000, 0f);
+            cache.SelfTestSetSeen(undersized, 0, 4 * full);  // the screen wants more than it has
+            cache.SelfTestSetSeen(blocked, 30_000, 0f);
+            cache.SelfTestBlockShrink(blocked);
+            cache.SelfTestSetSeen(unreferenced, 30_000, 0f);
+
+            var picked = cache.SelfTestShrinkCandidates(allowVisible: false);
+            if (picked.Count != 2 || picked[0] != unseen || picked[1] != far)
+                problems.Add($"candidates {Describe(picked, near, far, unseen, guarded, undersized, blocked, noLod, unreferenced)}, expected unseen, far");
+            if (cache.SelfTestReclaimableBytes != 2 * saving)
+                problems.Add($"reclaimable {cache.SelfTestReclaimableBytes} bytes, expected {2 * saving}");
+            var withVisible = cache.SelfTestShrinkCandidates(allowVisible: true);
+            if (withVisible.Contains(near))
+                problems.Add("a right-sized near texture was offered while free ones exist");
+
+            // Nothing free: the right-sized one is offered only when the cache is far over.
+            var onlyNearId = Up(onlyNear, full);
+            onlyNear.SelfTestSetSeen(onlyNearId, 0, full);
+            if (onlyNear.SelfTestShrinkCandidates(allowVisible: false).Count != 0)
+                problems.Add("a right-sized texture was offered without the far-over condition");
+            var last = onlyNear.SelfTestShrinkCandidates(allowVisible: true);
+            if (last.Count != 1 || last[0] != onlyNearId)
+                problems.Add($"far over with nothing free, {last.Count} candidates instead of the right-sized one");
+
+            // Admission: a full cache (3 textures, budget 3) with two unseen ones to give back.
+            var a = Up(small, full);
+            var b = Up(small, full);
+            Up(small, full);
+            small.SelfTestSetSeen(a, 30_000, 0f);
+            small.SelfTestSetSeen(b, 30_000, 0f);
+            small.SelfTestShrinkCandidates(allowVisible: false);
+            var nearArrival = small.SelfTestUpload(Guid.NewGuid(), data, full, true, 1);
+            if (nearArrival.Extra != 0 || nearArrival.Texture?.GetWidth() != S)
+                problems.Add($"a near texture arriving in a full cache with bytes to give back took {nearArrival.Extra} extra levels");
+            var farArrival = small.SelfTestUpload(Guid.NewGuid(), data, 16_000f, true, 1);
+            if (farArrival.Extra == 0)
+                problems.Add("a far texture arriving in a full cache took no extra level");
+            if (small.SelfTestReservedBytes != 0) problems.Add($"{small.SelfTestReservedBytes} bytes still reserved");
+
+            // A shrink: half the size, built for a quarter of its texels, requested for all of them.
+            var (nw, nh) = cache.SelfTestShrinkNow(far, data);
+            if (nw != S / 2 || nh != S / 2) problems.Add($"far texture shrank to {nw}x{nh}, expected {S / 2}x{S / 2}");
+            var farState = cache.SelfTestSharpenState(far);
+            if (Math.Abs(farState.BuiltFor - (S / 2) * (S / 2) / 4f) > 1f || Math.Abs(farState.RequestedFor - (S / 2) * (S / 2)) > 1f)
+                problems.Add($"after the shrink built for {farState.BuiltFor} / requested for {farState.RequestedFor}");
+            if (farState.Guarded) problems.Add("a free-tier shrink raised the sharpen guard");
+            var visibleShrink = cache.SelfTestShrinkNow(near, data);
+            if (visibleShrink.Width != S / 2 || !cache.SelfTestSharpenState(near).Guarded)
+                problems.Add("a visible-tier shrink did not raise the sharpen guard");
+
+            return problems.Count == 0
+                ? new Check(Name, true, $"ranked unseen > far, reclaimable {(2 * saving) >> 10} KB; near admitted whole, far cut {farArrival.Extra}; shrink {S}->{S / 2}")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            cache.DisposeAll();
+            small.DisposeAll();
+            onlyNear.DisposeAll();
+        }
+    }
+
+    private static string Describe(List<Guid> ids, params Guid[] named)
+    {
+        string[] names = { "near", "far", "unseen", "protected", "undersized", "blocked", "noLod", "unreferenced" };
+        var parts = new List<string>();
+        foreach (var id in ids)
+        {
+            int i = Array.IndexOf(named, id);
+            parts.Add(i >= 0 && i < names.Length ? names[i] : id.ToString()[..8]);
+        }
+        return "[" + string.Join(", ", parts) + "]";
+    }
+
+    /// <summary>
     /// BUG-PERF-09: a shrink now rebuilds the smaller image on a worker from the decoded pixels
     /// instead of reading the texture back out of VRAM. For a texture uploaded at full size the two
     /// have to come out the same: same pixels in every mip level, same alpha numbers.
@@ -130,7 +261,7 @@ public static partial class SelfTest
             }
             var decoded = new TextureData(W, H, rgba, false, W, H);
 
-            // The old way, as ShrinkOne does it: upload as GpuCache uploads, read back, halve.
+            // The old way, as the read-back shrink did it: upload as GpuCache uploads, read back, halve.
             using var source = Image.CreateFromData(W, H, false, Image.Format.Rgba8, rgba);
             source.FixAlphaEdges();
             source.GenerateMipmaps();

@@ -68,6 +68,8 @@ public partial class AvatarRenderer : Node3D
         public HashSet<Guid> UsedTextureIds { get; } = new();
         public bool TexturesPinned { get; set; } = true;
         public float LastRefreshedArea { get; set; }
+        // FEAT-PERF-25: when ScreenPixelArea was last reported to the GpuCache for this avatar's textures.
+        public double LastAreaNoteAt { get; set; } = double.NegativeInfinity;
         public Guid EntityId { get; set; }
         public volatile float ScreenPixelArea;
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
@@ -7194,6 +7196,14 @@ void fragment() {
                 {
                     float curArea = ComputeAvatarScreenPixelArea(visual);
                     visual.ScreenPixelArea = curArea;
+                    // FEAT-PERF-25: how large this avatar is on screen, for its textures in the shrink
+                    // pass's ranking -- avatar textures are not re-offered the way world textures are, and
+                    // one with no recent area counts as unseen (a parked outfit), which is shrunk first.
+                    if (_gpuCache != null && NowSeconds - visual.LastAreaNoteAt >= 1.0)
+                    {
+                        visual.LastAreaNoteAt = NowSeconds;
+                        _gpuCache.NoteAreas(visual.UsedTextureIds, curArea);
+                    }
                     if (visual.LastRefreshedArea <= 0f)
                     {
                         visual.LastRefreshedArea = curArea;
@@ -7331,8 +7341,11 @@ void fragment() {
                 }
             }
 
+            // FEAT-PERF-25: FULL avatars only. A reduced or parked one shows the jelly doll, and its outfit
+            // is what a small card has to give back first -- it used to be protected whenever it was
+            // among the three nearest shown avatars, parked or not.
             var otherAvatars = _visuals.Values
-                .Where(v => !v.IsSelf && v.Shown && v.Root != null && GodotObject.IsInstanceValid(v.Root))
+                .Where(v => !v.IsSelf && v.Shown && !v.IsReduced && !v.IsParked && v.Root != null && GodotObject.IsInstanceValid(v.Root))
                 .OrderBy(v => v.Root.GlobalPosition.DistanceSquaredTo(camRefPos))
                 .Take(3);
 
