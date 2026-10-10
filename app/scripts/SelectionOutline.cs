@@ -93,7 +93,15 @@ public static class SelectionOutline
             if (arrayMesh != null
                 && arrayMesh.SurfaceGetPrimitiveType(surface) != Mesh.PrimitiveType.Triangles) continue;
 
-            var arrays = source.SurfaceGetArrays(surface);
+            Godot.Collections.Array arrays;
+            if (arrayMesh != null && MeshSurfaceCache.TryGetSurface(arrayMesh, surface, out var cachedArray))
+            {
+                arrays = cachedArray;
+            }
+            else
+            {
+                arrays = source.SurfaceGetArrays(surface);
+            }
             if (arrays.Count <= (int)Mesh.ArrayType.Vertex) continue;
             var sourceVerts = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
             if (sourceVerts.Length == 0) continue;

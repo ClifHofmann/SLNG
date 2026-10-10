@@ -2943,9 +2943,20 @@ public partial class AvatarRenderer : Node3D
 
         if (mi.Mesh is not ArrayMesh mesh) return;
         var surfaces = new List<(Godot.Vector3[] Verts, int[] Bones, float[] Weights, int[] Indices)>();
+        bool haveCached = MeshSurfaceCache.TryGetSurfaces(mesh, out var cachedSurfaces);
         for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
         {
-            var arrays = mesh.SurfaceGetArrays(surface);
+            Godot.Collections.Array arrays;
+            if (haveCached && surface < cachedSurfaces.Length)
+            {
+                arrays = cachedSurfaces[surface];
+            }
+            else
+            {
+                if (RenderThread.IsSeparate)
+                    GD.PrintErr($"[ControlAvatar] mesh {mesh.GetInstanceId():X} surface {surface} missing from MeshSurfaceCache -- readback will stall render thread");
+                arrays = mesh.SurfaceGetArrays(surface);
+            }
             surfaces.Add((arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array(),
                           arrays[(int)Mesh.ArrayType.Bones].AsInt32Array(),
                           arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array(),
@@ -3316,9 +3327,24 @@ public partial class AvatarRenderer : Node3D
         // arrays it built (TrimeshFaces); only the physics shape itself is made here. Without them
         // (the item turned out to be the own avatar's only after the request was made) the read-back
         // stays as the fallback.
-        ConcavePolygonShape3D? shape = preparedFaces == null
-            ? mesh.CreateTrimeshShape()
-            : preparedFaces.Length > 0 ? new ConcavePolygonShape3D { Data = preparedFaces } : null;
+        ConcavePolygonShape3D? shape = null;
+        if (preparedFaces != null && preparedFaces.Length > 0)
+        {
+            shape = new ConcavePolygonShape3D { Data = preparedFaces };
+        }
+        else if (MeshSurfaceCache.TryGetSurfaces(mesh, out var cachedSurfaces))
+        {
+            var faces = TrimeshFaces(cachedSurfaces);
+            if (faces.Length > 0) shape = new ConcavePolygonShape3D { Data = faces };
+        }
+        else if (!RenderThread.IsSeparate)
+        {
+            shape = mesh.CreateTrimeshShape();
+        }
+        else
+        {
+            GD.PrintErr($"[AttachmentPick] mesh {mesh.GetInstanceId():X} missing from MeshSurfaceCache -- skipping CreateTrimeshShape to avoid render thread stall");
+        }
         if (shape == null) return;
 
         var body = new StaticBody3D
@@ -3743,7 +3769,16 @@ public partial class AvatarRenderer : Node3D
         foreach (int s in pending)
         {
             var copy = new ArrayMesh();
-            copy.AddSurfaceFromArrays(mesh.SurfaceGetPrimitiveType(s), mesh.SurfaceGetArrays(s));
+            if (MeshSurfaceCache.TryGetSurface(mesh, s, out var surfaceArrays))
+            {
+                copy.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, surfaceArrays);
+            }
+            else
+            {
+                if (RenderThread.IsSeparate)
+                    GD.PrintErr($"[RiggedSort] mesh={meshId:N} surface {s} missing from MeshSurfaceCache -- readback will stall render thread");
+                copy.AddSurfaceFromArrays(mesh.SurfaceGetPrimitiveType(s), mesh.SurfaceGetArrays(s));
+            }
             var child = new MeshInstance3D
             {
                 Name = SortedSurfaceName(s),
@@ -4252,6 +4287,10 @@ public partial class AvatarRenderer : Node3D
         // arriving late. The read-back stays only for a texture the cache did not decode.
         if (!GpuCache.TryGetAlphaStats(texId, out var stats))
         {
+            if (RenderThread.IsSeparate || texId == Guid.Empty)
+            {
+                return LogAlphaVerdict(texId, bomChannel, 255, 0f, 0f, PrimShaderFamily.Kind.Opaque, 0f);
+            }
             // Meant never to happen: shows up in [WorkCost] if it does.
             MainThreadWorkQueue.RecordIfMainThread("avatar.material.readback", 0);
             var img = tex.GetImage();
@@ -4789,6 +4828,7 @@ public partial class AvatarRenderer : Node3D
             var arrayMesh = new ArrayMesh();
             foreach (var arrays in prepared.SurfaceArrays)
                 arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            MeshSurfaceCache.Store(arrayMesh, prepared.SurfaceArrays);
             if (arrayMesh.GetSurfaceCount() == 0) return;
             var faceIndices = prepared.FaceIndices;
 
@@ -5670,6 +5710,7 @@ public partial class AvatarRenderer : Node3D
         var arrayMesh = new ArrayMesh();
         foreach (var arrays in prepared.SurfaceArrays)
             arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        MeshSurfaceCache.Store(arrayMesh, prepared.SurfaceArrays);
 
         // Diagnostic only — deliberately NO size/distance rejection here. The static bind-pose
         // AABB says nothing about where a skinned mesh RENDERS: uploads may park the bind pose

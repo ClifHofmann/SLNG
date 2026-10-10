@@ -4376,6 +4376,11 @@ public partial class ObjectRenderer : Node3D
         {
             alphaMode = cachedMode;
         }
+        else if (RenderThread.IsSeparate || texId == Guid.Empty)
+        {
+            // BUG-PERF-15: banned on hot path under separate render thread to prevent full pipeline stall
+            alphaMode = Image.AlphaMode.None;
+        }
         else
         {
             // Only reachable for a texture that did not come through GpuCache's upload path.
@@ -5409,7 +5414,16 @@ public partial class ObjectRenderer : Node3D
             if (copy == null)
             {
                 copy = new ArrayMesh();
-                copy.AddSurfaceFromArrays(mesh.SurfaceGetPrimitiveType(i), mesh.SurfaceGetArrays(i));
+                if (MeshSurfaceCache.TryGetSurface(mesh, i, out var surfaceArrays))
+                {
+                    copy.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, surfaceArrays);
+                }
+                else
+                {
+                    if (RenderThread.IsSeparate)
+                        GD.PrintErr($"[SplitSort] mesh {mesh.GetInstanceId():X} surface {i} missing from MeshSurfaceCache -- readback will stall render thread");
+                    copy.AddSurfaceFromArrays(mesh.SurfaceGetPrimitiveType(i), mesh.SurfaceGetArrays(i));
+                }
                 copies[i] = copy;
             }
             var node = new MeshInstance3D

@@ -296,6 +296,7 @@ public partial class ObjectRenderer
         var arrayMesh = new ArrayMesh();
         foreach (var arrays in surfaces)
             arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        MeshSurfaceCache.Store(arrayMesh, surfaces);
         return arrayMesh;
     }
 }

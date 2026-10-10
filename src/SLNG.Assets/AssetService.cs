@@ -708,7 +708,20 @@ public class AssetService
         try
         {
             var decoded = await DecodedCache.TryGetAsync(textureId, 0, cacheFile).ConfigureAwait(false);
-            return decoded is { IsDegraded: false } ? decoded : null;
+            if (decoded is { IsDegraded: false }) return decoded;
+
+            // BUG-PERF-15: If decoded cache missed but local .j2c exists on disk, decode on worker pool
+            if (cacheFile != null && File.Exists(cacheFile))
+            {
+                byte[] cachedBytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false);
+                var decodedFromCache = await Task.Run(() => DecodeTexture(cachedBytes, false)).ConfigureAwait(false);
+                if (decodedFromCache is { IsDegraded: false })
+                {
+                    _ = Task.Run(() => DecodedCache.PutAsync(textureId, 0, decodedFromCache));
+                    return decodedFromCache;
+                }
+            }
+            return null;
         }
         finally { _textureDecodeThrottle.Release(); }
     }

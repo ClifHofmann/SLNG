@@ -133,6 +133,7 @@ public partial class AvatarRenderer
         var arrayMesh = new ArrayMesh();
         foreach (var arrays in prepared.SurfaceArrays)
             arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        MeshSurfaceCache.Store(arrayMesh, prepared.SurfaceArrays);
         prepared.Guard.Report(() => $"worn attachment entity={entityId:N} mesh={request.MeshId:N} avatar={avatarVisual.AgentId:N}");
 
         // Where the item sits NOW: a duplicate update may have moved it while it was being prepared

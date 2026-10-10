@@ -1449,7 +1449,10 @@ public class GpuCache
                     : default;
                 if (prepared.Image == null)
                 {
-                    QueueReadBackShrink(entry, tex);
+                    // BUG-PERF-15: VRAM read-backs on hot paths are banned. Under the separate render
+                    // thread (FEAT-PERF-13), tex.GetImage() causes a full stall.
+                    Logger.Info($"[GpuCache] shrink {id.ToString()[..8]} skipped: no local decoded copy available ({w}x{h} kept, no readback stall)");
+                    _shrinkPending.TryRemove(id, out _);
                     return;
                 }
                 MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine,
@@ -1544,37 +1547,9 @@ public class GpuCache
     /// copy on this machine -- see <see cref="StartShrink"/>.</summary>
     private void ShrinkOne(CacheEntry entry, ImageTexture tex)
     {
-        try
-        {
-            if (!GodotObject.IsInstanceValid(tex)) return;
-            var img = tex.GetImage();
-            if (img == null) return;
-
-            int w = img.GetWidth(), h = img.GetHeight();
-            int nw = Math.Max(8, w >> 1), nh = Math.Max(8, h >> 1);
-            if (nw >= w && nh >= h) { img.Dispose(); return; }
-
-            bool mips = img.HasMipmaps();
-            if (mips) img.ClearMipmaps();
-            img.Resize(nw, nh, Image.Interpolation.Lanczos);
-            // BUG-PERF-07: the texture's pixels change here, so its alpha numbers do too.
-            _alphaStats[entry.Id] = MeasureAlphaStats(img.GetData(), nw, nh);
-            if (mips) img.GenerateMipmaps();
-            tex.SetImage(img);
-            img.Dispose();
-
-            SetResidentSize(entry.Id, tex, SLNG.Assets.TextureAdmission.TextureBytes(nw, nh, mips));
-            MarkShrunk(entry.Id, nw, nh);
-            Logger.Info($"[GpuCache] shrank {entry.Id.ToString()[..8]} {w}x{h} -> {nw}x{nh} (read back)");
-        }
-        catch (Exception ex)
-        {
-            GD.PrintErr($"[GpuCache] shrink {entry.Id} failed: {ex.Message}");
-        }
-        finally
-        {
-            _shrinkPending.TryRemove(entry.Id, out _);
-        }
+        // BUG-PERF-15: VRAM read-backs on hot paths are banned (RenderThread stall).
+        _shrinkPending.TryRemove(entry.Id, out _);
+        Logger.Info($"[GpuCache] read-back shrink for {entry.Id.ToString()[..8]} skipped (readback banned on hot path)");
     }
 
     private void EvictIfNeeded()
