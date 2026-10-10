@@ -58,6 +58,7 @@ public sealed class GraphicsSettings
     /// Godot's reported total. Default 1536 keeps today's value; the point of the setting is that
     /// the number now actually binds.</summary>
     public int TextureMemoryMb { get; private set; } = 1536;
+    public bool TextureMemoryAuto { get; private set; } = true;
 
     public bool PostFxSsao { get; private set; } = true;
     public bool PostFxSsil { get; private set; } = true;
@@ -134,6 +135,7 @@ public sealed class GraphicsSettings
         DrawDistance = (float)cfg.GetValue(Section, "draw_distance", DrawDistance);
         Msaa = (int)cfg.GetValue(Section, "msaa", Msaa);
         TextureMemoryMb = (int)cfg.GetValue(Section, "texture_memory_mb", TextureMemoryMb);
+        TextureMemoryAuto = (bool)cfg.GetValue(Section, "texture_memory_auto", TextureMemoryAuto);
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
@@ -162,6 +164,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "draw_distance", DrawDistance);
         cfg.SetValue(Section, "msaa", Msaa);
         cfg.SetValue(Section, "texture_memory_mb", TextureMemoryMb);
+        cfg.SetValue(Section, "texture_memory_auto", TextureMemoryAuto);
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
@@ -186,6 +189,7 @@ public sealed class GraphicsSettings
     public void SetDrawDistance(float metres) { DrawDistance = metres; Save(); }
     public void SetMsaa(int msaa) { Msaa = msaa; Save(); }
     public void SetTextureMemoryMb(int mb) { TextureMemoryMb = mb; Save(); }
+    public void SetTextureMemoryAuto(bool auto) { TextureMemoryAuto = auto; Save(); }
     public void SetPostFxSsao(bool on) { PostFxSsao = on; Save(); }
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
     public void SetPostFxGlow(bool on) { PostFxGlow = on; Save(); }
@@ -399,6 +403,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "draw_distance", DrawDistance);
         cfg.SetValue(section, "msaa", Msaa);
         cfg.SetValue(section, "texture_memory_mb", TextureMemoryMb);
+        cfg.SetValue(section, "texture_memory_auto", TextureMemoryAuto);
         cfg.SetValue(section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(section, "post_fx_glow", PostFxGlow);
@@ -438,6 +443,7 @@ public sealed class GraphicsSettings
         DrawDistance = (float)cfg.GetValue(section, "draw_distance", DrawDistance);
         Msaa = (int)cfg.GetValue(section, "msaa", Msaa);
         TextureMemoryMb = (int)cfg.GetValue(section, "texture_memory_mb", TextureMemoryMb);
+        TextureMemoryAuto = (bool)cfg.GetValue(section, "texture_memory_auto", TextureMemoryAuto);
         PostFxSsao = (bool)cfg.GetValue(section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(section, "post_fx_glow", PostFxGlow);

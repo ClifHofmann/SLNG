@@ -699,6 +699,7 @@
       "fps_unlimited": "Unlimited",
       "draw_distance_heading": "Draw distance:",
       "texture_memory_heading": "Texture memory:",
+      "texture_memory_auto": "Automatic (from free video memory)",
       "quality_heading": "Quality:",
       "msaa": "Anti-aliasing",
       "off": "Off",

@@ -16,6 +16,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private DofSettings? _dofSettings;
     private Action? _applyDof;
     private Func<long>? _cacheBytes;
+    private Func<long>? _budgetBytes;
 
     // Master preset controls
     private HSlider _presetSlider = null!;
@@ -62,6 +63,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private Label _renderThreadHint = null!;
     private OptionButton _msaaOption = null!;
     private OptionButton _shadowResOption = null!;
+    private CheckBox _textureMemAutoCheck = null!;
     private HSlider _textureMemSlider = null!;
     private Label _textureMemValue = null!;
     private Label _textureMemUsage = null!;
@@ -104,13 +106,14 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     }
 
     public void Initialize(GraphicsSettings settings, Action apply, DofSettings? dofSettings = null,
-                           Action? applyDof = null, Func<long>? cacheBytes = null)
+                           Action? applyDof = null, Func<long>? cacheBytes = null, Func<long>? budgetBytes = null)
     {
         _settings = settings;
         _apply = apply;
         _dofSettings = dofSettings;
         _applyDof = applyDof;
         _cacheBytes = cacheBytes;
+        _budgetBytes = budgetBytes;
 
         BuildProfileHeader();
         AddChild(new HSeparator());
@@ -525,6 +528,22 @@ public partial class GraphicsPreferencesPage : VBoxContainer
 
         // Texture memory
         AddHeading(_panelHardware, L10n.Tr("ui.preferences.texture_memory_heading"));
+
+        _textureMemAutoCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.texture_memory_auto"),
+            ButtonPressed = _settings.TextureMemoryAuto,
+            FocusMode = FocusModeEnum.None,
+        };
+        _textureMemAutoCheck.Toggled += on =>
+        {
+            if (_refreshing) return;
+            _settings.SetTextureMemoryAuto(on);
+            _apply();
+            UpdateTextureMemControls();
+        };
+        _panelHardware.AddChild(_textureMemAutoCheck);
+
         var texMemRow = new HBoxContainer();
         texMemRow.AddThemeConstantOverride("separation", 12);
         _panelHardware.AddChild(texMemRow);
@@ -551,16 +570,40 @@ public partial class GraphicsPreferencesPage : VBoxContainer
 
         _textureMemSlider.ValueChanged += val =>
         {
-            _textureMemValue.Text = $"{val:0} MB";
+            if (!_settings.TextureMemoryAuto)
+            {
+                _textureMemValue.Text = $"{val:0} MB";
+            }
             if (_refreshing) return;
             _settings.SetTextureMemoryMb((int)val);
             _apply();
         };
 
+        UpdateTextureMemControls();
+
         _textureMemUsage = new Label { Text = "" };
         _textureMemUsage.AddThemeColorOverride("font_color", new Color(0.65f, 0.65f, 0.65f));
         _textureMemUsage.AddThemeFontSizeOverride("font_size", 12);
         _panelHardware.AddChild(_textureMemUsage);
+    }
+
+    private void UpdateTextureMemControls()
+    {
+        if (_textureMemSlider == null || _textureMemValue == null) return;
+
+        if (_settings.TextureMemoryAuto)
+        {
+            _textureMemSlider.Editable = false;
+            long currentBudgetMb = (_budgetBytes?.Invoke() ?? ((long)_settings.TextureMemoryMb << 20)) >> 20;
+            _textureMemSlider.Value = currentBudgetMb;
+            _textureMemValue.Text = $"Auto: {currentBudgetMb} MB";
+        }
+        else
+        {
+            _textureMemSlider.Editable = true;
+            _textureMemSlider.Value = _settings.TextureMemoryMb;
+            _textureMemValue.Text = $"{_settings.TextureMemoryMb} MB";
+        }
     }
 
     // --- Sub-Tab 3: Depth of Field (Schärfentiefe) -------------------------------------------
@@ -884,6 +927,13 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _textureMemUsage.Text = cacheMb > 0
             ? $"Cache: {cacheMb} MB   ·   GPU gesamt: {gpuMb} MB"
             : $"GPU gesamt: {gpuMb} MB";
+
+        if (_settings.TextureMemoryAuto && _textureMemValue != null && _textureMemSlider != null)
+        {
+            long currentBudgetMb = (_budgetBytes?.Invoke() ?? ((long)_settings.TextureMemoryMb << 20)) >> 20;
+            _textureMemValue.Text = $"Auto: {currentBudgetMb} MB";
+            _textureMemSlider.Value = currentBudgetMb;
+        }
     }
 
     public void Refresh()
@@ -934,8 +984,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             int resIdx = Array.IndexOf(ShadowResChoices, _settings.ShadowResolution);
             _shadowResOption.Select(resIdx < 0 ? 2 : resIdx);
 
-            _textureMemSlider.Value = _settings.TextureMemoryMb;
-            _textureMemValue.Text = $"{_settings.TextureMemoryMb} MB";
+            _textureMemAutoCheck.ButtonPressed = _settings.TextureMemoryAuto;
+            UpdateTextureMemControls();
 
             // Depth of Field
             RefreshDof();

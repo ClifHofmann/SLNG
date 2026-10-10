@@ -104,6 +104,12 @@ public class GpuCache
     private readonly ConcurrentDictionary<Guid, long> _sharpenRetryAtMs = new();
     private const long SharpenRetryCooldownMs = 5000;
 
+    // FEAT-PERF-17: OS memory reported by DXGI probe or fallback
+    private long _osBudgetBytes;
+    private long _osUsageBytes;
+    private bool _autoBudget = true;
+    private long _lastLoggedBudget;
+
     // The one AssetService every renderer shares. A shrink needs it to find the texture's decoded
     // pixels; it is remembered from the upload calls rather than passed to Tick.
     private SLNG.Assets.AssetService? _assets;
@@ -141,19 +147,48 @@ public class GpuCache
         get { lock (_cache) return _currentSize > _maxSize; }
     }
 
+    /// <summary>Bytes the cache is allowed to hold (textures + meshes).</summary>
+    public long MaxSizeBytes => Interlocked.Read(ref _maxSize);
+
+    public bool AutoBudget
+    {
+        get => _autoBudget;
+        set => _autoBudget = value;
+    }
+
+    public void ReportOsMemory(long budgetBytes, long usageBytes)
+    {
+        Interlocked.Exchange(ref _osBudgetBytes, budgetBytes);
+        Interlocked.Exchange(ref _osUsageBytes, usageBytes);
+    }
+
+    public void ReportOsMemory(long budgetBytes, long usageBytes, bool auto)
+    {
+        _autoBudget = auto;
+        ReportOsMemory(budgetBytes, usageBytes);
+    }
+
     /// <summary>FEAT-PERF-04: change the texture/mesh budget at runtime (graphics-page slider). A
     /// lower budget takes effect immediately -- eviction runs now, and the per-frame
     /// <see cref="Tick"/> raises the LOD bias / shrinks resident textures until back under it.</summary>
     public void SetBudget(long maxSizeInBytes)
     {
         long clamped = Math.Max(64L * 1024 * 1024, maxSizeInBytes);
+        long oldSize;
         lock (_cache)
         {
             if (clamped == _maxSize) return;
+            oldSize = _maxSize;
             _maxSize = clamped;
             EvictIfNeeded();
         }
-        Console.Error.WriteLine($"[GpuCache] budget set to {clamped >> 20} MB");
+
+        long diff = Math.Abs(clamped - _lastLoggedBudget);
+        if (_lastLoggedBudget == 0 || diff >= 128L * 1024 * 1024 || (_lastLoggedBudget > 0 && (double)diff / _lastLoggedBudget >= 0.05))
+        {
+            _lastLoggedBudget = clamped;
+            Console.Error.WriteLine($"[GpuCache] budget set to {clamped >> 20} MB");
+        }
     }
 
     public void AddRef(Guid id)
@@ -448,10 +483,14 @@ public class GpuCache
         // A periodic stats dump, which is what the perf overlay is for. The budget and LOD-bias
         // lines below/above stay: those report a state CHANGE, not a reading.
         if (!Diagnostics.Enabled) return;
+        long osBudMb = Interlocked.Read(ref _osBudgetBytes) >> 20;
+        long osUseMb = Interlocked.Read(ref _osUsageBytes) >> 20;
+        string autoStr = _autoBudget ? "true" : "false";
         Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
             $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} inFlightMB={reserved >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
             $"noShrinkMB={exemptBytes >> 20} avatarMB={avatarBytes >> 20} reducibleMB={reducibleBytes >> 20} " +
-            $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth}");
+            $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth} " +
+            $"osBudgetMB={osBudMb} osUsageMB={osUseMb} auto={autoStr}");
     }
 
     /// <summary>BUG-PERF-09: records that a resident texture's pixels were replaced in place, so the

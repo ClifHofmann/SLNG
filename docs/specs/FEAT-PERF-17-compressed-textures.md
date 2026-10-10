@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-17`
 - **Track:** `render` / `assets`
-- **Status:** `⏸️ Pending`. Part A goes to agy; Part B is built later in a separate session.
+- **Status:** `🧪 Review`. Part A built (v0.27.33-alpha); Part B is built later in a separate session.
 - **Owner:** `gemini` (Part A)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [MVP6-1](MVP6-1-performance-program.md), [ADR 0004](../adr/0004-performance-architecture.md) pillar P4
 
@@ -280,9 +280,9 @@ Outline only; the session that builds it refines this section first.
 
 ## Sub-tasks / Progress
 
-- [ ] A1 policy + tests
-- [ ] A2 DXGI probe
-- [ ] A3 `--vram-budget` flag
-- [ ] A4 wiring, setting, UI, log fields
-- [ ] A5 acceptance checks reported
+- [x] A1 policy + tests
+- [x] A2 DXGI probe
+- [x] A3 `--vram-budget` flag
+- [x] A4 wiring, setting, UI, log fields
+- [x] A5 acceptance checks reported
 - [ ] Part B (separate session)

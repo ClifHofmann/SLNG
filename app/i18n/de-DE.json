@@ -699,6 +699,7 @@
       "fps_unlimited": "Unbegrenzt",
       "draw_distance_heading": "Sichtweite:",
       "texture_memory_heading": "Texturspeicher:",
+      "texture_memory_auto": "Automatisch (nach freiem Grafikspeicher)",
       "quality_heading": "Qualität:",
       "msaa": "Kantenglättung",
       "off": "Aus",

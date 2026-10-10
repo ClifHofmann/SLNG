@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
@@ -431,7 +432,14 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.32-alpha";
+    public const string AppVersion = "v0.27.33-alpha";
+
+    // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
+    private DxgiVideoMemory? _dxgiProbe;
+    private long? _cmdlineVramBudgetMb;
+    private double _vramBudgetAccumulator;
+    private double _timeSinceLastVramRise = 100.0;
+    private long _lastVramBudget;
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -535,6 +543,7 @@ public partial class Boot : Control
         // sticks; the immediate call below just avoids a flash of the wrong title before then.
         // Before anything that logs, so the level is already right for the first line.
         Diagnostics.Initialize();
+        ParseVramCmdlineArgs();
 
         // Before the first asset fetch: SLNG.Net/SLNG.Assets log through Console, which does not
         // reach godot.log on its own. See ConsoleToGodotLog.
@@ -2012,7 +2021,8 @@ public partial class Boot : Control
         _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics") };
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), _graphicsPage);
         _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings, _dofSettings,
-                                 () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0);
+                                 () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0,
+                                 () => _gpuCache?.MaxSizeBytes ?? ((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024));
 
         _networkSettings = new SLNG.App.UI.NetworkSettings();
         _networkSettings.Load();
@@ -2867,6 +2877,15 @@ public partial class Boot : Control
         // textures) so the texture-memory budget actually binds on a dense region.
         using (MainThreadPhase.Enter("gpucache")) _gpuCache?.Tick();
 
+        // FEAT-PERF-17: dynamically manage VRAM budget via DXGI probe every 2 s
+        _timeSinceLastVramRise += delta;
+        _vramBudgetAccumulator += delta;
+        if (_vramBudgetAccumulator >= 2.0)
+        {
+            _vramBudgetAccumulator = 0;
+            UpdateVramBudget(force: false);
+        }
+
         // FEAT-RENDER-20: cheap every frame (an early-out plus a distance check) -- the probe
         // itself only actually moves/re-bakes on its own measured cadence, see the method.
         UpdateReflectionProbe(delta);
@@ -3080,8 +3099,111 @@ public partial class Boot : Control
     private void ApplyGraphicsSettings()
     {
         _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun, _reflectionProbe);
-        // FEAT-PERF-04: the texture-memory slider takes effect immediately, no restart.
-        _gpuCache?.SetBudget((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
+        // FEAT-PERF-17: when probe or flag is active, run VramBudgetPolicy so the automatic
+        // budget is not overwritten by the slider and user adjustments apply at once.
+        if (_dxgiProbe != null || _cmdlineVramBudgetMb.HasValue)
+        {
+            UpdateVramBudget(force: true);
+        }
+        else
+        {
+            _gpuCache?.SetBudget((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
+        }
+    }
+
+    private void ParseVramCmdlineArgs()
+    {
+        if (TryParseVramArgs(OS.GetCmdlineUserArgs(), out long mb) ||
+            TryParseVramArgs(OS.GetCmdlineArgs(), out mb))
+        {
+            _cmdlineVramBudgetMb = mb;
+        }
+    }
+
+    internal static bool TryParseVramArgs(string[] args, out long mb)
+    {
+        mb = 0;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string a = args[i];
+            if (a.StartsWith("--vram-budget=", StringComparison.OrdinalIgnoreCase))
+            {
+                if (long.TryParse(a.Substring("--vram-budget=".Length), out long parsed) && parsed > 0)
+                {
+                    mb = parsed;
+                    return true;
+                }
+            }
+            else if (string.Equals(a, "--vram-budget", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                if (long.TryParse(args[i + 1], out long parsed) && parsed > 0)
+                {
+                    mb = parsed;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void UpdateVramBudget(bool force = false)
+    {
+        if (_gpuCache == null) return;
+
+        bool hasOsInfo = false;
+        long osBudget = 0;
+        long osUsage = 0;
+
+        if (_dxgiProbe != null && _dxgiProbe.TryQuery(out long rawBudget, out long rawUsage))
+        {
+            hasOsInfo = true;
+            osBudget = _cmdlineVramBudgetMb.HasValue
+                ? Math.Min(rawBudget, _cmdlineVramBudgetMb.Value << 20)
+                : rawBudget;
+            osUsage = rawUsage;
+        }
+        else if (_cmdlineVramBudgetMb.HasValue)
+        {
+            hasOsInfo = true;
+            osBudget = _cmdlineVramBudgetMb.Value << 20;
+            osUsage = unchecked((long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.VideoMemUsed));
+        }
+
+        if (hasOsInfo)
+        {
+            _gpuCache.ReportOsMemory(osBudget, osUsage, _graphicsSettings.TextureMemoryAuto);
+            long? manualCap = _graphicsSettings.TextureMemoryAuto ? null : ((long)_graphicsSettings.TextureMemoryMb << 20);
+            long prevBudget = force ? 0 : _lastVramBudget;
+            long newBudget = VramBudgetPolicy.Compute(
+                osBudget,
+                osUsage,
+                _gpuCache.CurrentSizeBytes,
+                manualCap,
+                prevBudget,
+                _timeSinceLastVramRise,
+                out bool rose);
+
+            if (rose)
+            {
+                _timeSinceLastVramRise = 0;
+            }
+
+            if (newBudget != _lastVramBudget || force)
+            {
+                _lastVramBudget = newBudget;
+                _gpuCache.SetBudget(newBudget);
+            }
+        }
+        else
+        {
+            _gpuCache.ReportOsMemory(0, 0, _graphicsSettings.TextureMemoryAuto);
+            long sliderBudget = (long)_graphicsSettings.TextureMemoryMb * 1024 * 1024;
+            if (sliderBudget != _lastVramBudget || force)
+            {
+                _lastVramBudget = sliderBudget;
+                _gpuCache.SetBudget(sliderBudget);
+            }
+        }
     }
 
     /// <summary>
@@ -3837,6 +3959,15 @@ public partial class Boot : Control
         // 12 GB card with headroom for post-FX; out-of-range content is released so the LRU
         // can reclaim under this cap.
         _gpuCache = new GpuCache((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
+        _dxgiProbe?.Dispose();
+        _dxgiProbe = null;
+        if (OperatingSystem.IsWindows())
+        {
+            _dxgiProbe = DxgiVideoMemory.TryCreate(RenderingServer.GetVideoAdapterName());
+        }
+        _lastVramBudget = 0;
+        _timeSinceLastVramRise = VramBudgetPolicy.RiseIntervalSeconds;
+        UpdateVramBudget(force: true);
 
         // FEAT-INV-07 inventory cache and the Display Names remembered from earlier sessions. This
         // only tells the session where they live: it opens them itself while it processes the
@@ -5488,6 +5619,8 @@ public partial class Boot : Control
         // leaked at exit" / "RenderingServer::get_singleton() is null" pair seen at close).
         GpuCache.BeginShutdown();
         _gpuCache?.DisposeAll();
+        _dxgiProbe?.Dispose();
+        _dxgiProbe = null;
 
         // Same reasoning, for the textures that are built once and kept in STATIC fields for the
         // whole process: nothing ever drops those references, so without this they are left to the

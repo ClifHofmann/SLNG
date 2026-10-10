@@ -251,6 +251,7 @@ public static partial class SelfTest
         results.Add(CheckGpuCacheAdmission()); // BUG-PERF-09
         results.Add(CheckRenderThread()); // FEAT-PERF-13
         results.Add(CheckMeshSurfaceCache()); // BUG-PERF-15
+        results.Add(CheckDxgiVideoMemory()); // FEAT-PERF-17
         results.Add(CheckAvatarTextureRemoval()); // BUG-PERF-13
         results.Add(CheckAvatarReduction()); // FEAT-PERF-08
         results.Add(CheckAvatarLimitStability()); // FEAT-PERF-08
