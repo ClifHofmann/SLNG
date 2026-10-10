@@ -214,7 +214,7 @@ public static partial class SelfTest
     /// </summary>
     private static Check CheckAvatarReduction()
     {
-        const string Name = "reduced avatars free attachments, show the jelly doll, keep their pose";
+        const string Name = "reduced avatars park attachments, show the jelly doll, keep their pose";
         var problems = new List<string>();
         var renderer = new AvatarRenderer();
         var (passed, detail) = renderer.SelfTestAvatarReductionLifecycle();

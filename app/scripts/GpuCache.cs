@@ -135,6 +135,12 @@ public class GpuCache
         get { lock (_cache) return _currentSize; }
     }
 
+    /// <summary>BUG-PERF-16: True when current cache size exceeds maximum budget.</summary>
+    public bool IsOverBudget
+    {
+        get { lock (_cache) return _currentSize > _maxSize; }
+    }
+
     /// <summary>FEAT-PERF-04: change the texture/mesh budget at runtime (graphics-page slider). A
     /// lower budget takes effect immediately -- eviction runs now, and the per-frame
     /// <see cref="Tick"/> raises the LOD bias / shrinks resident textures until back under it.</summary>

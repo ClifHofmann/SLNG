@@ -42,6 +42,11 @@ public partial class AvatarRenderer : Node3D
         public bool Shown { get; set; } = true;
         // FEAT-PERF-08: cheap stand-in beyond the avatar cap
         public bool IsReduced { get; set; }
+        // BUG-PERF-16: True when the avatar was full and its outfit is parked (kept in memory,
+        // skins detached, nodes hidden) rather than completely unloaded or never loaded.
+        public bool IsParked { get; set; }
+        // BUG-PERF-16: True when the avatar has loaded its outfit parts (rigged/rigid attachments or full setup).
+        public bool HasLoadedOutfit { get; set; }
         // When the full/reduced state last CHANGED (seconds, AvatarRenderer.NowSeconds). Negative infinity
         // until the first change, so a freshly created avatar's first promotion is never held back by the
         // dwell time (EvaluateAvatarLimit). Set by SetAvatarReduced/SetAvatarFull, not by CreateVisual.
@@ -819,6 +824,11 @@ public partial class AvatarRenderer : Node3D
         ForgetPendingWearer(entityId);
         if (_visuals.TryGetValue(entityId, out var visual))
         {
+            if (visual.IsParked || visual.HasLoadedOutfit)
+            {
+                UnloadAvatarOutfit(visual);
+            }
+
             foreach (var attId in visual.WornAttachmentEntities)
             {
                 _attachmentToAvatar.Remove(attId);
@@ -2498,6 +2508,7 @@ public partial class AvatarRenderer : Node3D
             boneAttach.BoneName = boneName;
             avatarVisual.Skeleton.AddChild(boneAttach);
             _attachmentNodes[entityId] = boneAttach;
+            avatarVisual.HasLoadedOutfit = true;
         }
 
         boneAttach.SetMeta("AttachPoint", (int)attachment.AttachmentPoint);
@@ -3495,6 +3506,7 @@ public partial class AvatarRenderer : Node3D
         req.Skeleton.AddChild(mi);
         _riggedAttachments[entityId] = mi;
         req.Visual.RiggedAttachments.Add((mi, req.MeshData, req.MeshId));
+        req.Visual.HasLoadedOutfit = true;
 
         // Skin is already assigned on the instance; the skeleton path must be set after
         // the node is in the tree so Godot can resolve and drive the skinning.
@@ -6589,6 +6601,8 @@ void fragment() {
     private const double AvatarMinDwellSeconds = 5.0;
     /// <summary>A full avatar that has been outside the draw distance this long is reduced.</summary>
     private const double AvatarHiddenReduceSeconds = 10.0;
+    /// <summary>BUG-PERF-16: A parked avatar hidden outside the draw distance this long has its outfit unloaded.</summary>
+    private const double AvatarHiddenUnloadSeconds = 60.0;
     /// <summary>The [AvatarLimit] info line also appears this often when only swaps happened, which
     /// leave the counts (its old trigger) unchanged.</summary>
     private const double AvatarLimitInfoIntervalSeconds = 5.0;
@@ -6678,6 +6692,149 @@ void fragment() {
             _preparedRigs.TryRemove(attId, out _);
             _rigsPreparing.TryRemove(attId, out _);
             _attachNewest.TryRemove(attId, out _);
+        }
+
+        // BUG-PERF-16: If this avatar was already loaded with outfit data, park it instead of unloading.
+        // Data is kept in memory and in the tree, but skins are detached from Skeleton3D and nodes are
+        // hidden/disabled so Godot performs zero skin-bind updates or draw calls.
+        bool hasOutfit = visual.HasLoadedOutfit
+            || visual.RiggedAttachments.Count > 0
+            || visual.WornAttachmentEntities.Any(id => _attachmentNodes.ContainsKey(id) || _riggedAttachments.ContainsKey(id));
+
+        if (hasOutfit)
+        {
+            visual.IsParked = true;
+            visual.HasLoadedOutfit = true;
+
+            foreach (var (rMi, _, _) in visual.RiggedAttachments)
+            {
+                if (GodotObject.IsInstanceValid(rMi))
+                {
+                    DetachSkeleton(rMi);
+                    rMi.Visible = false;
+                }
+            }
+
+            foreach (var attId in visual.WornAttachmentEntities)
+            {
+                if (_attachmentNodes.TryGetValue(attId, out var attachNode) && GodotObject.IsInstanceValid(attachNode))
+                {
+                    attachNode.Visible = false;
+                    attachNode.ProcessMode = Node.ProcessModeEnum.Disabled;
+                }
+                if (_riggedPickBodies.TryGetValue(attId, out var bodies))
+                {
+                    foreach (var body in bodies)
+                        if (GodotObject.IsInstanceValid(body)) body.Visible = false;
+                }
+            }
+        }
+        else
+        {
+            visual.IsParked = false;
+        }
+
+        ApplyJellyDoll(visual);
+        RecomputeMeshVisibility(visual);
+    }
+
+    private void SetAvatarFull(AvatarVisual visual)
+    {
+        if (!visual.IsReduced) return;
+        visual.IsReduced = false;
+        visual.StateChangedAt = NowSeconds;
+        visual.ReducedAnimAccum = 0f;
+
+        // The bake materials first: the morph rebuild below and the UpdateVisual after it draw with them.
+        RestorePartMaterials(visual);
+
+        // A shape that arrived while reduced took the skeleton only; the vertex morphs are due now.
+        if (visual.PendingMorphWeights is { } pending)
+        {
+            ApplyShapeMorphs(visual, pending);
+            visual.PendingMorphWeights = null;
+        }
+
+        if (visual.IsParked)
+        {
+            // BUG-PERF-16: Unpark instantaneously without rebuilds.
+            visual.IsParked = false;
+
+            foreach (var (rMi, _, _) in visual.RiggedAttachments)
+            {
+                if (GodotObject.IsInstanceValid(rMi))
+                {
+                    ReattachSkeleton(rMi);
+                    rMi.Visible = true;
+                    UpdateWornMeshVisibility(rMi);
+                }
+            }
+
+            foreach (var attId in visual.WornAttachmentEntities)
+            {
+                if (_attachmentNodes.TryGetValue(attId, out var attachNode) && GodotObject.IsInstanceValid(attachNode))
+                {
+                    attachNode.ProcessMode = Node.ProcessModeEnum.Inherit;
+                    attachNode.Visible = true;
+                }
+                if (_riggedPickBodies.TryGetValue(attId, out var bodies))
+                {
+                    foreach (var body in bodies)
+                        if (GodotObject.IsInstanceValid(body)) body.Visible = true;
+                }
+            }
+
+            // Catch any attachments that arrived while parked and were never loaded
+            foreach (var attId in visual.WornAttachmentEntities)
+            {
+                if (!_riggedAttachments.ContainsKey(attId) && !_attachmentNodes.ContainsKey(attId))
+                {
+                    CallDeferred(nameof(UpdateAttachment), attId.ToString());
+                }
+            }
+
+            // Check if server bakes changed while parked
+            if (visual.EntityId != Guid.Empty)
+            {
+                UpdateVisual(visual.EntityId.ToString());
+            }
+
+            RecomputeMeshVisibility(visual);
+        }
+        else
+        {
+            // A newcomer or an avatar whose outfit was unloaded: perform initial load
+            visual.HasLoadedOutfit = true;
+
+            if (visual.EntityId != Guid.Empty)
+            {
+                UpdateVisual(visual.EntityId.ToString());
+            }
+
+            foreach (var attId in visual.WornAttachmentEntities)
+            {
+                CallDeferred(nameof(UpdateAttachment), attId.ToString());
+            }
+
+            RecomputeMeshVisibility(visual);
+        }
+    }
+
+    /// <summary>
+    /// BUG-PERF-16: Unloads and frees an avatar's outfit under memory pressure or extended hidden time.
+    /// Parked avatars keep their data by default, but release it here when memory needs to be reclaimed.
+    /// </summary>
+    private void UnloadAvatarOutfit(AvatarVisual visual)
+    {
+        visual.IsParked = false;
+        visual.HasLoadedOutfit = false;
+
+        foreach (var attId in visual.WornAttachmentEntities)
+        {
+            _pendingRigs.TryRemove(attId, out _);
+            _preparedRigs.TryRemove(attId, out _);
+            _rigsPreparing.TryRemove(attId, out _);
+            _attachNewest.TryRemove(attId, out _);
 
             if (_riggedAttachments.TryGetValue(attId, out _))
             {
@@ -6732,45 +6889,35 @@ void fragment() {
         }
         visual.RiggedAttachments.Clear();
         visual.BomAttachments.Clear();
-        ApplyJellyDoll(visual);
         RecomputeMeshVisibility(visual);
     }
 
-    private void SetAvatarFull(AvatarVisual visual)
+    /// <summary>
+    /// BUG-PERF-16: Evicts parked avatar outfits (farthest first) when VRAM is under pressure.
+    /// </summary>
+    private void EvictParkedAvatarsIfNeeded(Godot.Vector3 camPos)
     {
-        if (!visual.IsReduced) return;
-        visual.IsReduced = false;
-        visual.StateChangedAt = NowSeconds;
-        visual.ReducedAnimAccum = 0f;
+        if (_gpuCache == null || !_gpuCache.IsOverBudget) return;
+        var parked = _visuals.Values
+            .Where(v => !v.IsSelf && v.IsParked && v.HasLoadedOutfit)
+            .OrderByDescending(v => v.GodotPos.DistanceSquaredTo(camPos))
+            .ToList();
 
-        // The bake materials first: the morph rebuild below and the UpdateVisual after it draw with them.
-        RestorePartMaterials(visual);
-
-        // A shape that arrived while reduced took the skeleton only; the vertex morphs are due now.
-        if (visual.PendingMorphWeights is { } pending)
+        foreach (var visual in parked)
         {
-            ApplyShapeMorphs(visual, pending);
+            if (!_gpuCache.IsOverBudget) break;
+            UnloadAvatarOutfit(visual);
+            Logger.Info($"[AvatarLimit] {visual.AgentId.ToString("N")[..8]} parked outfit unloaded under VRAM pressure");
         }
-
-        // Bakes (LoadedTextures is behind), position and animations. The animation player kept its
-        // state while reduced, so nothing needs restarting.
-        if (visual.EntityId != Guid.Empty)
-        {
-            UpdateVisual(visual.EntityId.ToString());
-        }
-
-        foreach (var attId in visual.WornAttachmentEntities)
-        {
-            CallDeferred(nameof(UpdateAttachment), attId.ToString());
-        }
-
-        RecomputeMeshVisibility(visual);
     }
 
     /// <summary>Moves one avatar between full and reduced, with the bookkeeping the log needs.</summary>
     private void TransitionAvatar(AvatarVisual visual, bool toFull, float distance)
     {
-        Logger.Debug($"[AvatarLimit] {visual.AgentId.ToString("N")[..8]} {(toFull ? "reduced->full" : "full->reduced")} dist={distance:0.0}");
+        string transitionKind = toFull
+            ? (visual.IsParked ? "parked->full" : "reduced->full")
+            : (visual.HasLoadedOutfit ? "full->parked" : "full->reduced");
+        Logger.Debug($"[AvatarLimit] {visual.AgentId.ToString("N")[..8]} {transitionKind} dist={distance:0.0}");
         _avatarLimitTransitions++;
         if (toFull) SetAvatarFull(visual);
         else SetAvatarReduced(visual);
@@ -6797,8 +6944,18 @@ void fragment() {
             {
                 // Outside the draw distance: no candidate (it takes no slot). One that stays out long
                 // enough lets go of its outfit. Not with an unlimited cap, where nobody is ever reduced.
-                if (cap > 0 && !isExempt && !visual.IsReduced && now - visual.HiddenSince > AvatarHiddenReduceSeconds)
-                    TransitionAvatar(visual, toFull: false, dist);
+                if (cap > 0 && !isExempt)
+                {
+                    if (!visual.IsReduced && now - visual.HiddenSince > AvatarHiddenReduceSeconds)
+                    {
+                        TransitionAvatar(visual, toFull: false, dist);
+                    }
+                    else if (visual.IsParked && now - visual.HiddenSince > AvatarHiddenUnloadSeconds)
+                    {
+                        UnloadAvatarOutfit(visual);
+                        Logger.Debug($"[AvatarLimit] {visual.AgentId.ToString("N")[..8]} parked outfit unloaded after {AvatarHiddenUnloadSeconds}s hidden");
+                    }
+                }
                 continue;
             }
 
@@ -6835,13 +6992,21 @@ void fragment() {
                 TransitionAvatar(visual, shouldBeFull, visual.GodotPos.DistanceTo(camPos));
         }
 
+        // Evict parked avatar outfits if under memory pressure
+        EvictParkedAvatarsIfNeeded(camPos);
+
         // Counted at the end over everything shown, so the avatars the dwell held back are in it.
         int fullCount = 0;
         int reducedCount = 0;
+        int parkedCount = 0;
         foreach (var visual in _visuals.Values)
         {
             if (visual.IsControlAvatar || !visual.Shown) continue;
-            if (visual.IsReduced) reducedCount++;
+            if (visual.IsReduced)
+            {
+                reducedCount++;
+                if (visual.IsParked) parkedCount++;
+            }
             else fullCount++;
         }
 
@@ -6853,7 +7018,7 @@ void fragment() {
             _lastLoggedReduced = reducedCount;
             _lastLoggedCap = cap;
             _lastAvatarLimitInfo = now;
-            Logger.Info($"[AvatarLimit] shown {fullCount} full, {reducedCount} reduced (cap {cap}), " +
+            Logger.Info($"[AvatarLimit] shown {fullCount} full, {reducedCount} reduced ({parkedCount} parked) (cap {cap}), " +
                         $"{_avatarLimitTransitions} transitions since the last line");
             _avatarLimitTransitions = 0;
         }

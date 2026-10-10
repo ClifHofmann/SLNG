@@ -524,9 +524,10 @@ public partial class AvatarRenderer
     }
 
     /// <summary>
-    /// FEAT-PERF-08: Verifies that reduced avatars have rigged and rigid attachments freed,
-    /// skins detached from Skeleton3D, are drawn in the jelly-doll colour, keep their pose and
-    /// animation state, and are restored (with their bake materials) when set full.
+    /// FEAT-PERF-08 / BUG-PERF-16: Verifies that reduced avatars park rigged and rigid attachments
+    /// (skins detached from Skeleton3D, nodes hidden, data kept in memory), are drawn in the jelly-doll
+    /// colour, keep their pose and animation state, are restored instantly when set full (unparked),
+    /// and are unloaded only when explicit outfit unload is called (memory pressure / extended departure).
     /// </summary>
     internal (bool Passed, string Detail) SelfTestAvatarReductionLifecycle()
     {
@@ -572,7 +573,7 @@ public partial class AvatarRenderer
         _attachmentNodes[rigidAttId] = boneAttach;
         visual.WornAttachmentEntities.Add(rigidAttId);
 
-        // A prim item's dedupe records go with its node: a promoted avatar must rebuild it.
+        // Prim dedupe records survive reduction when parked
         _attachmentPrimSignatures[primAttId] = PrimAttachSignature.From(new PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0), default);
         _attachmentLocalPoses[primAttId] = (System.Numerics.Vector3.One, System.Numerics.Quaternion.Identity);
         visual.WornAttachmentEntities.Add(primAttId);
@@ -580,12 +581,16 @@ public partial class AvatarRenderer
         SetAvatarReduced(visual);
 
         if (!visual.IsReduced) return (false, "visual was not marked reduced");
-        if (_riggedAttachments.ContainsKey(riggedAttId)) return (false, "rigged attachment was not removed from _riggedAttachments");
-        if (visual.RiggedAttachments.Count > 0) return (false, "visual.RiggedAttachments was not cleared");
-        if (!mi.Skeleton.IsEmpty) return (false, "rigged mesh was not detached from skeleton");
-        if (_attachmentNodes.ContainsKey(rigidAttId)) return (false, "rigid attachment was not removed from _attachmentNodes");
-        if (_attachmentPrimSignatures.ContainsKey(primAttId) || _attachmentLocalPoses.ContainsKey(primAttId))
-            return (false, "the prim attachment's dedupe records survived the reduction");
+        if (!visual.IsParked) return (false, "visual was not marked parked");
+        if (!_riggedAttachments.ContainsKey(riggedAttId)) return (false, "rigged attachment was dropped from _riggedAttachments while parked");
+        if (visual.RiggedAttachments.Count == 0) return (false, "visual.RiggedAttachments was dropped while parked");
+        if (!mi.Skeleton.IsEmpty) return (false, "rigged mesh was not detached from skeleton while parked");
+        if (mi.Visible) return (false, "rigged mesh remained visible while parked");
+        if (!_attachmentNodes.ContainsKey(rigidAttId)) return (false, "rigid attachment was dropped from _attachmentNodes while parked");
+        if (boneAttach.Visible) return (false, "rigid attachment remained visible while parked");
+        if (boneAttach.ProcessMode != Node.ProcessModeEnum.Disabled) return (false, "rigid attachment process mode was not disabled while parked");
+        if (!_attachmentPrimSignatures.ContainsKey(primAttId) || !_attachmentLocalPoses.ContainsKey(primAttId))
+            return (false, "the prim attachment's dedupe records were dropped while parked");
         if (skeleton.GetBonePosePosition(poseBone).DistanceTo(pose) > 1e-5f)
             return (false, "the reduction reset the pose (a reduced avatar must keep its animation state)");
 
@@ -612,6 +617,12 @@ public partial class AvatarRenderer
 
         SetAvatarFull(visual);
         if (visual.IsReduced) return (false, "visual was not restored to full");
+        if (visual.IsParked) return (false, "visual was not unparked");
+        if (mi.Skeleton.IsEmpty) return (false, "rigged mesh skeleton was not restored upon unparking");
+        if (!mi.Visible) return (false, "rigged mesh was not made visible upon unparking");
+        if (!boneAttach.Visible) return (false, "rigid attachment was not made visible upon unparking");
+        if (boneAttach.ProcessMode != Node.ProcessModeEnum.Inherit) return (false, "rigid attachment process mode was not restored upon unparking");
+
         foreach (var name in SystemPartNames)
         {
             if (!ReferenceEquals(visual.Parts[name].MaterialOverride, bakeMaterials[name]))
@@ -621,9 +632,18 @@ public partial class AvatarRenderer
         if (skeleton.GetBonePosePosition(poseBone).DistanceTo(pose) > 1e-5f)
             return (false, "the pose was lost across the promotion");
 
+        // BUG-PERF-16: Test explicit unloading under memory pressure
+        UnloadAvatarOutfit(visual);
+        if (visual.IsParked) return (false, "visual was still parked after unload");
+        if (_riggedAttachments.ContainsKey(riggedAttId)) return (false, "rigged attachment was not removed on unload");
+        if (visual.RiggedAttachments.Count > 0) return (false, "visual.RiggedAttachments was not cleared on unload");
+        if (_attachmentNodes.ContainsKey(rigidAttId)) return (false, "rigid attachment was not removed from _attachmentNodes on unload");
+        if (_attachmentPrimSignatures.ContainsKey(primAttId) || _attachmentLocalPoses.ContainsKey(primAttId))
+            return (false, "the prim attachment's dedupe records survived unload");
+
         _visuals.Remove(entityId);
         visual.Root.QueueFree();
-        return (true, "avatar reduction frees attachments, shows the jelly doll, keeps the pose, and restores the bake");
+        return (true, "avatar parking keeps data, detaches skins, shows jelly doll; unpark restores; unload frees under pressure");
     }
 
     /// <summary>
