@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.33-alpha";
+    public const string AppVersion = "v0.27.34-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -440,6 +440,7 @@ public partial class Boot : Control
     private double _vramBudgetAccumulator;
     private double _timeSinceLastVramRise = 100.0;
     private long _lastVramBudget;
+    private readonly SLNG.Core.RollingMinimum _osBudgetWindow = new(30.0);
     private int _parcelRequestAttempts;
     private System.Numerics.Vector3 _lastParcelQueryPos = new(-999, -999, -999);
 
@@ -3171,6 +3172,9 @@ public partial class Boot : Control
 
         if (hasOsInfo)
         {
+            // The OS budget wobbles by hundreds of MB between readings while another program uses
+            // the card; the policy gets the lowest reading of the last 30 s (see RollingMinimum).
+            osBudget = _osBudgetWindow.Add(Time.GetTicksMsec() / 1000.0, osBudget);
             _gpuCache.ReportOsMemory(osBudget, osUsage, _graphicsSettings.TextureMemoryAuto);
             long? manualCap = _graphicsSettings.TextureMemoryAuto ? null : ((long)_graphicsSettings.TextureMemoryMb << 20);
             long prevBudget = force ? 0 : _lastVramBudget;
