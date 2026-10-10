@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.35-alpha";
+    public const string AppVersion = "v0.27.36-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -3908,11 +3908,9 @@ public partial class Boot : Control
         _groupInviteWindows.Clear();
         while (_pendingGroupInvites.TryDequeue(out _)) { }
 
-        // BUG-UI-12: every pending decision belonged to the session that carried it. Re-opening
-        // one across a relogin would send an answer the new session's simulator knows nothing
-        // about. The entries stay -- they are still a record of what happened -- but the way back
-        // to an answer goes, which is exactly what CompleteAction leaves behind.
-        foreach (var key in _notificationActions.Keys) _notifications.CompleteAction(key);
+        // BUG-UI-12 / BUG-GRID-02: wipe notifications and action callbacks from previous sessions so
+        // different accounts and grids never share or inherit notifications.
+        _notifications.DismissAll();
         _notificationActions.Clear();
         _groupInviteActionKeys.Clear();
         _inventoryOfferActionKeys.Clear();
@@ -3980,8 +3978,8 @@ public partial class Boot : Control
         // before the login, and both returned without a word -- no cache file was ever read or
         // written (BUG-INV-12).
         _session.UseCacheDirectories(
-            ProjectSettings.GlobalizePath("user://cache/inventory"),
-            ProjectSettings.GlobalizePath("user://cache/displaynames"));
+            GridData.InventoryCacheDirectory(_sessionGridUri),
+            GridData.DisplayNameCacheDirectory(_sessionGridUri));
 
         // FEAT-NET-04: the object cache is on; --no-object-cache puts the session back exactly as it
         // was (handshake says "cache empty", every cached object is asked for). Read before login.
@@ -4429,6 +4427,9 @@ public partial class Boot : Control
             string gridSlug = GridIdentity.Slug(_sessionGridUri);
             _topMenu.FavoritesBar.Initialize(gridSlug, _myAgentId.ToString());
             _chatWindow.InitializeFriends(gridSlug, _myAgentId.ToString());
+            _avatarHoverSettings.Load(gridSlug, _myAgentId.ToString());
+            _avatarHoverWindow?.Refresh();
+            SLNG.App.UI.GroupMuteSettings.Initialize(gridSlug, _myAgentId.ToString());
             var favIds = _topMenu.FavoritesBar.FavoritesList.Items
                 .Select(i => i.ItemId != System.Guid.Empty ? i.ItemId : i.AssetId)
                 .ToHashSet();
@@ -5774,7 +5775,23 @@ public partial class Boot : Control
                 _topMenu.ClearLocation();
                 _topMenu.FavoritesBar.Reset();
             }
-            _chatWindow?.ResetFriends();
+            _chatWindow?.ResetForNewSession();
+            _landmarksWindow?.Reset();
+            _landmarkDedupWindow?.Reset();
+            _avatarHoverSettings.Reset();
+            _avatarHoverWindow?.Refresh();
+            SLNG.App.UI.GroupMuteSettings.Reset();
+            _notifications.DismissAll();
+            _notificationActions.Clear();
+            _groupInviteActionKeys.Clear();
+            _inventoryOfferActionKeys.Clear();
+            foreach (var win in _userProfileWindows.Values) win.QueueFree();
+            _userProfileWindows.Clear();
+            _openProfileWindows = 0;
+            foreach (var win in _groupInfoWindows.Values) win.QueueFree();
+            _groupInfoWindows.Clear();
+            _openGroupInfoWindows = 0;
+            if (_objectEditWindow != null) { _objectEditWindow.QueueFree(); _objectEditWindow = null; }
 
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;
@@ -5889,7 +5906,23 @@ public partial class Boot : Control
                 _topMenu.ClearLocation();
                 _topMenu.FavoritesBar.Reset();
             }
-            _chatWindow?.ResetFriends();
+            _chatWindow?.ResetForNewSession();
+            _landmarksWindow?.Reset();
+            _landmarkDedupWindow?.Reset();
+            _avatarHoverSettings.Reset();
+            _avatarHoverWindow?.Refresh();
+            SLNG.App.UI.GroupMuteSettings.Reset();
+            _notifications.DismissAll();
+            _notificationActions.Clear();
+            _groupInviteActionKeys.Clear();
+            _inventoryOfferActionKeys.Clear();
+            foreach (var win in _userProfileWindows.Values) win.QueueFree();
+            _userProfileWindows.Clear();
+            _openProfileWindows = 0;
+            foreach (var win in _groupInfoWindows.Values) win.QueueFree();
+            _groupInfoWindows.Clear();
+            _openGroupInfoWindows = 0;
+            if (_objectEditWindow != null) { _objectEditWindow.QueueFree(); _objectEditWindow = null; }
             var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
             if (hudLayer != null) hudLayer.Visible = false;
             if (_chatWindow != null) _chatWindow.Visible = false;

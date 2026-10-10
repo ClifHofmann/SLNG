@@ -26,8 +26,36 @@ namespace SLNG.App.UI;
 public partial class UserProfileWindow : SLNGWindow
 {
     private const string NotesConfigPath = "user://preferences.cfg";
-    private const string NotesSection = "avatar_notes";
+    private const string NotesSectionPrefix = "avatar_notes_";
+    private const string NotesImportedSectionPrefix = "avatar_notes_imported_";
+    private const string LegacyNotesSection = "avatar_notes";
+    private const string LegacyNotesImportedSection = "avatar_notes_imported";
     private const double NotesSaveDebounceSec = 1.0;
+
+    /// <summary>False keeps changes in memory only. Used by selftest to keep user preferences untouched.</summary>
+    public static bool Persist { get; set; } = true;
+
+    public static string? GetNotesSection(string? gridSlug, string? agentId)
+    {
+        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
+            return null;
+
+        if (Guid.TryParse(agentId, out var guid) && guid == Guid.Empty)
+            return null;
+
+        return $"{NotesSectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
+    }
+
+    public static string? GetNotesImportedSection(string? gridSlug, string? agentId)
+    {
+        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
+            return null;
+
+        if (Guid.TryParse(agentId, out var guid) && guid == Guid.Empty)
+            return null;
+
+        return $"{NotesImportedSectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
+    }
 
     private Guid _agentId;
     private string _agentName = "";
@@ -100,7 +128,6 @@ public partial class UserProfileWindow : SLNGWindow
     // never answers, the box falls back to the old local-only notes rather than offering none.
     private enum NotesMode { Loading, Server, LocalFallback }
     private const double NotesLoadTimeoutSec = 8.0;
-    private const string NotesImportedSection = "avatar_notes_imported";
     private TextEdit? _notesEdit;
     private Label? _notesHint;
     private double _notesSaveTimer = -1.0;
@@ -1025,40 +1052,82 @@ public partial class UserProfileWindow : SLNGWindow
 
     private string ReadLocalNote()
     {
+        string? section = GetNotesSection(_session?.GridSlug, _session?.AgentId);
+        if (section == null) return "";
+
         var cfg = new ConfigFile();
-        cfg.Load(NotesConfigPath); // fine if it doesn't exist yet
+        if (cfg.Load(NotesConfigPath) != Error.Ok) return "";
+
         var key = _agentId.ToString();
-        return cfg.HasSectionKey(NotesSection, key) ? (string)cfg.GetValue(NotesSection, key) : "";
+        return cfg.HasSectionKey(section, key) ? (string)cfg.GetValue(section, key) : "";
     }
 
     private void WriteLocalNote(string text)
     {
+        if (!Persist) return;
+        string? section = GetNotesSection(_session?.GridSlug, _session?.AgentId);
+        if (section == null) return;
+
         var cfg = new ConfigFile();
         cfg.Load(NotesConfigPath); // preserve window_geometry / other sections
+
+        // One-time cleanup of legacy/corrupted empty-guid sections
+        if (cfg.HasSection("avatar_notes_00000000-0000-0000-0000-000000000000"))
+        {
+            cfg.EraseSection("avatar_notes_00000000-0000-0000-0000-000000000000");
+        }
+        foreach (var s in cfg.GetSections())
+        {
+            if (s.StartsWith(NotesSectionPrefix) && s.EndsWith("00000000-0000-0000-0000-000000000000"))
+            {
+                cfg.EraseSection(s);
+            }
+        }
+
         var key = _agentId.ToString();
         if (string.IsNullOrEmpty(text))
         {
-            if (cfg.HasSectionKey(NotesSection, key)) cfg.EraseSectionKey(NotesSection, key);
+            if (cfg.HasSectionKey(section, key)) cfg.EraseSectionKey(section, key);
         }
         else
         {
-            cfg.SetValue(NotesSection, key, text);
+            cfg.SetValue(section, key, text);
         }
         cfg.Save(NotesConfigPath);
     }
 
     private bool WasLocalNoteImported()
     {
+        string? section = GetNotesImportedSection(_session?.GridSlug, _session?.AgentId);
+        if (section == null) return false;
+
         var cfg = new ConfigFile();
-        cfg.Load(NotesConfigPath);
-        return cfg.HasSectionKey(NotesImportedSection, _agentId.ToString());
+        if (cfg.Load(NotesConfigPath) != Error.Ok) return false;
+        return cfg.HasSectionKey(section, _agentId.ToString());
     }
 
     private void MarkLocalNoteImported()
     {
+        if (!Persist) return;
+        string? section = GetNotesImportedSection(_session?.GridSlug, _session?.AgentId);
+        if (section == null) return;
+
         var cfg = new ConfigFile();
         cfg.Load(NotesConfigPath);
-        cfg.SetValue(NotesImportedSection, _agentId.ToString(), true);
+
+        if (cfg.HasSection("avatar_notes_imported_00000000-0000-0000-0000-000000000000"))
+        {
+            cfg.EraseSection("avatar_notes_imported_00000000-0000-0000-0000-000000000000");
+        }
+        foreach (var s in cfg.GetSections())
+        {
+            if (s.StartsWith(NotesImportedSectionPrefix) && s.EndsWith("00000000-0000-0000-0000-000000000000"))
+            {
+                cfg.EraseSection(s);
+            }
+        }
+
+        cfg.SetValue(section, _agentId.ToString(), true);
         cfg.Save(NotesConfigPath);
     }
 

@@ -28,11 +28,14 @@ namespace SLNG.App.UI;
 public static class GroupMuteSettings
 {
     private const string ConfigPath = "user://preferences.cfg";
-    private const string Section = "group_mute";
+    private const string SectionPrefix = "group_mute_";
+    private const string LegacySection = "group_mute";
 
     private static readonly object _lock = new();
     private static readonly HashSet<Guid> _muted = new();
     private static bool _loaded;
+    private static string? _gridSlug;
+    private static string? _agentId;
 
     /// <summary>False keeps every change in memory only. <c>--selftest</c> boots against the
     /// developer's real <c>user://</c>, so its checks switch this off and never touch
@@ -44,20 +47,88 @@ public static class GroupMuteSettings
     /// thread).</summary>
     public static event Action<Guid, bool>? MuteChanged;
 
+    public static string? GetSection(string? gridSlug, string? agentId)
+    {
+        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
+            return null;
+
+        if (Guid.TryParse(agentId, out var guid) && guid == Guid.Empty)
+            return null;
+
+        return $"{SectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
+    }
+
+    public static void Initialize(string? gridSlug, string? agentId)
+    {
+        lock (_lock)
+        {
+            _gridSlug = gridSlug;
+            _agentId = agentId;
+            _muted.Clear();
+            _loaded = false;
+            EnsureLoaded();
+        }
+    }
+
+    public static void Reset()
+    {
+        lock (_lock)
+        {
+            _gridSlug = null;
+            _agentId = null;
+            _muted.Clear();
+            _loaded = false;
+        }
+    }
+
     private static void EnsureLoaded()
     {
         // Caller holds _lock.
         if (_loaded) return;
         _loaded = true;
 
+        string? section = GetSection(_gridSlug, _agentId);
+        if (section == null) return;
+
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return;
-        // HasSection first: GetSectionKeys on a missing section prints a Godot error, and on a
-        // fresh profile that section never exists.
-        if (!cfg.HasSection(Section)) return;
-        foreach (var key in cfg.GetSectionKeys(Section))
+
+        // One-time cleanup of legacy/corrupted empty-guid sections
+        bool dirty = false;
+        if (cfg.HasSection("group_mute_00000000-0000-0000-0000-000000000000"))
         {
-            if (Guid.TryParse(key, out var id) && (bool)cfg.GetValue(Section, key, false))
+            cfg.EraseSection("group_mute_00000000-0000-0000-0000-000000000000");
+            dirty = true;
+        }
+        foreach (var s in cfg.GetSections())
+        {
+            if (s.StartsWith(SectionPrefix) && s.EndsWith("00000000-0000-0000-0000-000000000000"))
+            {
+                cfg.EraseSection(s);
+                dirty = true;
+            }
+        }
+
+        // Migrate legacy un-scoped [group_mute] if target section does not exist yet
+        if (!cfg.HasSection(section) && cfg.HasSection(LegacySection))
+        {
+            foreach (var key in cfg.GetSectionKeys(LegacySection))
+            {
+                cfg.SetValue(section, key, cfg.GetValue(LegacySection, key));
+            }
+            cfg.EraseSection(LegacySection);
+            dirty = true;
+        }
+
+        if (dirty && Persist)
+        {
+            cfg.Save(ConfigPath);
+        }
+
+        if (!cfg.HasSection(section)) return;
+        foreach (var key in cfg.GetSectionKeys(section))
+        {
+            if (Guid.TryParse(key, out var id) && (bool)cfg.GetValue(section, key, false))
                 _muted.Add(id);
         }
     }
@@ -92,13 +163,14 @@ public static class GroupMuteSettings
             EnsureLoaded();
             if (muted ? !_muted.Add(groupId) : !_muted.Remove(groupId)) return; // no change
 
-            if (Persist)
+            string? section = GetSection(_gridSlug, _agentId);
+            if (Persist && section != null)
             {
                 var cfg = new ConfigFile();
                 cfg.Load(ConfigPath); // preserve sections owned by other features
                 var key = groupId.ToString();
-                if (muted) cfg.SetValue(Section, key, true);
-                else if (cfg.HasSectionKey(Section, key)) cfg.EraseSectionKey(Section, key);
+                if (muted) cfg.SetValue(section, key, true);
+                else if (cfg.HasSectionKey(section, key)) cfg.EraseSectionKey(section, key);
                 cfg.Save(ConfigPath);
             }
         }

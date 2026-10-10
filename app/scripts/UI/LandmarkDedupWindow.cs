@@ -141,6 +141,17 @@ public partial class LandmarkDedupWindow : SLNGWindow
         _favoriteIds = favoriteIds;
     }
 
+    public void Reset()
+    {
+        _session = null;
+        _favoriteIds = null;
+        _rawLandmarks.Clear();
+        _groups.Clear();
+        _selectedToDelete.Clear();
+        if (_tree != null && IsInstanceValid(_tree)) _tree.Clear();
+        if (_summaryLabel != null && IsInstanceValid(_summaryLabel)) _summaryLabel.Text = "";
+    }
+
     public void OpenAndScan()
     {
         Visible = true;

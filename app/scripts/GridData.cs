@@ -30,6 +30,8 @@ public static class GridData
 {
     public const string ObjectCacheKind = "objects";
     public const string MapTileCacheKind = "maptiles";
+    public const string InventoryCacheKind = "inventory";
+    public const string DisplayNameCacheKind = "displaynames";
     private const string LoginBackgroundName = "last_session_bg";
 
     private static GridDataPaths? _user;
@@ -48,6 +50,12 @@ public static class GridData
 
     /// <summary>Where this grid's world-map tiles are cached.</summary>
     public static string MapTileDirectory(string? gridUri) => User.CacheDirectory(gridUri, MapTileCacheKind);
+
+    /// <summary>Where this grid's inventory cache (<c>.inv.cache</c>) lives.</summary>
+    public static string InventoryCacheDirectory(string? gridUri) => User.CacheDirectory(gridUri, InventoryCacheKind);
+
+    /// <summary>Where this grid's display name cache (<c>.names.json</c>) lives.</summary>
+    public static string DisplayNameCacheDirectory(string? gridUri) => User.CacheDirectory(gridUri, DisplayNameCacheKind);
 
     /// <summary>The picture of the last session of this account on this grid -- the login and
     /// loading-screen background. A real file path (not <c>user://</c>), which Godot's image and

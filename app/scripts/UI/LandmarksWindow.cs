@@ -335,6 +335,14 @@ public partial class LandmarksWindow : SLNGWindow
         UpdateTree();
     }
 
+    public void Reset()
+    {
+        _session = null;
+        if (_tree != null) _tree.Session = null;
+        _landmarks.Clear();
+        UpdateTree();
+    }
+
     public void Toggle()
     {
         Visible = !Visible;
