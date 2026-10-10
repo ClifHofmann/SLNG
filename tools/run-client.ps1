@@ -104,7 +104,12 @@ param(
     # visual, whether its mesh arrived and at which level, whether it is culled, instanced or hidden.
     # Takes the object's UUID as the build floater shows it. For "object X is not shown". Passes
     # --trace-object=<uuid>. Works without -Diag.
-    [string]$TraceObject = ''
+    [string]$TraceObject = '',
+
+    # FEAT-PERF-17: cap the video-memory budget Windows reports to this many MB, to test how the
+    # viewer behaves on a smaller card (e.g. 3500 for a 4 GB card). 0 = use the real budget.
+    # Passes --vram-budget=<MB>.
+    [int]$VramBudget = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -198,6 +203,10 @@ if ($TraceObject -ne '') {
 if ($NoObjectCache) {
     Write-Host "      object cache OFF -- every object is streamed in full (--no-object-cache)" -ForegroundColor Magenta
     $userArgs += '--no-object-cache'
+}
+if ($VramBudget -gt 0) {
+    Write-Host "      VRAM budget capped at $VramBudget MB -- simulates a smaller card (--vram-budget)" -ForegroundColor Yellow
+    $userArgs += "--vram-budget=$VramBudget"
 }
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs
