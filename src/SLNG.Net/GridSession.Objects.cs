@@ -376,11 +376,11 @@ public sealed partial class GridSession
             _client.Self.ReplyToScriptDialog(channel, buttonIndex, buttonLabel, new UUID(objectId));
     }
 
-    private void OnObjectUpdate(object? sender, PrimEventArgs e)
-    {
-        InvalidateCachedObject(e.Simulator.Handle, e.Prim.LocalID);
-        RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
-    }
+    // BUG-RENDER-47: no cache invalidation here. LibreMetaverse raises ObjectUpdate for COMPRESSED
+    // updates too (ObjectManager.PacketHandlers.cs ObjectUpdateCompressedHandler, the PrimEventArgs
+    // raise near the end), so invalidating here would race the compressed-block store and empty the
+    // object cache. The uncompressed case is handled in OnRawObjectUpdatePacket.
+    private void OnObjectUpdate(object? sender, PrimEventArgs e) => RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
 
     /// <summary>FEAT-ANIMESH-02. The sim's <c>ObjectAnimation</c> message for one prim -- see
     /// <see cref="ObjectAnimationConverter"/>. Every region's, not just the current one: a

@@ -183,29 +183,26 @@ public class PrimShapeRoundTripTests
     }
 
     [Fact]
-    public void IsUntrustedShape_UnpopulatedPathCurveOrProfile_ReturnsTrue()
+    public void IsUntrustedShape_ZeroPathCurve_ReturnsTrue()
     {
         var zeroPath = BuildBlockWithShape(profileCurve: 0x01, pathCurve: 0, pathScale: 1f, profileBegin: 0f, profileEnd: 1f, profileHollow: 0f);
         Assert.True(CompressedObjectBlock.IsUntrustedShape(zeroPath));
-
-        var zeroProfile = BuildBlockWithShape(profileCurve: 0x00, pathCurve: (byte)PathCurve.Line, pathScale: 1f, profileBegin: 0f, profileEnd: 1f, profileHollow: 0f);
-        Assert.True(CompressedObjectBlock.IsUntrustedShape(zeroProfile));
     }
 
     [Fact]
-    public void IsUntrustedShape_DefaultTriangle_ReturnsTrue()
+    public void IsUntrustedShape_ValidShapesThatLookDefault_ReturnFalse()
     {
-        // 0x03 = Equilateral triangle with no hole, uncut (0..1), no hollow
-        var defaultTri = BuildBlockWithShape(profileCurve: 0x03, pathCurve: (byte)PathCurve.Line, pathScale: 1f, profileBegin: 0f, profileEnd: 1f, profileHollow: 0f);
-        Assert.True(CompressedObjectBlock.IsUntrustedShape(defaultTri));
-    }
+        // Profile 0 is LL_PCODE_PROFILE_CIRCLE (llvolume.h:143): a cylinder, not an unpopulated shape.
+        var cylinder = BuildBlockWithShape(profileCurve: 0x00, pathCurve: (byte)PathCurve.Line, pathScale: 1f, profileBegin: 0f, profileEnd: 1f, profileHollow: 0f);
+        Assert.False(CompressedObjectBlock.IsUntrustedShape(cylinder));
 
-    [Fact]
-    public void IsUntrustedShape_HoleTypeDeclaredWithZeroHollow_ReturnsTrue()
-    {
-        // 0x21 = Box with Square hole declared (high nibble 0x20), but hollow = 0
-        var unconfiguredHole = BuildBlockWithShape(profileCurve: 0x21, pathCurve: (byte)PathCurve.Line, pathScale: 1f, profileBegin: 0f, profileEnd: 1f, profileHollow: 0f);
-        Assert.True(CompressedObjectBlock.IsUntrustedShape(unconfiguredHole));
+        // A plain uncut prism is a real prism.
+        var prism = BuildBlockWithShape(profileCurve: 0x03, pathCurve: (byte)PathCurve.Line, pathScale: 1f, profileBegin: 0f, profileEnd: 1f, profileHollow: 0f);
+        Assert.False(CompressedObjectBlock.IsUntrustedShape(prism));
+
+        // A hole type with no hollow is a valid state.
+        var holeTypeNoHollow = BuildBlockWithShape(profileCurve: 0x21, pathCurve: (byte)PathCurve.Line, pathScale: 1f, profileBegin: 0f, profileEnd: 1f, profileHollow: 0f);
+        Assert.False(CompressedObjectBlock.IsUntrustedShape(holeTypeNoHollow));
     }
 
     [Fact]

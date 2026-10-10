@@ -66,49 +66,22 @@ internal static class CompressedObjectBlock
     }
 
     /// <summary>
-    /// Checks whether an ObjectUpdateCompressed block contains an unconfigured, incomplete, or
-    /// untrusted shape (BUG-RENDER-47).
+    /// Whether an ObjectUpdateCompressed block cannot be trusted to build the right shape from the cache
+    /// (BUG-RENDER-47): no block, a layout the shape cannot be located in, or a path curve of 0, which no
+    /// real prim has (the path curves start at LL_PCODE_PATH_LINE = 0x10).
     ///
-    /// <para>Newly rezzed prims or scripted displays (like FURWARE/XyzzyText chalkboards) begin as
-    /// default uncut equilateral triangles (ProfileCurve 0x03 or 0x23, Cut 0..1, Hollow 0) before
-    /// a script or edit configures their real shape. If such an early state was captured in the
-    /// cache, it would render as grey sawtooth triangles until manually selected. Similarly,
-    /// an all-zero shape or a non-zero hole type with 0 hollow is unconfigured.</para>
+    /// <para>Deliberately NOT a guess about "unconfigured" shapes. A profile curve of 0 is
+    /// LL_PCODE_PROFILE_CIRCLE (llvolume.h:143: cylinders, spheres, tori), a plain uncut prism is a real
+    /// prism, and a hole type with no hollow is a valid state; flagging them kept every such object out of
+    /// the cache and re-requested it on every visit. The stale chalkboard shapes came from cached
+    /// compressed blocks that a later UNCOMPRESSED update had superseded; that update now evicts the
+    /// cached block (GridSession.OnRawObjectUpdatePacket), and the cache file version was bumped so
+    /// blocks cached before the fix are dropped once.</para>
     /// </summary>
     public static bool IsUntrustedShape(byte[]? data)
     {
         if (data is null) return true;
-        if (!CompressedParticleRepair.TryFindVolumeParams(data, out int at))
-        {
-            return true;
-        }
-
-        byte pathCurve = data[at];
-        if (pathCurve == 0) return true;
-
-        byte profileCurve = data[at + 16];
-        byte baseProfile = (byte)(profileCurve & 0x0F);
-        if (baseProfile == 0) return true;
-
-        ushort profileBegin = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(at + 17, 2));
-        ushort profileEnd = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(at + 19, 2));
-        ushort profileHollow = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(at + 21, 2));
-
-        byte holeType = (byte)(profileCurve & 0xF0);
-
-        // A declared hole type (Square=0x20, Circle=0x10, Triangle=0x30) with 0 hollow is unconfigured
-        if (holeType != 0 && profileHollow == 0) return true;
-
-        // Default uncut, unhollowed equilateral triangle (0x03)
-        if (baseProfile == 3)
-        {
-            bool isDefaultCut = profileBegin == 0 && (profileEnd == 0 || profileEnd >= 49500);
-            if (isDefaultCut && profileHollow == 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        if (!CompressedParticleRepair.TryFindVolumeParams(data, out int at)) return true;
+        return data[at] == 0;   // path curve
     }
 }

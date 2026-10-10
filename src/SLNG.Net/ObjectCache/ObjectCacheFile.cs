@@ -17,7 +17,9 @@ internal static class ObjectCacheFile
 {
     public const string Extension = ".slobj";
 
-    private const int Version = 1;
+    // 2: BUG-RENDER-47 -- blocks cached before uncompressed updates evicted them can hold a stale
+    // shape; bumping the version drops every cache file written before the fix, once.
+    private const int Version = 2;
     private static readonly byte[] Magic = "SLNGOBJC"u8.ToArray();
 
     private const int HeaderLength = 8 + 4 + 8 + 16 + 8 + 4;
