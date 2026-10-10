@@ -3817,6 +3817,25 @@ public partial class AvatarRenderer : Node3D
                      $"moved onto their own instances in face order ({alreadySplit} already split)");
     }
 
+    /// <summary>The main-thread half of <see cref="BuildFaceMaterialAsync"/>'s texture bookkeeping: the
+    /// face's texture joins the visual's pinned/used sets, and the upload's initial reference is given
+    /// back while the visual is not pinning. A visual that RemoveVisual has already torn down released
+    /// its textures then; this one arrived after it, so its reference is given back here.</summary>
+    private void RecordAvatarTexture(AvatarVisual visual, Guid texId)
+    {
+        bool live = _visuals.TryGetValue(visual.EntityId, out var current) && ReferenceEquals(current, visual);
+        if (!live)
+        {
+            _gpuCache?.ReleaseRef(texId);
+            if (!visual.IsSelf) _gpuCache?.UnregisterAvatarTexture(texId, evictIfUnreferenced: true);
+            return;
+        }
+        visual.PinnedTextureIds.Add(texId);
+        visual.UsedTextureIds.Add(texId);
+        if (!visual.TexturesPinned)
+            _gpuCache?.ReleaseRef(texId);
+    }
+
     /// <summary>Builds a material for one SL face: optional albedo texture modulated by the
     /// face colour tint, with alpha-cutout when the texture has alpha. Texture decode runs off
     /// the main thread; only the GPU upload is marshalled back.</summary>
@@ -4004,12 +4023,14 @@ public partial class AvatarRenderer : Node3D
         var built = await builtTask.ConfigureAwait(false);
         if (avatarVisual != null && texId != Guid.Empty)
         {
-            avatarVisual.PinnedTextureIds.Add(texId);
-            avatarVisual.UsedTextureIds.Add(texId);
-            if (!avatarVisual.TexturesPinned)
-            {
-                _gpuCache?.ReleaseRef(texId);
-            }
+            // The await above resumes on a pool thread, and PinnedTextureIds / UsedTextureIds are plain
+            // HashSets the main thread edits and walks (RemoveVisual, SetAvatarReduced, the cull tick).
+            // Adding here raced RemoveVisual's Remove and corrupted the set ("Operations that change
+            // non-concurrent collections must have exclusive access", seen on exit 2026-10-10), so the
+            // bookkeeping is done on the main thread.
+            var visualForRefs = avatarVisual;
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                () => RecordAvatarTexture(visualForRefs, texId), label: "avatar.material.refs");
         }
         if (built == null)
         {
