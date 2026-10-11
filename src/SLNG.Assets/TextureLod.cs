@@ -69,6 +69,34 @@ public static class TextureLod
     }
 
     /// <summary>
+    /// BUG-PERF-18: the reduce level a codestream can really be decoded at, for the level the screen (plus
+    /// the VRAM back-pressure bias) asked for: no more than the codestream has wavelet decomposition levels
+    /// (<paramref name="decompositionLevels"/>, from its COD marker; a decoder's resolution is absolute, so a
+    /// level beyond that does not exist), no more than <see cref="MaxDiscardLevel"/>, and not so far that a
+    /// side drops below <see cref="MinReducedDimension"/> (a 32x32 texture reduced five times is one pixel,
+    /// which no face should be drawn with). 0 when the levels are unknown (<c>&lt;= 0</c>): "decode it whole"
+    /// is the one answer that always works, and a caller that keys a cache by the level then keys the full
+    /// decode as the full decode.
+    ///
+    /// <para>This is the "lowest valid level, never nothing" rule. Before it, a level beyond the codestream
+    /// made the reduced decode give up and fall back to a full one -- correct but 4-30x the work, and, with
+    /// the decoded cache keyed by the level that was asked for rather than the one that was served, a cache
+    /// entry that claimed to be smaller than it was.</para>
+    /// </summary>
+    public static int ClampReduceLevel(int reduce, int width, int height, int decompositionLevels)
+    {
+        if (reduce <= 0 || width <= 0 || height <= 0 || decompositionLevels <= 0) return 0;
+        reduce = System.Math.Min(System.Math.Min(reduce, decompositionLevels), MaxDiscardLevel);
+
+        int floorW = System.Math.Min(width, MinReducedDimension);
+        int floorH = System.Math.Min(height, MinReducedDimension);
+        while (reduce > 0
+               && (ReducedDimension(width, reduce) < floorW || ReducedDimension(height, reduce) < floorH))
+            reduce--;
+        return reduce;
+    }
+
+    /// <summary>
     /// BUG-PERF-13: Pure arithmetic: screen pixel area covered by a sphere of <paramref name="radius"/>
     /// at <paramref name="distance"/> given camera <paramref name="fovDegrees"/> and
     /// <paramref name="viewportHeightPixels"/>. Used by AvatarRenderer to determine screen-area-based

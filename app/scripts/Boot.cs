@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.40-alpha";
+    public const string AppVersion = "v0.27.41-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -3164,6 +3164,12 @@ public partial class Boot : Control
         return false;
     }
 
+    /// <summary>Godot's own figure for the video memory it holds -- the stats overlay's "VRAM". The
+    /// <c>Performance</c> monitor is not a render-thread round trip (FEAT-PERF-13), unlike the
+    /// <c>RenderingServer</c> getters, so it is safe on the 2 s budget tick.</summary>
+    private static long GodotVideoMemBytes()
+        => (long)Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed);
+
     private void UpdateVramBudget(bool force = false)
     {
         if (_gpuCache == null) return;
@@ -3184,7 +3190,7 @@ public partial class Boot : Control
         {
             hasOsInfo = true;
             osBudget = _cmdlineVramBudgetMb.Value << 20;
-            osUsage = unchecked((long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.VideoMemUsed));
+            osUsage = GodotVideoMemBytes();
         }
 
         if (hasOsInfo)
@@ -3194,12 +3200,16 @@ public partial class Boot : Control
             osBudget = _osBudgetWindow.Add(Time.GetTicksMsec() / 1000.0, osBudget);
             // FEAT-PERF-25: small card -> cap the render buffers before they eat the texture budget.
             UpdateLowVramTier(osBudget);
-            _gpuCache.ReportOsMemory(osBudget, osUsage, _graphicsSettings.TextureMemoryAuto);
+            long godotUsage = GodotVideoMemBytes();
+            _gpuCache.ReportOsMemory(osBudget, osUsage, _graphicsSettings.TextureMemoryAuto, godotUsage);
             long? manualCap = _graphicsSettings.TextureMemoryAuto ? null : ((long)_graphicsSettings.TextureMemoryMb << 20);
             long prevBudget = force ? 0 : _lastVramBudget;
+            // BUG-PERF-18: what Godot itself holds is the non-cache usage the budget must leave room for;
+            // the rest of the process's usage (freed textures the allocator pools) counts only partly.
             long newBudget = VramBudgetPolicy.Compute(
                 osBudget,
                 osUsage,
+                godotUsage,
                 _gpuCache.CurrentSizeBytes,
                 manualCap,
                 prevBudget,
@@ -5485,6 +5495,9 @@ public partial class Boot : Control
             $"{kv.Key}{(kv.Key == newHandle ? "*" : "")}={kv.Value}"));
         GD.Print($"[Origin] {(ulong)(RenderConfig.OriginX)},{(ulong)(RenderConfig.OriginY)} -> region {newHandle}; " +
                  $"world holds {perRegion.Values.Sum()} entities [{held}], {_world.Terrains.Count} terrain(s)");
+
+        // BUG-PERF-18: and the video-memory picture once the region we left has been released.
+        ScheduleRegionChangeVramBreakdown(newHandle);
 
         // The arrival itself proved nothing (the origin is correct and the old region's entities
         // are simply still queued for removal), but a region that comes back at a fraction of its

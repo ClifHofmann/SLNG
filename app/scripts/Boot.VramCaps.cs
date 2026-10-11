@@ -31,6 +31,12 @@ public partial class Boot
     private string _vramBreakdownReason = "";
     private int _vramBreakdownsLeft = 4;
 
+    // BUG-PERF-18: one breakdown after each region change, on its own timer and its own count -- a session
+    // that teleports a lot should not use up the four the caps and the budget fall are allowed.
+    private double _vramRegionBreakdownDueAt = -1;
+    private string _vramRegionBreakdownReason = "";
+    private int _vramRegionBreakdownsLeft = 8;
+
     private static double VramNowSeconds => Time.GetTicksMsec() / 1000.0;
 
     /// <summary>Called with every smoothed OS budget reading (UpdateVramBudget). A tier change
@@ -92,6 +98,27 @@ public partial class Boot
                 LogVramBreakdown(_vramBreakdownReason);
             }
         }
+
+        if (_vramRegionBreakdownDueAt >= 0 && VramNowSeconds >= _vramRegionBreakdownDueAt)
+        {
+            _vramRegionBreakdownDueAt = -1;
+            if (_vramRegionBreakdownsLeft > 0)
+            {
+                _vramRegionBreakdownsLeft--;
+                LogVramBreakdown(_vramRegionBreakdownReason);
+            }
+        }
+    }
+
+    /// <summary>BUG-PERF-18: a <c>[VramBreakdown]</c> line a while after the world moved to another region
+    /// (a teleport, a login is covered by the 60 s one): by then the region we left has had time to be
+    /// released, so the line shows what is still held -- the cache's pinned bytes, the scene nodes, and
+    /// what the driver keeps that Godot no longer counts. A newer region change replaces a pending one.</summary>
+    private void ScheduleRegionChangeVramBreakdown(ulong regionHandle)
+    {
+        if (_vramRegionBreakdownsLeft <= 0 || _gpuCache == null) return;
+        _vramRegionBreakdownReason = $"20 s after entering region {regionHandle}";
+        _vramRegionBreakdownDueAt = VramNowSeconds + 20;
     }
 
     /// <summary>Asks for a <c>[VramBreakdown]</c> line <paramref name="delaySeconds"/> from now, at most
@@ -161,7 +188,10 @@ public partial class Boot
         if (dxgi) sb.Append($"OS budget {osBudget >> 20} MB (smoothed {_vramTierBudget >> 20}), process usage {osUsage >> 20} MB | ");
         else if (_cmdlineVramBudgetMb.HasValue) sb.Append($"budget {_cmdlineVramBudgetMb.Value} MB (--vram-budget, no DXGI) | ");
         sb.Append($"Godot: video {video >> 20} MB, textures {textures >> 20} MB, buffers {buffers >> 20} MB | ");
-        sb.Append($"texture cache {_gpuCache.CurrentSizeBytes >> 20} of {_gpuCache.MaxSizeBytes >> 20} MB: " +
+        var refs = _gpuCache.ReferenceBreakdown();
+        sb.Append($"texture cache {_gpuCache.CurrentSizeBytes >> 20} of {_gpuCache.MaxSizeBytes >> 20} MB " +
+                  $"(pinned {refs.PinnedBytes >> 20} MB in {refs.Pinned}, unreferenced {refs.UnreferencedBytes >> 20} MB in {refs.Unreferenced} of which {refs.Fresh} fresh; " +
+                  $"{(long)Performance.GetMonitor(Performance.Monitor.ObjectNodeCount)} scene nodes): " +
                   $"{cache.TextureBytes >> 20} MB in {cache.Textures} textures (avatars {cache.AvatarBytes >> 20}, protected {cache.ProtectedBytes >> 20}), " +
                   $"{cache.MeshBytes >> 20} MB in {cache.Meshes} meshes | ");
         long outsideTextures = textures - cache.TextureBytes;

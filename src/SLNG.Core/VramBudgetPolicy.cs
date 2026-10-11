@@ -7,21 +7,28 @@ public static class VramBudgetPolicy
     public const long MinBudgetBytes = 256L << 20;
     public const long MinHeadroomBytes = 256L << 20;
     public const double HeadroomFraction = 0.10;
+
+    /// <summary>The budget never falls below this share of the OS budget (BUG-PERF-18). The policy's
+    /// own arithmetic can end up at nothing -- in-world 2026-10-11 it sat at the old 256 MB floor on a
+    /// card with 8.7 GB, and every world texture was cut to a sixteenth. A transient misreading must
+    /// not be able to do that: below a fifth of what the OS grants us, the budget is wrong, not the card
+    /// full. Manual mode still honours a smaller user cap (down to <see cref="MinBudgetBytes"/>).</summary>
+    public const double FloorFraction = 0.20;
+
+    /// <summary>The share of the OS budget that memory the process holds but Godot no longer accounts for
+    /// (<c>osUsage - godotUsage</c>: freed textures the allocator pools, the driver's own overhead) counts
+    /// as non-cache usage while the OS is not asking us to trim. See <see cref="Compute(long,long,long,long,long?,long,double,out bool)"/>.</summary>
+    public const double SlackFraction = 0.15;
+
     public const double DropThreshold = 0.97;     // a fall of more than 3 % applies at once
     public const double RiseThreshold = 1.03;     // a rise of more than 3 % is considered...
     public const double MaxRiseFactor = 1.10;     // ...but grows by at most 10 % per step
     public const double RiseIntervalSeconds = 10; // and at most once every 10 s
 
     /// <summary>
-    /// Computes the GPU texture cache budget based on OS video memory budget and usage.
-    /// <list type="bullet">
-    /// <item><paramref name="osBudget"/>: what Windows grants this process (bytes), already capped by --vram-budget.</item>
-    /// <item><paramref name="osUsage"/>: what this process currently uses on the card (bytes).</item>
-    /// <item><paramref name="cacheBytes"/>: current cache size in bytes.</item>
-    /// <item><paramref name="manualCapBytes"/>: manual budget cap in bytes, or null in Auto mode.</item>
-    /// </list>
+    /// Computes the GPU texture cache budget based on OS video memory budget and usage, for a caller that
+    /// has no figure of Godot's own: everything the process holds beyond the cache counts as non-cache usage.
     /// </summary>
-    /// <returns>The new GpuCache budget in bytes.</returns>
     public static long Compute(
         long osBudget,
         long osUsage,
@@ -30,17 +37,62 @@ public static class VramBudgetPolicy
         long previousBudget,
         double secondsSinceLastRise,
         out bool rose)
+        => Compute(osBudget, osUsage, osUsage, cacheBytes, manualCapBytes, previousBudget, secondsSinceLastRise, out rose);
+
+    /// <summary>
+    /// Computes the GPU texture cache budget based on OS video memory budget and usage.
+    /// <list type="bullet">
+    /// <item><paramref name="osBudget"/>: what Windows grants this process (bytes), already capped by --vram-budget.</item>
+    /// <item><paramref name="osUsage"/>: what this process currently uses on the card (bytes).</item>
+    /// <item><paramref name="godotUsage"/>: what Godot itself says it holds on the card (bytes) -- its
+    /// <c>RenderVideoMemUsed</c> monitor; the same figure the stats overlay shows. Pass <paramref name="osUsage"/>
+    /// when unknown.</item>
+    /// <item><paramref name="cacheBytes"/>: current cache size in bytes.</item>
+    /// <item><paramref name="manualCapBytes"/>: manual budget cap in bytes, or null in Auto mode.</item>
+    /// </list>
+    ///
+    /// <para><b>Why two usage figures (BUG-PERF-18).</b> In-world 2026-10-11 (RTX 4070, 12 GB), Millenium ->
+    /// Sirens -> Millenium: DXGI said the process used 8.4 GB while Godot's own counters said 2.6 GB.
+    /// The other ~6 GB were the old region's freed textures, which the allocator pools or the driver has
+    /// not given back. Counted as "someone else's memory" (<c>osUsage - cacheBytes</c>), they pushed the
+    /// budget to its floor, the 356 MB the cache then held was all pinned, and the world came back at a
+    /// sixteenth of its size with textures that never arrived. That memory is not another program's: it is
+    /// ours, and the allocator reuses it for the next texture. So the non-cache usage is Godot's own
+    /// figure minus the cache, plus the part Godot cannot account for -- <i>bounded</i> to
+    /// <see cref="SlackFraction"/> of the OS budget (the driver's real, steady overhead is a few hundred MB)
+    /// while the OS is not complaining, and in full once <c>osUsage &gt; osBudget</c>, because then
+    /// Windows is demoting us and the memory is no longer something to hope for.</para>
+    /// </summary>
+    /// <returns>The new GpuCache budget in bytes.</returns>
+    public static long Compute(
+        long osBudget,
+        long osUsage,
+        long godotUsage,
+        long cacheBytes,
+        long? manualCapBytes,
+        long previousBudget,
+        double secondsSinceLastRise,
+        out bool rose)
     {
         rose = false;
 
-        // 1. nonCache = max(0, osUsage - cacheBytes).
-        long nonCache = Math.Max(0L, osUsage - cacheBytes);
+        // 1. What Godot holds besides the cache, plus the slack the process holds that Godot does not
+        //    account for. Godot reading higher than the OS never makes the budget smaller than the
+        //    OS-only reading would have.
+        long godot = Math.Min(godotUsage > 0 ? godotUsage : osUsage, osUsage);
+        long godotNonCache = Math.Max(0L, godot - cacheBytes);
+        long slack = Math.Max(0L, osUsage - godot);
+        long countedSlack = osUsage > osBudget
+            ? slack
+            : Math.Min(slack, (long)(osBudget * SlackFraction));
+        long nonCache = godotNonCache + countedSlack;
 
         // 2. headroom = max(MinHeadroomBytes, osBudget * HeadroomFraction).
         long headroom = Math.Max(MinHeadroomBytes, (long)(osBudget * HeadroomFraction));
 
-        // 3. target = max(MinBudgetBytes, osBudget - nonCache - headroom).
-        long target = Math.Max(MinBudgetBytes, osBudget - nonCache - headroom);
+        // 3. target = max(floor, osBudget - nonCache - headroom).
+        long floor = Math.Max(MinBudgetBytes, (long)(osBudget * FloorFraction));
+        long target = Math.Max(floor, osBudget - nonCache - headroom);
 
         // 4. If manualCapBytes has a value: target = min(target, manualCapBytes). In Manual mode the OS budget is still a hard safety limit.
         if (manualCapBytes.HasValue)

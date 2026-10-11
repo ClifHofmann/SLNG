@@ -34,6 +34,7 @@ public class GpuCache
         public long LastSharpenMs;
         public long LastShrinkMs;
         public long SharpenGuardUntilMs;       // shrunk from the visible tier: no sharpen-for-room before this
+        public long FreshUntilMs;              // BUG-PERF-18: handed out (Put / looked up) and not yet referenced: not evictable before this
     }
 
     /// <summary>FEAT-PERF-25: the shape of a texture going into the cache (see <see cref="CacheEntry"/>).</summary>
@@ -106,6 +107,14 @@ public class GpuCache
     // FEAT-PERF-25: the shrink pass ranks what it gives back, instead of taking the first two entries
     // at the head of the LRU list -- see RebuildShrinkCandidates.
     private const long AreaWindowMs = 6000;            // ObjectRenderer offers every 2 s, AvatarRenderer every 1 s
+    // BUG-PERF-18: how long a texture that has just been handed to a caller is safe from eviction while
+    // nobody has referenced it yet. The reference arrives LATER than the texture -- a face with a normal or
+    // specular map awaits those maps inside BuildFaceMaterialAsync, and only then does the object's
+    // material.refcount item (the main-thread queue, which can be seconds behind) AddRef the lot. With the
+    // pinned textures alone over the budget, EvictIfNeeded used to dispose every unreferenced entry on sight,
+    // the new texture first: 4,293 "fetch/decode returned null" after a teleport back, and a visible face
+    // that never got its texture.
+    private const long FreshGraceMs = 10_000;
     private const long ScanIntervalMs = 500;           // a ranked candidate list lasts this long...
     private const long ScanRefreshMs = 2000;           // ...or this long when it is not used up
     private const int MaxCandidates = 96;
@@ -172,6 +181,7 @@ public class GpuCache
     // FEAT-PERF-17: OS memory reported by DXGI probe or fallback
     private long _osBudgetBytes;
     private long _osUsageBytes;
+    private long _godotUsageBytes;     // BUG-PERF-18: Godot's own VRAM figure, next to the OS one in the stats line
     private bool _autoBudget = true;
     private long _lastLoggedBudget;
 
@@ -227,10 +237,11 @@ public class GpuCache
         Interlocked.Exchange(ref _osUsageBytes, usageBytes);
     }
 
-    public void ReportOsMemory(long budgetBytes, long usageBytes, bool auto)
+    public void ReportOsMemory(long budgetBytes, long usageBytes, bool auto, long godotBytes = 0)
     {
         _autoBudget = auto;
         ReportOsMemory(budgetBytes, usageBytes);
+        Interlocked.Exchange(ref _godotUsageBytes, godotBytes);
     }
 
     /// <summary>FEAT-PERF-04: change the texture/mesh budget at runtime (graphics-page slider). A
@@ -320,6 +331,8 @@ public class GpuCache
             long now = _biasClock.ElapsedMilliseconds;
             entry.LastSeenMs = now;
             NoteArea(entry, screenPixelArea, now);
+            // Handed out and not referenced yet: the caller is about to bind it (see FreshGraceMs).
+            if (entry.RefCount <= 0) entry.FreshUntilMs = now + FreshGraceMs;
             return entry.Res;
         }
     }
@@ -390,6 +403,7 @@ public class GpuCache
                 SourceHeight = shape.SourceHeight,
                 Mipmaps = shape.Mipmaps,
                 LastSeenMs = now,
+                FreshUntilMs = now + FreshGraceMs,
             };
             NoteArea(entry, shape.ScreenPixelArea, now);
             entry.Node = _lruList.AddLast(entry);
@@ -602,12 +616,13 @@ public class GpuCache
         if (!Diagnostics.Enabled) return;
         long osBudMb = Interlocked.Read(ref _osBudgetBytes) >> 20;
         long osUseMb = Interlocked.Read(ref _osUsageBytes) >> 20;
+        long godotMb = Interlocked.Read(ref _godotUsageBytes) >> 20;
         string autoStr = _autoBudget ? "true" : "false";
         Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
             $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} inFlightMB={reserved >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
             $"noShrinkMB={exemptBytes >> 20} avatarMB={avatarBytes >> 20} reducibleMB={reducibleBytes >> 20} " +
             $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth} " +
-            $"osBudgetMB={osBudMb} osUsageMB={osUseMb} auto={autoStr}");
+            $"osBudgetMB={osBudMb} osUsageMB={osUseMb} godotMB={godotMb} auto={autoStr}");
     }
 
     /// <summary>BUG-PERF-09: records that a resident texture's pixels were replaced in place, so the
@@ -2078,6 +2093,31 @@ public class GpuCache
         return (builtFor, requestedFor, guarded);
     }
 
+    /// <summary>BUG-PERF-18: how much of the cache is held by something (a visual or an avatar has a
+    /// reference) and how much is waiting to be evicted, for the one-shot [VramBreakdown] line after a
+    /// region change: after leaving a region the pinned bytes must fall by what that region held, or
+    /// something still references it. Unreferenced entries inside their eviction grace are counted
+    /// apart (<see cref="FreshGraceMs"/>).</summary>
+    public (long PinnedBytes, int Pinned, long UnreferencedBytes, int Unreferenced, int Fresh) ReferenceBreakdown()
+    {
+        long pinnedBytes = 0, unreferencedBytes = 0;
+        int pinned = 0, unreferenced = 0, fresh = 0;
+        long now = _biasClock.ElapsedMilliseconds;
+        lock (_cache)
+        {
+            foreach (var e in _cache.Values)
+            {
+                if (e.RefCount > 0) { pinned++; pinnedBytes += e.Size; }
+                else
+                {
+                    unreferenced++; unreferencedBytes += e.Size;
+                    if (now < e.FreshUntilMs) fresh++;
+                }
+            }
+        }
+        return (pinnedBytes, pinned, unreferencedBytes, unreferenced, fresh);
+    }
+
     /// <summary>FEAT-PERF-25: the cache's bytes by kind, for the one-shot [VramBreakdown] line.</summary>
     public (long TextureBytes, int Textures, long MeshBytes, int Meshes, long AvatarBytes, long ProtectedBytes) SizeBreakdown()
     {
@@ -2108,13 +2148,14 @@ public class GpuCache
     {
         if (_currentSize <= _maxSize) return;
 
+        long now = _biasClock.ElapsedMilliseconds;
         var node = _lruList.First;
         while (node != null && _currentSize > _maxSize)
         {
             var next = node.Next;
             var entry = node.Value;
 
-            if (entry.RefCount <= 0)
+            if (entry.RefCount <= 0 && now >= entry.FreshUntilMs)
             {
                 _lruList.Remove(node);
                 _cache.Remove(entry.Id);

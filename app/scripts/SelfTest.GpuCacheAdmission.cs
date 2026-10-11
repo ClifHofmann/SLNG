@@ -110,6 +110,70 @@ public static partial class SelfTest
     }
 
     /// <summary>
+    /// BUG-PERF-18: with the pinned textures alone over the budget, a texture that has just been uploaded
+    /// and nobody references yet must not be disposed by its own Put. In-world 2026-10-11 the cache sat at
+    /// 356/256 MB all pinned, every new normal / specular map (referenced only after its caller's await
+    /// returns) was evicted on the spot, and 4,293 faces logged "fetch/decode returned null". The texture
+    /// must still be there, valid, and found by a lookup -- and a lookup keeps a still-unreferenced one safe.
+    /// </summary>
+    private static Check CheckFreshTextureSurvivesOverBudgetPut()
+    {
+        const string Name = "a fresh unreferenced texture survives its own Put when the pinned ones exceed the budget";
+        var problems = new List<string>();
+        const int S = 256;
+        var rgba = new byte[S * S * 4];
+        for (int i = 0; i < S * S; i++)
+        {
+            rgba[i * 4] = (byte)(i * 7);
+            rgba[i * 4 + 1] = (byte)(i * 3);
+            rgba[i * 4 + 2] = (byte)(i * 5);
+            rgba[i * 4 + 3] = 255;
+        }
+        var data = new TextureData(S, S, rgba, false, S, S);
+        long oneTexture = TextureAdmission.TextureBytes(S, S, true);
+        var cache = new GpuCache(oneTexture * 2);   // room for two; three are pinned below
+        try
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                var pinned = cache.SelfTestUpload(Guid.NewGuid(), data, 0f, true, initialRefCount: 1);
+                if (pinned.Texture == null) { problems.Add($"pinned texture {i} was not uploaded"); break; }
+            }
+            if (cache.CurrentSizeBytes <= cache.MaxSizeBytes)
+                problems.Add($"the pinned textures ({cache.CurrentSizeBytes} bytes) do not exceed the budget ({cache.MaxSizeBytes}); the test is not testing anything");
+
+            var freshId = Guid.NewGuid();
+            var fresh = cache.SelfTestUpload(freshId, data, 0f, true, initialRefCount: 0);
+            if (fresh.Texture == null) problems.Add("the fresh texture was not uploaded");
+            else
+            {
+                if (!GodotObject.IsInstanceValid(fresh.Texture)) problems.Add("the fresh texture was disposed by its own Put");
+                if (cache.Get(freshId) == null) problems.Add("the fresh texture is not in the cache");
+            }
+
+            // The reference arrives later (the object's material.refcount item): the texture is then
+            // pinned like the others and nothing about the grace matters any more.
+            cache.AddRef(freshId);
+            if (cache.SelfTestGetRefCount(freshId) != 1) problems.Add("the late reference was not counted");
+            var after = cache.ReferenceBreakdown();
+            if (after.Unreferenced != 0) problems.Add($"{after.Unreferenced} unreferenced entries remain after every texture is pinned");
+            if (after.Pinned != 4) problems.Add($"{after.Pinned} pinned entries, expected 4");
+
+            return problems.Count == 0
+                ? new Check(Name, true, $"4 pinned textures ({cache.CurrentSizeBytes >> 10} KB) over a {cache.MaxSizeBytes >> 10} KB budget, the 4th arrived unreferenced and survived")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            cache.DisposeAll();
+        }
+    }
+
+    /// <summary>
     /// FEAT-PERF-25: the shrink pass ranks what it gives back. In the 3.5 GB run it gave back nothing at
     /// all; the ranking is what decides it now, so it is held to the rules here: unseen and far textures
     /// (more texels than the screen shows) first, the longest unseen before the merely far; never what is

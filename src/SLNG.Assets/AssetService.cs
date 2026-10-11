@@ -731,7 +731,7 @@ public class AssetService
             int reduce = 0;
             if (TryReadJ2kSize(bytes, out int w, out int h, out _))
             {
-                reduce = TextureLod.ReduceLevelForAtLeast(w, h, minWidth, minHeight);
+                reduce = ClampReduceToCodestream(bytes, TextureLod.ReduceLevelForAtLeast(w, h, minWidth, minHeight));
                 if (sourceWidth <= 0 || sourceHeight <= 0)
                 {
                     var fromDecodedCache = await DecodedCache.TryGetAsync(textureId, reduce, cacheFile).ConfigureAwait(false);
@@ -881,7 +881,19 @@ public class AssetService
     {
         if (isSculpt || screenPixelArea <= 0f) return 0;
         if (!TryReadJ2kSize(bytes, out int w, out int h, out _)) return 0;
-        return TextureLod.ResolutionStepsFor(TextureLod.DiscardLevelFor(w, h, screenPixelArea));
+        return ClampReduceToCodestream(bytes,
+            TextureLod.ResolutionStepsFor(TextureLod.DiscardLevelFor(w, h, screenPixelArea)));
+    }
+
+    /// <summary>BUG-PERF-18: <paramref name="reduce"/> limited to what this codestream carries (see
+    /// <see cref="TextureLod.ClampReduceLevel"/>). 0 when its size or its decomposition levels cannot be
+    /// read.</summary>
+    private static int ClampReduceToCodestream(byte[] bytes, int reduce)
+    {
+        if (reduce <= 0) return 0;
+        if (!TryReadJ2kSize(bytes, out int w, out int h, out _)) return 0;
+        if (!TryReadJ2kDecompositionLevels(bytes, out int levels)) return 0;
+        return TextureLod.ClampReduceLevel(reduce, w, h, levels);
     }
 
     private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f)
@@ -1621,9 +1633,11 @@ public class AssetService
         if (!TryReadJ2kDecompositionLevels(bytes, out int levels) || levels <= 0) return null;
 
         // Absolute level, counted from 0 = smallest. Asking for more steps than the codestream has
-        // decompositions is not an error, it just cannot go that small.
+        // decompositions is not an error, it just cannot go that small: BUG-PERF-18 serves the smallest
+        // level it HAS (and keeps a side from dropping to a pixel) instead of giving up to a full decode.
+        steps = TextureLod.ClampReduceLevel(steps, fullWidth, fullHeight, levels);
+        if (steps <= 0) return null;
         int res = levels - steps;
-        if (res < 0) return null;
 
         int expectedWidth = TextureLod.ReducedDimension(fullWidth, steps);
         int expectedHeight = TextureLod.ReducedDimension(fullHeight, steps);
