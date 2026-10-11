@@ -98,12 +98,53 @@ public sealed partial class GridSession
             Console.Error.WriteLine(restored < 0
                 ? $"[InvCache] unreadable cache {_inventoryCachePath} -- fetching everything"
                 : $"[InvCache] restored {restored} item(s) from {_inventoryCachePath}");
+
+            // BUG-INV-14: a restore that leaves My Inventory without a single folder is not a
+            // restore to build on. Every real account has system folders; if none is there, the
+            // store is not what the cache was written against.
+            if (restored >= 0 && !RootHasFolders(store))
+            {
+                int dropped = DiscardRestoredContents(store);
+                Console.Error.WriteLine(
+                    $"[InvCache] My Inventory has no folders after the restore -- discarded it ({dropped} item(s)), fetching everything");
+            }
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[InvCache] could not open cache in {directory}: {ex.Message}");
             _inventoryCachePath = null;
         }
+    }
+
+    /// <summary>BUG-INV-14: whether the agent's inventory root has at least one folder under it. A
+    /// real account always has the system folders (Objects, Trash, Current Outfit, ...), so a root
+    /// without any is a store that is not what a cache was written against. (The write side needs
+    /// no such check: <see cref="CacheSnapshot"/> counts folders below the root, and with none the
+    /// save already leaves the file alone.)</summary>
+    private static bool RootHasFolders(LibreMetaverse.Inventory store)
+        => store.RootNode != null && store.RootNode.Nodes.Values.Any(n => n.Data is LibreMetaverse.InventoryFolder);
+
+    /// <summary>BUG-INV-14: undoes <c>RestoreFromDisk</c>. Called right after a restore, while every
+    /// folder is still just a login-skeleton folder, so "undo" is: take the restored items out and
+    /// flag every folder as not fetched. Returns how many items went.</summary>
+    private static int DiscardRestoredContents(LibreMetaverse.Inventory store)
+    {
+        var items = new List<LibreMetaverse.InventoryItem>();
+        foreach (var root in new[] { store.RootNode, store.LibraryRootNode })
+        {
+            if (root == null) continue;
+            var stack = new Stack<LibreMetaverse.InventoryNode>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                if (node.Data is LibreMetaverse.InventoryItem item) items.Add(item);
+                else node.NeedsUpdate = true;
+                foreach (var child in node.Nodes.Values) stack.Push(child);
+            }
+        }
+        foreach (var item in items) store.RemoveNodeFor(item);
+        return items.Count;
     }
 
     /// <summary>FEAT-INV-07: whether a folder's contents are already local, so reading them costs
@@ -156,9 +197,11 @@ public sealed partial class GridSession
         Action<int, int>? progress = null, CancellationToken ct = default)
     {
         var store = _client.Inventory.Store;
-        if (store?.RootNode == null || !_client.Network.Connected) return 0;
+        if (store?.RootNode == null) return 0;
+        if (InventoryFetchUriOverride == null && !_client.Network.Connected) return 0;
 
-        var cap = _client.Network.CurrentSim?.Caps?.CapabilityURI("FetchInventoryDescendents2");
+        var cap = InventoryFetchUriOverride
+            ?? _client.Network.CurrentSim?.Caps?.CapabilityURI("FetchInventoryDescendents2");
         if (cap == null)
         {
             Console.Error.WriteLine("[InvPrefetch] no FetchInventoryDescendents2 capability -- skipping");
@@ -639,14 +682,84 @@ public sealed partial class GridSession
         return list;
     }
 
+    /// <summary>Where folder fetches go instead of the simulator's own capability. Null in
+    /// production; a test points it at <c>FakeInventoryCaps</c>, a local stand-in for the grid's
+    /// <c>FetchInventoryDescendents2</c>, so the whole fetch path — LibreMetaverse's own reply
+    /// parser included — runs without a connection.</summary>
+    internal Uri? InventoryFetchUriOverride { get; set; }
+
+    private Task<List<LibreMetaverse.InventoryBase>> RequestFolderAsync(
+        UUID folder, UUID owner, CancellationToken ct)
+    {
+        if (InventoryFetchUriOverride is { } uri)
+        {
+            return _client.Inventory.RequestFolderContentsAsync(
+                new List<LibreMetaverse.InventoryFolder> { new(folder) { OwnerID = owner } },
+                uri, fetchFolders: true, fetchItems: true, LibreMetaverse.InventorySortOrder.ByName, ct);
+        }
+        return _client.Inventory.FolderContentsAsync(
+            folder, owner, fetchFolders: true, fetchItems: true, LibreMetaverse.InventorySortOrder.ByName, ct);
+    }
+
+    /// <summary>How often a folder the grid did not fill is asked for again before giving up, and
+    /// how long to wait between asks. Instance state so a test can shorten the wait without
+    /// touching another test's session.</summary>
+    internal int InventoryFetchAttempts { get; set; } = 3;
+    internal TimeSpan InventoryFetchRetryDelay { get; set; } = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>
+    /// BUG-INV-14: asks the grid for one folder, and does not take "nothing came back" for "the
+    /// folder is empty".
+    ///
+    /// <para>LibreMetaverse cannot tell the two apart for us. <c>HttpCapsClient</c> never looks at
+    /// the HTTP status, so a request the grid refused — a rate limit, an overloaded inventory
+    /// service, an error page — comes back as a body the reply parser finds no <c>folders</c> in,
+    /// and <c>RequestFolderContentsAsync</c> returns an <b>empty list</b>: no exception, no log
+    /// line, and the folder's <c>NeedsUpdate</c> flag untouched. <c>FolderContentsAsync</c> only
+    /// falls back to the store when the list is <c>null</c>, which this never is. The caller drew
+    /// that as an empty folder; for <c>My Inventory</c> that is a window with "(empty)" under it and
+    /// nothing in any log, and the panel does not ask again.</para>
+    ///
+    /// <para>A folder the grid really answered has its flag cleared by the reply parser, so a flag
+    /// that is still set after the call means the grid did not fill it. That is asked again
+    /// (a short pause between asks — what refused a request a moment ago often answers the next), and
+    /// when it still has not answered the folder keeps its flag, so the next call and the
+    /// background fill try again, and what is already local is returned instead of an empty list: for
+    /// the root that is every folder the login skeleton listed.</para>
+    /// </summary>
+    private async Task<List<LibreMetaverse.InventoryBase>> FetchFolderFromGridAsync(
+        LibreMetaverse.Inventory store, UUID folder, UUID owner, CancellationToken ct)
+    {
+        bool NotFilled() => store.GetNodeOrDefault(folder) is { NeedsUpdate: true };
+        bool canAskAgain = InventoryFetchUriOverride != null || _client.Network.Connected;
+
+        int attempts = 0;
+        List<LibreMetaverse.InventoryBase> contents;
+        while (true)
+        {
+            attempts++;
+            contents = await RequestFolderAsync(folder, owner, ct).ConfigureAwait(false);
+            if (!NotFilled()) return contents;
+            if (!canAskAgain || attempts >= Math.Max(1, InventoryFetchAttempts)) break;
+            await Task.Delay(InventoryFetchRetryDelay, ct).ConfigureAwait(false);
+        }
+
+        var node = store.GetNodeOrDefault(folder);
+        var local = node == null ? new List<LibreMetaverse.InventoryBase>() : store.GetContents(folder);
+        Console.Error.WriteLine(
+            $"[Inventory] the grid did not fill '{node?.Data?.Name}' ({folder}) after {attempts} ask(s) -- " +
+            $"showing the {local.Count} entr{(local.Count == 1 ? "y" : "ies")} already local; it stays flagged and is asked for again");
+        return local;
+    }
+
     /// <summary>
     /// Fetches one folder's direct children (subfolders + items) — the lazy per-folder expansion
     /// unit for an inventory UI. One CAPS request (FetchInventoryDescendents2 — supported by
     /// modern OpenSim; AIS3 is SL-only and mutation-only in LibreMetaverse anyway) per call, no
     /// recursion: recursing the whole tree hammers the grid and is never needed for a browser.
-    /// Returns an empty list before login or when the fetch fails (LibreMetaverse's
-    /// FolderContentsAsync falls back to its own cache on failure rather than surfacing an
-    /// error — acceptable for a UI tree, where the user just re-expands).
+    /// Returns an empty list before login. When the grid does not answer for the folder, returns
+    /// what is already local (<see cref="FetchFolderFromGridAsync"/>) — LibreMetaverse's own
+    /// fallback never fires for a refused request, which it reports as an empty folder.
     /// </summary>
     public async Task<IReadOnlyList<InventoryEntry>> FetchInventoryChildrenAsync(
         Guid folderId, CancellationToken ct = default)
@@ -686,9 +799,7 @@ public sealed partial class GridSession
 
         var contents = servedFromCache
             ? store.GetContents(folderUuid)
-            : await _client.Inventory.FolderContentsAsync(
-                folderUuid, owner, fetchFolders: true, fetchItems: true,
-                LibreMetaverse.InventorySortOrder.ByName, ct).ConfigureAwait(false);
+            : await FetchFolderFromGridAsync(store, folderUuid, owner, ct).ConfigureAwait(false);
         if (contents == null) return Array.Empty<InventoryEntry>();
 
         bool isLandmarksFolder = IsInLandmarksSubtree(folderId);

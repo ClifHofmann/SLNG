@@ -2966,7 +2966,18 @@ public partial class InventoryPanel : SLNGWindow
         try
         {
             var children = await _session!.FetchInventoryChildrenAsync(folderId).ConfigureAwait(false);
-            RunOnMainThread(() => Populate(item, children, knownItemId, knownAssetId));
+            // BUG-INV-14: when the grid did not answer for the folder, the session hands back what is
+            // already local and leaves the folder flagged. Draw that, but do not call the folder
+            // loaded: collapsing and expanding it asks the grid again, instead of keeping a partial
+            // list (the root: its folders, none of the items) for the rest of the session.
+            bool complete = _session!.IsFolderLocal(folderId);
+            RunOnMainThread(() =>
+            {
+                Populate(item, children, knownItemId, knownAssetId);
+                if (complete || !IsInstanceValid(this)) return;
+                _loadedFolders.Remove(folderId);
+                _status.Text = "Not everything loaded — collapse and expand the folder to try again.";
+            });
         }
         catch (Exception ex)
         {
