@@ -182,6 +182,9 @@ public class GpuCache
     private long _osBudgetBytes;
     private long _osUsageBytes;
     private long _godotUsageBytes;     // BUG-PERF-18: Godot's own VRAM figure, next to the OS one in the stats line
+    private long _adapterUsageBytes;   // BUG-PERF-19: what ALL processes hold on the card (0 = no reading)
+    private long _adapterDedicatedBytes;
+    private long _cardBudgetBytes;     // VramBudgetPolicy.CardBudget (long.MaxValue = no reading)
     private bool _autoBudget = true;
     private long _lastLoggedBudget;
 
@@ -237,11 +240,15 @@ public class GpuCache
         Interlocked.Exchange(ref _osUsageBytes, usageBytes);
     }
 
-    public void ReportOsMemory(long budgetBytes, long usageBytes, bool auto, long godotBytes = 0)
+    public void ReportOsMemory(long budgetBytes, long usageBytes, bool auto, long godotBytes = 0,
+                               long adapterUsageBytes = 0, long adapterDedicatedBytes = 0, long cardBudgetBytes = long.MaxValue)
     {
         _autoBudget = auto;
         ReportOsMemory(budgetBytes, usageBytes);
         Interlocked.Exchange(ref _godotUsageBytes, godotBytes);
+        Interlocked.Exchange(ref _adapterUsageBytes, adapterUsageBytes);
+        Interlocked.Exchange(ref _adapterDedicatedBytes, adapterDedicatedBytes);
+        Interlocked.Exchange(ref _cardBudgetBytes, cardBudgetBytes);
     }
 
     /// <summary>FEAT-PERF-04: change the texture/mesh budget at runtime (graphics-page slider). A
@@ -617,12 +624,18 @@ public class GpuCache
         long osBudMb = Interlocked.Read(ref _osBudgetBytes) >> 20;
         long osUseMb = Interlocked.Read(ref _osUsageBytes) >> 20;
         long godotMb = Interlocked.Read(ref _godotUsageBytes) >> 20;
+        long adapterUse = Interlocked.Read(ref _adapterUsageBytes);
+        long adapterDed = Interlocked.Read(ref _adapterDedicatedBytes);
+        long cardBudget = Interlocked.Read(ref _cardBudgetBytes);
+        string adapterStr = adapterDed > 0 && adapterUse > 0
+            ? $"{adapterUse >> 20}/{adapterDed >> 20}" + (cardBudget == long.MaxValue ? "" : $" cardMB={Math.Max(0L, cardBudget) >> 20}")
+            : "n/a";
         string autoStr = _autoBudget ? "true" : "false";
         Console.Error.WriteLine($"[GpuCache] get={n} hit={_gpuGetHit} bypassDegraded={_gpuGetBypassDegraded} " +
             $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} inFlightMB={reserved >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
             $"noShrinkMB={exemptBytes >> 20} avatarMB={avatarBytes >> 20} reducibleMB={reducibleBytes >> 20} " +
             $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth} " +
-            $"osBudgetMB={osBudMb} osUsageMB={osUseMb} godotMB={godotMb} auto={autoStr}");
+            $"osBudgetMB={osBudMb} osUsageMB={osUseMb} godotMB={godotMb} adapterMB={adapterStr} auto={autoStr}");
     }
 
     /// <summary>BUG-PERF-09: records that a resident texture's pixels were replaced in place, so the

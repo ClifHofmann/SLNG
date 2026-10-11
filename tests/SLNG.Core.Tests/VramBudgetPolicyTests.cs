@@ -344,4 +344,129 @@ public class VramBudgetPolicyTests
             1000L * Mb, 900L * Mb, 900L * Mb, 0L, null, 0, 0, out _);
         Assert.Equal(VramBudgetPolicy.MinBudgetBytes, result);
     }
+
+    // ---- BUG-PERF-19: the whole card ----
+
+    // In-world 2026-10-11, RTX 4070 12 GB, after the switch Ultra -> High: 7-8 fps. The card held 11.3 GB:
+    // Puris 7.25 GB, Sunshine 2.0, a slicer 1.36, Edge 0.55 and the rest; DXGI still granted us 9.0 GB.
+    private const long CardDedicated = 12288L * Mb;
+    private const long CardAdapterUsage = 11571L * Mb;   // 11.3 GiB, all programs
+    private const long CardProcessUsage = 7424L * Mb;    // 7.25 GiB, ours
+    private const long CardOsBudget = 9216L * Mb;        // 9.0 GiB, what DXGI granted
+    private const long CardGodot = 5400L * Mb;
+    private const long CardCache = 3600L * Mb;
+
+    private static long CardNonCache()
+    {
+        long slack = CardProcessUsage - CardGodot;
+        long counted = System.Math.Min(slack, (long)(CardOsBudget * VramBudgetPolicy.SlackFraction));
+        return (CardGodot - CardCache) + counted;
+    }
+
+    [Fact]
+    public void Card_budget_is_the_limit_share_of_the_dedicated_memory_less_everybody_elses()
+    {
+        long others = CardAdapterUsage - CardProcessUsage;
+        long expected = (long)(CardDedicated * VramBudgetPolicy.AdapterUsageLimit) - others;
+        Assert.Equal(expected, VramBudgetPolicy.CardBudget(CardDedicated, CardAdapterUsage, CardProcessUsage));
+    }
+
+    [Fact]
+    public void Card_budget_is_unlimited_when_an_adapter_figure_is_unknown()
+    {
+        Assert.Equal(long.MaxValue, VramBudgetPolicy.CardBudget(0, CardAdapterUsage, CardProcessUsage));
+        Assert.Equal(long.MaxValue, VramBudgetPolicy.CardBudget(CardDedicated, 0, CardProcessUsage));
+    }
+
+    [Fact]
+    public void A_full_card_with_other_programs_on_it_lowers_the_budget_the_per_process_figure_would_allow()
+    {
+        long withoutCard = VramBudgetPolicy.Compute(
+            CardOsBudget, CardProcessUsage, CardGodot, CardCache, null, 0, 0, out _);
+        long withCard = VramBudgetPolicy.Compute(
+            CardOsBudget, CardProcessUsage, CardGodot, CardDedicated, CardAdapterUsage, CardCache, null, 0, 0, out bool rose);
+
+        // per-process: 9216 - 3182 - 922 = 5112 MB; card: 0.92 * 12288 - 4147 - 3182 = 3976 MB.
+        long expectedCard = VramBudgetPolicy.CardBudget(CardDedicated, CardAdapterUsage, CardProcessUsage) - CardNonCache();
+        Assert.Equal(expectedCard, withCard);
+        Assert.True(withCard < withoutCard, $"{withCard / Mb} MB must be below {withoutCard / Mb} MB");
+        Assert.True(withoutCard - withCard > 1000L * Mb, "the incident's card was 1.1 GB short of room for the per-process target");
+        Assert.True(withCard > 2L * Gb, "still a usable budget, not the floor");
+        Assert.False(rose);
+    }
+
+    [Fact]
+    public void A_card_with_room_leaves_the_per_process_budget_alone()
+    {
+        long adapterUsage = 6000L * Mb; // others hold 2 GB of a 12 GB card
+        long process = 4000L * Mb;
+        long without = VramBudgetPolicy.Compute(9000L * Mb, process, 3000L * Mb, 1500L * Mb, null, 0, 0, out _);
+        long with = VramBudgetPolicy.Compute(9000L * Mb, process, 3000L * Mb, CardDedicated, adapterUsage, 1500L * Mb, null, 0, 0, out _);
+        Assert.Equal(without, with);
+    }
+
+    [Fact]
+    public void No_adapter_reading_behaves_exactly_like_before()
+    {
+        long a = VramBudgetPolicy.Compute(CardOsBudget, CardProcessUsage, CardGodot, CardCache, null, 0, 0, out _);
+        long b = VramBudgetPolicy.Compute(CardOsBudget, CardProcessUsage, CardGodot, 0, 0, CardCache, null, 0, 0, out _);
+        Assert.Equal(a, b);
+    }
+
+    [Fact]
+    public void A_card_that_others_have_filled_cannot_push_the_budget_below_the_floor()
+    {
+        // The other programs alone hold 11 of 12 GB: the card has nothing left for us, the floor is what we keep.
+        long result = VramBudgetPolicy.Compute(
+            CardOsBudget, 1000L * Mb, 800L * Mb, CardDedicated, 12000L * Mb, 300L * Mb, null, 0, 0, out _);
+        Assert.Equal((long)(CardOsBudget * VramBudgetPolicy.FloorFraction), result);
+    }
+
+    [Fact]
+    public void A_manual_cap_below_the_card_budget_still_wins()
+    {
+        long result = VramBudgetPolicy.Compute(
+            CardOsBudget, CardProcessUsage, CardGodot, CardDedicated, CardAdapterUsage, CardCache, 1500L * Mb, 0, 0, out _);
+        Assert.Equal(1500L * Mb, result);
+    }
+
+    [Fact]
+    public void Memory_the_process_keeps_after_the_cache_shrinks_does_not_drive_the_card_budget_down_again()
+    {
+        // The cache gives back 1 GB, Godot's own figure falls with it, the process keeps the memory (the
+        // allocator slack of BUG-PERF-18): usage and the card stay as they were. The slack allowance is already
+        // used up, so the budget must not fall by the 1 GB a second time and again on every tick.
+        long first = VramBudgetPolicy.Compute(
+            CardOsBudget, CardProcessUsage, CardGodot, CardDedicated, CardAdapterUsage, CardCache, null, 0, 0, out _);
+        long after = VramBudgetPolicy.Compute(
+            CardOsBudget, CardProcessUsage, CardGodot - 1000L * Mb, CardDedicated, CardAdapterUsage, CardCache - 1000L * Mb, null, 0, 0, out _);
+        Assert.Equal(first, after);
+    }
+
+    [Fact]
+    public void Other_programs_leaving_the_card_raise_the_budget_slowly_but_taking_room_lowers_it_at_once()
+    {
+        long previous = 5000L * Mb;
+
+        // Others grow: the card target (~3976 MB) is far below the previous budget -> applied at once.
+        long lowered = VramBudgetPolicy.Compute(
+            CardOsBudget, CardProcessUsage, CardGodot, CardDedicated, CardAdapterUsage, CardCache, null, previous, 0, out bool roseDown);
+        Assert.True(lowered < previous * VramBudgetPolicy.DropThreshold);
+        Assert.False(roseDown);
+
+        // Others leave: the target is the per-process one (~5112 MB), and it is reached in a capped step.
+        long lowGodotRise = VramBudgetPolicy.Compute(
+            CardOsBudget, CardProcessUsage, CardGodot, CardDedicated, CardProcessUsage + 500L * Mb, CardCache, null, lowered, 20.0, out bool roseUp);
+        Assert.True(roseUp);
+        Assert.True(lowGodotRise <= (long)(lowered * VramBudgetPolicy.MaxRiseFactor));
+        Assert.True(lowGodotRise > lowered);
+    }
+
+    [Fact]
+    public void An_adapter_reading_lower_than_the_process_own_usage_counts_nobody_else()
+    {
+        // Two counters sampled at different moments can disagree by a few hundred MB; never a negative "others".
+        long result = VramBudgetPolicy.CardBudget(CardDedicated, 5000L * Mb, 5500L * Mb);
+        Assert.Equal((long)(CardDedicated * VramBudgetPolicy.AdapterUsageLimit), result);
+    }
 }

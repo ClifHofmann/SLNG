@@ -20,6 +20,15 @@ public static class VramBudgetPolicy
     /// as non-cache usage while the OS is not asking us to trim. See <see cref="Compute(long,long,long,long,long?,long,double,out bool)"/>.</summary>
     public const double SlackFraction = 0.15;
 
+    /// <summary>BUG-PERF-19: the share of the card's dedicated memory the whole machine may fill before
+    /// we hold back. Above it Windows starts demoting somebody's allocations to system memory, and in
+    /// the one case measured that somebody was us (see <see cref="CardBudget"/>).</summary>
+    public const double AdapterUsageLimit = 0.92;
+
+    /// <summary>The adapter reading is only believed this recent; a stale or missing one leaves the budget
+    /// to the per-process figure alone, exactly as before BUG-PERF-19.</summary>
+    public const double AdapterReadingMaxAgeSeconds = 15;
+
     public const double DropThreshold = 0.97;     // a fall of more than 3 % applies at once
     public const double RiseThreshold = 1.03;     // a rise of more than 3 % is considered...
     public const double MaxRiseFactor = 1.10;     // ...but grows by at most 10 % per step
@@ -73,6 +82,52 @@ public static class VramBudgetPolicy
         long previousBudget,
         double secondsSinceLastRise,
         out bool rose)
+        => Compute(osBudget, osUsage, godotUsage, 0, 0, cacheBytes, manualCapBytes, previousBudget, secondsSinceLastRise, out rose);
+
+    /// <summary>
+    /// The card-wide ceiling on what this process may hold, in bytes: <see cref="AdapterUsageLimit"/> of the
+    /// adapter's dedicated memory, minus what every OTHER program holds on it
+    /// (<c>adapterUsage - osUsage</c>). <see cref="long.MaxValue"/> when either adapter figure is unknown.
+    ///
+    /// <para><b>Why this exists (BUG-PERF-19).</b> In-world 2026-10-11 (RTX 4070, 12 GB) the viewer ran at 40+ fps on
+    /// Ultra, then dropped to 7-8 fps for good after a switch to High: renderGpuMs 125-274 ms with ~8.5 k draws,
+    /// i.e. the GPU waiting on memory. The card held 11.3 of 12 GB -- Puris 7.25, Sunshine 2.0, a slicer 1.36,
+    /// Edge 0.55 -- and DXGI's per-process budget for us still read 9.0 GB. That figure is a share Windows is
+    /// willing to grant when it is asked, not a promise that the card has the room: three other programs were
+    /// already on it, and nothing in the per-process numbers shows them.</para>
+    ///
+    /// <para>The ceiling is measured at the target, not at the present usage. "Lower the budget by how far the
+    /// adapter is over 92 % right now" is zero until the card is already full, and subtracting it from a target
+    /// the cache has not reached changes nothing; this form holds the cache back while the card still has room,
+    /// which is the only time shrinking it helps. It does not depend on the cache's current size, so freed memory
+    /// that the allocator keeps (the BUG-PERF-18 slack) cannot make it chase its own tail down to the floor.</para>
+    /// </summary>
+    public static long CardBudget(long adapterDedicated, long adapterUsage, long osUsage)
+    {
+        if (adapterDedicated <= 0 || adapterUsage <= 0) return long.MaxValue;
+        long others = Math.Max(0L, adapterUsage - Math.Max(0L, osUsage));
+        return (long)(adapterDedicated * AdapterUsageLimit) - others;
+    }
+
+    /// <summary>
+    /// <see cref="Compute(long,long,long,long,long?,long,double,out bool)"/> that also respects the whole card
+    /// (BUG-PERF-19): <paramref name="adapterDedicated"/> is the adapter's dedicated video memory and
+    /// <paramref name="adapterUsage"/> what ALL processes hold on it right now (the "GPU Adapter Memory" counter);
+    /// pass 0 for either when unknown and the result is the per-process one. The target is the smaller of the
+    /// per-process target and the one the card can afford (<see cref="CardBudget"/> - non-cache - nothing more:
+    /// the 8 % the limit leaves free is the headroom), never below the floor.
+    /// </summary>
+    public static long Compute(
+        long osBudget,
+        long osUsage,
+        long godotUsage,
+        long adapterDedicated,
+        long adapterUsage,
+        long cacheBytes,
+        long? manualCapBytes,
+        long previousBudget,
+        double secondsSinceLastRise,
+        out bool rose)
     {
         rose = false;
 
@@ -93,6 +148,11 @@ public static class VramBudgetPolicy
         // 3. target = max(floor, osBudget - nonCache - headroom).
         long floor = Math.Max(MinBudgetBytes, (long)(osBudget * FloorFraction));
         long target = Math.Max(floor, osBudget - nonCache - headroom);
+
+        // 3b. The whole card (BUG-PERF-19): what is left of it after everybody else, less what we hold besides the cache.
+        long cardBudget = CardBudget(adapterDedicated, adapterUsage, osUsage);
+        if (cardBudget != long.MaxValue)
+            target = Math.Min(target, Math.Max(floor, cardBudget - nonCache));
 
         // 4. If manualCapBytes has a value: target = min(target, manualCapBytes). In Manual mode the OS budget is still a hard safety limit.
         if (manualCapBytes.HasValue)

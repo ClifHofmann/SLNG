@@ -65,11 +65,23 @@ public sealed class DxgiVideoMemory : IDisposable
     private bool _disposed;
     private bool _loggedError;
 
-    private DxgiVideoMemory(IntPtr adapter3Ptr, QueryVideoMemoryInfoDelegate queryDelegate, ReleaseDelegate releaseDelegate)
+    /// <summary>The adapter's LUID (BUG-PERF-19): the key the adapter-wide performance counters
+    /// (<see cref="AdapterMemoryCounter"/>) name their instances by.</summary>
+    public uint LuidLow { get; }
+    public int LuidHigh { get; }
+
+    /// <summary>The adapter's dedicated video memory (<c>DXGI_ADAPTER_DESC1.DedicatedVideoMemory</c>).</summary>
+    public long DedicatedBytes { get; }
+
+    private DxgiVideoMemory(IntPtr adapter3Ptr, QueryVideoMemoryInfoDelegate queryDelegate, ReleaseDelegate releaseDelegate,
+                            uint luidLow, int luidHigh, long dedicatedBytes)
     {
         _adapter3Ptr = adapter3Ptr;
         _queryVideoMemoryInfo = queryDelegate;
         _release = releaseDelegate;
+        LuidLow = luidLow;
+        LuidHigh = luidHigh;
+        DedicatedBytes = dedicatedBytes;
     }
 
     private static uint ReleaseCom(IntPtr ptr, ReleaseDelegate? release = null)
@@ -248,9 +260,10 @@ public sealed class DxgiVideoMemory : IDisposable
             ulong osBudgetMb = info.Budget >> 20;
             ulong osUsageMb = info.CurrentUsage >> 20;
 
-            GD.Print($"[VramBudget] adapter=\"{chosen.desc.Description}\" dedicated={dedicatedMb} MB matched={matchType} osBudget={osBudgetMb} osUsage={osUsageMb}");
+            GD.Print($"[VramBudget] adapter=\"{chosen.desc.Description}\" dedicated={dedicatedMb} MB matched={matchType} luid=0x{chosen.desc.LuidHigh:X8}_0x{chosen.desc.LuidLow:X8} osBudget={osBudgetMb} osUsage={osUsageMb}");
 
-            return new DxgiVideoMemory(adapter3Ptr, queryVideoMemoryInfo, releaseAdapter3);
+            return new DxgiVideoMemory(adapter3Ptr, queryVideoMemoryInfo, releaseAdapter3,
+                chosen.desc.LuidLow, chosen.desc.LuidHigh, unchecked((long)(ulong)chosen.desc.DedicatedVideoMemory));
         }
         catch (Exception ex)
         {

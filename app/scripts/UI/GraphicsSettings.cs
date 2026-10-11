@@ -532,6 +532,44 @@ public sealed class GraphicsSettings
 
     private bool _appliedSsaoHalfSize = ProjectSsaoHalfSize;
 
+    /// <summary>The options as set, then the low-VRAM caps on top (when allowed) -- what <see cref="Apply"/> puts in the
+    /// engine. Side-effect free, so a caller can see the render buffers a change would need before applying it.</summary>
+    private LowVramPolicy.Request ComputeEffective(List<string>? changes)
+    {
+        var requested = new LowVramPolicy.Request(
+            Msaa, PostFxSsao, ProjectSsaoHalfSize, PostFxSsil, ShadowResolution, ProjectReflectionSize,
+            PlanarMirror: true, HeroProbe: PostFxHeroProbe);
+        return LowVramCaps ? LowVramPolicy.Cap(requested, VramTier, changes) : requested;
+    }
+
+    private string BufferSignature(LowVramPolicy.Request eff)
+        => RenderBufferSwitch.Signature(eff.Msaa, eff.Ssao, eff.Ssil, PostFxSsr, PostFxGlow, Shadows ? eff.ShadowAtlasSize : 0);
+
+    /// <summary>BUG-PERF-19: the render buffers (<see cref="RenderBufferSwitch.Signature"/>) the options as they are
+    /// now would need, before <see cref="Apply"/> has put them in the engine.</summary>
+    public string PredictedBufferSignature() => BufferSignature(ComputeEffective(null));
+
+    /// <summary>BUG-PERF-19: the render buffers <see cref="Apply"/> last put in the engine.</summary>
+    public string AppliedBufferSignature() => BufferSignature(Effective);
+
+    /// <summary>
+    /// BUG-PERF-19: the buffer-free state -- MSAA off and every post effect that owns a buffer switched off -- which
+    /// makes the engine free the old render targets. Held for <see cref="RenderBufferSwitch.ReleaseFrames"/> frames
+    /// between two sets of options that need different buffers, because switching straight from one set to the other
+    /// leaves the process holding both (see <see cref="RenderBufferSwitch"/>).
+    /// </summary>
+    public void ApplyBufferFreeState(Viewport? viewport, WorldEnvironment? worldEnvironment)
+    {
+        if (viewport != null) viewport.Msaa3D = Viewport.Msaa.Disabled;
+        if (worldEnvironment?.Environment is { } env)
+        {
+            env.SsaoEnabled = false;
+            env.SsilEnabled = false;
+            env.SsrEnabled = false;
+            env.GlowEnabled = false;
+        }
+    }
+
     public void Apply(Viewport? viewport, WorldEnvironment? worldEnvironment, DirectionalLight3D? sun,
                        ReflectionProbe? reflectionProbe = null)
     {
@@ -553,11 +591,8 @@ public sealed class GraphicsSettings
         AvatarRenderer.NotifySettingsChanged();
 
         // FEAT-PERF-25: the options as set, then the low-VRAM caps on top (when allowed).
-        var requested = new LowVramPolicy.Request(
-            Msaa, PostFxSsao, ProjectSsaoHalfSize, PostFxSsil, ShadowResolution, ProjectReflectionSize,
-            PlanarMirror: true, HeroProbe: PostFxHeroProbe);
         var changes = new List<string>();
-        Effective = LowVramCaps ? LowVramPolicy.Cap(requested, VramTier, changes) : requested;
+        Effective = ComputeEffective(changes);
         CapChanges = changes;
         _applied = true;
 

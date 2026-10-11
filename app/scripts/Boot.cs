@@ -432,10 +432,21 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.43-alpha";
+    public const string AppVersion = "v0.27.44-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
+    // BUG-PERF-19: the whole card's usage, next to DXGI's per-process figure.
+    private AdapterMemoryCounter? _adapterProbe;
+    private const long AdapterSampleIntervalMs = 4000;
+    // The largest "everybody else's usage" (adapter - ours) in the last 30 s: held in a RollingMinimum of the
+    // negated value, so a rise in other programs' memory applies at once and a fall only after it has aged out.
+    private readonly SLNG.Core.RollingMinimum _adapterOthersWindow = new(30.0);
+    private readonly RenderBufferSwitch _renderBufferSwitch = new();
+    private bool _bufferReleaseDisabled;
+    private long _lastAdapterUsage;      // the raw reading, for the breakdown line
+    private bool _cardLimited;           // the texture budget is held below the per-process one by the whole card
+    private double _cardLimitedChangedAt = -100;
     private long? _cmdlineVramBudgetMb;
     private double _vramBudgetAccumulator;
     private double _timeSinceLastVramRise = 100.0;
@@ -685,6 +696,9 @@ public partial class Boot : Control
         {
             Callable.From(() => SelfTest.Run(GetTree())).CallDeferred();
         }
+
+        // BUG-PERF-19: --no-buffer-release switches graphics presets directly again (RenderBufferSwitch), for an A/B in-world.
+        _bufferReleaseDisabled = System.Array.Exists(OS.GetCmdlineUserArgs(), a => a == "--no-buffer-release");
     }
 
     /// <summary>Opens (or re-raises) the About window — TPV Policy §1.g. Reachable from the login
@@ -3115,7 +3129,25 @@ public partial class Boot : Control
     /// environment or the sun itself -- it only knows the settings object.</summary>
     private void ApplyGraphicsSettings()
     {
-        _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun, _reflectionProbe);
+        // BUG-PERF-19: a change to what the render buffers are made of goes through a few frames without them,
+        // so the old set is freed before the new one is allocated (RenderBufferSwitch).
+        switch (_bufferReleaseDisabled ? RenderBufferSwitch.Step.ApplyNow : _renderBufferSwitch.Request(_graphicsSettings.PredictedBufferSignature()))
+        {
+            case RenderBufferSwitch.Step.Pending:
+                return; // FinishGraphicsApply reads the settings when the wait ends
+            case RenderBufferSwitch.Step.ReleaseThenApply:
+                BeginRenderBufferSwitch();
+                return;
+        }
+        FinishGraphicsApply();
+    }
+
+    /// <summary>The second half of <see cref="ApplyGraphicsSettings"/>: the options as they are now go into the engine,
+    /// and the budget follows.</summary>
+    private void FinishGraphicsApply()
+    {
+        NoteGraphicsApply(() => _graphicsSettings.Apply(GetViewport(), _worldEnvironment, _sun, _reflectionProbe));
+        _renderBufferSwitch.SetApplied(_graphicsBufferSignature);
         ReportVramCaps();
         // FEAT-PERF-17: when probe or flag is active, run VramBudgetPolicy so the automatic
         // budget is not overwritten by the slider and user adjustments apply at once.
@@ -3170,6 +3202,36 @@ public partial class Boot : Control
     private static long GodotVideoMemBytes()
         => (long)Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed);
 
+    /// <summary>BUG-PERF-19: one line each time the whole card starts or stops being what limits the texture
+    /// budget -- a state change, not a reading (godot.log and the perf sidecar, ungated).</summary>
+    private void ReportCardLimit(long osBudget, long osUsage, long godotUsage, long adapterDedicated, long adapterUsage,
+                                 long cardBudget, long? manualCap)
+    {
+        bool limited = false;
+        long withoutCard = 0, withCard = 0;
+        if (cardBudget != long.MaxValue)
+        {
+            long cache = _gpuCache!.CurrentSizeBytes;
+            withoutCard = VramBudgetPolicy.Compute(osBudget, osUsage, godotUsage, 0, 0, cache, manualCap, 0, 0, out _);
+            withCard = VramBudgetPolicy.Compute(osBudget, osUsage, godotUsage, adapterDedicated, adapterUsage, cache, manualCap, 0, 0, out _);
+            limited = withCard < withoutCard;
+        }
+        if (limited == _cardLimited) return;
+        // A reading hovering at the edge must not log on every tick.
+        double now = VramNowSeconds;
+        if (now - _cardLimitedChangedAt < 20) return;
+        _cardLimitedChangedAt = now;
+        _cardLimited = limited;
+        string line = limited
+            ? $"[VramBudget] the whole card is the limit: all programs hold {adapterUsage >> 20} of {adapterDedicated >> 20} MB " +
+              $"(others {(adapterUsage - osUsage) >> 20} MB, this process {osUsage >> 20} MB, Godot {godotUsage >> 20} MB); " +
+              $"texture budget held at {withCard >> 20} MB instead of {withoutCard >> 20} MB so the card stays under " +
+              $"{(int)(VramBudgetPolicy.AdapterUsageLimit * 100)} % and Windows does not page"
+            : "[VramBudget] the whole card has room again; the texture budget follows the per-process figures";
+        PerfSidecar.Write(line);
+        GD.Print(line);
+    }
+
     private void UpdateVramBudget(bool force = false)
     {
         if (_gpuCache == null) return;
@@ -3201,7 +3263,24 @@ public partial class Boot : Control
             // FEAT-PERF-25: small card -> cap the render buffers before they eat the texture budget.
             UpdateLowVramTier(osBudget);
             long godotUsage = GodotVideoMemBytes();
-            _gpuCache.ReportOsMemory(osBudget, osUsage, _graphicsSettings.TextureMemoryAuto, godotUsage);
+            // BUG-PERF-19: the card's total next to our own share. 0/0 = no (fresh) reading -> per-process maths only.
+            long adapterDedicated = 0, adapterUsage = 0;
+            if (_adapterProbe != null && _dxgiProbe != null)
+            {
+                long nowMs = unchecked((long)Time.GetTicksMsec());
+                _adapterProbe.Request(nowMs, AdapterSampleIntervalMs);
+                if (_adapterProbe.TryGetUsage(nowMs, out long rawAdapter, out double adapterAge) &&
+                    adapterAge <= VramBudgetPolicy.AdapterReadingMaxAgeSeconds)
+                {
+                    long others = -_adapterOthersWindow.Add(nowMs / 1000.0, -Math.Max(0L, rawAdapter - osUsage));
+                    adapterDedicated = _dxgiProbe.DedicatedBytes;
+                    adapterUsage = osUsage + others;
+                    _lastAdapterUsage = rawAdapter;
+                }
+            }
+            long cardBudget = VramBudgetPolicy.CardBudget(adapterDedicated, adapterUsage, osUsage);
+            _gpuCache.ReportOsMemory(osBudget, osUsage, _graphicsSettings.TextureMemoryAuto, godotUsage,
+                adapterUsage, adapterDedicated, cardBudget);
             long? manualCap = _graphicsSettings.TextureMemoryAuto ? null : ((long)_graphicsSettings.TextureMemoryMb << 20);
             long prevBudget = force ? 0 : _lastVramBudget;
             // BUG-PERF-18: what Godot itself holds is the non-cache usage the budget must leave room for;
@@ -3210,6 +3289,8 @@ public partial class Boot : Control
                 osBudget,
                 osUsage,
                 godotUsage,
+                adapterDedicated,
+                adapterUsage,
                 _gpuCache.CurrentSizeBytes,
                 manualCap,
                 prevBudget,
@@ -3220,6 +3301,8 @@ public partial class Boot : Control
             {
                 _timeSinceLastVramRise = 0;
             }
+
+            ReportCardLimit(osBudget, osUsage, godotUsage, adapterDedicated, adapterUsage, cardBudget, manualCap);
 
             if (newBudget != _lastVramBudget || force)
             {
@@ -3999,9 +4082,14 @@ public partial class Boot : Control
         _gpuCache = new GpuCache((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
         _dxgiProbe?.Dispose();
         _dxgiProbe = null;
+        _adapterProbe?.Dispose();
+        _adapterProbe = null;
+        _adapterOthersWindow.Clear();
         if (OperatingSystem.IsWindows())
         {
             _dxgiProbe = DxgiVideoMemory.TryCreate(RenderingServer.GetVideoAdapterName());
+            if (_dxgiProbe != null)
+                _adapterProbe = AdapterMemoryCounter.TryCreate(_dxgiProbe.LuidLow, _dxgiProbe.LuidHigh);
         }
         _lastVramBudget = 0;
         _timeSinceLastVramRise = VramBudgetPolicy.RiseIntervalSeconds;
@@ -5668,6 +5756,8 @@ public partial class Boot : Control
         _gpuCache?.DisposeAll();
         _dxgiProbe?.Dispose();
         _dxgiProbe = null;
+        _adapterProbe?.Dispose();
+        _adapterProbe = null;
 
         // Same reasoning, for the textures that are built once and kept in STATIC fields for the
         // whole process: nothing ever drops those references, so without this they are left to the
