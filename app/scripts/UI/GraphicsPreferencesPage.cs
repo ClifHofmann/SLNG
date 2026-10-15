@@ -294,7 +294,10 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _lodSlider = new HSlider
         {
             MinValue = 0.5,
-            MaxValue = 4.0,
+            // FEAT-PERF-07: the reference viewers stop at 4. With compressed textures (FEAT-PERF-17) the
+            // GPU has room on crowded regions, and a higher factor only costs triangles, not draw calls,
+            // so the slider goes further. VolumeLod stays valid below 10 (its distance factor 1 - f*0.1).
+            MaxValue = 8.0,
             Step = 0.125,
             Value = _settings.VolumeLodFactor,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
