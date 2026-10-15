@@ -1673,6 +1673,37 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
+    /// <summary>Diagnostic, on a left-click that the physics ray answered with the ground: the shown
+    /// objects whose world bounds contain the hit point, each with the same [FaceParams] dump a click on
+    /// it would give. The ray only sees colliders, so a phantom decal or a mesh with physics shape None
+    /// (a wet-sand overlay, a shore-wave strip) is unclickable here although the reference viewer picks
+    /// it by its rendered geometry -- without this the surface a report is about cannot be named.</summary>
+    public static void LogObjectsAtPoint(Godot.Vector3 point)
+    {
+        var renderer = _instance;
+        if (renderer?._world == null) return;
+
+        // Smallest bounds first: a whole-island mesh or a parcel-sized skirt holds every point near it,
+        // and the surface a report is about is usually the thin one lying on the ground.
+        var hits = new List<(Guid Id, float Size)>();
+        foreach (var (id, state) in renderer._visuals)
+        {
+            if (!state.Shown || !IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) continue;
+            var bounds = (state.MeshInstance.GlobalTransform * state.MeshInstance.GetAabb()).Grow(0.25f);
+            if (bounds.HasPoint(point)) hits.Add((id, bounds.Size.Length()));
+        }
+        hits.Sort((a, b) => a.Size.CompareTo(b.Size));
+
+        GD.Print($"[GroundClick] ground hit at ({point.X:0.#},{point.Y:0.#},{point.Z:0.#}); " +
+                 $"{hits.Count} shown object(s) hold the point in their bounds");
+        foreach (var (id, size) in hits.Take(4))
+        {
+            if (renderer._world.GetEntity(id) is not { } entity) continue;
+            GD.Print($"[GroundClick] object {entity.LocalId} bounds {size:0.#} m");
+            LogFaceTextureParams(entity);
+        }
+    }
+
     private static string DescribeLiveMaterial(ShaderMaterial mat)
     {
         static Variant P(ShaderMaterial m, StringName name) => m.GetShaderParameter(name);
