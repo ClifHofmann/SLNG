@@ -846,6 +846,21 @@ public partial class AvatarController : Camera3D
     /// never delivered; the per-frame <c>Input.IsMouseButtonPressed</c> poll that drives
     /// <see cref="_altOrbitActive"/> then stays stuck "pressed" until focus returns, leaving the
     /// camera orbiting to the unfocused mouse and jumping the next time Alt is pressed.</summary>
+    // BUG-RENDER-48: the water plane in view space, written just before the frame is drawn so it always
+    // matches the camera the frame is drawn from (see PublishViewSpaceWaterPlane). Paired in the tree
+    // callbacks, not _Ready, so a node that leaves and re-enters the tree publishes again.
+    public override void _EnterTree()
+    {
+        base._EnterTree();
+        RenderingServer.FramePreDraw += PublishViewSpaceWaterPlane;
+    }
+
+    public override void _ExitTree()
+    {
+        RenderingServer.FramePreDraw -= PublishViewSpaceWaterPlane;
+        base._ExitTree();
+    }
+
     public override void _Notification(int what)
     {
         base._Notification(what);
@@ -954,6 +969,36 @@ public partial class AvatarController : Camera3D
         // transpose would do; Inverse() is clearer and this runs once a frame.
         var viewDir = GlobalTransform.Basis.Inverse() * dir.Normalized();
         RenderingServer.GlobalShaderParameterSet("slng_sun_direction_view", viewDir.Normalized());
+    }
+
+    /// <summary>
+    /// BUG-RENDER-48: publishes the primary region's water plane in VIEW space as
+    /// <c>slng_water_plane_view</c> -- the reference viewer's <c>waterPlane</c> uniform
+    /// (llsettingsvo.cpp:1073-1100): xyz is world up rotated into view space, w the eye's height above
+    /// the surface, so <c>dot(viewPos, xyz) + w</c> is any view-space point's height above the water.
+    ///
+    /// <para>The blended prim variants fog their own below-surface fragments with it, and like the sun
+    /// direction above it has to be a global: a function called from fragment() cannot see VIEW_MATRIX.
+    /// It is hooked to <c>FramePreDraw</c> rather than written from <c>_Process</c> because this node
+    /// places itself in the middle of _Process (orbit, follow, ground clamp), so a value written at its
+    /// top would describe last frame's camera, and the waterline of every blended face would swim by
+    /// the angle turned in a frame. The active camera is read from the viewport, which is this node in
+    /// the normal case.</para>
+    ///
+    /// <para>No known water height (before the first RegionHandshake) publishes a plane 10^6 m below
+    /// the eye, which fogs nothing.</para>
+    /// </summary>
+    private void PublishViewSpaceWaterPlane()
+    {
+        if (!IsInsideTree()) return;
+        var cam = GetViewport()?.GetCamera3D() ?? this;
+        float waterHeight = TerrainRenderer.PrimaryWaterHeight;
+
+        var xform = cam.GlobalTransform;
+        float eyeHeight = float.IsNaN(waterHeight) ? 1_000_000f : xform.Origin.Y - waterHeight;
+        var up = xform.Basis.Inverse() * Vector3.Up;
+        RenderingServer.GlobalShaderParameterSet(
+            "slng_water_plane_view", new Color(up.X, up.Y, up.Z, eyeHeight));
     }
 
     public override void _Process(double delta)

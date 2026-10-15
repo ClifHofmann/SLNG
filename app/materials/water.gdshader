@@ -18,6 +18,7 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, specular_schlick_ggx;
 
 #include "res://materials/slng_atmospherics.gdshaderinc"
+#include "res://materials/slng_water_fog.gdshaderinc"
 
 // SL's water wave field, ported from the viewer (FEAT-ENV-01).
 //
@@ -43,7 +44,10 @@ uniform vec4 albedo : source_color = vec4(0.0, 0.3, 0.5, 0.85);
 // mirror ("das Wasser ist zu glatt / weich"). Point sampling keeps the ripple structure at range;
 // the aliasing that produces IS the classic SL water shimmer.
 uniform sampler2D slng_water_normal_map : hint_normal, filter_nearest, repeat_enable;
-uniform float slng_water_fog_density = 2.0;
+// slng_water_fog_density is NOT a uniform of this shader any more: it is the global of the same name in
+// slng_water_fog.gdshaderinc (BUG-RENDER-48), shared with the blended prim shaders. It used to be declared
+// here and set by EnvironmentDriver.ApplyWater, and nothing in this file ever read it -- the fog the
+// viewer applies to everything seen through the surface simply did not exist.
 uniform float slng_water_fresnel_scale = 0.4;
 uniform float slng_water_fresnel_offset = 0.5;
 
@@ -68,6 +72,13 @@ uniform float slng_water_blur_multiplier = 0.04;
 // opaque + sky frame, before any foliage.
 uniform sampler2D slng_screen_tex : hint_screen_texture, filter_linear_mipmap;
 
+// The opaque depth, for the two things waterF.glsl does with `depthMap` (class3/environment/waterF.glsl
+// :252-272): reject a refracted sample that landed on something IN FRONT of the water, and -- via the
+// water haze pass, which reads the same buffer (waterHazeF.glsl) -- know how far behind the surface the
+// sampled pixel is, to fog it. Reverse-Z, as everything in Godot 4.3+: 1 at the near plane, 0 at the far
+// one (sky).
+uniform sampler2D slng_depth_tex : hint_depth_texture, filter_nearest;
+
 // The viewer's `normScale`. It does NOT tile the normal map and it is NOT a bump depth -- it
 // shapes the normal used for the reflection sample only (waterF.glsl `wave_ibl`). Both of the
 // previous uses here were inventions.
@@ -83,12 +94,25 @@ uniform vec2 slng_water_wave2_dir = vec2(1.11, -1.16);
 varying vec2 v_big_wave;
 varying vec4 v_little_wave;
 varying vec3 v_view_position;
+// World height of THIS water fragment: the plane the fog is measured from. Per fragment, not the
+// primary region's global plane, so a neighbouring region with its own water height fogs against its own
+// surface (the viewer has a single plane and gets that case wrong).
+varying float v_water_y;
+
+// View-space position of the scene at `uv`, from the opaque depth. Godot's INV_PROJECTION_MATRIX is only
+// in scope inside fragment(), so it comes in as an argument. A sky pixel has depth 0 (the far plane),
+// which this maps to the far plane's point -- finite, so the divide is safe.
+vec3 slng_view_from_depth(vec2 uv, float depth, mat4 inv_projection) {
+    vec4 p = inv_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    return p.xyz / p.w;
+}
 
 void vertex() {
     // SL region metres: x = east, y = north. Godot world x = SL x, Godot -z = SL y.
     vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
     vec2 v = vec2(world_pos.x, -world_pos.z);
     v_view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+    v_water_y = world_pos.y;
 
     // waterV.glsl:87 -- "create sweeping horizontal waves". Displaces the wave field, not the
     // geometry; period is 2*pi/0.08 ~= 78.5 m in x with a +-6 m amplitude.
@@ -155,14 +179,48 @@ void fragment() {
     float df2_x = min(1.0, df3.x + df3.y + df3.z);   // reflection <-> refraction mix
     float df2_y = max(0.0, dot(view_sl, wavef) * slng_water_fresnel_scale + slng_water_fresnel_offset);
 
-    // --- fb: the scene behind the water, from the screen, rippled -------------------------------
+    // --- fb: the scene behind the water, from the screen, rippled, FOGGED ------------------------
     // waterF.glsl:206/244: distort = this pixel's screen UV; distort2 = distort + waver.xy *
     // refScale / max(sqrt(dist), 1) * 2, waver = wavef * 3, refScale = scale_above. SL world
     // (east=x, north=y) maps to screen (x, -y) since Godot's screen V runs top-down.
     float dist = max(length(v_view_position), 5.0);
     vec2 ripple = (wavef.xy * 3.0) * slng_water_scale_above / max(sqrt(dist), 1.0) * 2.0;
-    vec2 distort2 = clamp(SCREEN_UV + vec2(ripple.x, -ripple.y), vec2(0.0), vec2(1.0));
-    vec3 fb = textureLod(slng_screen_tex, distort2, 0.0).rgb;
+    vec2 sample_uv = clamp(SCREEN_UV + vec2(ripple.x, -ripple.y), vec2(0.0), vec2(1.0));
+
+    // waterF.glsl:268-272: if the rippled sample landed on something nearer than the water (a hull
+    // standing in it, a leg, a post), use the un-rippled pixel instead -- otherwise the water smears a
+    // shifted, striped copy of that object across itself. View-space z is negative ahead of the camera
+    // in both renderers, so the viewer's `pos.z < refPos.z - 0.05` carries over unchanged.
+    float scene_depth = textureLod(slng_depth_tex, sample_uv, 0.0).r;
+    vec3 scene_view = slng_view_from_depth(sample_uv, scene_depth, INV_PROJECTION_MATRIX);
+    if (v_view_position.z < scene_view.z - 0.05) {
+        sample_uv = SCREEN_UV;
+        scene_depth = textureLod(slng_depth_tex, sample_uv, 0.0).r;
+        scene_view = slng_view_from_depth(sample_uv, scene_depth, INV_PROJECTION_MATRIX);
+    }
+    vec3 fb = textureLod(slng_screen_tex, sample_uv, 0.0).rgb;
+
+    // The water haze (waterHazeF.glsl; pipeline.cpp doWaterHaze, run just before the water copies the
+    // screen): the sampled pixel's own thickness of water -- from where its view ray crosses the surface
+    // to where the depth buffer says the scene is -- tints it with the water colour and takes away some
+    // of its own, `fb * pow(D, 1.7) + rgb`. A pixel above the surface is untouched. This is what makes
+    // seaweed, a hull's keel or a sandbank read as UNDER the water instead of seen through a pane of
+    // clear glass; before this the fog density was parsed from the region's water settings and never used.
+    //
+    // DELIBERATE DEVIATION: a pixel with NO geometry behind it (depth 0 -- sky, i.e. the open sea out to the
+    // horizon) is left alone. The viewer fogs it as if the scene were at the far plane, which turns the far
+    // sea toward the fog colour -- and then lets its post-water atmospheric haze pull distant water back to
+    // the horizon haze (pipeline.cpp doAtmospherics runs after the water pool). SLNG has no such pass over
+    // the water; here the water has always taken its colour at the horizon from the sky pixel behind it
+    // (see slng_screen_tex above), and fogging that dark would open a navy band between sea and sky.
+    // BUG-RENDER-48 is about OBJECTS below the surface; the horizon was not reported, so it stays as it was.
+    vec4 fog = vec4(0.0, 0.0, 0.0, 1.0);
+    if (scene_depth > 0.0) {
+        vec3 scene_world = (INV_VIEW_MATRIX * vec4(scene_view, 1.0)).xyz;
+        float eye_h = INV_VIEW_MATRIX[3].y - v_water_y;
+        fog = slng_water_fog_height(eye_h, scene_world.y - v_water_y, length(scene_view));
+    }
+    fb = fb * pow(fog.a, 1.7) + fog.rgb;
 
     // --- sun glitter: waterF.glsl `punctual` (306-323). The glint normal is waterF.glsl:321's
     // normalize(wavef + up * max(dist,32)/32 * (1 - vdu)) -- the RAW wave normal blended toward

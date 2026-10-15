@@ -36,6 +36,8 @@ shader_type spatial;
 //     stands on its own; this half does not.
 render_mode blend_mix, depth_draw_opaque, depth_prepass_alpha, cull_disabled, diffuse_burley, specular_schlick_ggx;
 
+// BUG-RENDER-48: draws after the water, so it fogs its own below-surface fragments (prim_common.gdshaderinc).
+#define SLNG_WATER_FOG_BLEND
 #include "res://materials/prim/prim_common.gdshaderinc"
 
 // The viewer's MINIMUM_ALPHA, "~ 1/255" (lldrawpoolalpha.cpp:63) -- one 8-bit alpha step. See the

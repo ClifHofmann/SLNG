@@ -414,18 +414,32 @@ public partial class TerrainRenderer : Node3D
         RefreshVoidWater();
     }
 
+    /// <summary>BUG-RENDER-48: the primary region's water height in Godot world metres (= SL Z, no origin
+    /// shift on that axis), or NaN while it is not known. Read by the camera, which turns it into the
+    /// view-space water plane the blended prim shaders fog against; static for the same reason
+    /// <c>EnvironmentDriver.LastSunDirectionGodot</c> is -- one writer, any reader, no wiring between them.</summary>
+    public static float PrimaryWaterHeight { get; private set; } = float.NaN;
+
     private void RefreshVoidWater()
     {
         if (_voidWater == null || _primaryRegionHandle == 0) return;
 
         float waterHeight = 20f; // OpenSim default, used until real settings arrive
         int width = 256, height = 256;
+        bool terrainKnown = false;
         if (_world != null && _world.Terrains.TryGetValue(_primaryRegionHandle, out var terrain))
         {
+            terrainKnown = true;
             waterHeight = terrain.WaterHeight;
             if (terrain.Width > 0) width = terrain.Width;
             if (terrain.Height > 0) height = terrain.Height;
         }
+
+        // The 20 m fallback above is OpenSim's, so with no terrain record at all there is no plane worth fogging
+        // against (NaN -> the camera publishes "no water"). A terrain PATCH can create the record, at that same
+        // default, a moment before the RegionHandshake's real height lands; OnTerrainSettingsUpdated then calls
+        // this again, so the plane is provisional for that moment only.
+        PrimaryWaterHeight = terrainKnown ? waterHeight : float.NaN;
 
         var centre = RenderConfig.ToGodot(_primaryRegionHandle, new System.Numerics.Vector3(width / 2f, height / 2f, 0f));
         _voidWater.Position = new Vector3(centre.X, waterHeight - VoidWaterDepthBias, centre.Z);

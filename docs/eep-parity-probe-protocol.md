@@ -209,7 +209,7 @@ enough to give a specular track.
 | `PARITY-W4-blur-neg` | Reflection blur | −0.5 (min) | **`blur_multiplier` is SIGNED** — this is where treating it as roughness breaks |
 | `PARITY-W5-normscale-max` | Normal scale | 10 on all axes | Very fine wave tiling |
 | `PARITY-W6-wave-fast` | Wave directions | (20, 20) and (−20, 20) | Fast, sharply crossed wave motion |
-| `PARITY-W7-underwater` *(no file — reuse `W0` and swim under)* | Camera below the surface | — | Underwater fog. **Known unimplemented in SLNG today**: `water_fog_density` and `underwater_fog_mod` are parsed and never applied, so expect no fog at all rather than the wrong amount |
+| `PARITY-W7-underwater` *(no file — reuse `W0` and swim under)* | Camera below the surface | — | Underwater fog. **Known unimplemented in SLNG today** for a camera BELOW the surface: `underwater_fog_mod` is parsed and never applied, so expect no fog at all rather than the wrong amount. (Since BUG-RENDER-48 the fog is applied to things seen THROUGH the surface from above, so W1/W2 now change how deep seaweed and sand look, not only the surface itself.) |
 
 ## Reading a result
 

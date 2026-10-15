@@ -1110,6 +1110,23 @@ public sealed class EnvironmentDriver
 
     private void ApplyWater(ShaderMaterial? waterMaterial, WaterSettings water)
     {
+        // BUG-RENDER-48: the fog is GLOBAL, not a water-material uniform, because the blended prim shaders
+        // fog their own below-surface fragments with the same numbers (slng_water_fog.gdshaderinc) -- and
+        // it is set before the material null-check on purpose, since those prims do not need the water.
+        // The setting stores the colour as sRGB; the viewer linearises it in the shader
+        // (getWaterFogViewNoClip: srgb_to_linear(kc.rgb)), done here once instead. waterFogKS is
+        // 1 / max(light elevation, 0.3) with the SUN-OR-MOON elevation (llsettingsvo.cpp:1112-1123,
+        // getClampedLightNorm), which is exactly CalculatedLightDirection.
+        RenderingServer.GlobalShaderParameterSet("slng_water_fog_color", new Vector3(
+            SrgbToLinear(SafeFloat(water.FogColor.X)),
+            SrgbToLinear(SafeFloat(water.FogColor.Y)),
+            SrgbToLinear(SafeFloat(water.FogColor.Z))));
+        RenderingServer.GlobalShaderParameterSet("slng_water_fog_density", SafeFloat(water.FogDensity, 2.0f));
+        RenderingServer.GlobalShaderParameterSet(
+            "slng_water_fog_ks", WaterFog.KsFromLightHeight(SafeFloat(CalculatedLightDirection.Z, 1.0f)));
+        RenderingServer.GlobalShaderParameterSet(
+            "slng_water_fresnel", new Vector2(SafeFloat(water.FresnelScale, 0.3999f), SafeFloat(water.FresnelOffset, 0.5f)));
+
         if (waterMaterial == null) return;
 
         // water.gdshader's `albedo` uniform is a vec4 (RGB + alpha); alpha is not part of
@@ -1125,7 +1142,6 @@ public sealed class EnvironmentDriver
         var color = ToColor(water.FogColor);
         waterMaterial.SetShaderParameter("albedo", new Color(color.R, color.G, color.B, currentAlpha));
 
-        waterMaterial.SetShaderParameter("slng_water_fog_density", water.FogDensity);
         waterMaterial.SetShaderParameter("slng_water_fresnel_scale", water.FresnelScale);
         waterMaterial.SetShaderParameter("slng_water_fresnel_offset", water.FresnelOffset);
         waterMaterial.SetShaderParameter("slng_water_scale_above", water.ScaleAbove);
