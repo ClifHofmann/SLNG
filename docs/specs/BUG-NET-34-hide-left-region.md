@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-NET-34`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -238,7 +238,7 @@ from the selftest.
 
 ## Sub-tasks / Progress
 
-- [ ] Steps 1–4 ObjectRenderer
-- [ ] Step 5 TerrainRenderer
-- [ ] Step 6 selftest
-- [ ] Step 7 roadmap, version, commit
+- [x] Steps 1–4 ObjectRenderer
+- [x] Step 5 TerrainRenderer
+- [x] Step 6 selftest
+- [x] Step 7 roadmap, version, commit

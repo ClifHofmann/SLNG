@@ -42,6 +42,9 @@ public partial class ObjectRenderer : Node3D
     {
         public Guid EntityId;
         public MeshInstance3D MeshInstance = null!;
+        // BUG-NET-34: the entity is gone from the world and this visual is waiting in _pendingRemovals to be
+        // freed. Hidden at once; nothing may show, re-instance or re-collide it before it is freed.
+        public bool PendingRemoval;
         public StaticBody3D StaticBody = null!;
         public CollisionShape3D CollisionShape = null!;
         public OmniLight3D? LightNode;
@@ -655,12 +658,41 @@ public partial class ObjectRenderer : Node3D
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
         var id = e.Entity.Id;
-        if (!_visuals.ContainsKey(id)) return;
+        if (!_visuals.TryGetValue(id, out var state)) return;
+        HideForRemoval(id, state);
         if (_pendingRemovalSet.Add(id))
         {
             _pendingRemovals.Enqueue(id);
         }
     }
+
+    /// <summary>BUG-NET-34: takes a removed entity off the screen and out of picking and physics in the
+    /// frame its removal arrives. Freeing the node stays in ProcessPendingRemovals under its budget: a
+    /// teleport removes tens of thousands of visuals at once, and before this they stood where they were
+    /// built -- on top of the new region -- for up to a minute.</summary>
+    private void HideForRemoval(Guid id, VisualState state)
+    {
+        if (state.PendingRemoval) return;
+        state.PendingRemoval = true;
+
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        // Out of its MultiMesh group FIRST: Leave() hands the shared mesh back to the member's own node,
+        // so it must run before that node is hidden, not after.
+        _instanceGroups?.Leave(id);
+
+        if (IsInstanceValid(state.MeshInstance)) state.MeshInstance.Visible = false;
+        state.Shown = false;
+        if (IsInstanceValid(state.StaticBody)) state.StaticBody.CollisionLayer = 0;
+        if (state.LightNode != null && IsInstanceValid(state.LightNode)) state.LightNode.Visible = false;
+
+        _removalHideTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+        _removalHideCount++;
+    }
+
+    // BUG-NET-34: the cost of the hides above, summed and printed once per burst (see Step 4).
+    private long _removalHideTicks;
+    private int _removalHideCount;
 
     private void OnEntityRekeyed(object? sender, EntityRekeyedEventArgs e)
     {
@@ -724,6 +756,20 @@ public partial class ObjectRenderer : Node3D
     /// spreading large region-disconnect bursts across frames instead of freezing the main thread.</summary>
     private void ProcessPendingRemovals(double maxBudgetMs = 2.0)
     {
+        // BUG-NET-34: report the immediate hides once, after the frame they happened in.
+        if (_removalHideCount >= 100)
+        {
+            double ms = _removalHideTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            GD.Print($"[RegionHide] hid {_removalHideCount} visuals in {ms:0.0} ms, {_pendingRemovals.Count} wait to be freed");
+            _removalHideTicks = 0;
+            _removalHideCount = 0;
+        }
+        else if (_pendingRemovals.Count == 0)
+        {
+            _removalHideTicks = 0;
+            _removalHideCount = 0;
+        }
+
         if (_pendingRemovals.Count == 0) return;
 
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -929,6 +975,7 @@ public partial class ObjectRenderer : Node3D
                 var id = _cullOrder[ci];
                 if (!_visuals.TryGetValue(id, out var state)) continue; // removed since the snapshot
                 if (!IsInstanceValid(state.MeshInstance)) continue;
+                if (state.PendingRemoval) continue;   // BUG-NET-34: hidden, waiting to be freed
 
                 // BUG-PERF-11: a released, hidden object nobody is waiting on cannot be reloaded before the viewer
                 // has travelled how far beyond the draw distance it was at the last visit.
@@ -952,7 +999,7 @@ public partial class ObjectRenderer : Node3D
                 // Visibility with hysteresis: show within draw distance, hide only past 1.15x, so
                 // objects sitting near the edge don't flicker on/off every tick while moving.
                 bool shown = state.Shown;
-                if (viewDSq <= showSq && !shown) { state.MeshInstance.Visible = true; state.Shown = shown = true; }
+                if (viewDSq <= showSq && !shown && !state.PendingRemoval) { state.MeshInstance.Visible = true; state.Shown = shown = true; }
                 else if (viewDSq > hideSq && shown) { state.MeshInstance.Visible = false; state.Shown = shown = false; }
 
                 // FEAT-PERF-14: a setting, the viewport or the field of view changed since this object's
@@ -3011,6 +3058,7 @@ public partial class ObjectRenderer : Node3D
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
         if (_world == null) return;
         if (!_visuals.TryGetValue(entityId, out var state)) return;
+        if (state.PendingRemoval) return;
 
         var entity = _world.GetEntity(entityId);
         if (entity == null) return;
@@ -3307,7 +3355,7 @@ public partial class ObjectRenderer : Node3D
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
-            if (!IsInstanceValid(state.MeshInstance)) return;
+            if (!IsInstanceValid(state.MeshInstance) || state.PendingRemoval) return;
             if (state.LoadedMeshId != meshId) return; // shape/asset changed while loading
             // FEAT-PERF-07: and drop a result for a level nobody wants any more -- the cull sweep
             // may have re-evaluated while this was in flight. Same staleness guard
@@ -3547,7 +3595,7 @@ public partial class ObjectRenderer : Node3D
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
-            if (!IsInstanceValid(state.MeshInstance)) return;
+            if (!IsInstanceValid(state.MeshInstance) || state.PendingRemoval) return;
             if (state.LoadedMeshId != sculptId) return; // changed while meshing
 
             if (mesh != null && mesh.Submeshes.Count > 0)
@@ -3722,7 +3770,7 @@ public partial class ObjectRenderer : Node3D
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
-            if (!IsInstanceValid(state.MeshInstance)) return;
+            if (!IsInstanceValid(state.MeshInstance) || state.PendingRemoval) return;
             // Drop stale results: the shape may have changed again while we were meshing, or
             // (BUG-RENDER-19) a later re-evaluation already moved on to a different LOD -- an
             // in-flight request for a level nobody wants anymore must not clobber it.
@@ -3779,6 +3827,7 @@ public partial class ObjectRenderer : Node3D
     /// (falling back to the object's default texture for faces without their own).</summary>
     private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(VisualState state)
     {
+        if (state.PendingRemoval) return;
         if (_assetService == null || _world == null) return;
         var prim = _world.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>();
         if (prim == null) return;
@@ -4011,7 +4060,7 @@ public partial class ObjectRenderer : Node3D
     {
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
-            if (IsInstanceValid(state.MeshInstance))
+            if (IsInstanceValid(state.MeshInstance) && !state.PendingRemoval)
             {
                 action?.Invoke();
                 SetTexturesForVisual(state, usedTextures);
@@ -5268,7 +5317,7 @@ public partial class ObjectRenderer : Node3D
         _activeMirrorId = id;
 
         if (id != Guid.Empty && _visuals.TryGetValue(id, out var current)
-            && IsInstanceValid(current.MeshInstance))
+            && IsInstanceValid(current.MeshInstance) && !current.PendingRemoval)
         {
             current.MeshInstance.Layers = MirrorVisualLayer;
             ApplyMirrorShader(current, true);
@@ -5298,6 +5347,7 @@ public partial class ObjectRenderer : Node3D
     private void AssignSharedMesh(VisualState state, Guid geometryKey, MeshData data, bool flipV,
         PreparedStaticMesh? prepared = null)
     {
+        if (state.PendingRemoval) return;
         // BUG-PERF-10: timed in parts (MainThreadWorkQueue.Part), which add up to this method.
         (bool[] RunStart, int Surfaces, int SubmeshCount, ulong Pattern) plan;
         Guid key;
@@ -5967,6 +6017,12 @@ public partial class ObjectRenderer : Node3D
     /// instance sharing it).</para></summary>
     private void EvaluateInstancing(VisualState state, double nowSec)
     {
+        if (state.PendingRemoval)
+        {
+            _instanceGroups?.Leave(state.EntityId);
+            return;
+        }
+
         if (_instanceGroups == null || !RenderConfig.EnableInstancing)
         {
             _instanceGroups?.Leave(state.EntityId);
@@ -5988,7 +6044,8 @@ public partial class ObjectRenderer : Node3D
         bool hasMedia = _world?.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>()?.MediaFaces != null;
 
         bool disqualified =
-            _instanceSuppressed.Contains(state.EntityId)
+            state.PendingRemoval
+            || _instanceSuppressed.Contains(state.EntityId)
             || state.ResourcesReleased
             || state.SplitChildren != null
             || state.LightNode != null

@@ -546,6 +546,16 @@ public partial class TerrainRenderer : Node3D
         // World events are applied on the main thread (WorldSimulation.Pump), so this is
         // safe. Just mark the region dirty; the rebuild is coalesced in _Process.
         _dirtyRegions.Add(regionHandle);
+
+        // BUG-NET-34: a REMOVED region's terrain is freed by the next rebuild, which can be 10 s away;
+        // until then it would lie at its old place, inside the new region. Hide it and stop it
+        // colliding now.
+        if (_world != null && !_world.Terrains.ContainsKey(regionHandle)
+            && _regions.TryGetValue(regionHandle, out var node))
+        {
+            node.Root.Visible = false;
+            node.StaticBody.CollisionLayer = 0;
+        }
     }
 
     private double _rebuildAccum;
@@ -662,6 +672,11 @@ public partial class TerrainRenderer : Node3D
             // Position root node relative to the floating origin (see RenderConfig) so terrain
             // lines up with objects/avatars without overflowing float precision on OSGrid.
             regionNode.Root.Position = RenderConfig.ToGodot(regionHandle, System.Numerics.Vector3.Zero);
+        }
+        else
+        {
+            regionNode.Root.Visible = true;
+            regionNode.StaticBody.CollisionLayer = PhysicsLayers.Terrain;
         }
 
         var heights = regionTerrain.GetHeights();
