@@ -85,6 +85,7 @@ public sealed class WorldSimulation : IDisposable
         _source.PhysicsPropertiesReceived += OnPhysicsProperties;
         _source.ObjectMediaReceived += OnObjectMedia;
         _source.ObjectAnimationReceived += OnObjectAnimation;
+        _source.GltfMaterialOverrideReceived += OnGltfMaterialOverride;
         _source.DisplayNameResolved += OnDisplayNameResolved;
         _source.TeleportProgressReceived += OnTeleportProgress;
         _world.EntityRemoved += OnEntityRemoved;
@@ -98,6 +99,7 @@ public sealed class WorldSimulation : IDisposable
     private void OnPhysicsProperties(object? sender, PhysicsPropertiesEvent e) => _pending.Enqueue(e);
     private void OnObjectMedia(object? sender, ObjectMediaEvent e) => _pending.Enqueue(e);
     private void OnObjectAnimation(object? sender, ObjectAnimationEvent e) => _pending.Enqueue(e);
+    private void OnGltfMaterialOverride(object? sender, GltfMaterialOverrideEvent e) => _pending.Enqueue(e);
     private void OnTerrainPatch(object? sender, TerrainPatchEvent e) => _pending.Enqueue(e);
     private void OnTerrainSettings(object? sender, TerrainSettingsEvent e) => _pending.Enqueue(e);
     private void OnRegionDisconnected(object? sender, RegionDisconnectedEvent e) => _pending.Enqueue(e);
@@ -142,6 +144,7 @@ public sealed class WorldSimulation : IDisposable
                     ParkTerrain(e.RegionHandle);
                     _world.RemoveRegion(e.RegionHandle);
                     DropPendingAnimations(e.RegionHandle); // FEAT-ANIMESH-02: for objects that never arrived
+                    DropGltfOverrides(e.RegionHandle);
                     _avatarCacheDirty = true; // takes every avatar in that region with it
                     StartReconciliation();
                     break;
@@ -149,6 +152,7 @@ public sealed class WorldSimulation : IDisposable
                 case AvatarAnimationEvent e: kind = 11; ApplyAvatarAnimation(e); break;
                 case NameResolvedEvent e: kind = 12; ApplyDisplayNameResolved(e); break;
                 case TeleportProgressEvent e: kind = 13; ApplyTeleportProgress(e); break;
+                case GltfMaterialOverrideEvent e: kind = 14; ApplyGltfOverride(e); break;
                 default: kind = DrainKinds.Length - 1; break;
             }
             _drainTicks[kind] += System.Diagnostics.Stopwatch.GetTimestamp() - started;
@@ -195,7 +199,7 @@ public sealed class WorldSimulation : IDisposable
     {
         "ObjectUpdate", "AvatarUpdate", "ObjectRemoved", "ObjectProperties", "PhysicsProperties", "ObjectMedia",
         "ObjectAnimation", "TerrainPatch", "TerrainSettings", "RegionDisconnected", "AvatarAppearance",
-        "AvatarAnimation", "NameResolved", "TeleportProgress", "other",
+        "AvatarAnimation", "NameResolved", "TeleportProgress", "GltfOverride", "other",
     };
     private readonly long[] _drainTicks = new long[DrainKinds.Length];
     private readonly int[] _drainCounts = new int[DrainKinds.Length];
@@ -232,6 +236,7 @@ public sealed class WorldSimulation : IDisposable
         _parkedOrder.Clear();
         _pendingAnimations.Clear();
         _pendingAnimationNodes.Clear();
+        _gltfOverrides.Clear();
         _world.RemoveAllRegions();
         _avatarCacheDirty = true;
     }
@@ -635,6 +640,7 @@ public sealed class WorldSimulation : IDisposable
             prim.Faces = e.Faces;
             entity.SetComponent(prim);
         }
+        StampGltfOverrides(prim, (e.RegionHandle, e.LocalId));
         prim.AttachmentPoint = e.AttachmentPoint;
         // Unlike the flags/light fields below, Material comes from the same PrimData block as
         // Shape/ProfileCurve above, which the network layer keeps current on a terse update by
@@ -1525,10 +1531,74 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    /// <summary>Past this many held entries (objects that have overrides), NEW entries for objects that have no entity
+    /// yet are dropped with one log line. Far above any real region; entries of live objects are never evicted.</summary>
+    public const int GltfOverrideLimit = 65536;
+
+    internal int GltfOverrideLimitOverride { get; set; } = 0;
+    private int EffectiveGltfOverrideLimit => GltfOverrideLimitOverride > 0 ? GltfOverrideLimitOverride : GltfOverrideLimit;
+
+    // FEAT-RENDER-26: the viewer's per-region override cache (llviewerregion.cpp:2787, :3849), keyed the same way.
+    private readonly Dictionary<(ulong Region, uint LocalId), IReadOnlyDictionary<int, GltfMaterialOverride>> _gltfOverrides = new();
+    private bool _gltfOverrideLimitLogged;
+
+    private void ApplyGltfOverride(GltfMaterialOverrideEvent e)
+    {
+        var key = (e.RegionHandle, e.LocalId);
+        var entity = _world.GetEntity(e.RegionHandle, e.LocalId);
+
+        if (e.Faces.Count == 0) _gltfOverrides.Remove(key);                      // clear-all
+        else if (entity != null || _gltfOverrides.Count < EffectiveGltfOverrideLimit)
+            _gltfOverrides[key] = new Dictionary<int, GltfMaterialOverride>(e.Faces); // the store owns its copy
+        else if (!_gltfOverrideLimitLogged)
+        {
+            _gltfOverrideLimitLogged = true;
+            System.Console.Error.WriteLine($"[GltfOverride] limit of {EffectiveGltfOverrideLimit} held entries reached; dropping override for unknown object region={e.RegionHandle} local={e.LocalId}");
+        }
+
+        var prim = entity?.GetComponent<PrimitiveComponent>();
+        if (prim == null) return;                                                 // held until the object arrives
+        if (StampGltfOverrides(prim, key)) _world.NotifyComponentUpdated(entity!, prim);
+    }
+
+    /// <summary>Re-stamps prim.Faces from the store. True when prim.Faces changed. O(1) for a prim that has no override
+    /// and never had one (the flag): this runs after EVERY object update, terse ones included.</summary>
+    private bool StampGltfOverrides(PrimitiveComponent prim, (ulong, uint) key)
+    {
+        _gltfOverrides.TryGetValue(key, out var set);
+        bool hasSet = set is { Count: > 0 };
+        if (!hasSet && !prim.HasPbrOverrides) return false;
+
+        var stamped = GltfOverrideStamp.Apply(prim.Faces, prim.DefaultFace(), set);
+        prim.HasPbrOverrides = hasSet;
+        if (ReferenceEquals(stamped, prim.Faces)) return false;
+        prim.Faces = stamped;
+        return true;
+    }
+
+    private void DropGltfOverrides(ulong region)
+    {
+        List<(ulong, uint)>? toRemove = null;
+        foreach (var key in _gltfOverrides.Keys)
+        {
+            if (key.Region == region)
+            {
+                toRemove ??= new List<(ulong, uint)>();
+                toRemove.Add(key);
+            }
+        }
+        if (toRemove != null)
+        {
+            foreach (var k in toRemove) _gltfOverrides.Remove(k);
+        }
+    }
+
     /// <summary>Fires for every way an entity leaves the world -- a kill, a region unloading, the
     /// stale local agent being replaced -- so the UUID index never outlives its entity.</summary>
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
+        _gltfOverrides.Remove((e.Entity.RegionHandle, e.Entity.LocalId));
+
         var objectId = e.Entity.GetComponent<MetadataComponent>()?.Id ?? System.Guid.Empty;
         if (objectId == System.Guid.Empty) return;
 
@@ -1804,6 +1874,7 @@ public sealed class WorldSimulation : IDisposable
         _source.AvatarAppearanceReceived -= OnAvatarAppearance;
         _source.AvatarAnimationReceived -= OnAvatarAnimation;
         _source.ObjectAnimationReceived -= OnObjectAnimation;
+        _source.GltfMaterialOverrideReceived -= OnGltfMaterialOverride;
         _world.EntityRemoved -= OnEntityRemoved;
     }
 }

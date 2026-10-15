@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-RENDER-26`
 - **Track:** `render` (+ `net`)
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 

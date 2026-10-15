@@ -59,6 +59,11 @@ uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 uniform float uv_rotation = 0.0;
 
+// FEAT-RENDER-26: a glTF face with a texture-transform override (base-colour slot). a = (scale.xy, offset.xy),
+// b = (rotation in radians, 1 = in use). Replaces the face's legacy placement, as in the viewer (llface.cpp:1475).
+uniform vec4 pbr_uv_a = vec4(1.0, 1.0, 0.0, 0.0);
+uniform vec4 pbr_uv_b = vec4(0.0);
+
 // FEAT-PERF-16: llSetTextureAnim, evaluated here instead of by ObjectRenderer every frame.
 // a = (mode bits, SizeX, SizeY, Start), b = (Length, Rate, start time, 1 = animated).
 // Packed by SLNG.Core.TextureAnimShader.Pack; mirrored by TextureAnimShader.Evaluate (tests).
@@ -302,12 +307,28 @@ void slng_tex_anim(inout vec2 repeat_st, inout vec2 offset_st, inout float rotat
     offset_st = vec2(fc, 0.0);                                         // plain slide
 }
 
+// KHR_texture_transform exactly as the viewer's shader does it (textureUtilV.glsl:36-49): scale, then rotate, then
+// offset, about the top-left corner. uv is SLNG's mesh UV (top-origin V); the viewer flips V before and after, and
+// SLNG's flipV meshes make those two flips cancel, so the same formula applies directly.
+// C# mirror: GltfTextureTransform.Apply. Change both together.
+vec2 slng_khr_uv(vec2 uv) {
+    float s = sin(pbr_uv_b.x);
+    float c = cos(pbr_uv_b.x);
+    vec2 sc = uv * pbr_uv_a.xy;
+    return vec2(c * sc.x + s * sc.y, -s * sc.x + c * sc.y) + pbr_uv_a.zw;
+}
+
 vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     // TexGen chooses the base coordinate; the transform below is identical either way. The
     // viewer has the same shape: getGeometryVolume computes planar tc and then calls the very
     // same xform() the default path uses (llface.cpp:1808-1812).
     if (uv_texgen == 1) {
         uv = slng_planar_uv(vertex, normal);
+    }
+    // FEAT-RENDER-26: an animated face keeps the animation (it already replaces the placement); otherwise a face
+    // with a texture-transform override uses it instead of the legacy placement.
+    if (pbr_uv_b.y > 0.5 && tex_anim_b.w <= 0.5) {
+        return slng_khr_uv(uv);
     }
     // FEAT-PERF-16: an animated face. uv_offset is packed as (0.5 - 0.5*repeatU + offsetU,
     // 0.5 - 0.5*repeatV - offsetV) (ObjectRenderer.ApplyAnimatedPlacement / BuildFaceMaterialAsync);

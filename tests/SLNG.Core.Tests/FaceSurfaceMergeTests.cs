@@ -19,10 +19,11 @@ public class FaceSurfaceMergeTests
         Guid? texture = null, Guid? renderMaterial = null, Guid? legacyMaterial = null,
         Vector4? color = null, float repeatU = 1f, float repeatV = 1f,
         float offsetU = 0f, float offsetV = 0f, float rotation = 0f,
-        byte texGen = 0, bool fullbright = false, byte shiny = 0, bool hasMedia = false) =>
+        byte texGen = 0, bool fullbright = false, byte shiny = 0, bool hasMedia = false,
+        GltfMaterialOverride? pbrOverride = null) =>
         new(texture ?? TexA, renderMaterial ?? Guid.Empty, legacyMaterial ?? Guid.Empty,
             color ?? new Vector4(1, 1, 1, 1), repeatU, repeatV, offsetU, offsetV, rotation,
-            texGen, fullbright, shiny, hasMedia);
+            texGen, fullbright, shiny, hasMedia, pbrOverride);
 
     private static (int Surfaces, bool[] RunStart) Plan(
         int[] submeshFaceIndices, FaceTexture[]? faces,
@@ -102,6 +103,8 @@ public class FaceSurfaceMergeTests
         // MVP3-3: a MOAP face must never merge with an otherwise-identical non-media face --
         // see FaceSurfaceMerge's doc comment on why this keeps a future media texture swap safe.
         { "has media", Face(hasMedia: true) },
+        // FEAT-RENDER-26: per-face glTF material override
+        { "glTF material override", Face(pbrOverride: new GltfMaterialOverride { Roughness = 0.5f }) },
     };
 
     [Theory]

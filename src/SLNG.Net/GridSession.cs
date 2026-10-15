@@ -306,14 +306,12 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         if (SeedCapabilityGuard.IsRetryLine(message))
             AbortLibreMetaverseSeedRetry();
 
-        // SLNG does not apply glTF material overrides yet, and LibreMetaverse's notation parser rejects
-        // some of the simulator's override payloads ("Unknown type marker ','"), with a full stack trace
-        // per message -- 16 in one Sirens session. Say it once per session; the rest are counted.
+        // LibreMetaverse's notation parser rejects some of the simulator's override payloads ("Unknown type marker ','"),
+        // with a full stack trace per message -- 16 in one Sirens session. Say it once per session; the rest are counted.
         if (message.Contains("Failed to parse GltfMaterialOverride", StringComparison.Ordinal))
         {
             if (System.Threading.Interlocked.Increment(ref _gltfOverrideParseFailures) == 1)
-                Console.Error.WriteLine("[GltfOverride] LibreMetaverse could not parse a glTF material override " +
-                                        "from the region (SLNG does not apply overrides yet); further ones are not printed.");
+                Console.Error.WriteLine("[GltfOverride] LibreMetaverse's own parser rejected an override payload (it mishandles an empty [] or {}); SLNG parses them itself, nothing is lost.");
             return false;
         }
 
@@ -780,6 +778,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // every ObjectAnimation packet, empty lists included; the region's seed request already
         // asks for the capability OpenSim gates the message on (Caps.AllCapabilities).
         _client.Objects.ObjectAnimation += OnObjectAnimation;
+        _client.Network.GenericStreamingMessage += OnGenericStreamingMessage;
         // Repairs the particle system LibreMetaverse loses on every compressed update -- see
         // CompressedParticleRepair. Registered here rather than replacing the library's handler,
         // so it runs after it: LibreMetaverse decodes the object as usual (correctly, apart from
@@ -928,6 +927,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
         _client.Objects.ObjectAnimation -= OnObjectAnimation;
+        _client.Network.GenericStreamingMessage -= OnGenericStreamingMessage;
         _client.Self.AgentDataReply -= OnAgentDataReply;
         _client.Objects.ObjectPropertiesFamily -= OnObjectPropertiesFamily;
         _client.Objects.ObjectProperties -= OnObjectPropertiesFull;

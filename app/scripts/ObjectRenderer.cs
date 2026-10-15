@@ -572,6 +572,24 @@ public partial class ObjectRenderer : Node3D
             GD.Print($"[FaceAlpha] {texId.ToString()[..8]} {decision}");
     }
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pbrOverrideLogged = new();
+
+    private void LogPbrOverride(Guid matId, GltfMaterialOverride o)
+    {
+        if (!Diag.Verbose) return;
+        string bc = o.BaseColor != null ? "yes" : "no";
+        string rf = o.Roughness != null ? $"{o.Roughness.Value:0.###}" : "-";
+        string mf = o.Metallic != null ? $"{o.Metallic.Value:0.###}" : "-";
+        string am = o.AlphaMode != null ? o.AlphaMode.Value.ToString() : "-";
+        int texCount = (o.BaseColorTexture != null ? 1 : 0) + (o.NormalTexture != null ? 1 : 0)
+            + (o.MetallicRoughnessTexture != null ? 1 : 0) + (o.EmissiveTexture != null ? 1 : 0);
+        string ti = (o.BaseColorTransform != null || o.NormalTransform != null || o.MetallicRoughnessTransform != null || o.EmissiveTransform != null) ? "yes" : "no";
+        string matStr = matId.ToString()[..Math.Min(8, matId.ToString().Length)];
+        string line = $"mat={matStr} bc={bc} rf={rf} mf={mf} am={am} tex={texCount} ti={ti}";
+        if (_pbrOverrideLogged.TryAdd($"{matId:N}:{line}", 0))
+            Console.Error.WriteLine($"[PbrOverride] {line}");
+    }
+
     private readonly HashSet<Guid> _sculptFallbacksLogged = new();
     private readonly HashSet<Guid> _meshLoadFailuresLogged = new();
     // Keyed by SHAPE, not by object: a failing prim shape is usually a whole build's worth of
@@ -4093,6 +4111,8 @@ public partial class ObjectRenderer : Node3D
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
+        if (ft.RenderMaterialId != Guid.Empty && ft.PbrOverride?.BaseColor != null)
+            colorTint = new Godot.Color(1f, 1f, 1f, 1f);
 
         // Scale the object's on-screen pixel area down to what ONE TILE of this face's texture
         // actually covers, before it decides a discard level. Ported from LLFace::
@@ -4110,7 +4130,8 @@ public partial class ObjectRenderer : Node3D
         // Sculpts are deliberately exempt when texel_area > 1, exactly as the viewer notes
         // ("sculpts can break assumptions about texel area") -- a sculpt's UV layout is generated
         // from its map, not authored per face, so its repeats are not a reliable tiling signal.
-        float texelArea = new Godot.Vector2(ft.RepeatU * 0.5f, ft.RepeatV * 0.5f).LengthSquared() * Mathf.Pi;
+        var (scaleU, scaleV) = ft.PbrOverride?.BaseColorTransform is { } t ? (t.Scale.X, t.Scale.Y) : (ft.RepeatU, ft.RepeatV);
+        float texelArea = new Godot.Vector2(scaleU * 0.5f, scaleV * 0.5f).LengthSquared() * Mathf.Pi;
         if (texelArea <= 0f) texelArea = 1f; // probably animated -- viewer uses the same default
         if (!(isSculpted && texelArea > 1f))
         {
@@ -4367,16 +4388,18 @@ public partial class ObjectRenderer : Node3D
             pbr = await pbrRequest;
             if (pbr != null)
             {
+                var eff = SLNG.Assets.PbrOverrideMerge.Apply(pbr, ft.PbrOverride);
+
                 if (_pbrMaterialsSeen.TryAdd(ft.RenderMaterialId, 0))
                 {
                     GD.Print($"[PbrMaterial] {ft.RenderMaterialId.ToString()[..8]} " +
-                             $"alphaMode={pbr.AlphaMode} doubleSided={pbr.DoubleSided}");
+                             $"alphaMode={eff.AlphaMode} doubleSided={eff.DoubleSided}");
                 }
 
-                var baseColor = new Godot.Color(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W) * colorTint;
-                material.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
-                material.SetShaderParameter(PrimShaderFamily.MetallicFactor, pbr.MetallicFactor);
-                material.SetShaderParameter(PrimShaderFamily.RoughnessFactor, pbr.RoughnessFactor);
+                ApplyPbrFactors(material, eff, ft.PbrOverride, colorTint);
+
+                if (ft.PbrOverride != null)
+                    LogPbrOverride(ft.RenderMaterialId, ft.PbrOverride);
 
                 // FEAT-RENDER-22: remember which glTF materials are mirror-grade, so the hero probe
                 // can find the one surface in the scene worth spending a real-time capture on.
@@ -4386,49 +4409,18 @@ public partial class ObjectRenderer : Node3D
                 // per face because the cull sweep already carries each visual's LoadedMaterialId
                 // and can test membership with one hash lookup, without touching the entity or its
                 // components.
-                if (pbr.RoughnessFactor <= MirrorRoughnessThreshold)
+                // NOTE: When an override provides Roughness, do not add base material to _mirrorMaterials.
+                if (pbr.RoughnessFactor <= MirrorRoughnessThreshold && ft.PbrOverride?.Roughness == null)
                     _mirrorMaterials.Add(ft.RenderMaterialId);
-                material.SetShaderParameter(PrimShaderFamily.EmissionEnabled, pbr.EmissiveFactor != System.Numerics.Vector3.Zero);
-                material.SetShaderParameter(PrimShaderFamily.EmissionColor,
-                    new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z));
 
-                // glTF's own alphaMode is authoritative here — a real, creator-declared signal,
-                // never a pixel-content guess (see AvatarRenderer.BuildFaceMaterialAsync's
-                // identical use of this field, added alongside PbrMaterialData.AlphaMode this
-                // session — this branch previously never set Transparency at all for PBR-
-                // materialed faces, so a BLEND/MASK-authored glTF material rendered fully opaque
-                // regardless of its own alpha content). PbrAlphaMode.Opaque intentionally leaves
-                // Transparency untouched: colorTint may have already forced Alpha above for a
-                // translucent per-face tint, which is a separate SL signal from the material's
-                // own declared transparency and must not be downgraded back to opaque.
-                if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Blend)
-                {
-                    material.Shader = PrimShaderFamily.Blend;
-                }
-                else if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Mask)
-                {
-                    material.Shader = PrimShaderFamily.Scissor;
-                    material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, pbr.AlphaCutoff);
-                }
-
-                // BUG-RENDER-06: glTF's own doubleSided flag, mirrored the same way alphaMode
-                // is above — authoritative, never a guess. Swap to whichever WorldPrim shader was
-                // just selected's cull_disabled twin. Legacy Blinn-Phong materials have no
-                // equivalent flag (this branch only runs for a face with a real PBR material), so
-                // nothing else needs to check this.
-                if (pbr.DoubleSided)
-                {
-                    material.Shader = DoubleSidedTwin(material.Shader);
-                }
-
-                LogFaceAlpha(ft.TextureId != Guid.Empty ? ft.TextureId : pbr.BaseColorTextureId,
-                    $"pbrMat={ft.RenderMaterialId.ToString()[..8]} mode={pbr.AlphaMode} cutoff={pbr.AlphaCutoff:0.###} doubleSided={pbr.DoubleSided} tintA={colorTint.A:0.###} -> {PrimShaderKindName(material.Shader)}{(pbr.DoubleSided ? " (2-sided twin)" : "")}");
+                LogFaceAlpha(ft.TextureId != Guid.Empty ? ft.TextureId : eff.BaseColorTextureId,
+                    $"pbrMat={ft.RenderMaterialId.ToString()[..8]} mode={eff.AlphaMode} cutoff={eff.AlphaCutoff:0.###} doubleSided={eff.DoubleSided} tintA={colorTint.A:0.###} -> {PrimShaderKindName(material.Shader)}{(eff.DoubleSided ? " (2-sided twin)" : "")}");
 
                 var tasks = new List<System.Threading.Tasks.Task>();
-                if (pbr.BaseColorTextureId != Guid.Empty)
+                if (eff.BaseColorTextureId != Guid.Empty)
                 {
-                    used.Add(pbr.BaseColorTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.BaseColorTextureId, screenPixelArea, priority).ContinueWith(t =>
+                    used.Add(eff.BaseColorTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(eff.BaseColorTextureId, screenPixelArea, priority).ContinueWith(t =>
                         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
@@ -4436,13 +4428,13 @@ public partial class ObjectRenderer : Node3D
                                 material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, t.Result);
                                 material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
                             }
-                            else GD.PrintErr($"[FaceTex] object PBR baseColor {pbr.BaseColorTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR baseColor {eff.BaseColorTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }, label: "prim.pbr_basecolor")));
                 }
-                if (pbr.NormalTextureId != Guid.Empty)
+                if (eff.NormalTextureId != Guid.Empty)
                 {
-                    used.Add(pbr.NormalTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, screenPixelArea, priority, compress: false).ContinueWith(t =>
+                    used.Add(eff.NormalTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(eff.NormalTextureId, screenPixelArea, priority, compress: false).ContinueWith(t =>
                         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
@@ -4450,13 +4442,13 @@ public partial class ObjectRenderer : Node3D
                                 material.SetShaderParameter(PrimShaderFamily.NormalTexture, t.Result);
                                 material.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
                             }
-                            else GD.PrintErr($"[FaceTex] object PBR normal {pbr.NormalTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR normal {eff.NormalTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }, label: "prim.pbr_normal")));
                 }
-                if (pbr.MetallicRoughnessTextureId != Guid.Empty)
+                if (eff.MetallicRoughnessTextureId != Guid.Empty)
                 {
-                    used.Add(pbr.MetallicRoughnessTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.MetallicRoughnessTextureId, screenPixelArea, priority).ContinueWith(t =>
+                    used.Add(eff.MetallicRoughnessTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(eff.MetallicRoughnessTextureId, screenPixelArea, priority).ContinueWith(t =>
                         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
@@ -4477,16 +4469,16 @@ public partial class ObjectRenderer : Node3D
                                 // when it's needed. Once per texture id (this callback is
                                 // main-thread via CallDeferred, so the set needs no lock) to keep
                                 // a heavily-reused ORM map from spamming.
-                                if (_ormMapsSeen.Add(pbr.MetallicRoughnessTextureId))
-                                    Logger.Info($"[FaceTex] ORM map now sampled (StandardMaterial3D ignored it): {pbr.MetallicRoughnessTextureId}");
+                                if (_ormMapsSeen.Add(eff.MetallicRoughnessTextureId))
+                                    Logger.Info($"[FaceTex] ORM map now sampled (StandardMaterial3D ignored it): {eff.MetallicRoughnessTextureId}");
                             }
-                            else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {pbr.MetallicRoughnessTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR metallicRoughness {eff.MetallicRoughnessTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }, label: "prim.pbr_metallic_roughness")));
                 }
-                if (pbr.EmissiveTextureId != Guid.Empty)
+                if (eff.EmissiveTextureId != Guid.Empty)
                 {
-                    used.Add(pbr.EmissiveTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.EmissiveTextureId, screenPixelArea, priority).ContinueWith(t =>
+                    used.Add(eff.EmissiveTextureId);
+                    tasks.Add(GetOrCreateGpuTextureAsync(eff.EmissiveTextureId, screenPixelArea, priority).ContinueWith(t =>
                         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
@@ -4494,7 +4486,7 @@ public partial class ObjectRenderer : Node3D
                                 material.SetShaderParameter(PrimShaderFamily.EmissionTexture, t.Result);
                                 material.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
                             }
-                            else GD.PrintErr($"[FaceTex] object PBR emissive {pbr.EmissiveTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
+                            else GD.PrintErr($"[FaceTex] object PBR emissive {eff.EmissiveTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }, label: "prim.pbr_emissive")));
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
@@ -4551,6 +4543,66 @@ public partial class ObjectRenderer : Node3D
         }
 
         return (material, used);
+    }
+
+    internal static void ApplyPbrFactors(
+        ShaderMaterial material,
+        SLNG.Assets.PbrMaterialData pbr,
+        SLNG.Core.GltfMaterialOverride? o,
+        Godot.Color colorTint)
+    {
+        var baseColor = new Godot.Color(
+            pbr.BaseColorFactor.X,
+            pbr.BaseColorFactor.Y,
+            pbr.BaseColorFactor.Z,
+            pbr.BaseColorFactor.W) * colorTint;
+        material.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
+        material.SetShaderParameter(PrimShaderFamily.MetallicFactor, pbr.MetallicFactor);
+        material.SetShaderParameter(PrimShaderFamily.RoughnessFactor, pbr.RoughnessFactor);
+
+        material.SetShaderParameter(PrimShaderFamily.EmissionEnabled, pbr.EmissiveFactor != System.Numerics.Vector3.Zero);
+        material.SetShaderParameter(PrimShaderFamily.EmissionColor,
+            new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z));
+
+        // glTF's own alphaMode is authoritative here — a real, creator-declared signal,
+        // never a pixel-content guess (see AvatarRenderer.BuildFaceMaterialAsync's
+        // identical use of this field, added alongside PbrMaterialData.AlphaMode this
+        // session — this branch previously never set Transparency at all for PBR-
+        // materialed faces, so a BLEND/MASK-authored glTF material rendered fully opaque
+        // regardless of its own alpha content). PbrAlphaMode.Opaque intentionally leaves
+        // Transparency untouched: colorTint may have already forced Alpha above for a
+        // translucent per-face tint, which is a separate SL signal from the material's
+        // own declared transparency and must not be downgraded back to opaque.
+        if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Blend)
+        {
+            material.Shader = PrimShaderFamily.Blend;
+        }
+        else if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Mask)
+        {
+            material.Shader = PrimShaderFamily.Scissor;
+            material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, pbr.AlphaCutoff);
+        }
+
+        // BUG-RENDER-06: glTF's own doubleSided flag, mirrored the same way alphaMode
+        // is above — authoritative, never a guess. Swap to whichever WorldPrim shader was
+        // just selected's cull_disabled twin. Legacy Blinn-Phong materials have no
+        // equivalent flag (this branch only runs for a face with a real PBR material), so
+        // nothing else needs to check this.
+        if (pbr.DoubleSided)
+        {
+            material.Shader = DoubleSidedTwin(material.Shader);
+        }
+
+        if (o?.BaseColorTransform is { } t)
+        {
+            material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(t.Scale.X, t.Scale.Y, t.Offset.X, t.Offset.Y));
+            material.SetShaderParameter(PrimShaderFamily.PbrUvB, new Godot.Vector4(t.Rotation, 1f, 0f, 0f));
+        }
+        else
+        {
+            material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(1f, 1f, 0f, 0f));
+            material.SetShaderParameter(PrimShaderFamily.PbrUvB, Godot.Vector4.Zero);
+        }
     }
 
     /// <summary>Picks the right transparency mode from the texture's actual alpha:

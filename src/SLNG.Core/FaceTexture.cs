@@ -73,8 +73,14 @@ public readonly record struct FaceTexture(
     /// the media itself (home/current URL, permissions, ...), which arrives separately via the
     /// <c>ObjectMedia</c> capability and is stored on <c>PrimitiveComponent.MediaFaces</c>, not
     /// here. True on every prim that has ever advertised media on this face, even before that
-    /// capability fetch has completed.</summary>
-    bool HasMedia = false)
+    bool HasMedia = false,
+    /// <summary>FEAT-RENDER-26: the per-face glTF material override the simulator sent for this face (message
+    /// 0x4175), or null. Part of the face's value identity on purpose: the renderer's re-apply gate, FaceSurfaceMerge
+    /// and PrimMaterialKey all compare FaceTexture by value, so a changed override re-applies the face, splits a
+    /// surface run, and gives a different material key, and equal overrides give equal keys. Only meaningful when
+    /// <see cref="RenderMaterialId"/> is not empty. Never set by the network layer's face build: it is stamped by
+    /// WorldSimulation (see GltfOverrideStamp).</summary>
+    GltfMaterialOverride? PbrOverride = null)
 {
     /// <summary>The viewer's SHININESS_TO_ALPHA (llface.cpp:1420): the glossiness that a legacy
     /// shiny level feeds into the specular LUT. Index is the raw 0-3 value; anything out of
