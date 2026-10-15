@@ -109,7 +109,14 @@ param(
     # FEAT-PERF-17: cap the video-memory budget Windows reports to this many MB, to test how the
     # viewer behaves on a smaller card (e.g. 3500 for a 4 GB card). 0 = use the real budget.
     # Passes --vram-budget=<MB>.
-    [int]$VramBudget = 0
+    [int]$VramBudget = 0,
+
+    # FEAT-PERF-14: the small-object cull threshold for this run -- the screen radius in pixels under which
+    # a prim is not drawn (the engine culls it through a visibility range). 0 = cull OFF, the A/B baseline;
+    # -1 (default) = whatever the Graphics preference says. Compare `draws`, `drawsScene`, `drawsShadow`,
+    # `renderCpuMs` and fps in the [Perf] lines, and read the [RangeCull] line for what was held back.
+    # Passes --small-cull=<px>.
+    [double]$SmallCull = -1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -207,6 +214,11 @@ if ($NoObjectCache) {
 if ($VramBudget -gt 0) {
     Write-Host "      VRAM budget capped at $VramBudget MB -- simulates a smaller card (--vram-budget)" -ForegroundColor Yellow
     $userArgs += "--vram-budget=$VramBudget"
+}
+if ($SmallCull -ge 0) {
+    $scText = if ($SmallCull -eq 0) { 'OFF' } else { "$SmallCull px" }
+    Write-Host "      small-object cull $scText for this run (--small-cull)" -ForegroundColor Yellow
+    $userArgs += "--small-cull=$($SmallCull.ToString([cultureinfo]::InvariantCulture))"
 }
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs

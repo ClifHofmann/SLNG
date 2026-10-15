@@ -227,6 +227,7 @@ public static partial class SelfTest
         results.Add(CheckWornAnimesh(tree));
         results.Add(CheckAvatarPick(tree));
         results.Add(CheckAnimeshHandOver(tree));
+        results.Add(CheckVisibilityRanges(tree));
         results.Add(CheckControlAvatarAnimation(tree));
         results.Add(CheckAnimeshAnimation(tree));
         {
@@ -2025,6 +2026,35 @@ public static partial class SelfTest
         {
             if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
             if (GodotObject.IsInstanceValid(avatars)) avatars.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-PERF-14: a small prim carries the engine visibility range the size rule gives it, a big,
+    /// selected, lit or mirror prim carries none, and a rescale or a setting change reaches the number
+    /// the engine reads. The failure it exists for is silent: a prim that is culled when it should not
+    /// be simply is not there, and one that is not culled when it should be costs a draw nobody sees.
+    /// </summary>
+    private static Check CheckVisibilityRanges(SceneTree tree)
+    {
+        const string Name = "small-object visibility ranges";
+        var objects = new ObjectRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            var world = new SLNG.Core.ECS.World();
+            objects.Initialize(world, null!, null!);
+
+            var (passed, detail) = objects.SelfTestVisibilityRanges(world);
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
         }
     }
 

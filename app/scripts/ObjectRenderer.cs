@@ -182,6 +182,19 @@ public partial class ObjectRenderer : Node3D
         public GeometryInstance3D.ShadowCastingSetting ShadowSettingBeforeDistanceCull =
             GeometryInstance3D.ShadowCastingSetting.On;
 
+        // FEAT-PERF-14: size-based culling by the engine. MeshAabbSize is the LOCAL bounds of the mesh the
+        // node last held (kept when the node is emptied for a MultiMesh or a release, like
+        // CachedBoundingRadius), so the radius follows a rescale with no interop read. RangeEnd is what was
+        // last written to GeometryInstance3D.VisibilityRangeEnd (0 = none) and ShadowEnd the shorter
+        // distance at which the cull sweep stops this object casting (0 = the plain ShadowCasterDistance).
+        // RangeEpoch is the _rangeEpoch the pair was computed under; a settings, viewport or field-of-view
+        // change bumps it and the sweep re-sets the object on its next visit.
+        public Godot.Vector3 MeshAabbSize;
+        public float RangeEnd;
+        public float ShadowEnd;
+        public int RangeEpoch = -1;
+        public bool RangeExempt;
+
         // Set whenever a face material is (re)built, because that write puts the face's STATIC
         // TextureEntry placement back into the shader uniforms and so undoes the current
         // animation frame. The texture-anim tick normally skips objects whose frame has not
@@ -840,6 +853,10 @@ public partial class ObjectRenderer : Node3D
             _cullOrder.AddRange(_visuals.Keys);
             _cullCursor = 0;
             _cullCarry = 0;
+
+            // FEAT-PERF-14: once per pass, so a changed setting, window or field of view reaches every
+            // object's visibility range within a pass (a quarter of a second) and not within one frame.
+            UpdateRangeEpoch(camNode);
         }
         if (_cullOrder.Count == 0) return;
 
@@ -913,6 +930,11 @@ public partial class ObjectRenderer : Node3D
                 if (viewDSq <= showSq && !shown) { state.MeshInstance.Visible = true; state.Shown = shown = true; }
                 else if (viewDSq > hideSq && shown) { state.MeshInstance.Visible = false; state.Shown = shown = false; }
 
+                // FEAT-PERF-14: a setting, the viewport or the field of view changed since this object's
+                // visibility range was set. Cheap enough to do for the whole pass: it reads managed data
+                // and writes only when the number changed.
+                if (state.RangeEpoch != _rangeEpoch && !state.ResourcesReleased) RefreshVisibilityRange(state, readMesh: false);
+
                 // FEAT-ANIMESH-01: a control avatar is not in this dictionary, so its mesh takes the
                 // prim's visibility from here. A lookup per animesh prim per sweep; ordinary prims
                 // skip it on one bool.
@@ -931,6 +953,12 @@ public partial class ObjectRenderer : Node3D
                 if (!instanced)
                 {
                     float scd = RenderConfig.ShadowCasterDistance;
+                    // FEAT-PERF-14: a small caster stops casting sooner than a big one. Its shadow spans as
+                    // few pixels as the object does (SmallObjectCull.ShadowEndDistance), so the plain
+                    // distance is only the ceiling. The same managed flag below still holds the real
+                    // setting, and the same 0.9 hysteresis applies to the shorter distance.
+                    float plainScd = scd;
+                    if (state.ShadowEnd > 0f && state.ShadowEnd < scd) scd = state.ShadowEnd;
                     bool tooFarToCast = viewDSq > scd * scd;
                     bool nearEnoughToCast = viewDSq < (scd * 0.9f) * (scd * 0.9f);
                     // BUG-PERF-11: the managed flag first, so an object already forced off (nearly all
@@ -946,6 +974,33 @@ public partial class ObjectRenderer : Node3D
                     {
                         state.MeshInstance.CastShadow = state.ShadowSettingBeforeDistanceCull;
                         state.ShadowForcedOffByDistance = false;
+                    }
+
+                    // FEAT-PERF-14: a caster the size rule stopped while the plain distance would still let it
+                    // cast. Counted from the managed flag, so an object that never cast is not in it.
+                    if (scd < plainScd && state.ShadowForcedOffByDistance && viewDSq <= plainScd * plainScd && shown)
+                        _rcShadowCut++;
+                }
+
+                // FEAT-PERF-14: the numbers behind the [RangeCull] line. camDSq is the camera's own distance,
+                // which is what the engine measures, so "culled" is the engine's decision (without its
+                // hysteresis band) read back from data we already hold -- no interop.
+                if (shown && !state.ResourcesReleased)
+                {
+                    if (instanced) _rcGrouped++;
+                    else
+                    {
+                        _rcObjects++;
+                        float rr = RangeRadius(state);
+                        int bucket = 0;
+                        while (bucket < RadiusBucketEdges.Length && rr >= RadiusBucketEdges[bucket]) bucket++;
+                        _rcRadius[bucket]++;
+                        if (state.RangeEnd > 0f)
+                        {
+                            _rcRanged++;
+                            if (camDSq > state.RangeEnd * state.RangeEnd) _rcCulled++;
+                        }
+                        else if (state.RangeExempt) _rcExempt++;
                     }
                 }
 
@@ -1209,6 +1264,13 @@ public partial class ObjectRenderer : Node3D
             _lodVisible = 0;
             _lodNoLevel = 0;
             _lodInstanced = 0;
+
+            // FEAT-PERF-14: the same hand-over for the range tally.
+            System.Array.Copy(_rcRadius, _rcRadiusLast, _rcRadius.Length);
+            System.Array.Clear(_rcRadius, 0, _rcRadius.Length);
+            _rcObjectsLast = _rcObjects; _rcRangedLast = _rcRanged; _rcCulledLast = _rcCulled;
+            _rcExemptLast = _rcExempt; _rcShadowCutLast = _rcShadowCut; _rcGroupedLast = _rcGrouped;
+            _rcObjects = _rcRanged = _rcCulled = _rcExempt = _rcShadowCut = _rcGrouped = 0;
         }
 
         _instanceStatsAccum += delta;
@@ -1226,6 +1288,22 @@ public partial class ObjectRenderer : Node3D
                     _instanceReject.Clear();
                 }
                 SLNG.App.UI.StatsOverlay.EmitPerfLine(line);
+            }
+
+            // FEAT-PERF-14: how much the engine's size cull is holding back. objects = shown prims with
+            // their own node; ranged = of those, carrying a visibility range; culled = beyond it from the
+            // camera right now (each is at least one draw in the main pass, and none in the sun's
+            // shadow cascades); exempt = left out on purpose (selected, light, emitter, mirror, animesh);
+            // shadowCut = stopped casting by the size rule before the plain distance would;
+            // grouped = drawn by a MultiMesh (one draw each group, no range). radius = how many of the
+            // objects fall in each bounding-radius bucket, in metres: <0.05 <0.1 <0.2 <0.35 <0.5 <1 >=1.
+            if (_rcObjectsLast > 0)
+            {
+                SLNG.App.UI.StatsOverlay.EmitPerfLine(
+                    $"[RangeCull] cullPx={RenderConfig.SmallObjectCullPixels:0.#} lod={RenderConfig.VolumeLodFactor:0.##} " +
+                    $"ppr={_rangePpr:0} objects={_rcObjectsLast} ranged={_rcRangedLast} culled={_rcCulledLast} " +
+                    $"exempt={_rcExemptLast} shadowCut={_rcShadowCutLast} grouped={_rcGroupedLast} " +
+                    $"radius={string.Join(",", _rcRadiusLast)}");
             }
 
             if (_lodVisibleLast > 0)
@@ -1625,6 +1703,7 @@ public partial class ObjectRenderer : Node3D
                  $"visible={mi.Visible} instanced={instanced} controlAvatar={state.ControlAvatarOwned} " +
                  $"surfaces={surfaces} splitChildren={state.SplitChildren?.Count ?? 0} " +
                  $"boundingRadius={EffectiveBoundingRadius(state):0.##} " +
+                 $"rangeEnd={state.RangeEnd:0.#} shadowEnd={state.ShadowEnd:0.#} rangeExempt={state.RangeExempt} " +
                  $"smallObjectShadows={RenderConfig.SmallObjectShadows} shadowCasterDistance={RenderConfig.ShadowCasterDistance:0}");
 
         var groups = new Dictionary<string, List<int>>();
@@ -2226,6 +2305,10 @@ public partial class ObjectRenderer : Node3D
         {
             _instanceSuppressed.Remove(id);
         }
+
+        // FEAT-PERF-14: a selected or edited object is never culled by size (and gets its range back when
+        // the selection ends).
+        if (_visuals.TryGetValue(id, out var rangeState)) RefreshVisibilityRange(rangeState, readMesh: false);
     }
 
     private void ApplySelectionOutline(Guid id, MeshInstance3D meshInstance, bool isSelected, bool isRoot)
@@ -3085,6 +3168,14 @@ public partial class ObjectRenderer : Node3D
                     state.ParticlesNode = null;
                 }
             }
+
+            // FEAT-PERF-14: size, light, emitter and mirror flags have all just been settled above; this is
+            // the one place a rescale or a flag change reaches the object's visibility range. Reads the
+            // mesh bounds only while none are known: the stand-in box/sphere/cylinder are assigned by the
+            // paths above and not by AssignSharedMesh (which refreshes with its own read), and all three
+            // are unit-sized, so one read is enough. Writes only when the number changed.
+            using (MainThreadWorkQueue.Part("uv.range"))
+                RefreshVisibilityRange(state, readMesh: state.MeshAabbSize == Godot.Vector3.Zero);
         }
 
         var transform = entity.GetComponent<TransformComponent>();
@@ -5026,6 +5117,7 @@ public partial class ObjectRenderer : Node3D
 
     private void SetActiveMirror(Guid id)
     {
+        Guid previousMirrorId = _activeMirrorId;
         // Not an early-out on "unchanged": a visual that was released and rebuilt comes back with
         // a fresh MeshInstance at the default layer, so the assignment below is re-applied every
         // sweep. Writing an unchanged property is free; silently losing the layer is not.
@@ -5058,6 +5150,16 @@ public partial class ObjectRenderer : Node3D
                     if (IsInstanceValid(child)) child.Layers = MirrorVisualLayer;
                 }
             }
+        }
+
+        // FEAT-PERF-14: the mirror the hero probe is spent on is never culled by size, and the one it
+        // was spent on until now goes back to its size-based range.
+        if (previousMirrorId != id)
+        {
+            if (previousMirrorId != Guid.Empty && _visuals.TryGetValue(previousMirrorId, out var oldMirror))
+                RefreshVisibilityRange(oldMirror, readMesh: false);
+            if (id != Guid.Empty && _visuals.TryGetValue(id, out var newMirror))
+                RefreshVisibilityRange(newMirror, readMesh: false);
         }
     }
 
@@ -5178,6 +5280,11 @@ public partial class ObjectRenderer : Node3D
                 {
                     state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
                 }
+
+                // FEAT-PERF-14: a new mesh is new bounds (a LOD swap changes them a little, a mesh
+                // arriving over its stand-in a lot). Split children are made after this, by
+                // SplitSortedSurfaces, and pick the range up there.
+                RefreshVisibilityRange(state, readMesh: true);
             }
         }
 
@@ -5453,6 +5560,9 @@ public partial class ObjectRenderer : Node3D
             parent.AddChild(node);
             parent.SetSurfaceOverrideMaterial(i, HiddenMaterial);
             state.SplitChildren.Add((i, node));
+            // FEAT-PERF-14: a child is its own instance with its own range (it is not drawn by the
+            // parent's), at the same place as the parent, so it takes the parent's range.
+            if (state.RangeEnd > 0f) WriteVisibilityRange(node, state.RangeEnd);
         }
         return true;
     }
@@ -5567,6 +5677,150 @@ public partial class ObjectRenderer : Node3D
             return live;
         }
         return float.IsNaN(state.CachedBoundingRadius) ? 0f : state.CachedBoundingRadius;
+    }
+
+    // --- FEAT-PERF-14: size-based visibility ranges ----------------------------------------------
+    //
+    // A prim whose bounding sphere would span only a few pixels is not worth a draw call. The engine can
+    // refuse it in C++ (GeometryInstance3D.VisibilityRangeEnd, checked per instance while Godot culls the
+    // scene -- renderer_scene_cull.cpp VIS_RANGE_CHECK -- for the camera pass AND the directional-shadow
+    // cascades), so the cost in C# is the write below, made when the visual is built or rescaled and not
+    // per frame. SLNG.Core.SmallObjectCull holds the rule and why it is shaped the way it is.
+    //
+    // What deliberately does NOT get a range:
+    //  * an object the sweep would hide anyway (end >= 1.15 x draw distance reads as "no range");
+    //  * selected / edited objects, the mirror candidates, lights, emitters and control-avatar prims
+    //    (IsRangeExempt) -- all things the user or another system is looking at on purpose;
+    //  * MultiMesh group members: a group is one draw however many members it has, and Godot has no
+    //    per-instance range on a MultiMesh, so the group stays whole (the draw is already paid once);
+    //  * avatars and their attachments: they are not in this renderer.
+    //
+    // The range is measured by the engine from the CAMERA, to the instance's AABB centre. That is the
+    // right distance for a screen-size rule; the sweep's min(avatar, camera) distance stays what it was,
+    // for loading and releasing assets.
+
+    /// <summary>FEAT-PERF-14: bumped when anything a range depends on changes (draw distance, the cull
+    /// threshold, Object Detail, the viewport or field of view). Each object re-sets its range on its
+    /// next sweep visit when its own <c>RangeEpoch</c> is behind, which spreads the writes over a pass.</summary>
+    private int _rangeEpoch;
+
+    /// <summary>The viewer's <c>sCurPixelAngle</c> (viewport height / vertical FOV in radians), rounded UP
+    /// to a step of 8 % so a sub-pixel change of window or FOV does not re-set every object. 0 = no
+    /// camera or viewport yet, in which case nothing gets a range.</summary>
+    private float _rangePpr;
+
+    private float _rangeDraw, _rangePx, _rangeLod;
+
+    private const float RangePprStep = 1.08f;
+
+    // Per-pass tally for the [RangeCull] line, filled by the sweep and published when a pass completes
+    // (same pattern as the BUG-PERF-02 LOD tally, so the line always describes a whole scene).
+    private static readonly float[] RadiusBucketEdges = { 0.05f, 0.1f, 0.2f, 0.35f, 0.5f, 1f };
+    private readonly int[] _rcRadius = new int[7];
+    private readonly int[] _rcRadiusLast = new int[7];
+    private int _rcObjects, _rcObjectsLast;      // shown, non-instanced
+    private int _rcRanged, _rcRangedLast;        // carrying an engine range
+    private int _rcCulled, _rcCulledLast;        // beyond that range from the camera right now
+    private int _rcExempt, _rcExemptLast;        // would be ranged but is exempt
+    private int _rcShadowCut, _rcShadowCutLast;  // stopped casting by the size rule before the plain distance would
+    private int _rcGrouped, _rcGroupedLast;      // drawn by a MultiMesh group, which carries no range
+
+    /// <summary>Called once per cull pass: re-derives the inputs of every range and bumps the epoch if any
+    /// moved.</summary>
+    private void UpdateRangeEpoch(Camera3D? camera)
+    {
+        float ppr = 0f;
+        var vp = GetViewport();
+        if (camera != null && IsInstanceValid(camera) && vp != null)
+        {
+            // Physical pixels, as the texture-LOD offer measures them (a UI scale only changes the
+            // visible rect). Camera3D.Fov is the VERTICAL field of view in degrees under KeepHeight.
+            float height = SLNG.App.UI.UiScale.RenderSize(vp).Y;
+            float fov = Mathf.DegToRad(camera.Fov);
+            if (height > 0f && fov > 0.0001f)
+            {
+                float raw = height / fov;
+                ppr = Mathf.Pow(RangePprStep, Mathf.Ceil(Mathf.Log(raw) / Mathf.Log(RangePprStep)));
+            }
+        }
+
+        float draw = RenderConfig.DrawDistance;
+        float px = RenderConfig.SmallObjectCullPixels;
+        float lod = RenderConfig.VolumeLodFactor;
+        if (ppr != _rangePpr || draw != _rangeDraw || px != _rangePx || lod != _rangeLod)
+        {
+            _rangePpr = ppr; _rangeDraw = draw; _rangePx = px; _rangeLod = lod;
+            _rangeEpoch++;
+        }
+    }
+
+    /// <summary>Things that must never be culled by size: what the user has selected, the mirror the hero
+    /// probe is spent on, a light (its glow prim is cheap and the light node is not ours to hide), a
+    /// particle emitter, and a prim a control avatar draws.</summary>
+    private bool IsRangeExempt(VisualState state)
+    {
+        var id = state.EntityId;
+        return state.ControlAvatarOwned
+            || state.LightNode != null
+            || state.ParticlesNode != null
+            || _instanceSuppressed.Contains(id)
+            || _flaggedMirrors.Contains(id)
+            || _legacyMirrors.Contains(id)
+            || id == _activeMirrorId
+            || (state.LoadedMaterialId != VisualState.NotLoaded && _mirrorMaterials.Contains(state.LoadedMaterialId));
+    }
+
+    /// <summary>The object's bounding radius from managed data only (see <see cref="VisualState.MeshAabbSize"/>).</summary>
+    private static float RangeRadius(VisualState state)
+        => (state.MeshAabbSize * state.Scl.Abs()).Length() * 0.5f;
+
+    /// <summary>Works out this object's visibility range and its shorter shadow distance and writes the
+    /// range to the node (and its split children) when it changed. <paramref name="readMesh"/> re-reads
+    /// the mesh bounds -- pass it where the mesh may have changed; otherwise the last known bounds are
+    /// used, which is what keeps this free of interop on the sweep's epoch refresh.</summary>
+    private void RefreshVisibilityRange(VisualState state, bool readMesh)
+    {
+        var node = state.MeshInstance;
+        if (!IsInstanceValid(node)) return;
+
+        if (readMesh && node.Mesh is { } mesh) state.MeshAabbSize = mesh.GetAabb().Size;
+
+        // No camera / viewport yet: leave the epoch unset so the next visit tries again.
+        if (_rangePpr <= 0f) return;
+        state.RangeEpoch = _rangeEpoch;
+
+        float end = 0f, shadowEnd = 0f;
+        float radius = RangeRadius(state);
+        bool exempt = IsRangeExempt(state);
+        if (radius > 0f && !exempt)
+        {
+            float px = RenderConfig.SmallObjectCullPixels;
+            float lod = RenderConfig.VolumeLodFactor;
+            end = SLNG.Core.SmallObjectCull.EndDistance(radius, _rangePpr, px, lod, RenderConfig.DrawDistance * 1.15f);
+            shadowEnd = SLNG.Core.SmallObjectCull.ShadowEndDistance(radius, _rangePpr, px, lod);
+        }
+        state.RangeExempt = exempt;
+        state.ShadowEnd = shadowEnd;
+
+        // Steps of half a metre: a rescale by a hair is not worth two interop writes.
+        end = end > 0f ? Mathf.Round(end * 2f) * 0.5f : 0f;
+        if (end == state.RangeEnd) return;
+        state.RangeEnd = end;
+
+        WriteVisibilityRange(node, end);
+        if (state.SplitChildren != null)
+        {
+            foreach (var (_, child) in state.SplitChildren)
+                if (IsInstanceValid(child)) WriteVisibilityRange(child, end);
+        }
+    }
+
+    private static void WriteVisibilityRange(GeometryInstance3D node, float end)
+    {
+        // Fade stays off (the default): with it off the engine treats the margin as hysteresis, so an
+        // object on the edge does not flicker as the camera bobs, and costs no dither pass.
+        node.VisibilityRangeEnd = end;
+        node.VisibilityRangeEndMargin = SLNG.Core.SmallObjectCull.Margin(end);
     }
 
     /// <summary>FEAT-PERF-06: offer one swept prim to the instancing groups, or pull it out if it
