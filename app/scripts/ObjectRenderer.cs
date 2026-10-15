@@ -1726,8 +1726,9 @@ public partial class ObjectRenderer : Node3D
         string specDesc = "none";
         string normalDesc = "none";
         var specTexel = Godot.Vector3.One;
+        float specAlpha = 1f;
         float normalAlpha = 1f;
-        if (hasSpec) specDesc = DescribeTexture(P(mat, PrimShaderFamily.SpecularTexture), out specTexel, out _);
+        if (hasSpec) specDesc = DescribeTexture(P(mat, PrimShaderFamily.SpecularTexture), out specTexel, out specAlpha);
         if (hasNormal) normalDesc = DescribeTexture(P(mat, PrimShaderFamily.NormalTexture), out _, out normalAlpha);
         string albedoTex = B(P(mat, PrimShaderFamily.HasAlbedoTexture))
             ? DescribeTexture(P(mat, PrimShaderFamily.AlbedoTexture), out _, out _)
@@ -1742,7 +1743,7 @@ public partial class ObjectRenderer : Node3D
             hasSpec, new System.Numerics.Vector3(specTexel.X, specTexel.Y, specTexel.Z),
             new System.Numerics.Vector3(tint.X, tint.Y, tint.Z), hasNormal, normalAlpha,
             gloss, env, shiny, metallic, roughness,
-            new System.Numerics.Vector3(albedo.R, albedo.G, albedo.B)));
+            new System.Numerics.Vector3(albedo.R, albedo.G, albedo.B), specAlpha));
 
         // A viewer-specular twin (BUG-RENDER-44) hands Godot the viewer's gloss-reflection weight instead of
         // the map luminance, and its sun highlight comes from light(), so the roughness/specular above are

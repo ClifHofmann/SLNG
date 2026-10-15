@@ -539,7 +539,8 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
     float env_intensity = 0.0;
 
     if (has_specular_texture) {
-        vec3 spec = texture(specular_texture, v_specular_uv).rgb * specular_tint;
+        vec4 spec_texel = texture(specular_texture, v_specular_uv);
+        vec3 spec = spec_texel.rgb * specular_tint;
 
         // SL modulates glossiness PER TEXEL with the normal map's ALPHA channel
         // (materialF.glsl:227, `glossiness *= vNt.a`). Not an optional refinement: content is
@@ -568,7 +569,14 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         // The material's own EnvIntensity -- the Build floater's Environment slider. Only
         // reachable here, because only a material WITH a specular map ever reaches the shader
         // with its own value (llvovolume.cpp:5556).
-        env_intensity = specular_environment;
+        //
+        // Per texel, times the specular map's ALPHA: `float env = env_intensity * spec.a`
+        // (class3/deferred/materialF.glsl:306, spec straight from getSpecular() :242-251). The map's
+        // alpha is the creator's "where is this wet / polished" mask; without it the whole face
+        // was one uniform mirror -- the Sirens shoreline sand (Environment 100, map alpha 0..1, mean
+        // ~0.65) came out as a sheet of sky, in Firestorm wet sand. A map without an alpha channel
+        // samples 1, so every other material is unchanged.
+        env_intensity = specular_environment * spec_texel.a;
         out_metallic = clamp(metallic_factor + env_intensity * out_specular, 0.0, 1.0);
 
         // After the metallic fold above on purpose: the lab scales only what Godot reads as the
