@@ -454,6 +454,11 @@ internal static class MaterialFingerprint
     /// the main thread and would wait out a whole draw each time on a separate render thread
     /// (FEAT-PERF-13). The list of a loaded shader does not change, so it is cached on the shader
     /// object; <c>getGroups: false</c> drops the group and subgroup headers.</summary>
+    /// <summary>FEAT-PERF-20: true once <see cref="Of"/> can fingerprint a material of
+    /// <paramref name="shader"/> without the one RenderingServer round trip that reads its uniform
+    /// list, so a diagnostic can stick to shaders the client has already paid for.</summary>
+    public static bool IsReadyFor(Shader shader) => _uniformNames.TryGetValue(shader, out _);
+
     private static string[] UniformNames(Shader shader)
     {
         if (_uniformNames.TryGetValue(shader, out var cached)) return cached;
