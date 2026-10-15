@@ -36,6 +36,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private Label _drawDistanceValue = null!;
     private HSlider _lodSlider = null!;
     private Label _lodValue = null!;
+    private HSlider _smallCullSlider = null!;
+    private Label _smallCullValue = null!;
     private HSlider _avatarCapSlider = null!;
     private Label _avatarCapValue = null!;
     private CheckBox _shadowsCheck = null!;
@@ -292,7 +294,10 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _lodSlider = new HSlider
         {
             MinValue = 0.5,
-            MaxValue = 4.0,
+            // FEAT-PERF-07: the reference viewers stop at 4. With compressed textures (FEAT-PERF-17) the
+            // GPU has room on crowded regions, and a higher factor only costs triangles, not draw calls,
+            // so the slider goes further. VolumeLod stays valid below 10 (its distance factor 1 - f*0.1).
+            MaxValue = 8.0,
             Step = 0.125,
             Value = _settings.VolumeLodFactor,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
@@ -318,6 +323,42 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             UpdatePresetIndicator();
         };
         AddHint(_panelGeneral, L10n.Tr("ui.preferences.object_detail_hint"));
+
+        // Small-object cull (FEAT-PERF-14)
+        AddHeading(_panelGeneral, L10n.Tr("ui.preferences.small_cull_heading"));
+        var smallCullRow = new HBoxContainer();
+        smallCullRow.AddThemeConstantOverride("separation", 12);
+        _panelGeneral.AddChild(smallCullRow);
+
+        _smallCullSlider = new HSlider
+        {
+            MinValue = 0,
+            MaxValue = 8,
+            Step = 0.5,
+            Value = _settings.SmallObjectCullPixels,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(200, 0),
+            FocusMode = FocusModeEnum.None,
+        };
+        smallCullRow.AddChild(_smallCullSlider);
+
+        _smallCullValue = new Label
+        {
+            Text = SmallCullText(_settings.SmallObjectCullPixels),
+            CustomMinimumSize = new Vector2(56, 0),
+        };
+        _smallCullValue.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
+        smallCullRow.AddChild(_smallCullValue);
+
+        _smallCullSlider.ValueChanged += val =>
+        {
+            _smallCullValue.Text = SmallCullText((float)val);
+            if (_refreshing) return;
+            _settings.SetSmallObjectCullPixels((float)val);
+            _apply();
+            UpdatePresetIndicator();
+        };
+        AddHint(_panelGeneral, L10n.Tr("ui.preferences.small_cull_hint"));
 
         // Avatar cap (FEAT-PERF-08)
         AddHeading(_panelGeneral, L10n.Tr("ui.preferences.max_full_avatars_heading"));
@@ -968,6 +1009,9 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         }
     }
 
+    private static string SmallCullText(float pixels)
+        => pixels <= 0f ? L10n.Tr("ui.preferences.small_cull_off") : $"{pixels:0.#} px";
+
     public void Refresh()
     {
         _refreshing = true;
@@ -979,6 +1023,9 @@ public partial class GraphicsPreferencesPage : VBoxContainer
 
             _lodSlider.Value = _settings.VolumeLodFactor;
             _lodValue.Text = $"{_settings.VolumeLodFactor:0.###}";
+
+            _smallCullSlider.Value = _settings.SmallObjectCullPixels;
+            _smallCullValue.Text = SmallCullText(_settings.SmallObjectCullPixels);
 
             int cap = _settings.MaxFullyRenderedAvatars;
             _avatarCapSlider.Value = cap <= 0 ? 51 : cap;

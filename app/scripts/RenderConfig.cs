@@ -76,6 +76,21 @@ public static class RenderConfig
     public static float ShadowCasterDistance = 56f;
 
     /// <summary>
+    /// FEAT-PERF-14: the screen radius, in pixels, under which a small prim is not drawn at all: the
+    /// engine culls it beyond <see cref="SLNG.Core.SmallObjectCull.EndDistance"/> through
+    /// <c>GeometryInstance3D.VisibilityRangeEnd</c>, in C++, so no C# runs per frame. Scaled by Object
+    /// Detail (<see cref="VolumeLodFactor"/>) the way the viewer scales its mesh LOD distances. The
+    /// same number sets the shorter distance at which a small caster drops out of the shadow pass.
+    /// 0 turns the whole thing off; <c>--small-cull=N</c> overrides it for an A/B.
+    /// </summary>
+    public static float SmallObjectCullPixels = SLNG.Core.SmallObjectCull.DefaultPixelRadius;
+
+    /// <summary>FEAT-PERF-14: the value of <c>--small-cull=N</c> when it was given. Wins over the
+    /// saved Graphics preference, which would otherwise overwrite <see cref="SmallObjectCullPixels"/>
+    /// the moment the settings are applied.</summary>
+    public static float? SmallObjectCullArg;
+
+    /// <summary>
     /// BUG-RENDER-16: how to render an undeclared-alpha world-prim face whose texture
     /// <c>analyzeAlphaData</c> classifies as NOT maskable (high-frequency / gradient alpha — thin
     /// grass, wispy foliage). Clean cutouts (<c>maskable == true</c>: fences, sharp leaf cards)

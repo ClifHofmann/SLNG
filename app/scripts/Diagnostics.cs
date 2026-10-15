@@ -154,6 +154,19 @@ public static class Diagnostics
 
         GD.Print($"[Diagnostics] instancing = {(RenderConfig.EnableInstancing ? "on" : "off (--no-instancing)")} (FEAT-PERF-06)");
 
+        // FEAT-PERF-14: --small-cull=N sets the small-object cull threshold (screen radius in pixels)
+        // for this run whatever the Graphics preference says; 0 turns the cull off. The A/B switch for
+        // "do the draws drop, and does anything visible go with them".
+        string? cullArg = FindValueArg("--small-cull=", OS.GetCmdlineArgs())
+                       ?? FindValueArg("--small-cull=", OS.GetCmdlineUserArgs());
+        if (cullArg != null && float.TryParse(cullArg, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float sc) && sc >= 0f && sc <= 64f)
+        {
+            RenderConfig.SmallObjectCullArg = sc;
+            RenderConfig.SmallObjectCullPixels = sc;
+        }
+        GD.Print($"[Diagnostics] small-object cull = {(RenderConfig.SmallObjectCullArg.HasValue ? RenderConfig.SmallObjectCullPixels.ToString(System.Globalization.CultureInfo.InvariantCulture) + " px (--small-cull)" : "from the Graphics preference")} (FEAT-PERF-14)");
+
         // Info is where the per-object asset logging lives -- texture fetches, sharpen decisions,
         // mesh sites. One session of it ran to 3.4 GB before it was throttled, and even throttled it
         // is thousands of lines nobody reads unless they are chasing something.
