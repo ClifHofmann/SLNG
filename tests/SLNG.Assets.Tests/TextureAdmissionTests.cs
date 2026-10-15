@@ -124,4 +124,24 @@ public class TextureAdmissionTests
         Assert.Equal(10000f, TextureAdmission.BuiltForArea(40000f, 1), 1);
         Assert.Equal(2500f, TextureAdmission.BuiltForArea(40000f, 2), 1);
     }
+
+    [Fact]
+    public void TextureBytes_PerFormat_AreAnEighthAndAQuarterOfRgba8()
+    {
+        long rgba = TextureAdmission.TextureBytes(1024, 1024, true, GpuTextureFormat.Rgba8);
+        Assert.Equal(TextureAdmission.TextureBytes(1024, 1024, true), rgba);
+        Assert.Equal(699064, TextureAdmission.TextureBytes(1024, 1024, true, GpuTextureFormat.Bc1));
+        Assert.Equal(1398128, TextureAdmission.TextureBytes(1024, 1024, true, GpuTextureFormat.Bc3));
+        Assert.InRange((double)TextureAdmission.TextureBytes(1024, 1024, true, GpuTextureFormat.Bc1) / rgba, 0.124, 0.126);
+    }
+
+    [Fact]
+    public void ExtraDiscard_ForACompressedTexture_FitsWhereRgba8DoesNot()
+    {
+        // 2 MB of room: a 1024 RGBA8 chain (5.6 MB) needs one extra level (512: 1.4 MB), BC1 (0.7 MB) and BC3 (1.4 MB) none.
+        const long budget = 10L << 20, projected = 8L << 20;
+        Assert.Equal(1, TextureAdmission.ExtraDiscardFor(projected, budget, 1024, 1024, true, 2));
+        Assert.Equal(0, TextureAdmission.ExtraDiscardFor(projected, budget, 1024, 1024, true, 2, GpuTextureFormat.Bc1));
+        Assert.Equal(0, TextureAdmission.ExtraDiscardFor(projected, budget, 1024, 1024, true, 2, GpuTextureFormat.Bc3));
+    }
 }

@@ -7,7 +7,8 @@ namespace SLNG.Assets;
 
 /// <summary>
 /// Persistent disk cache of decoded textures (LZ4-compressed RGBA8) to avoid repeating
-/// expensive JPEG-2000 decodes on region revisits and teleports (FEAT-PERF-11).
+/// expensive JPEG-2000 decodes on region revisits and teleports (FEAT-PERF-11), and of their
+/// block-compressed GPU copies (FEAT-PERF-17), so a warm start uploads without encoding again.
 /// </summary>
 public sealed class DecodedTextureCache
 {
@@ -76,6 +77,166 @@ public sealed class DecodedTextureCache
     /// <summary>Gets the file path for a cached sculpt map.</summary>
     public string GetSculptCachePath(Guid sculptId)
         => Path.Combine(_cacheDir, $"{sculptId:D}_sculpt_v{FormatVersion}.dec");
+
+    // FEAT-PERF-17 Part B: the GPU-ready copy of a texture -- block-compressed, with its mip chain, and
+    // the alpha verdicts measured on the RGBA pixels before compression. One file per texture holding
+    // the LARGEST level encoded so far: every smaller level is the tail of its mip chain
+    // (CompressedTextureData.Slice), so it serves any reduce level at or below its own without a decode
+    // or an encode. A format of its own (magic and version), so neither reader mistakes the other's file.
+    private const uint GpuMagic = 0x42474C53; // "SLGB" in little-endian
+    private const ushort GpuFormatVersion = 1;
+    private const int GpuHeaderSize = 40;
+
+    /// <summary>FEAT-PERF-17: the file path of a texture's block-compressed copy.</summary>
+    public string GetGpuCachePath(Guid textureId)
+        => Path.Combine(_cacheDir, $"{textureId:D}_gpu_v{GpuFormatVersion}.dec");
+
+    /// <summary>
+    /// FEAT-PERF-17: the texture's block-compressed copy, or null. Stale when the source .j2c is newer,
+    /// and deleted when it does not parse -- the same rules as the RGBA entries.
+    /// </summary>
+    public async Task<CompressedTextureData?> TryGetGpuAsync(Guid textureId, string? sourceJ2cPath = null)
+    {
+        if (!Enabled) return null;
+        string filePath = GetGpuCachePath(textureId);
+        if (!File.Exists(filePath)) return null;
+        try
+        {
+            if (sourceJ2cPath != null && File.Exists(sourceJ2cPath)
+                && new FileInfo(sourceJ2cPath).LastWriteTimeUtc > new FileInfo(filePath).LastWriteTimeUtc)
+            {
+                TryDelete(filePath);
+                return null;
+            }
+
+            byte[] fileBytes = await File.ReadAllBytesAsync(filePath).ConfigureAwait(false);
+            var data = ParseGpu(fileBytes);
+            if (data == null)
+            {
+                TryDelete(filePath);
+                return null;
+            }
+            try { File.SetLastAccessTimeUtc(filePath, DateTime.UtcNow); } catch { }
+            return data;
+        }
+        catch
+        {
+            TryDelete(filePath);
+            return null;
+        }
+    }
+
+    /// <summary>The size of the stored compressed copy without reading its blocks, or (0, 0).</summary>
+    public (int Width, int Height) PeekGpuSize(Guid textureId)
+    {
+        try
+        {
+            string filePath = GetGpuCachePath(textureId);
+            if (!File.Exists(filePath)) return (0, 0);
+            Span<byte> head = stackalloc byte[GpuHeaderSize];
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Read(head) < GpuHeaderSize) return (0, 0);
+            if (BitConverter.ToUInt32(head) != GpuMagic || BitConverter.ToUInt16(head.Slice(4)) != GpuFormatVersion) return (0, 0);
+            return (BitConverter.ToInt32(head.Slice(8)), BitConverter.ToInt32(head.Slice(12)));
+        }
+        catch
+        {
+            return (0, 0);
+        }
+    }
+
+    /// <summary>
+    /// FEAT-PERF-17: stores a texture's block-compressed copy, unless a copy at least as large (and with a
+    /// mip chain if this one has one) is already there -- a far object must not replace the copy a near
+    /// one paid for. Does not throw on I/O failures.
+    /// </summary>
+    public async Task PutGpuAsync(Guid textureId, CompressedTextureData data)
+    {
+        if (!Enabled || data == null || data.Data == null || data.Format == GpuTextureFormat.Rgba8) return;
+        if (data.Data.Length != BcLayout.ChainBytes(data.Format, data.Width, data.Height, data.Mipmaps)) return;
+
+        string targetPath = GetGpuCachePath(textureId);
+        var (oldW, oldH) = PeekGpuSize(textureId);
+        if (oldW >= data.Width && oldH >= data.Height && (oldW > data.Width || oldH > data.Height || !data.Mipmaps)) return;
+        long oldLength = 0;
+        try { if (File.Exists(targetPath)) oldLength = new FileInfo(targetPath).Length; } catch { }
+
+        int maxLz4Len = LZ4Codec.MaximumOutputSize(data.Data.Length);
+        byte[]? rented = null;
+        try
+        {
+            rented = ArrayPool<byte>.Shared.Rent(GpuHeaderSize + maxLz4Len);
+            WriteGpuHeader(rented.AsSpan(0, GpuHeaderSize), data);
+
+            int compressedLen = LZ4Codec.Encode(data.Data, 0, data.Data.Length, rented, GpuHeaderSize, maxLz4Len, LZ4Level.L00_FAST);
+            int totalFileLen = GpuHeaderSize + compressedLen;
+
+            string tempPath = targetPath + ".tmp." + Guid.NewGuid().ToString("N");
+            using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                await stream.WriteAsync(rented.AsMemory(0, totalFileLen)).ConfigureAwait(false);
+                await stream.FlushAsync().ConfigureAwait(false);
+            }
+            File.Move(tempPath, targetPath, overwrite: true);
+            Interlocked.Add(ref _currentSizeBytes, totalFileLen - oldLength);
+
+            if (Interlocked.Read(ref _currentSizeBytes) > _maxCacheSizeBytes) ScheduleEviction();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DecodedCache] Failed to write cache file '{targetPath}': {ex.Message}");
+        }
+        finally
+        {
+            if (rented != null) ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private static void WriteGpuHeader(Span<byte> head, CompressedTextureData data)
+    {
+        head.Clear();
+        BitConverter.TryWriteBytes(head.Slice(0, 4), GpuMagic);
+        BitConverter.TryWriteBytes(head.Slice(4, 2), GpuFormatVersion);
+        head[6] = (byte)data.Format;
+        head[7] = (byte)((data.Mipmaps ? 1 : 0) | (data.Alpha.Maskable ? 2 : 0));
+        BitConverter.TryWriteBytes(head.Slice(8, 4), data.Width);
+        BitConverter.TryWriteBytes(head.Slice(12, 4), data.Height);
+        BitConverter.TryWriteBytes(head.Slice(16, 4), data.SourceWidth);
+        BitConverter.TryWriteBytes(head.Slice(20, 4), data.SourceHeight);
+        head[24] = data.Alpha.Mode;
+        head[25] = (byte)Math.Clamp(data.Alpha.MinAlpha, 0, 255);
+        BitConverter.TryWriteBytes(head.Slice(28, 4), data.Alpha.FracMid);
+        BitConverter.TryWriteBytes(head.Slice(32, 4), data.Alpha.FracClear);
+        BitConverter.TryWriteBytes(head.Slice(36, 4), data.Data.Length);
+    }
+
+    private static CompressedTextureData? ParseGpu(byte[] fileBytes)
+    {
+        if (fileBytes.Length < GpuHeaderSize) return null;
+        if (BitConverter.ToUInt32(fileBytes, 0) != GpuMagic) return null;
+        if (BitConverter.ToUInt16(fileBytes, 4) != GpuFormatVersion) return null;
+        var format = (GpuTextureFormat)fileBytes[6];
+        if (format != GpuTextureFormat.Bc1 && format != GpuTextureFormat.Bc3) return null;
+        bool mipmaps = (fileBytes[7] & 1) != 0;
+        bool maskable = (fileBytes[7] & 2) != 0;
+        int width = BitConverter.ToInt32(fileBytes, 8);
+        int height = BitConverter.ToInt32(fileBytes, 12);
+        int sourceWidth = BitConverter.ToInt32(fileBytes, 16);
+        int sourceHeight = BitConverter.ToInt32(fileBytes, 20);
+        byte alphaMode = fileBytes[24];
+        int minAlpha = fileBytes[25];
+        float fracMid = BitConverter.ToSingle(fileBytes, 28);
+        float fracClear = BitConverter.ToSingle(fileBytes, 32);
+        int dataLen = BitConverter.ToInt32(fileBytes, 36);
+        if (width <= 0 || height <= 0 || alphaMode > 2) return null;
+        if (dataLen != BcLayout.ChainBytes(format, width, height, mipmaps)) return null;
+
+        var blocks = new byte[dataLen];
+        int decoded = LZ4Codec.Decode(fileBytes, GpuHeaderSize, fileBytes.Length - GpuHeaderSize, blocks, 0, dataLen);
+        if (decoded != dataLen) return null;
+        return new CompressedTextureData(format, width, height, mipmaps, blocks, sourceWidth, sourceHeight,
+            new TextureAlphaInfo(alphaMode, maskable, minAlpha, fracMid, fracClear));
+    }
 
     /// <summary>
     /// Attempts to read a cached decoded texture. If the exact reduce level is not present,
@@ -214,7 +375,7 @@ public sealed class DecodedTextureCache
         // If storing full resolution (r0), prune inferior levels (r1, r2, ...) for this UUID
         if (reduceLevel == 0)
         {
-            for (int r = 1; r <= 3; r++)
+            for (int r = 1; r <= TextureLod.MaxDiscardLevel; r++)
             {
                 TryDelete(GetCachePath(textureId, r));
             }
@@ -297,11 +458,12 @@ public sealed class DecodedTextureCache
     /// <summary>Invalidates all cached decoded resolutions and sculpts for a given texture UUID.</summary>
     public void Invalidate(Guid textureId)
     {
-        for (int r = 0; r <= 3; r++)
+        for (int r = 0; r <= TextureLod.MaxDiscardLevel; r++)
         {
             TryDelete(GetCachePath(textureId, r));
         }
         TryDelete(GetSculptCachePath(textureId));
+        TryDelete(GetGpuCachePath(textureId));
     }
 
     /// <summary>Deletes all files in the decoded cache directory.</summary>

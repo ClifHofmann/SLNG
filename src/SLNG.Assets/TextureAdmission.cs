@@ -26,6 +26,15 @@ public static class TextureAdmission
         return mipmaps ? baseBytes + baseBytes / 3 : baseBytes;
     }
 
+    /// <summary>FEAT-PERF-17 Part B: video memory of a texture held in <paramref name="format"/>. A
+    /// block-compressed one is counted to the byte, as Godot lays it out (<see cref="BcLayout"/>): an
+    /// eighth (BC1) or a quarter (BC3) of the RGBA8 figure, so the budget holds four to eight times as
+    /// many of them.</summary>
+    public static long TextureBytes(int width, int height, bool mipmaps, GpuTextureFormat format)
+        => format == GpuTextureFormat.Rgba8
+            ? TextureBytes(width, height, mipmaps)
+            : BcLayout.ChainBytes(format, width, height, mipmaps);
+
     /// <summary>
     /// The extra discard levels (0..<paramref name="maxExtra"/>) a texture of
     /// <paramref name="width"/> x <paramref name="height"/> (already at the level the screen asks for)
@@ -41,8 +50,10 @@ public static class TextureAdmission
     /// <param name="projectedBytes">Resident bytes plus admitted-but-not-yet-resident bytes, without
     /// this texture. For a re-upload of a texture that is already resident, pass the total without
     /// that texture's current bytes.</param>
+    /// <param name="format">FEAT-PERF-17: how the texture will be held; its bytes per level follow.</param>
     public static int ExtraDiscardFor(
-        long projectedBytes, long budgetBytes, int width, int height, bool mipmaps, int maxExtra)
+        long projectedBytes, long budgetBytes, int width, int height, bool mipmaps, int maxExtra,
+        GpuTextureFormat format = GpuTextureFormat.Rgba8)
     {
         if (maxExtra <= 0 || width <= 0 || height <= 0) return 0;
         if (budgetBytes <= 0) return maxExtra;
@@ -52,7 +63,7 @@ public static class TextureAdmission
             long bytes = TextureBytes(
                 TextureLod.DimensionAfterDiscard(width, extra),
                 TextureLod.DimensionAfterDiscard(height, extra),
-                mipmaps);
+                mipmaps, format);
             if (projectedBytes + bytes <= budgetBytes) return extra;
         }
         return maxExtra;

@@ -760,6 +760,27 @@ public class AssetService
         finally { _shrinkSourceGate.Release(); }
     }
 
+    /// <summary>FEAT-PERF-17 Part B: the texture's block-compressed copy from the decoded disk cache (the
+    /// largest level encoded so far, with its mip chain), or null. Never the network, never a decode.
+    /// Started on the pool: like the RGBA read (BUG-PERF-10), the file reads complete synchronously when
+    /// the OS has them cached, and the caller may be the main thread's cull sweep.</summary>
+    public Task<CompressedTextureData?> TryGetCompressedTextureAsync(Guid textureId)
+    {
+        if (textureId == TextureTransparentId || textureId == TextureWhiteId || string.IsNullOrEmpty(_cacheDir))
+            return Task.FromResult<CompressedTextureData?>(null);
+        string j2c = System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v5.j2c");
+        return Task.Run(() => DecodedCache.TryGetGpuAsync(textureId, j2c));
+    }
+
+    /// <summary>FEAT-PERF-17 Part B: stores a block-compressed copy in the decoded disk cache (kept only if
+    /// it is larger than what is there), in the background. Callers pass only copies made from a clean
+    /// decode.</summary>
+    public void StoreCompressedTexture(Guid textureId, CompressedTextureData data)
+    {
+        if (textureId == TextureTransparentId || textureId == TextureWhiteId) return;
+        _ = Task.Run(() => DecodedCache.PutGpuAsync(textureId, data));
+    }
+
     // FEAT-PERF-25: see GetShrinkSourceAsync. Two slots: a reduced decode is 4-13 ms, and the shrinks
     // themselves are applied at most two per frame (MainThreadWorkQueue's Refine lane).
     private static readonly PriorityGate _shrinkSourceGate = new PriorityGate(2);

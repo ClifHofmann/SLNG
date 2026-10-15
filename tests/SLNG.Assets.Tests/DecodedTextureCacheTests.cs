@@ -160,4 +160,94 @@ public class DecodedTextureCacheTests : IDisposable
         var newest = await tightCache.TryGetAsync(ids.Last(), 0);
         Assert.NotNull(newest);
     }
+
+    // ---- FEAT-PERF-17 Part B: the block-compressed copy -----------------------------------------
+
+    private static CompressedTextureData Compressed(int size, GpuTextureFormat format, bool mipmaps = true)
+    {
+        var rgba = new byte[BcLayout.ChainBytes(GpuTextureFormat.Rgba8, size, size, mipmaps)];
+        RandomNumberGenerator.Fill(rgba);
+        var blocks = BcEncoder.EncodeChain(format, rgba, size, size, mipmaps);
+        return new CompressedTextureData(format, size, size, mipmaps, blocks, 1024, 1024,
+            new TextureAlphaInfo(2, true, 3, 0.25f, 0.5f));
+    }
+
+    [Fact]
+    public async Task Gpu_WriteAndReadBack_RoundTripExact()
+    {
+        var id = Guid.NewGuid();
+        var original = Compressed(128, GpuTextureFormat.Bc3);
+        await _cache.PutGpuAsync(id, original);
+
+        var back = await _cache.TryGetGpuAsync(id);
+        Assert.NotNull(back);
+        Assert.Equal(original.Format, back!.Format);
+        Assert.Equal((128, 128, true), (back.Width, back.Height, back.Mipmaps));
+        Assert.Equal((1024, 1024), (back.SourceWidth, back.SourceHeight));
+        Assert.Equal(original.Alpha, back.Alpha);
+        Assert.Equal(original.Data, back.Data);
+        Assert.Equal((128, 128), _cache.PeekGpuSize(id));
+    }
+
+    [Fact]
+    public async Task Gpu_KeepsTheLargerCopy_AndServesSmallerLevelsFromIt()
+    {
+        var id = Guid.NewGuid();
+        await _cache.PutGpuAsync(id, Compressed(256, GpuTextureFormat.Bc1));
+        await _cache.PutGpuAsync(id, Compressed(64, GpuTextureFormat.Bc1));   // a far object's smaller encode
+
+        var back = await _cache.TryGetGpuAsync(id);
+        Assert.Equal(256, back!.Width);
+        var level = back.Slice(64, 64);
+        Assert.NotNull(level);
+        Assert.Equal(BcLayout.ChainBytes(GpuTextureFormat.Bc1, 64, 64, true), level!.Data.Length);
+
+        await _cache.PutGpuAsync(id, Compressed(512, GpuTextureFormat.Bc1));  // a closer look replaces it
+        Assert.Equal((512, 512), _cache.PeekGpuSize(id));
+    }
+
+    [Fact]
+    public async Task Gpu_StaleAgainstTheJ2c_AndGoneOnInvalidate()
+    {
+        var id = Guid.NewGuid();
+        await _cache.PutGpuAsync(id, Compressed(64, GpuTextureFormat.Bc1));
+        string j2c = Path.Combine(_testDir, "src.j2c");
+        File.WriteAllBytes(j2c, new byte[] { 1 });
+        File.SetLastWriteTimeUtc(j2c, DateTime.UtcNow.AddMinutes(5));
+        Assert.Null(await _cache.TryGetGpuAsync(id, j2c));
+        Assert.False(File.Exists(_cache.GetGpuCachePath(id)));
+
+        await _cache.PutGpuAsync(id, Compressed(64, GpuTextureFormat.Bc1));
+        _cache.Invalidate(id);
+        Assert.Null(await _cache.TryGetGpuAsync(id));
+    }
+
+    [Fact]
+    public async Task Gpu_CorruptFile_IsDeleted_AndFormatsDoNotMix()
+    {
+        var id = Guid.NewGuid();
+        await _cache.PutGpuAsync(id, Compressed(64, GpuTextureFormat.Bc1));
+        string path = _cache.GetGpuCachePath(id);
+        var bytes = File.ReadAllBytes(path);
+        bytes[36] ^= 0x7F; // the payload length no longer matches the chain
+        File.WriteAllBytes(path, bytes);
+        Assert.Null(await _cache.TryGetGpuAsync(id));
+        Assert.False(File.Exists(path));
+
+        // An RGBA entry is not a compressed one, and the reverse.
+        await _cache.PutAsync(id, 0, CreateDummyTexture(64, 64));
+        Assert.Null(await _cache.TryGetGpuAsync(id));
+        await _cache.PutGpuAsync(id, Compressed(64, GpuTextureFormat.Bc1));
+        Assert.NotNull(await _cache.TryGetAsync(id, 0));
+    }
+
+    [Fact]
+    public async Task Gpu_WrongLengthOrRgba_IsNotStored()
+    {
+        var id = Guid.NewGuid();
+        var good = Compressed(64, GpuTextureFormat.Bc1);
+        await _cache.PutGpuAsync(id, good with { Data = good.Data[..^8] });
+        await _cache.PutGpuAsync(id, good with { Format = GpuTextureFormat.Rgba8 });
+        Assert.False(File.Exists(_cache.GetGpuCachePath(id)));
+    }
 }
