@@ -20,7 +20,7 @@
          freetype/fontconfig so a headless runner needs no apt packages. Keep the version pinned
          in lockstep with SkiaSharp above. -->
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.152.1" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.13" />
     <PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
   </ItemGroup>
 
