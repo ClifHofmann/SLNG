@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-17`
 - **Track:** `render` / `assets`
-- **Status:** `🚧 In Progress`. Part A built (v0.27.33-alpha, 🧪); Part B in progress.
+- **Status:** `🧪 Review`. Part A built (v0.27.33-alpha); Part B built (v0.27.46-alpha), in-world acceptance open.
 - **Owner:** `gemini` (Part A), `claude` (Part B)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [MVP6-1](MVP6-1-performance-program.md), [ADR 0004](../adr/0004-performance-architecture.md) pillar P4
 
@@ -313,9 +313,10 @@ So we encode ourselves.
 
 | Texture | Compressed | Why |
 |---|---|---|
-| World faces (diffuse, specular, PBR base colour / metallic-roughness / emissive), particles, terrain, worn (non-bake) avatar textures and HUDs | yes | the bulk of the cache |
+| World faces (diffuse, specular, PBR base colour / metallic-roughness / emissive), particles, terrain, worn (non-bake) avatar textures | yes | the bulk of the cache |
 | Normal maps (legacy and PBR) | **no** | the worst measured loss (above); BC5 needs a shader change -- follow-up |
 | Avatar bakes and Bakes-on-Mesh (`bakeChannel`) | **no** | skin; ~11 per avatar and protected near; the task's default |
+| HUDs | no | drawn at screen scale, text and all -- BC1's blocks would show |
 | UI (profiles, icons, map tiles, world map), environment (sun / moon / cloud) | no | few, sharp edges / shader-sensitive |
 
 SL's own viewer has the same switch: `RenderCompressTextures` (settings.xml, default 0,
@@ -388,6 +389,47 @@ round trip and a warm upload with no encode, slice-shrink.
 
 ### B9. Acceptance
 
+#### Measured offline (2026-10-15, RTX 4070 12 GB, v0.27.46-alpha code)
+
+A windowed Godot 4.7 probe (scratch, not committed) uploaded the **same 500 textures** from the user's
+decoded cache (random sample of the r0 entries, 448 Mpx, 361 opaque / 139 with alpha), each in its own
+process: as RGBA8 with mips (today), BC-encoded with mips (cold), and from the stored compressed copies
+(warm). Process = PDH `GPU Process Memory(pid_N*)\Dedicated Usage`, Godot = `Performance` monitors.
+
+| | RGBA8 (today) | BC1/BC3 cold | BC1/BC3 warm |
+|---|---|---|---|
+| Godot textures | 2,283 MB | **344 MB** | 344 MB |
+| Godot video total | 2,318 MB | 355 MB | 355 MB |
+| process (PDH dedicated) | 2,611 MB | **563 MB** | 563 MB |
+| booked by our accounting | 2,280 MB | 341 MB | 341 MB |
+| read per texture (worker) | 2.44 ms (RGBA .dec, LZ4) | same | **0.62 ms** (`_gpu_v1.dec`) |
+| image + mips per texture (worker) | 8.15 ms | 8.6 ms | 0.08 ms (slice) |
+| encode per texture (worker) | -- | **27.6 ms** avg, 125 ms max (30.8 ms/Mpx) | -- |
+| upload per texture (main thread) | 0.80 ms | 0.28 ms | **0.19 ms** |
+| 500 textures, one thread | 5.8 s | 40 s (once) | **0.5 s** |
+| disk for the copies | -- | 206 MB for 500 | -- |
+
+Our booked bytes match Godot's own texture figure to within 1 %, in both formats. Texture VRAM is
+**6.6x smaller**; the process 4.6x. A warm start does a tenth of today's CPU work per texture and a
+quarter of the main thread's. The cold encode is a one-time cost per texture and level (the copy
+serves every smaller level), on the image workers.
+
+Selftest (headless, Godot's own bcdec decoding our blocks): a 256² ramp/disc at 44.1 dB (BC1) and
+44.2 / 46.1 dB colour / alpha (BC3); 40 x 512² BC1 fit uncut in the budget that held 5 RGBA8.
+
+#### In-world (open -- needs a login)
+
+- **Same spot before/after:** at one region, `[VramBreakdown]` / `[GpuCache]` / `[Perf]` with the
+  setting off, then relog with it on: texture cache MB, `bcMB=`, Godot video MB, process MB.
+- **Low VRAM:** `pwsh tools/run-client.ps1 -VramBudget 3500` at Sirens Beach: the texture budget
+  should now hold the scene at full or near-full resolution (`[GpuShrink]` quiet, `lodBias=0`),
+  `renderGpuMs` without 100+ ms swings.
+- **`[GpuCompress]`** every 10 s while loading: encode ms/Mpx, `fromDiskCopy=` high on the second
+  visit, upload ms per format.
+- **Look at:** cutout foliage and lace edges, text boards and signs at reading distance, skin
+  (bakes are not compressed, applier skins on mesh bodies are), shiny surfaces with normal maps
+  (unchanged), HUDs (unchanged).
+
 VRAM before/after at the same spot (`[VramBreakdown]`, `[GpuCache]`, `[Perf]`: texture cache MB,
 Godot video MB, process MB), encode ms per texture, upload ms, warm-start time; the A5.5 low-VRAM
 test (`-VramBudget 3500`) with better visual results; no visible loss on alpha edges, text boards
@@ -402,7 +444,12 @@ or skin.
 - [x] A5 acceptance checks reported
 - [x] B0 encoder availability checked
 - [x] B1 encoder + tests
-- [ ] B3-B5 pipeline, accounting, disk cache
-- [ ] B6 setting, UI, manual
-- [ ] B7-B8 logging, selftests
-- [ ] B9 measurements reported
+- [x] B3-B5 pipeline, accounting, disk cache
+- [x] B6 setting, UI, manual
+- [x] B7-B8 logging, selftests
+- [x] B9 offline measurements reported
+- [ ] B9 in-world acceptance (same-spot VRAM, `-VramBudget 3500`, visual check)
+- Follow-up: BC5 normal maps (needs the shaders to rebuild Z), BC7 for alpha if BC3 shows its limits
+- Follow-up (mobile goal): a GPU without BC support makes Godot decompress DXT to RGBA8 on upload
+  (`texture_storage.cpp`), so the cache would book 1/8 of what it holds; every desktop target supports
+  BC. Mobile needs ETC2/ASTC and a check of `texture_is_format_supported_for_usage` before choosing BC.
