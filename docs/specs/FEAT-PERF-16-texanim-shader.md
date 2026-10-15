@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-16`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review`
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), plan [MVP6-1](MVP6-1-performance-program.md)
   (ADR 0004 P5: per-frame animation runs on the GPU)
@@ -319,14 +319,14 @@ existing ObjectRenderer selftests do, with two surfaces / faces. Then:
 
 ## Acceptance Criteria
 
-- [ ] `TextureAnimShaderTests` pass, including the 64-combination parity test. Existing `TextureAnimatorTests`
+- [x] `TextureAnimShaderTests` pass, including the 64-combination parity test. Existing `TextureAnimatorTests`
       pass unchanged.
-- [ ] `dotnet build SLNG.sln`, `dotnet build app/SLNG.App.csproj`, `dotnet test`,
+- [x] `dotnet build SLNG.sln`, `dotnet build app/SLNG.App.csproj`, `dotnet test`,
       `dotnet format SLNG.sln --verify-no-changes`, and `python tools/check_shader_globals.py` are all clean.
-- [ ] `godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest` prints `PASS`, with the
+- [x] `godot --headless --path app --log-file user://logs/selftest/godot.log -- --selftest` prints `PASS`, with the
       new check `ok`. Afterwards run `git status` and undo any change the headless run made to `app/project.godot`
       **except** your new `slng_anim_time` entry.
-- [ ] Report:
+- [x] Report:
   - the list of shaders covered (Step 2 check);
   - any mode where the mirror differed from `TextureAnimator` and how you resolved it;
   - the verify output.
@@ -336,8 +336,8 @@ existing ObjectRenderer selftests do, with two surfaces / faces. Then:
 
 ## Sub-tasks / Progress
 
-- [ ] Step 1 TextureAnimShader + tests
-- [ ] Step 2 shader + global
-- [ ] Step 3 ObjectRenderer
-- [ ] Step 4 selftest
-- [ ] Roadmap, version, commit
+- [x] Step 1 TextureAnimShader + tests
+- [x] Step 2 shader + global
+- [x] Step 3 ObjectRenderer
+- [x] Step 4 selftest
+- [x] Roadmap, version, commit

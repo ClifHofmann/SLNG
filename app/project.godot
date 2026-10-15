@@ -61,6 +61,10 @@ slng_legacy_specular_scale={
 "type": "float",
 "value": 1.0
 }
+slng_anim_time={
+"type": "float",
+"value": 0.0
+}
 slng_ambient={
 "type": "color",
 "value": Color(0.25, 0.25, 0.25, 1)

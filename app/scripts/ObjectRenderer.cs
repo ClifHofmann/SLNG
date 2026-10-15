@@ -2537,9 +2537,13 @@ public partial class ObjectRenderer : Node3D
     private sealed class TexAnimState
     {
         public SLNG.Core.TextureAnimation Anim;
-        public ulong StartMsec;
-        public SLNG.Core.TextureAnimFrame LastFrame = new(SLNG.Core.TextureAnimResult.None, float.NaN, 0f, 0f, 0f, 0f);
+        public Godot.Vector4 A;
+        public Godot.Vector4 B;
     }
+
+    /// <summary>FEAT-PERF-16: the clock the shaders animate by (global uniform slng_anim_time), in seconds since
+    /// the client started. Float on the GPU: precise to well under a frame for many hours.</summary>
+    private static float AnimNowSeconds() => Godot.Time.GetTicksMsec() / 1000f;
 
     /// <summary>Starts, restarts or stops an object's texture animation to match its current
     /// TextureAnim block. Restarting only on a CHANGED block matters: UpdateVisual runs on every
@@ -2550,20 +2554,42 @@ public partial class ObjectRenderer : Node3D
     {
         if (anim is not { IsOn: true } running)
         {
-            _texAnims.Remove(entityId);
+            if (_texAnims.Remove(entityId))
+            {
+                if (_visuals.TryGetValue(entityId, out var state) && _world != null)
+                {
+                    var prim = _world.GetEntity(entityId)?.GetComponent<PrimitiveComponent>();
+                    if (prim != null)
+                    {
+                        ApplyTexAnimUniforms(state, prim, null);
+                    }
+                }
+            }
             return;
         }
+
+        var (packedA, packedB) = SLNG.Core.TextureAnimShader.Pack(running, AnimNowSeconds());
+        var a = new Godot.Vector4(packedA.X, packedA.Y, packedA.Z, packedA.W);
+        var b = new Godot.Vector4(packedB.X, packedB.Y, packedB.Z, packedB.W);
 
         if (_texAnims.TryGetValue(entityId, out var existing))
         {
             if (existing.Anim.Equals(running)) return;
             existing.Anim = running;
-            existing.StartMsec = Godot.Time.GetTicksMsec();
-            existing.LastFrame = new SLNG.Core.TextureAnimFrame(SLNG.Core.TextureAnimResult.None, float.NaN, 0f, 0f, 0f, 0f);
+            existing.A = a;
+            existing.B = b;
+            if (_visuals.TryGetValue(entityId, out var existingState))
+            {
+                existingState.TexAnimNeedsReapply = true;
+            }
             return;
         }
 
-        _texAnims[entityId] = new TexAnimState { Anim = running, StartMsec = Godot.Time.GetTicksMsec() };
+        _texAnims[entityId] = new TexAnimState { Anim = running, A = a, B = b };
+        if (_visuals.TryGetValue(entityId, out var visualState))
+        {
+            visualState.TexAnimNeedsReapply = true;
+        }
 
         // FEAT-PERF-06: an animating face must not be frozen inside a MultiMesh -- pull it out so
         // its own shader can run the flipbook. The cull sweep leaves it out while _texAnims holds it.
@@ -2597,9 +2623,9 @@ public partial class ObjectRenderer : Node3D
     /// starved by.</summary>
     private void TickTextureAnimations()
     {
-        if (_texAnims.Count == 0 || _world == null) return;
+        RenderingServer.GlobalShaderParameterSet("slng_anim_time", AnimNowSeconds());
 
-        ulong nowMsec = Godot.Time.GetTicksMsec();
+        if (_texAnims.Count == 0 || _world == null) return;
 
         _texAnimScratch.Clear();
         _texAnimScratch.AddRange(_texAnims.Keys);
@@ -2614,23 +2640,17 @@ public partial class ObjectRenderer : Node3D
                 continue;
             }
 
-            // Out of draw distance / hidden: the object has no materials to write to (or is not
-            // being looked at). The animation is not paused -- it is a pure function of elapsed
-            // time, so it resumes at the frame it would have reached anyway.
-            if (state.ResourcesReleased || !state.MeshInstance.Visible) continue;
+            if (!state.TexAnimNeedsReapply) continue;
+
+            // Out of draw distance: the object has no materials to write to. Keep the flag so
+            // it reapplies when materials are rebuilt.
+            if (state.ResourcesReleased) continue;
 
             var prim = _world.GetEntity(entityId)?.GetComponent<PrimitiveComponent>();
             if (prim == null) continue;
 
-            float elapsed = (nowMsec - anim.StartMsec) / 1000f;
-            var frame = SLNG.Core.TextureAnimator.Evaluate(anim.Anim, elapsed);
-            if (frame.Driven == SLNG.Core.TextureAnimResult.None) continue;
-
-            if (frame.Equals(anim.LastFrame) && !state.TexAnimNeedsReapply) continue;
-            anim.LastFrame = frame;
+            ApplyTexAnimUniforms(state, prim, anim);
             state.TexAnimNeedsReapply = false;
-
-            ApplyTextureAnimFrame(state, prim, anim.Anim.Face, frame);
         }
     }
 
@@ -2960,18 +2980,24 @@ public partial class ObjectRenderer : Node3D
         _alphaSortOffsetsApplied = false;
     }
 
-    /// <summary>Writes one animation frame onto the affected surfaces' materials.</summary>
-    private void ApplyTextureAnimFrame(VisualState state, PrimitiveComponent prim, sbyte animFace, in SLNG.Core.TextureAnimFrame frame)
+    /// <summary>FEAT-PERF-16: writes the packed animation (or "off") onto the face materials of one object.
+    /// Faces the animation does not cover get "off". Runs when an animation starts, changes or stops, and
+    /// after a material rebuild -- never per frame.</summary>
+    private void ApplyTexAnimUniforms(VisualState state, PrimitiveComponent prim, TexAnimState? anim)
     {
-        var defaultFace = new FaceTexture(prim.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint,
-            prim.RepeatU, prim.RepeatV, prim.OffsetU, prim.OffsetV, prim.Rotation, prim.TexGen, prim.Fullbright);
+        if (!IsInstanceValid(state.MeshInstance)) return;
+
+        sbyte animFace = anim != null ? anim.Anim.Face : (sbyte)-1;
+        bool isAnimated = anim != null;
+        Godot.Vector4 a = anim?.A ?? Godot.Vector4.Zero;
+        Godot.Vector4 b = anim?.B ?? Godot.Vector4.Zero;
 
         // Same fallback the material build uses: a mesh without per-surface face info wears one
         // material for the whole node, so the animation drives that one.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
             if (state.MeshInstance.MaterialOverride is ShaderMaterial single)
-                ApplyAnimatedPlacement(single, defaultFace, frame);
+                ApplyTexAnimToMaterial(single, isAnimated, a, b);
             return;
         }
 
@@ -2983,56 +3009,36 @@ public partial class ObjectRenderer : Node3D
         {
             int faceIdx = faceIndices[surf];
             // Face -1 (wire 255) means every face; anything else is a single SL face number.
-            if (animFace >= 0 && faceIdx != animFace) continue;
+            bool faceCovered = isAnimated && (animFace < 0 || faceIdx == animFace);
             if (SurfaceMaterial(state, surf) is not ShaderMaterial mat) continue;
 
-            FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
-                ? prim.Faces[faceIdx] : defaultFace;
-            ApplyAnimatedPlacement(mat, ft, frame);
+            ApplyTexAnimToMaterial(mat, faceCovered, a, b);
         }
     }
 
-    /// <summary>Sets the UV uniforms for one animated face: the face's own placement with the
-    /// animated components substituted. The uniform arithmetic (centring fold, and the MINUS on
-    /// V that the flipV meshes require) is deliberately identical to BuildFaceMaterialAsync's --
-    /// the animation changes which NUMBERS go in, never how they are packed.</summary>
-    private static void ApplyAnimatedPlacement(ShaderMaterial mat, FaceTexture ft, in SLNG.Core.TextureAnimFrame frame)
+    private static void ApplyTexAnimToMaterial(ShaderMaterial mat, bool covered, Godot.Vector4 a, Godot.Vector4 b)
     {
-        float repeatU = ft.RepeatU, repeatV = ft.RepeatV;
-        float offsetU = ft.OffsetU, offsetV = ft.OffsetV;
-        float rotation = ft.Rotation;
-
-        if ((frame.Driven & SLNG.Core.TextureAnimResult.Scale) != 0)
+        if (covered)
         {
-            repeatU = frame.ScaleS;
-            repeatV = frame.ScaleT;
+            mat.SetShaderParameter(PrimShaderFamily.TexAnimA, a);
+            mat.SetShaderParameter(PrimShaderFamily.TexAnimB, b);
         }
-        if ((frame.Driven & SLNG.Core.TextureAnimResult.Translate) != 0)
+        else
         {
-            offsetU = frame.OffsetS;
-            offsetV = frame.OffsetT;
-        }
-        if ((frame.Driven & SLNG.Core.TextureAnimResult.Rotate) != 0)
-        {
-            rotation = frame.Rotation;
+            mat.SetShaderParameter(PrimShaderFamily.TexAnimB, Godot.Vector4.Zero);
         }
 
-        var uvScale = new Godot.Vector2(repeatU, repeatV);
-        var uvOffset = new Godot.Vector2(
-            0.5f - 0.5f * repeatU + offsetU,
-            0.5f - 0.5f * repeatV - offsetV);
-        mat.SetShaderParameter(PrimShaderFamily.UvScale, uvScale);
-        mat.SetShaderParameter(PrimShaderFamily.UvRotation, rotation);
-        mat.SetShaderParameter(PrimShaderFamily.UvOffset, uvOffset);
-
-        // BUG-RENDER-16: the alpha depth pass samples the same texel through its own copy of these
-        // uniforms; left behind, its cores would occlude one frame's worth of animation away from
-        // where the colour pass draws them.
         if (mat.NextPass is ShaderMaterial core && ReferenceEquals(core.Shader, PrimShaderFamily.DepthCore))
         {
-            core.SetShaderParameter(PrimShaderFamily.UvScale, uvScale);
-            core.SetShaderParameter(PrimShaderFamily.UvRotation, rotation);
-            core.SetShaderParameter(PrimShaderFamily.UvOffset, uvOffset);
+            if (covered)
+            {
+                core.SetShaderParameter(PrimShaderFamily.TexAnimA, a);
+                core.SetShaderParameter(PrimShaderFamily.TexAnimB, b);
+            }
+            else
+            {
+                core.SetShaderParameter(PrimShaderFamily.TexAnimB, Godot.Vector4.Zero);
+            }
         }
     }
 
