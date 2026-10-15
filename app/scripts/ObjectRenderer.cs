@@ -4079,7 +4079,7 @@ public partial class ObjectRenderer : Node3D
                         0.5f - 0.5f * nScale.X + lm.NormalOffset.X,
                         0.5f - 0.5f * nScale.Y - lm.NormalOffset.Y);
 
-                    var normalTex = await GetOrCreateGpuTextureAsync(lm.NormalMap, screenPixelArea, priority);
+                    var normalTex = await GetOrCreateGpuTextureAsync(lm.NormalMap, screenPixelArea, priority, compress: false);
                     MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                     {
                         // Same eviction guard as the diffuse path: the GpuCache can free this
@@ -4213,7 +4213,7 @@ public partial class ObjectRenderer : Node3D
                 if (pbr.NormalTextureId != Guid.Empty)
                 {
                     used.Add(pbr.NormalTextureId);
-                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, screenPixelArea, priority).ContinueWith(t =>
+                    tasks.Add(GetOrCreateGpuTextureAsync(pbr.NormalTextureId, screenPixelArea, priority, compress: false).ContinueWith(t =>
                         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
                         {
                             if (IsInstanceValid(t.Result))
@@ -4596,7 +4596,10 @@ public partial class ObjectRenderer : Node3D
     // FEAT-PERF-02: thin wrapper -- the real fetch/decode/Image/mipmap/upload work (and its
     // single-flight dedup across every renderer, not just this one) lives in
     // GpuCache.GetOrUploadTextureAsync.
-    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId, float screenPixelArea = 0f, float priority = 0f)
+    /// <param name="compress">FEAT-PERF-17: false for a normal map -- fine normal detail drives the
+    /// lighting, and BC1's four colours per 4x4 block visibly smear it (the spec's B1 measurement).</param>
+    private System.Threading.Tasks.Task<ImageTexture?> GetOrCreateGpuTextureAsync(Guid textureId, float screenPixelArea = 0f, float priority = 0f,
+        bool compress = true)
     {
         if (_gpuCache == null || _assetService == null)
             return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
@@ -4604,7 +4607,8 @@ public partial class ObjectRenderer : Node3D
         // BUG-PERF-10: the synchronous part of a texture request -- a GpuCache hit, or the start of a
         // fetch whose first awaits may complete at once -- is main-thread time for every caller.
         using (MainThreadWorkQueue.Part("tex.request"))
-            return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, screenPixelArea: screenPixelArea, priority: priority);
+            return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, screenPixelArea: screenPixelArea, priority: priority,
+                compress: compress);
     }
 
     /// <summary>

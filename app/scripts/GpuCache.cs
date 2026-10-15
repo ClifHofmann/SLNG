@@ -35,10 +35,12 @@ public class GpuCache
         public long LastShrinkMs;
         public long SharpenGuardUntilMs;       // shrunk from the visible tier: no sharpen-for-room before this
         public long FreshUntilMs;              // BUG-PERF-18: handed out (Put / looked up) and not yet referenced: not evictable before this
+        public SLNG.Assets.GpuTextureFormat Format;  // FEAT-PERF-17: how the pixels are held now (Rgba8 for meshes)
     }
 
     /// <summary>FEAT-PERF-25: the shape of a texture going into the cache (see <see cref="CacheEntry"/>).</summary>
-    private readonly record struct TextureShape(int Width, int Height, int SourceWidth, int SourceHeight, bool Mipmaps, float ScreenPixelArea);
+    private readonly record struct TextureShape(int Width, int Height, int SourceWidth, int SourceHeight, bool Mipmaps, float ScreenPixelArea,
+        SLNG.Assets.GpuTextureFormat Format = SLNG.Assets.GpuTextureFormat.Rgba8);
 
     private readonly Dictionary<Guid, CacheEntry> _cache = new();
     private readonly LinkedList<CacheEntry> _lruList = new();
@@ -187,6 +189,31 @@ public class GpuCache
     private long _cardBudgetBytes;     // VramBudgetPolicy.CardBudget (long.MaxValue = no reading)
     private bool _autoBudget = true;
     private long _lastLoggedBudget;
+
+    // FEAT-PERF-17 Part B: world textures are held block-compressed (BC1 opaque, BC3 with alpha) when the
+    // setting is on and the caller allows it -- see the spec's B2 for which textures do. Read on the
+    // texture workers, written by Boot from the graphics setting.
+    private volatile bool _compressTextures;
+
+    // Per texture id, whether the callers that named it allow compression. A normal map must stay RGBA8
+    // even when the cull sweep's re-offer (which does not know what a texture is used for) asks for it,
+    // so a "no" from any caller wins over a "yes".
+    private readonly ConcurrentDictionary<Guid, bool> _compressIntent = new();
+
+    // [GpuCompress] counters, per stats line. Workers and the main thread touch them: Interlocked.
+    private int _cmpBc1, _cmpBc3, _cmpWarmHits, _cmpWarmTooSmall, _cmpSliceShrinks, _cmpRgbaUploads;
+    private long _cmpEncodePixels, _cmpEncodeTicks, _cmpEncodeMaxTicks, _cmpSavedBytes, _cmpEncodesTotal;
+    private readonly int[] _cmpUploads = new int[4];
+    private readonly long[] _cmpUploadTicks = new long[4];
+    private long _nextCompressStatsMs = ShrinkStatsIntervalMs;
+
+    /// <summary>FEAT-PERF-17 Part B: hold world textures block-compressed from now on (the graphics
+    /// setting). Textures already resident keep their format until they are re-sized.</summary>
+    public bool CompressTextures
+    {
+        get => _compressTextures;
+        set => _compressTextures = value;
+    }
 
     // The one AssetService every renderer shares. A shrink needs it to find the texture's decoded
     // pixels; it is remembered from the upload calls rather than passed to Tick.
@@ -409,6 +436,7 @@ public class GpuCache
                 SourceWidth = shape.SourceWidth,
                 SourceHeight = shape.SourceHeight,
                 Mipmaps = shape.Mipmaps,
+                Format = shape.Format,
                 LastSeenMs = now,
                 FreshUntilMs = now + FreshGraceMs,
             };
@@ -462,10 +490,14 @@ public class GpuCache
         int? bakeChannel = null,
         Guid bakeAgentId = default,
         bool isAvatar = false,
-        bool isSelf = false)
+        bool isSelf = false,
+        bool? compress = null)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
         if (assetService != null && !ReferenceEquals(_assets, assetService)) _assets = assetService;
+
+        // FEAT-PERF-17: null is "whatever this texture's callers said" (the cull sweep's re-offer).
+        if (compress is bool asked) { bool wants = asked && bakeChannel == null; _compressIntent.AddOrUpdate(textureId, wants, (_, had) => had && wants); }
 
         // BUG-PERF-13: Bake textures (bakeChannel != null) stay full-res and exempt from distance LOD.
         // Only the OWN avatar's textures go into _noShrink; remote bakes stay full-res at upload
@@ -532,7 +564,8 @@ public class GpuCache
         using (MainThreadWorkQueue.Part("tex.miss"))
         {
             var lazy = _inflightTextureUploads.GetOrAdd(textureId, id => new Lazy<Task<ImageTexture?>>(
-                () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel, bakeAgentId),
+                () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel, bakeAgentId,
+                    compressible: bakeChannel == null && _compressIntent.TryGetValue(id, out bool allowed) && allowed),
                 LazyThreadSafetyMode.ExecutionAndPublication));
             return lazy.Value;
         }
@@ -575,7 +608,7 @@ public class GpuCache
         if (now < due) return;
         // Claim the slot so a burst of concurrent gets emits one line, not one per thread.
         if (System.Threading.Interlocked.CompareExchange(ref _gpuStatsNextMs, now + GpuStatsIntervalMs, due) != due) return;
-        int entries, degraded, pinned; long sizeMb, pinnedMb, exemptBytes = 0, avatarBytes = 0, reducibleBytes = 0;
+        int entries, degraded, pinned; long sizeMb, pinnedMb, exemptBytes = 0, avatarBytes = 0, reducibleBytes = 0, compressedBytes = 0;
         lock (_cache)
         {
             entries = _cache.Count;
@@ -585,6 +618,7 @@ public class GpuCache
             foreach (var e in _cache.Values)
             {
                 if (e.RefCount > 0) { pinned++; pinnedBytes += e.Size; }
+                if (e.Format != SLNG.Assets.GpuTextureFormat.Rgba8) compressedBytes += e.Size;
                 if (_noShrink.ContainsKey(e.Id) || _protectedBakes.ContainsKey(e.Id)) exemptBytes += e.Size;
                 if (_avatarTextures.ContainsKey(e.Id))
                 {
@@ -635,12 +669,13 @@ public class GpuCache
             $"entries={entries} sizeMB={sizeMb}/{_maxSize >> 20} inFlightMB={reserved >> 20} pinned={pinned} pinnedMB={pinnedMb} " +
             $"noShrinkMB={exemptBytes >> 20} avatarMB={avatarBytes >> 20} reducibleMB={reducibleBytes >> 20} " +
             $"lodBias={SLNG.Assets.TextureLod.GlobalLodBias} degradedIds={degraded} mainQueue={MainThreadWorkQueue.Depth} " +
-            $"osBudgetMB={osBudMb} osUsageMB={osUseMb} godotMB={godotMb} adapterMB={adapterStr} auto={autoStr}");
+            $"osBudgetMB={osBudMb} osUsageMB={osUseMb} godotMB={godotMb} adapterMB={adapterStr} auto={autoStr} bcMB={compressedBytes >> 20}");
     }
 
     /// <summary>BUG-PERF-09: records that a resident texture's pixels were replaced in place, so the
     /// cache's total follows what the card holds. Main thread (it follows a SetImage).</summary>
-    private void SetResidentSize(Guid id, Resource res, long newSize, int width, int height, bool sharpened)
+    private void SetResidentSize(Guid id, Resource res, long newSize, int width, int height, bool sharpened,
+        SLNG.Assets.GpuTextureFormat format = SLNG.Assets.GpuTextureFormat.Rgba8)
     {
         lock (_cache)
         {
@@ -650,6 +685,7 @@ public class GpuCache
                 live.Size = newSize;
                 live.Width = width;
                 live.Height = height;
+                live.Format = format;
                 long now = _biasClock.ElapsedMilliseconds;
                 if (sharpened) live.LastSharpenMs = now;
                 else live.LastShrinkMs = now;
@@ -718,6 +754,7 @@ public class GpuCache
             replaced = found ? resident!.Size : 0;
             guardUntil = found ? resident!.SharpenGuardUntilMs : 0;
         }
+        bool compressible = _compressIntent.TryGetValue(textureId, out bool allowed) && allowed;
         if (replaced <= 0) return;
         // FEAT-PERF-25: shrunk from the visible tier a moment ago -- only a real approach sharpens it now.
         if (cutAtUpload && _biasClock.ElapsedMilliseconds < guardUntil) return;
@@ -749,21 +786,42 @@ public class GpuCache
                 // decode when 13.1 ms buys everything the screen can display.
                 // FEAT-PERF-25: a bake comes from the bake host (BUG-AVATAR-02); a shrunk far bake is
                 // sharpened again from there, or from the memory cache that path fills.
-                var textureData = _bakeSource.TryGetValue(textureId, out var bake)
-                    ? await assetService.GetBakeTextureAsync(textureId, bake.Channel, priority, bake.Agent).ConfigureAwait(false)
-                    : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, screenPixelArea: screenPixelArea).ConfigureAwait(false);
-                if (textureData == null)
+                bool isBake = _bakeSource.TryGetValue(textureId, out var bake);
+                // FEAT-PERF-17: the stored compressed copy first, when it is large enough for the new area.
+                PreparedImage? fromCopy = null;
+                if (compressible && _compressTextures && !isBake)
                 {
-                    _uploadedForPixelArea.TryUpdate(textureId, builtFor, screenPixelArea);
-                    _sharpenRetryAtMs[textureId] = _biasClock.ElapsedMilliseconds + SharpenRetryCooldownMs;
-                    return;
+                    var copy = await assetService.TryGetCompressedTextureAsync(textureId).ConfigureAwait(false);
+                    if (copy != null)
+                        fromCopy = await RunOnImageWorker(
+                            () => PrepareFromCompressed(textureId, copy, generateMipmaps, screenPixelArea, replaced),
+                            (PreparedImage?)null).ConfigureAwait(false);
                 }
 
-                // BUG-NET-11: same split as FetchAndUploadTextureAsync -- the image build happens
-                // here on the worker, the queued main-thread item does nothing but hand the
-                // finished pixels to the live ImageTexture.
-                var prepared = await PrepareImageAsync(textureId, textureData, generateMipmaps, screenPixelArea, replaced)
-                    .ConfigureAwait(false);
+                PreparedImage prepared;
+                if (fromCopy is { } served)
+                {
+                    prepared = served;
+                }
+                else
+                {
+                    var textureData = isBake
+                        ? await assetService.GetBakeTextureAsync(textureId, bake.Channel, priority, bake.Agent).ConfigureAwait(false)
+                        : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, screenPixelArea: screenPixelArea).ConfigureAwait(false);
+                    if (textureData == null)
+                    {
+                        _uploadedForPixelArea.TryUpdate(textureId, builtFor, screenPixelArea);
+                        _sharpenRetryAtMs[textureId] = _biasClock.ElapsedMilliseconds + SharpenRetryCooldownMs;
+                        return;
+                    }
+
+                    // BUG-NET-11: same split as FetchAndUploadTextureAsync -- the image build happens
+                    // here on the worker, the queued main-thread item does nothing but hand the
+                    // finished pixels to the live ImageTexture.
+                    prepared = await PrepareImageAsync(textureId, textureData, generateMipmaps, screenPixelArea, replaced,
+                            compressible: compressible && !isBake)
+                        .ConfigureAwait(false);
+                }
                 if (prepared.Image == null)
                 {
                     // FEAT-PERF-25: "nothing sharper" only stands when the LOD bias played no part. Under a
@@ -798,11 +856,14 @@ public class GpuCache
                     try
                     {
                         int finalW = image.GetWidth(), finalH = image.GetHeight();
+                        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                         cached.SetImage(image);
+                        NoteUpload(prepared.Format, System.Diagnostics.Stopwatch.GetTimestamp() - t0);
                         // BUG-PERF-09: the pixels changed, so the entry's size did. It used to stay at
                         // the downsampled size for ever, and the budget never saw a sharpened texture.
                         SetResidentSize(textureId, cached,
-                            SLNG.Assets.TextureAdmission.TextureBytes(finalW, finalH, generateMipmaps), finalW, finalH, sharpened: true);
+                            SLNG.Assets.TextureAdmission.TextureBytes(finalW, finalH, generateMipmaps, prepared.Format), finalW, finalH,
+                            sharpened: true, prepared.Format);
 
                         // UploadedForPixelArea is 0 exactly when the re-decode came out at full
                         // resolution, i.e. there is nothing left to sharpen -- drop the entry so
@@ -1126,8 +1187,10 @@ public class GpuCache
     /// <param name="NothingSharper">...and, for a re-upload that returned no image, that this is
     /// because the level the area asks for is no larger than the texture already is (the area is below
     /// the 5-level floor, or the asset is small) -- as opposed to admission finding no room.</param>
+    /// <param name="Format">FEAT-PERF-17: how <paramref name="Image"/> holds its pixels -- what the entry is
+    /// sized by.</param>
     private readonly record struct PreparedImage(Image? Image, float UploadedForPixelArea, long ReservedBytes, int ExtraDiscard = 0, bool NothingSharper = false,
-        int SourceWidth = 0, int SourceHeight = 0);
+        int SourceWidth = 0, int SourceHeight = 0, SLNG.Assets.GpuTextureFormat Format = SLNG.Assets.GpuTextureFormat.Rgba8);
 
     /// <summary>Bounds the concurrent CPU image work the same way AssetService bounds J2K decode.
     /// An unbounded <c>Task.Run</c> per texture is what made the decode path's measured "91 ms"
@@ -1193,27 +1256,37 @@ public class GpuCache
     /// <param name="replacedBytes">BUG-PERF-09: for a re-upload of a texture that is already resident
     /// (a sharpen), the bytes it holds now. Admission then judges the NET growth, and an upload that
     /// would not be larger than what is there returns no image at all.</param>
+    /// <param name="compressible">FEAT-PERF-17: the callers allow this texture to be block-compressed
+    /// (it is then, when the setting is on and its size allows it).</param>
     private Task<PreparedImage> PrepareImageAsync(
         Guid textureId, SLNG.Assets.TextureData textureData, bool generateMipmaps, float screenPixelArea,
-        long replacedBytes = 0)
+        long replacedBytes = 0, bool compressible = false)
         => RunOnImageWorker(
-            () => PrepareImage(textureId, textureData, generateMipmaps, screenPixelArea, replacedBytes),
+            () => PrepareImage(textureId, textureData, generateMipmaps, screenPixelArea, replacedBytes, compressible),
             new PreparedImage(null, 0f, 0));
 
     private PreparedImage PrepareImage(
         Guid textureId, SLNG.Assets.TextureData textureData, bool generateMipmaps, float screenPixelArea,
-        long replacedBytes)
+        long replacedBytes, bool compressible = false)
     {
         Image? image = null;
         float uploadedFor = 0f;
         bool resized = false;
         long reserved = 0;
         int extra = 0;
+        var format = SLNG.Assets.GpuTextureFormat.Rgba8;
         try
         {
             image = Image.CreateFromData(textureData.Width, textureData.Height, false,
                 Image.Format.Rgba8, textureData.Rgba);
             image?.FixAlphaEdges();
+
+            // BUG-PERF-07: the decoded buffer IS mip 0 of the upload unless it is resized below --
+            // FixAlphaEdges rewrites the colour of near-clear texels and never their alpha
+            // (core/io/image.cpp, 4.7-stable). Measured first, because FEAT-PERF-17 picks the format
+            // from it before admission: an opaque texture is BC1, anything with alpha BC3.
+            var sourceStats = MeasureAlphaStats(textureData.Rgba, textureData.Width, textureData.Height);
+            format = ChooseFormat(compressible, textureData.Width, textureData.Height, sourceStats.MinAlpha < 255);
 
             // The decoder may already have reduced this (SourceWidth > Width). Such an
             // upload is NOT full resolution and must stay eligible for sharpening, even
@@ -1252,7 +1325,7 @@ public class GpuCache
                 // textures (no screen area, or exempt) are counted but never reduced.
                 if (replacedBytes > 0 && SLNG.Assets.TextureAdmission.TextureBytes(
                         SLNG.Assets.TextureLod.DimensionAfterDiscard(w, discard),
-                        SLNG.Assets.TextureLod.DimensionAfterDiscard(h, discard), generateMipmaps) <= replacedBytes)
+                        SLNG.Assets.TextureLod.DimensionAfterDiscard(h, discard), generateMipmaps, format) <= replacedBytes)
                 {
                     // A sharpen whose target is no larger than what is resident, whatever the budget:
                     // the area is below the level floor, or the asset itself is that small.
@@ -1267,7 +1340,7 @@ public class GpuCache
                 extra = AdmitAndReserve(
                     SLNG.Assets.TextureLod.DimensionAfterDiscard(w, discard),
                     SLNG.Assets.TextureLod.DimensionAfterDiscard(h, discard),
-                    generateMipmaps, Math.Max(0, maxExtra), replacedBytes, near, out long finalBytes, out reserved);
+                    generateMipmaps, Math.Max(0, maxExtra), replacedBytes, near, out long finalBytes, out reserved, format);
 
                 if (replacedBytes > 0 && finalBytes <= replacedBytes)
                 {
@@ -1301,16 +1374,40 @@ public class GpuCache
                 // already-decoded pixels. Only meaningful when there IS an alpha channel.
                 _alphaMaskable[textureId] = _alphaModes[textureId] != Image.AlphaMode.None
                     && AnalyzeAlphaMaskable(image.GetData(), image.GetWidth(), image.GetHeight());
-                // BUG-PERF-07: the decoded buffer IS mip 0 of the upload unless it was
-                // resized -- FixAlphaEdges rewrites the colour of near-clear texels and
-                // never their alpha (core/io/image.cpp, 4.7-stable) -- so no copy is
-                // needed for the common case.
+                // BUG-PERF-07: on the uploaded mip 0 -- the decoded buffer itself unless it was resized.
                 _alphaStats[textureId] = resized
                     ? MeasureAlphaStats(image.GetData(), image.GetWidth(), image.GetHeight())
-                    : MeasureAlphaStats(textureData.Rgba, textureData.Width, textureData.Height);
+                    : sourceStats;
             }
 
             if (generateMipmaps && image != null) image.GenerateMipmaps();
+
+            // FEAT-PERF-17: the whole chain block-compressed, here on the worker; the alpha numbers above
+            // were measured on the uncompressed pixels. A resize to a side that is not a multiple of 4
+            // (a non-power-of-two asset) stays RGBA8.
+            if (image != null && format != SLNG.Assets.GpuTextureFormat.Rgba8)
+            {
+                int fw = image.GetWidth(), fh = image.GetHeight();
+                var blocks = fw % 4 == 0 && fh % 4 == 0 ? EncodeImage(image, format, generateMipmaps) : null;
+                var compressed = blocks != null
+                    ? Image.CreateFromData(fw, fh, generateMipmaps, ToGodotFormat(format), blocks)
+                    : null;
+                if (compressed != null)
+                {
+                    image.Dispose();
+                    image = compressed;
+                    if (!textureData.IsDegraded)
+                        _assets?.StoreCompressedTexture(textureId, new SLNG.Assets.CompressedTextureData(
+                            format, fw, fh, generateMipmaps, blocks!,
+                            textureData.SourceWidth > 0 ? textureData.SourceWidth : textureData.Width,
+                            textureData.SourceHeight > 0 ? textureData.SourceHeight : textureData.Height,
+                            AlphaInfoOf(textureId)));
+                }
+                else
+                {
+                    format = SLNG.Assets.GpuTextureFormat.Rgba8;
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -1324,7 +1421,127 @@ public class GpuCache
         }
         return new PreparedImage(image, uploadedFor, reserved, extra,
             SourceWidth: textureData.SourceWidth > 0 ? textureData.SourceWidth : textureData.Width,
-            SourceHeight: textureData.SourceHeight > 0 ? textureData.SourceHeight : textureData.Height);
+            SourceHeight: textureData.SourceHeight > 0 ? textureData.SourceHeight : textureData.Height,
+            Format: format);
+    }
+
+    /// <summary>FEAT-PERF-17: the format a texture of <paramref name="width"/> x <paramref name="height"/>
+    /// is held in: RGBA8 unless its callers allow compression, the setting is on and its sides are
+    /// multiples of 4; then BC1 when every alpha is 255 (Godot samples DXT1 as RGB with alpha 1), else BC3.</summary>
+    private SLNG.Assets.GpuTextureFormat ChooseFormat(bool compressible, int width, int height, bool hasAlpha)
+    {
+        if (!compressible || !_compressTextures || width < 4 || height < 4 || width % 4 != 0 || height % 4 != 0)
+            return SLNG.Assets.GpuTextureFormat.Rgba8;
+        return hasAlpha ? SLNG.Assets.GpuTextureFormat.Bc3 : SLNG.Assets.GpuTextureFormat.Bc1;
+    }
+
+    internal static Image.Format ToGodotFormat(SLNG.Assets.GpuTextureFormat format) => format switch
+    {
+        SLNG.Assets.GpuTextureFormat.Bc1 => Image.Format.Dxt1,
+        SLNG.Assets.GpuTextureFormat.Bc3 => Image.Format.Dxt5,
+        _ => Image.Format.Rgba8,
+    };
+
+    /// <summary>FEAT-PERF-17: an RGBA8 image (with its mips, if it has them) block-compressed, timed for
+    /// [GpuCompress]. Worker thread.</summary>
+    private byte[] EncodeImage(Image image, SLNG.Assets.GpuTextureFormat format, bool mipmaps)
+    {
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        int w = image.GetWidth(), h = image.GetHeight();
+        var blocks = SLNG.Assets.BcEncoder.EncodeChain(format, image.GetData(), w, h, mipmaps);
+        long ticks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+        Interlocked.Increment(ref format == SLNG.Assets.GpuTextureFormat.Bc1 ? ref _cmpBc1 : ref _cmpBc3);
+        Interlocked.Increment(ref _cmpEncodesTotal);
+        Interlocked.Add(ref _cmpEncodePixels, (long)w * h);
+        Interlocked.Add(ref _cmpEncodeTicks, ticks);
+        long seen;
+        do { seen = Interlocked.Read(ref _cmpEncodeMaxTicks); }
+        while (ticks > seen && Interlocked.CompareExchange(ref _cmpEncodeMaxTicks, ticks, seen) != seen);
+        return blocks;
+    }
+
+    /// <summary>FEAT-PERF-17: what the renderer decided this texture's transparency on, to store with its
+    /// compressed copy (all three were measured on the uncompressed pixels just before).</summary>
+    private static SLNG.Assets.TextureAlphaInfo AlphaInfoOf(Guid textureId)
+    {
+        _alphaModes.TryGetValue(textureId, out var mode);
+        _alphaMaskable.TryGetValue(textureId, out bool maskable);
+        _alphaStats.TryGetValue(textureId, out var stats);
+        return new SLNG.Assets.TextureAlphaInfo((byte)mode, maskable, stats.MinAlpha, stats.FracMid, stats.FracClear);
+    }
+
+    /// <summary>FEAT-PERF-17: the alpha numbers stored with a compressed copy, as if just measured.</summary>
+    private static void RestoreAlphaInfo(Guid textureId, SLNG.Assets.TextureAlphaInfo alpha)
+    {
+        _alphaModes[textureId] = (Image.AlphaMode)alpha.Mode;
+        _alphaMaskable[textureId] = alpha.Maskable;
+        _alphaStats[textureId] = new AlphaStats(alpha.MinAlpha, alpha.FracMid, alpha.FracClear);
+    }
+
+    /// <summary>
+    /// FEAT-PERF-17 Part B, the warm path: an upload (or, with <paramref name="replacedBytes"/>, a sharpen)
+    /// served from the texture's stored compressed copy -- a slice of its mip chain, with no J2K decode,
+    /// no RGBA read and no encode. Same LOD and admission rules as <see cref="PrepareImage"/>, but judged
+    /// against the ASSET's size, which the copy records.
+    ///
+    /// <para>Null when the copy cannot serve this request (smaller than the level the screen asks for, no
+    /// level of the admitted size, or no chain where one is needed): the caller takes the RGBA path, whose
+    /// larger encode then replaces the copy. A result with no image is a decision: nothing sharper
+    /// (<c>NothingSharper</c>) or no room.</para>
+    /// </summary>
+    private PreparedImage? PrepareFromCompressed(
+        Guid textureId, SLNG.Assets.CompressedTextureData copy, bool generateMipmaps, float screenPixelArea, long replacedBytes)
+    {
+        if (generateMipmaps && !copy.Mipmaps) return null;
+        int srcW = copy.SourceWidth > 0 ? copy.SourceWidth : copy.Width;
+        int srcH = copy.SourceHeight > 0 ? copy.SourceHeight : copy.Height;
+        int discard = screenPixelArea > 0f ? ComputeDiscardLevel(srcW, srcH, screenPixelArea) : 0;
+        int wantW = SLNG.Assets.TextureLod.DimensionAfterDiscard(srcW, discard);
+        int wantH = SLNG.Assets.TextureLod.DimensionAfterDiscard(srcH, discard);
+        if (copy.Width < wantW || copy.Height < wantH)
+        {
+            Interlocked.Increment(ref _cmpWarmTooSmall);
+            return null;
+        }
+        var format = copy.Format;
+
+        if (replacedBytes > 0 && SLNG.Assets.TextureAdmission.TextureBytes(wantW, wantH, generateMipmaps, format) <= replacedBytes)
+            return new PreparedImage(null, 0f, 0, 0, NothingSharper: true);
+
+        bool admit = screenPixelArea > 0f && !_noShrink.ContainsKey(textureId) && !_protectedBakes.ContainsKey(textureId);
+        int maxExtra = admit ? Math.Min(MaxLodBias, SLNG.Assets.TextureLod.MaxDiscardLevel - discard) : 0;
+        bool near = admit && screenPixelArea >= SLNG.Assets.TextureLod.BiasExemptAreaPx;
+        int extra = AdmitAndReserve(wantW, wantH, generateMipmaps, Math.Max(0, maxExtra), replacedBytes, near,
+            out long finalBytes, out long reserved, format);
+        if (replacedBytes > 0 && finalBytes <= replacedBytes)
+        {
+            ReleaseReservation(reserved);
+            return new PreparedImage(null, 0f, 0);
+        }
+
+        int finalW = SLNG.Assets.TextureLod.DimensionAfterDiscard(wantW, extra);
+        int finalH = SLNG.Assets.TextureLod.DimensionAfterDiscard(wantH, extra);
+        var level = copy.Slice(finalW, finalH);
+        Image? image = null;
+        if (level != null)
+        {
+            byte[] data = level.Data;
+            if (!generateMipmaps && level.Mipmaps)
+                data = data.AsSpan(0, (int)SLNG.Assets.BcLayout.LevelBytes(format, finalW, finalH)).ToArray();
+            image = Image.CreateFromData(finalW, finalH, generateMipmaps, ToGodotFormat(format), data);
+        }
+        if (image == null)
+        {
+            ReleaseReservation(reserved);
+            return null;
+        }
+
+        RestoreAlphaInfo(textureId, copy.Alpha);
+        Interlocked.Increment(ref _cmpWarmHits);
+        float uploadedFor = finalW < srcW || finalH < srcH
+            ? (extra > 0 ? SLNG.Assets.TextureAdmission.BuiltForArea(screenPixelArea, extra) : screenPixelArea)
+            : 0f;
+        return new PreparedImage(image, uploadedFor, reserved, extra, SourceWidth: srcW, SourceHeight: srcH, Format: format);
     }
 
     /// <summary>BUG-PERF-09: picks the admission level for one texture and reserves its bytes, in one
@@ -1335,7 +1552,8 @@ public class GpuCache
     /// size), minus <paramref name="replacedBytes"/> for an in-place re-upload.</summary>
     private int AdmitAndReserve(
         int width, int height, bool mipmaps, int maxExtra, long replacedBytes, bool near,
-        out long finalBytes, out long reserved)
+        out long finalBytes, out long reserved,
+        SLNG.Assets.GpuTextureFormat format = SLNG.Assets.GpuTextureFormat.Rgba8)
     {
         long wanted;
         int extra;
@@ -1347,15 +1565,15 @@ public class GpuCache
             // close to -- see NearCeiling. The far one in the corner still takes the cut.
             long ceiling = near ? NearCeiling(budget) : budget;
             extra = maxExtra > 0
-                ? SLNG.Assets.TextureAdmission.ExtraDiscardFor(projected, ceiling, width, height, mipmaps, maxExtra)
+                ? SLNG.Assets.TextureAdmission.ExtraDiscardFor(projected, ceiling, width, height, mipmaps, maxExtra, format)
                 : 0;
             finalBytes = SLNG.Assets.TextureAdmission.TextureBytes(
                 SLNG.Assets.TextureLod.DimensionAfterDiscard(width, extra),
-                SLNG.Assets.TextureLod.DimensionAfterDiscard(height, extra), mipmaps);
+                SLNG.Assets.TextureLod.DimensionAfterDiscard(height, extra), mipmaps, format);
             reserved = Math.Max(0, finalBytes - replacedBytes);
             _reservedBytes += reserved;
 
-            long requestedBytes = SLNG.Assets.TextureAdmission.TextureBytes(width, height, mipmaps);
+            long requestedBytes = SLNG.Assets.TextureAdmission.TextureBytes(width, height, mipmaps, format);
             wanted = near && extra > 0 ? requestedBytes - finalBytes : 0;
             if (extra > 0)
             {
@@ -1393,6 +1611,15 @@ public class GpuCache
         lock (_admitLock) _reservedBytes = Math.Max(0, _reservedBytes - bytes);
     }
 
+    /// <summary>FEAT-PERF-17: one GPU upload (create or SetImage) for [GpuCompress], by format.</summary>
+    private void NoteUpload(SLNG.Assets.GpuTextureFormat format, long ticks)
+    {
+        int i = (int)format & 3;
+        Interlocked.Increment(ref _cmpUploads[i]);
+        Interlocked.Add(ref _cmpUploadTicks[i], ticks);
+        if (format == SLNG.Assets.GpuTextureFormat.Rgba8) Interlocked.Increment(ref _cmpRgbaUploads);
+    }
+
     /// <summary>The main-thread half of an upload: the GPU upload (<c>ImageTexture.CreateFromImage</c>)
     /// and the cache entry, plus giving the admission reservation back. Returns the cached texture,
     /// or null if there was nothing to upload.</summary>
@@ -1417,7 +1644,9 @@ public class GpuCache
         {
             if (image != null)
             {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 tex = ImageTexture.CreateFromImage(image);
+                NoteUpload(prepared.Format, System.Diagnostics.Stopwatch.GetTimestamp() - t0);
                 if (tex != null)
                 {
                     // Only recorded once the upload actually exists, so a raced/failed
@@ -1434,9 +1663,11 @@ public class GpuCache
                     // BUG-PERF-09: with its mip chain -- the base level alone is 25% under
                     // what the card holds, and the budget is compared with the card.
                     int texW = tex.GetWidth(), texH = tex.GetHeight();
-                    long size = SLNG.Assets.TextureAdmission.TextureBytes(texW, texH, generateMipmaps);
+                    long size = SLNG.Assets.TextureAdmission.TextureBytes(texW, texH, generateMipmaps, prepared.Format);
+                    if (prepared.Format != SLNG.Assets.GpuTextureFormat.Rgba8)
+                        Interlocked.Add(ref _cmpSavedBytes, SLNG.Assets.TextureAdmission.TextureBytes(texW, texH, generateMipmaps) - size);
                     Put(textureId, tex, size, initialRefCount,
-                        new TextureShape(texW, texH, prepared.SourceWidth, prepared.SourceHeight, generateMipmaps, screenPixelArea));
+                        new TextureShape(texW, texH, prepared.SourceWidth, prepared.SourceHeight, generateMipmaps, screenPixelArea, prepared.Format));
                 }
             }
         }
@@ -1457,9 +1688,11 @@ public class GpuCache
     /// <summary>BUG-PERF-09 self test seam: the whole upload minus the network and the queue, on the
     /// calling (main) thread. Returns what the cache ended up holding.</summary>
     internal (ImageTexture? Texture, float UploadedFor, int Extra) SelfTestUpload(
-        Guid textureId, SLNG.Assets.TextureData data, float screenPixelArea, bool generateMipmaps = true, int initialRefCount = 0)
+        Guid textureId, SLNG.Assets.TextureData data, float screenPixelArea, bool generateMipmaps = true, int initialRefCount = 0,
+        bool compress = false)
     {
-        var prepared = PrepareImage(textureId, data, generateMipmaps, screenPixelArea, 0);
+        if (compress) _compressIntent[textureId] = true;
+        var prepared = PrepareImage(textureId, data, generateMipmaps, screenPixelArea, 0, compressible: compress);
         var tex = CommitPreparedTexture(textureId, prepared, screenPixelArea, generateMipmaps, initialRefCount);
         return (tex, prepared.UploadedForPixelArea, prepared.ExtraDiscard);
     }
@@ -1479,6 +1712,50 @@ public class GpuCache
     }
 
     internal long SelfTestReservedBytes => ReservedBytesSnapshot();
+
+    /// <summary>FEAT-PERF-17 self test seam: the warm path, from a compressed copy. Null texture with
+    /// <c>Served</c> false: the copy could not serve the request.</summary>
+    internal (ImageTexture? Texture, bool Served, float UploadedFor) SelfTestUploadFromCompressed(
+        Guid textureId, SLNG.Assets.CompressedTextureData copy, float screenPixelArea, bool generateMipmaps = true)
+    {
+        _compressIntent[textureId] = true;
+        var prepared = PrepareFromCompressed(textureId, copy, generateMipmaps, screenPixelArea, 0);
+        if (prepared is not { } p) return (null, false, 0f);
+        return (CommitPreparedTexture(textureId, p, screenPixelArea, generateMipmaps, 0), true, p.UploadedForPixelArea);
+    }
+
+    /// <summary>FEAT-PERF-17 self test seam: encodes since the cache was made.</summary>
+    internal long SelfTestEncodeCount => Interlocked.Read(ref _cmpEncodesTotal);
+
+    /// <summary>FEAT-PERF-17 self test seam: what the callers of a texture id said about compressing it.</summary>
+    internal bool? SelfTestCompressIntent(Guid textureId) => _compressIntent.TryGetValue(textureId, out bool v) ? v : null;
+
+    /// <summary>FEAT-PERF-17 self test seam: the entry's format and booked bytes.</summary>
+    internal (SLNG.Assets.GpuTextureFormat Format, long Size) SelfTestEntry(Guid textureId)
+    {
+        lock (_cache) return _cache.TryGetValue(textureId, out var e) ? (e.Format, e.Size) : (SLNG.Assets.GpuTextureFormat.Rgba8, 0);
+    }
+
+    /// <summary>FEAT-PERF-17 self test seam: a shrink of a compressed entry from a stored copy, synchronously.</summary>
+    internal (int Width, int Height, SLNG.Assets.GpuTextureFormat Format) SelfTestShrinkFromCopy(Guid textureId, SLNG.Assets.CompressedTextureData copy)
+    {
+        CacheEntry? entry;
+        ImageTexture? tex;
+        lock (_cache)
+        {
+            if (!_cache.TryGetValue(textureId, out entry) || entry.Res is not ImageTexture t) return (0, 0, default);
+            tex = t;
+        }
+        int w = entry.Width, h = entry.Height, nw = Math.Max(8, w >> 1), nh = Math.Max(8, h >> 1);
+        var level = copy.Slice(nw, nh);
+        if (level == null) return (0, 0, default);
+        long now = _biasClock.ElapsedMilliseconds;
+        if (!_shrinkPending.TryAdd(textureId, new PendingShrink(entry.Size - entry.Size / 4, now))) return (0, 0, default);
+        var prepared = PrepareShrinkFromCompressed(level, entry.Mipmaps);
+        if (prepared.Image == null) { _shrinkPending.TryRemove(textureId, out _); return (0, 0, default); }
+        ApplyShrink(entry, tex, prepared, w, h, nw, nh, entry.Mipmaps);
+        lock (_cache) return (entry.Width, entry.Height, entry.Format);
+    }
 
     internal void SelfTestMarkNoShrink(Guid textureId) => _noShrink.TryAdd(textureId, 0);
 
@@ -1505,10 +1782,33 @@ public class GpuCache
     }
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
-        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded, int? bakeChannel = null, Guid bakeAgentId = default)
+        Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded, int? bakeChannel = null, Guid bakeAgentId = default,
+        bool compressible = false)
     {
         try
         {
+            // FEAT-PERF-17 Part B: the stored compressed copy first. A hit is a slice of its mip chain -- no
+            // decode, no RGBA read, no encode -- and is a clean decode's by construction.
+            if (compressible && _compressTextures)
+            {
+                var copy = await assetService.TryGetCompressedTextureAsync(textureId).ConfigureAwait(false);
+                if (copy != null)
+                {
+                    var fromCopy = await RunOnImageWorker(
+                        () => PrepareFromCompressed(textureId, copy, generateMipmaps, screenPixelArea, 0),
+                        (PreparedImage?)null).ConfigureAwait(false);
+                    if (fromCopy is { Image: not null } warm)
+                    {
+                        _uploadFromDegraded.TryRemove(textureId, out _);
+                        var warmTcs = new TaskCompletionSource<ImageTexture?>();
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+                            warmTcs.SetResult(CommitPreparedTexture(textureId, warm, screenPixelArea, generateMipmaps, initialRefCount)),
+                            label: "texture.upload");
+                        return await warmTcs.Task.ConfigureAwait(false);
+                    }
+                }
+            }
+
             // desiredDiscard: 0 here, deliberately -- always fetch/decode the complete asset.
             // See this method's/GetOrUploadTextureAsync's doc comments for why network-side
             // truncation is disabled; the downsample below is purely local/post-decode.
@@ -1560,7 +1860,8 @@ public class GpuCache
             // stage. Leaving only ImageTexture.CreateFromImage + Put on the main thread cuts the
             // per-item cost to a fraction of a millisecond, so the same 3 ms budget now drains
             // many uploads per frame. It is also what AGENTS.md's non-negotiable #2 asks for.
-            var prepared = await PrepareImageAsync(textureId, textureData, generateMipmaps, screenPixelArea)
+            var prepared = await PrepareImageAsync(textureId, textureData, generateMipmaps, screenPixelArea,
+                    compressible: compressible)
                 .ConfigureAwait(false);
 
             // FATAL BUG, live on Aditi: this used to be Godot.Callable.From(() => {...}).CallDeferred()
@@ -1729,6 +2030,44 @@ public class GpuCache
             _nextShrinkStatsMs = now + ShrinkStatsIntervalMs;
             EmitShrinkStats(projected);
         }
+        if (now >= _nextCompressStatsMs)
+        {
+            _nextCompressStatsMs = now + ShrinkStatsIntervalMs;
+            EmitCompressStats();
+        }
+    }
+
+    /// <summary>FEAT-PERF-17: one line per 10 s while textures were encoded, uploaded compressed or served
+    /// from a stored copy -- to the perf sidecar always, to godot.log under --diag. Encode times are worker
+    /// time; upload times are the main thread's <c>CreateFromImage</c> / <c>SetImage</c>, per format.</summary>
+    private void EmitCompressStats()
+    {
+        int bc1 = Interlocked.Exchange(ref _cmpBc1, 0), bc3 = Interlocked.Exchange(ref _cmpBc3, 0);
+        int warm = Interlocked.Exchange(ref _cmpWarmHits, 0), tooSmall = Interlocked.Exchange(ref _cmpWarmTooSmall, 0);
+        int sliced = Interlocked.Exchange(ref _cmpSliceShrinks, 0), rgba = Interlocked.Exchange(ref _cmpRgbaUploads, 0);
+        long px = Interlocked.Exchange(ref _cmpEncodePixels, 0), ticks = Interlocked.Exchange(ref _cmpEncodeTicks, 0);
+        long maxTicks = Interlocked.Exchange(ref _cmpEncodeMaxTicks, 0), saved = Interlocked.Exchange(ref _cmpSavedBytes, 0);
+        var up = new System.Text.StringBuilder();
+        foreach (var f in new[] { SLNG.Assets.GpuTextureFormat.Rgba8, SLNG.Assets.GpuTextureFormat.Bc1, SLNG.Assets.GpuTextureFormat.Bc3 })
+        {
+            int i = (int)f & 3;
+            int n = Interlocked.Exchange(ref _cmpUploads[i], 0);
+            long t = Interlocked.Exchange(ref _cmpUploadTicks[i], 0);
+            if (n == 0) continue;
+            if (up.Length > 0) up.Append(' ');
+            up.Append(f.ToString().ToLowerInvariant()).Append('=').Append(n).Append('/')
+              .Append((t * 1000.0 / System.Diagnostics.Stopwatch.Frequency / n).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)).Append(" ms");
+        }
+        if (bc1 + bc3 + warm + tooSmall + sliced == 0 && !_compressTextures) return;
+        if (bc1 + bc3 + warm + tooSmall + sliced + up.Length == 0) return;
+        double ms = ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        double mpx = px / 1e6;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        UI.StatsOverlay.EmitPerfLine(
+            $"[GpuCompress] last {ShrinkStatsIntervalMs / 1000} s: on={(_compressTextures ? "true" : "false")} encoded bc1={bc1} bc3={bc3} " +
+            $"{mpx.ToString("0.0", ci)} Mpx in {ms.ToString("0", ci)} ms ({(mpx > 0 ? ms / mpx : 0).ToString("0.0", ci)} ms/Mpx, max " +
+            $"{(maxTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency).ToString("0.0", ci)} ms) | fromDiskCopy={warm} copyTooSmall={tooSmall} " +
+            $"slicedShrinks={sliced} | uploads {up} (rgba8 uploads={rgba}) | savedMB={saved >> 20}");
     }
 
     /// <summary>FEAT-PERF-25: ranks what the shrink pass may give back. Under <c>_cache</c>'s lock.
@@ -1882,18 +2221,35 @@ public class GpuCache
         int sourceW = entry.SourceWidth, sourceH = entry.SourceHeight;
         float priority = entry.Size / (1024f * 1024f);   // the larger saving first
         bool isBake = _bakeSource.TryGetValue(id, out var bake);
+        // FEAT-PERF-17: a compressed texture stays compressed when it shrinks -- by slicing its stored copy
+        // one level down when there is one (no decode, no encode), else from the RGBA source plus an encode.
+        bool compress = !isBake && _compressTextures && _compressIntent.TryGetValue(id, out bool allowed) && allowed;
         Interlocked.Increment(ref _statStarted);
 
         _ = Task.Run(async () =>
         {
             try
             {
-                var decoded = await assets.GetShrinkSourceAsync(id, nw, nh, sourceW, sourceH, priority).ConfigureAwait(false);
-                if (decoded == null && isBake)
-                    decoded = await assets.GetBakeTextureAsync(id, bake.Channel, 0f, bake.Agent).ConfigureAwait(false);
-                var prepared = decoded != null && decoded.Width >= nw && decoded.Height >= nh
-                    ? await RunOnImageWorker(() => PrepareShrinkImage(decoded, nw, nh, mips), default(PreparedShrink)).ConfigureAwait(false)
-                    : default;
+                PreparedShrink prepared = default;
+                if (compress)
+                {
+                    var copy = await assets.TryGetCompressedTextureAsync(id).ConfigureAwait(false);
+                    var level = copy?.Slice(nw, nh);
+                    if (level != null && (level.Mipmaps || !mips))
+                    {
+                        prepared = await RunOnImageWorker(() => PrepareShrinkFromCompressed(level, mips), default(PreparedShrink)).ConfigureAwait(false);
+                        if (prepared.Image != null) Interlocked.Increment(ref _cmpSliceShrinks);
+                    }
+                }
+                if (prepared.Image == null)
+                {
+                    var decoded = await assets.GetShrinkSourceAsync(id, nw, nh, sourceW, sourceH, priority).ConfigureAwait(false);
+                    if (decoded == null && isBake)
+                        decoded = await assets.GetBakeTextureAsync(id, bake.Channel, 0f, bake.Agent).ConfigureAwait(false);
+                    prepared = decoded != null && decoded.Width >= nw && decoded.Height >= nh
+                        ? await RunOnImageWorker(() => PrepareShrinkImage(decoded, nw, nh, mips, compress ? this : null), default(PreparedShrink)).ConfigureAwait(false)
+                        : default;
+                }
                 if (prepared.Image == null)
                 {
                     Interlocked.Increment(ref _statNoSource);
@@ -1915,11 +2271,13 @@ public class GpuCache
         });
     }
 
-    private readonly record struct PreparedShrink(Image? Image, AlphaStats Stats);
+    private readonly record struct PreparedShrink(Image? Image, AlphaStats Stats,
+        SLNG.Assets.GpuTextureFormat Format = SLNG.Assets.GpuTextureFormat.Rgba8);
 
     /// <summary>The worker half of a shrink: the same pixel work an upload at the smaller size would
-    /// have done (alpha-edge fix, Lanczos resize, mips), from the decoded copy.</summary>
-    private static PreparedShrink PrepareShrinkImage(SLNG.Assets.TextureData decoded, int nw, int nh, bool mips)
+    /// have done (alpha-edge fix, Lanczos resize, mips), from the decoded copy. With
+    /// <paramref name="encoder"/> (FEAT-PERF-17), block-compressed after the alpha numbers are taken.</summary>
+    private static PreparedShrink PrepareShrinkImage(SLNG.Assets.TextureData decoded, int nw, int nh, bool mips, GpuCache? encoder = null)
     {
         Image? image = null;
         try
@@ -1930,12 +2288,38 @@ public class GpuCache
             image.Resize(nw, nh, Image.Interpolation.Lanczos);
             var stats = MeasureAlphaStats(image.GetData(), nw, nh);
             if (mips) image.GenerateMipmaps();
-            return new PreparedShrink(image, stats);
+            var format = encoder?.ChooseFormat(true, nw, nh, stats.MinAlpha < 255) ?? SLNG.Assets.GpuTextureFormat.Rgba8;
+            if (format != SLNG.Assets.GpuTextureFormat.Rgba8)
+            {
+                var compressed = Image.CreateFromData(nw, nh, mips, ToGodotFormat(format), encoder!.EncodeImage(image, format, mips));
+                if (compressed == null) return new PreparedShrink(image, stats);
+                image.Dispose();
+                image = compressed;
+            }
+            return new PreparedShrink(image, stats, format);
         }
         catch (Exception ex)
         {
             GD.PrintErr($"[GpuCache] shrink prepare failed: {ex.Message}");
             image?.Dispose();
+            return default;
+        }
+    }
+
+    /// <summary>FEAT-PERF-17: the worker half of a shrink of a compressed texture, from its stored copy's
+    /// chain one level down. The alpha numbers are the copy's (its top level's).</summary>
+    private static PreparedShrink PrepareShrinkFromCompressed(SLNG.Assets.CompressedTextureData level, bool mips)
+    {
+        try
+        {
+            byte[] data = mips ? level.Data : level.Data.AsSpan(0, (int)SLNG.Assets.BcLayout.LevelBytes(level.Format, level.Width, level.Height)).ToArray();
+            var image = Image.CreateFromData(level.Width, level.Height, mips, ToGodotFormat(level.Format), data);
+            if (image == null) return default;
+            return new PreparedShrink(image, new AlphaStats(level.Alpha.MinAlpha, level.Alpha.FracMid, level.Alpha.FracClear), level.Format);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[GpuCache] shrink from the compressed copy failed: {ex.Message}");
             return default;
         }
     }
@@ -1958,11 +2342,13 @@ public class GpuCache
 
             long before;
             lock (_cache) before = entry.Size;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             tex.SetImage(img);
+            NoteUpload(prepared.Format, System.Diagnostics.Stopwatch.GetTimestamp() - t0);
             // BUG-PERF-07: the texture's pixels change here, so its alpha numbers do too.
             _alphaStats[entry.Id] = prepared.Stats;
-            long after = SLNG.Assets.TextureAdmission.TextureBytes(nw, nh, mips);
-            SetResidentSize(entry.Id, tex, after, nw, nh, sharpened: false);
+            long after = SLNG.Assets.TextureAdmission.TextureBytes(nw, nh, mips, prepared.Format);
+            SetResidentSize(entry.Id, tex, after, nw, nh, sharpened: false, prepared.Format);
             MarkShrunk(entry.Id, nw, nh);
             if (_shrinkPending.TryGetValue(entry.Id, out var pending) && pending.Visible)
                 lock (_cache) entry.SharpenGuardUntilMs = _biasClock.ElapsedMilliseconds + SharpenShrinkGuardMs;
@@ -2187,6 +2573,23 @@ public class GpuCache
             }
             node = next;
         }
+    }
+
+    /// <summary>FEAT-PERF-17: the cache's block-compressed textures (bytes, count), for [VramBreakdown].</summary>
+    public (long Bytes, int Textures) CompressedBreakdown()
+    {
+        long bytes = 0;
+        int textures = 0;
+        lock (_cache)
+        {
+            foreach (var e in _cache.Values)
+            {
+                if (e.Format == SLNG.Assets.GpuTextureFormat.Rgba8) continue;
+                bytes += e.Size;
+                textures++;
+            }
+        }
+        return (bytes, textures);
     }
 
     /// <summary>Explicitly frees every still-cached Resource's native RID (ImageTexture/ArrayMesh

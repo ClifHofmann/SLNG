@@ -700,6 +700,8 @@
       "draw_distance_heading": "Sichtweite:",
       "texture_memory_heading": "Texturspeicher:",
       "texture_memory_auto": "Automatisch (nach freiem Grafikspeicher)",
+      "compress_textures": "Texturen im Grafikspeicher komprimieren",
+      "compress_textures_tooltip": "Speichert Welt-Texturen blockkomprimiert (BC1/BC3): etwa ein Viertel bis ein Achtel des Grafikspeichers, mit leichtem Schärfeverlust bei feinen Details. Normal-Maps, Avatar-Bakes, HUDs und die Oberfläche bleiben unkomprimiert. Gilt für Texturen, die ab jetzt geladen werden.",
       "low_vram_caps": "Teure Effekte bei kleinen Grafikkarten begrenzen",
       "low_vram_caps_hint": "Unter 6 GB Grafikspeicher: Kantenglättung höchstens 2x (unter 4,5 GB aus), kein SSIL, kleinere Schatten- und Spiegelungskarten, keine Live-Spiegel -- damit der Texturspeicher nahe Objekte scharf hält. Aus: jede Option gilt genau wie eingestellt.",
       "low_vram_caps_active": "Gerade begrenzt:",

@@ -60,6 +60,10 @@ public sealed class GraphicsSettings
     public int TextureMemoryMb { get; private set; } = 1536;
     public bool TextureMemoryAuto { get; private set; } = true;
 
+    /// <summary>FEAT-PERF-17: store world textures block-compressed in video memory (BC1/BC3, 1/8 to
+    /// 1/4 of RGBA8). Applies to textures loaded or re-sized from then on.</summary>
+    public bool CompressTextures { get; private set; } = true;
+
     /// <summary>FEAT-PERF-25: on a card with a small video-memory budget (<see cref="LowVramPolicy"/>),
     /// cap the render buffers that cost the same at every distance -- MSAA, SSIL, the shadow and
     /// reflection atlases, the planar mirror -- so the texture budget keeps near objects sharp. On by
@@ -164,6 +168,7 @@ public sealed class GraphicsSettings
         Msaa = (int)cfg.GetValue(Section, "msaa", Msaa);
         TextureMemoryMb = (int)cfg.GetValue(Section, "texture_memory_mb", TextureMemoryMb);
         TextureMemoryAuto = (bool)cfg.GetValue(Section, "texture_memory_auto", TextureMemoryAuto);
+        CompressTextures = (bool)cfg.GetValue(Section, "compress_textures", CompressTextures);
         LowVramCaps = (bool)cfg.GetValue(Section, "low_vram_caps", LowVramCaps);
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
@@ -194,6 +199,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "msaa", Msaa);
         cfg.SetValue(Section, "texture_memory_mb", TextureMemoryMb);
         cfg.SetValue(Section, "texture_memory_auto", TextureMemoryAuto);
+        cfg.SetValue(Section, "compress_textures", CompressTextures);
         cfg.SetValue(Section, "low_vram_caps", LowVramCaps);
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
@@ -220,6 +226,7 @@ public sealed class GraphicsSettings
     public void SetMsaa(int msaa) { Msaa = msaa; Save(); }
     public void SetTextureMemoryMb(int mb) { TextureMemoryMb = mb; Save(); }
     public void SetTextureMemoryAuto(bool auto) { TextureMemoryAuto = auto; Save(); }
+    public void SetCompressTextures(bool value) { CompressTextures = value; Save(); }
     public void SetLowVramCaps(bool on) { LowVramCaps = on; Save(); }
     public void SetPostFxSsao(bool on) { PostFxSsao = on; Save(); }
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
@@ -435,6 +442,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "msaa", Msaa);
         cfg.SetValue(section, "texture_memory_mb", TextureMemoryMb);
         cfg.SetValue(section, "texture_memory_auto", TextureMemoryAuto);
+        cfg.SetValue(section, "compress_textures", CompressTextures);
         cfg.SetValue(section, "low_vram_caps", LowVramCaps);
         cfg.SetValue(section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(section, "post_fx_ssil", PostFxSsil);
@@ -476,6 +484,7 @@ public sealed class GraphicsSettings
         Msaa = (int)cfg.GetValue(section, "msaa", Msaa);
         TextureMemoryMb = (int)cfg.GetValue(section, "texture_memory_mb", TextureMemoryMb);
         TextureMemoryAuto = (bool)cfg.GetValue(section, "texture_memory_auto", TextureMemoryAuto);
+        CompressTextures = (bool)cfg.GetValue(section, "compress_textures", CompressTextures);
         LowVramCaps = (bool)cfg.GetValue(section, "low_vram_caps", LowVramCaps);
         PostFxSsao = (bool)cfg.GetValue(section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(section, "post_fx_ssil", PostFxSsil);

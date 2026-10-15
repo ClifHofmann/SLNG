@@ -700,6 +700,8 @@
       "draw_distance_heading": "Draw distance:",
       "texture_memory_heading": "Texture memory:",
       "texture_memory_auto": "Automatic (from free video memory)",
+      "compress_textures": "Compress textures in video memory",
+      "compress_textures_tooltip": "Stores world textures block-compressed (BC1/BC3): about a quarter to an eighth of the video memory, with a small loss of sharpness on fine detail. Normal maps, avatar bakes, HUDs and the interface stay uncompressed. Applies to textures loaded from now on.",
       "low_vram_caps": "Limit expensive effects on small graphics cards",
       "low_vram_caps_hint": "Below 6 GB of video memory: anti-aliasing at most 2x (off below 4.5 GB), no SSIL, smaller shadow and reflection maps, no live mirrors -- so the texture memory keeps nearby objects sharp. Off: every option applies exactly as set.",
       "low_vram_caps_active": "Limited now:",

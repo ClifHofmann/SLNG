@@ -250,6 +250,9 @@ public static partial class SelfTest
         results.Add(CheckAlphaStatsWithoutReadBack()); // BUG-PERF-07
         results.Add(CheckGpuCacheAdmission()); // BUG-PERF-09
         results.Add(CheckFreshTextureSurvivesOverBudgetPut()); // BUG-PERF-18
+        results.Add(CheckCompressedTextureUpload()); // FEAT-PERF-17
+        results.Add(CheckCompressedAdmission()); // FEAT-PERF-17
+        results.Add(CheckCompressedWarmPathAndShrink()); // FEAT-PERF-17
         results.Add(CheckRenderThread()); // FEAT-PERF-13
         results.Add(CheckMeshSurfaceCache()); // BUG-PERF-15
         results.Add(CheckDxgiVideoMemory()); // FEAT-PERF-17

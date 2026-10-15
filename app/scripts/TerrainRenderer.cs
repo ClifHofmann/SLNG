@@ -526,7 +526,7 @@ public partial class TerrainRenderer : Node3D
         if (textureId == Guid.Empty || _gpuCache == null || _assetService == null)
             return System.Threading.Tasks.Task.FromResult<ImageTexture?>(null);
 
-        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true);
+        return _gpuCache.GetOrUploadTextureAsync(textureId, _assetService, generateMipmaps: true, compress: true);
     }
 
     private void ApplyTerrainTextures(ulong regionHandle, ImageTexture? tex0, ImageTexture? tex1, ImageTexture? tex2, ImageTexture? tex3)

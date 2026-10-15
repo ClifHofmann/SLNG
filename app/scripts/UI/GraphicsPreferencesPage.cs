@@ -67,6 +67,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private HSlider _textureMemSlider = null!;
     private Label _textureMemValue = null!;
     private Label _textureMemUsage = null!;
+    private CheckBox _compressTexturesCheck = null!;
     private CheckBox _lowVramCapsCheck = null!;
     private Label _lowVramCapsState = null!;
 
@@ -588,6 +589,15 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _textureMemUsage.AddThemeFontSizeOverride("font_size", 12);
         _panelHardware.AddChild(_textureMemUsage);
 
+        // FEAT-PERF-17: block-compressed (BC1/BC3) world textures. Not part of the presets.
+        _compressTexturesCheck = AddCheck(_panelHardware, L10n.Tr("ui.preferences.compress_textures"), _settings.CompressTextures, on =>
+        {
+            if (_refreshing) return;
+            _settings.SetCompressTextures(on);
+            _apply();
+        });
+        _compressTexturesCheck.TooltipText = L10n.Tr("ui.preferences.compress_textures_tooltip");
+
         // FEAT-PERF-25: the low-VRAM caps, and what they are doing right now.
         _lowVramCapsCheck = AddCheck(_panelHardware, L10n.Tr("ui.preferences.low_vram_caps"), _settings.LowVramCaps, on =>
         {
@@ -1007,6 +1017,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             _shadowResOption.Select(resIdx < 0 ? 2 : resIdx);
 
             _textureMemAutoCheck.ButtonPressed = _settings.TextureMemoryAuto;
+            _compressTexturesCheck.ButtonPressed = _settings.CompressTextures;
             _lowVramCapsCheck.ButtonPressed = _settings.LowVramCaps;
             UpdateTextureMemControls();
 

@@ -4017,7 +4017,10 @@ public partial class AvatarRenderer : Node3D
             texId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: rejectDegraded,
             bakeChannel: wasBom ? bomIndex : null,
             bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default,
-            screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf);
+            screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf,
+            // FEAT-PERF-17: worn textures are compressed; bakes never are (GpuCache skips a bake channel),
+            // and a HUD is drawn at screen scale, text and all, where BC1's blocks would show.
+            compress: !isHud);
         MainThreadWorkQueue.RecordIfMainThread("avatar.material.texture",
             System.Diagnostics.Stopwatch.GetElapsedTime(texStart).TotalMilliseconds);
         var built = await builtTask.ConfigureAwait(false);
@@ -4331,6 +4334,9 @@ public partial class AvatarRenderer : Node3D
             var img = tex.GetImage();
             if (img == null)
                 return (PrimShaderFamily.Kind.Scissor, HardCutoutScissorThreshold);
+            // FEAT-PERF-17: a block-compressed image's data is blocks, not RGBA8 texels.
+            if (img.IsCompressed() && (img.Decompress() != Error.Ok || img.GetFormat() != Image.Format.Rgba8))
+                img.Convert(Image.Format.Rgba8);
             stats = GpuCache.MeasureAlphaStats(img.GetData(), img.GetWidth(), img.GetHeight());
             img.Dispose();
         }

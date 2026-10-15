@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.45-alpha";
+    public const string AppVersion = "v0.27.46-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -3129,6 +3129,9 @@ public partial class Boot : Control
     /// environment or the sun itself -- it only knows the settings object.</summary>
     private void ApplyGraphicsSettings()
     {
+        // FEAT-PERF-17: the texture format is not a render-buffer change; it applies to the next upload.
+        if (_gpuCache != null) _gpuCache.CompressTextures = _graphicsSettings.CompressTextures;
+
         // BUG-PERF-19: a change to what the render buffers are made of goes through a few frames without them,
         // so the old set is freed before the new one is allocated (RenderBufferSwitch).
         switch (_bufferReleaseDisabled ? RenderBufferSwitch.Step.ApplyNow : _renderBufferSwitch.Request(_graphicsSettings.PredictedBufferSignature()))
@@ -4080,6 +4083,7 @@ public partial class Boot : Control
         // 12 GB card with headroom for post-FX; out-of-range content is released so the LRU
         // can reclaim under this cap.
         _gpuCache = new GpuCache((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024);
+        _gpuCache.CompressTextures = _graphicsSettings.CompressTextures;
         _dxgiProbe?.Dispose();
         _dxgiProbe = null;
         _adapterProbe?.Dispose();

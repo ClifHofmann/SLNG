@@ -229,10 +229,12 @@ public partial class Boot
             sb.Append(" | ");
         }
         var refs = _gpuCache.ReferenceBreakdown();
+        var compressed = _gpuCache.CompressedBreakdown();   // FEAT-PERF-17
         sb.Append($"texture cache {_gpuCache.CurrentSizeBytes >> 20} of {_gpuCache.MaxSizeBytes >> 20} MB " +
                   $"(pinned {refs.PinnedBytes >> 20} MB in {refs.Pinned}, unreferenced {refs.UnreferencedBytes >> 20} MB in {refs.Unreferenced} of which {refs.Fresh} fresh; " +
                   $"{(long)Performance.GetMonitor(Performance.Monitor.ObjectNodeCount)} scene nodes): " +
-                  $"{cache.TextureBytes >> 20} MB in {cache.Textures} textures (avatars {cache.AvatarBytes >> 20}, protected {cache.ProtectedBytes >> 20}), " +
+                  $"{cache.TextureBytes >> 20} MB in {cache.Textures} textures (avatars {cache.AvatarBytes >> 20}, protected {cache.ProtectedBytes >> 20}, " +
+                  $"block-compressed {compressed.Bytes >> 20} MB in {compressed.Textures}), " +
                   $"{cache.MeshBytes >> 20} MB in {cache.Meshes} meshes | ");
         long outsideTextures = textures - cache.TextureBytes;
         long outsideBuffers = buffers - cache.MeshBytes;

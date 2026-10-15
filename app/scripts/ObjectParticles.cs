@@ -831,7 +831,7 @@ public partial class ObjectParticles : CpuParticles3D
             return;
         }
 
-        var pending = gpuCache.GetOrUploadTextureAsync(textureId, assetService, generateMipmaps: true, initialRefCount: 0);
+        var pending = gpuCache.GetOrUploadTextureAsync(textureId, assetService, generateMipmaps: true, initialRefCount: 0, compress: true);
         pending.ContinueWith(task =>
         {
             if (task is { IsCompletedSuccessfully: true, Result: not null })
