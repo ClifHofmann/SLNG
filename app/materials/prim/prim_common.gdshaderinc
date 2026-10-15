@@ -59,6 +59,14 @@ uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 uniform float uv_rotation = 0.0;
 
+// FEAT-PERF-16: llSetTextureAnim, evaluated here instead of by ObjectRenderer every frame.
+// a = (mode bits, SizeX, SizeY, Start), b = (Length, Rate, start time, 1 = animated).
+// Packed by SLNG.Core.TextureAnimShader.Pack; mirrored by TextureAnimShader.Evaluate (tests).
+uniform vec4 tex_anim_a = vec4(0.0);
+uniform vec4 tex_anim_b = vec4(0.0);
+// Seconds since the client started; ObjectRenderer sets it once per frame.
+global uniform float slng_anim_time;
+
 // A LEGACY Blinn-Phong material places its normal map INDEPENDENTLY of the diffuse texture --
 // NormRepeat/NormOffset/NormRotation are their own fields on the material, not the face's
 // (llmaterial.cpp:35-40). So the normal map needs its own transformed coordinate rather than
@@ -234,6 +242,65 @@ vec2 slng_specular_uv(vec2 uv, vec3 vertex, vec3 normal) {
     return slng_place_uv(uv, specular_uv_scale, specular_uv_offset, specular_uv_rotation);
 }
 
+// C#'s float % (truncated). GLSL mod() is floored and gives a different result for negative rates.
+float slng_fmod(float a, float b) { return a - b * trunc(a / b); }
+// MathF.Round(x, MidpointRounding.AwayFromZero)
+float slng_round_away(float x) { return sign(x) * floor(abs(x) + 0.5); }
+
+// Replaces the driven parts of a face's placement. repeat/offset are SL's raw values
+// (offset NOT packed with the centring term); rotation in radians.
+void slng_tex_anim(inout vec2 repeat_st, inout vec2 offset_st, inout float rotation) {
+    int mode = int(tex_anim_a.x + 0.5);
+    bool is_loop = (mode & 2) != 0;
+    bool is_reverse = (mode & 4) != 0;
+    bool is_ping = (mode & 8) != 0;
+    bool is_smooth = (mode & 16) != 0;
+    float size_x = tex_anim_a.y;
+    float size_y = tex_anim_a.z;
+    float start = tex_anim_a.w;
+    float len = tex_anim_b.x;
+    float rate = tex_anim_b.y;
+    float elapsed = slng_anim_time - tex_anim_b.z;
+
+    float num_frames = len != 0.0 ? len : max(1.0, size_x * size_y);
+    float full_length = num_frames;
+    if (is_ping) {
+        if (is_smooth) full_length = 2.0 * num_frames;
+        else if (is_loop) full_length = max(1.0, 2.0 * num_frames - 2.0);
+        else full_length = max(1.0, 2.0 * num_frames - 1.0);
+    }
+
+    float fc = elapsed * rate;
+    if (is_loop) fc = slng_fmod(fc, full_length);
+    else fc = min(full_length - 1.0, fc);
+
+    if (!is_smooth) {
+        fc = floor(fc + 0.01);
+        fc = min(full_length - 1.0, fc);
+    }
+    if (is_ping && fc >= num_frames) {
+        fc = is_smooth ? num_frames - (fc - num_frames) : (num_frames - 1.99) - (fc - num_frames);
+    }
+    if (is_reverse) {
+        fc = is_smooth ? num_frames - fc : (num_frames - 0.99) - fc;
+    }
+    fc += start;
+    if (!is_smooth) fc = slng_round_away(fc);
+
+    if ((mode & 32) != 0) { rotation = fc; return; }                  // ROTATE
+    if ((mode & 64) != 0) { repeat_st = vec2(fc); return; }           // SCALE
+    if (size_x != 0.0 && size_y != 0.0) {                              // frame grid
+        float ss = 1.0 / size_x;
+        float st = 1.0 / size_y;
+        float x_frame = slng_fmod(fc, size_x);
+        float y_frame = trunc(fc / size_x);
+        repeat_st = vec2(ss, st);
+        offset_st = vec2((-0.5 + 0.5 * ss) + x_frame * ss, (0.5 - 0.5 * st) - y_frame * st);
+        return;
+    }
+    offset_st = vec2(fc, 0.0);                                         // plain slide
+}
+
 vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     // TexGen chooses the base coordinate; the transform below is identical either way. The
     // viewer has the same shape: getGeometryVolume computes planar tc and then calls the very
@@ -241,13 +308,17 @@ vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     if (uv_texgen == 1) {
         uv = slng_planar_uv(vertex, normal);
     }
-    // No uv_extra_u/uv_extra_v here any more. They were a DIAGNOSTIC pair, added after the
-    // finished transform so a residual sculpt offset could be dialled in from F10/F11 and read
-    // off as a number instead of argued about. The offset they were built to measure is gone --
-    // it was our sculpt grid, 33x33 against the viewer's 32x32, which put our UV step at 1/32
-    // where the viewer's is 1/31 (fixed in `faadfa8`, now pinned index-by-index by
-    // ViewerSculptParityTests). They wrote zero on every face after that, and every sculpt face
-    // paid two SetShaderParameter calls for it.
+    // FEAT-PERF-16: an animated face. uv_offset is packed as (0.5 - 0.5*repeatU + offsetU,
+    // 0.5 - 0.5*repeatV - offsetV) (ObjectRenderer.ApplyAnimatedPlacement / BuildFaceMaterialAsync);
+    // unpack, let the animation replace what it drives, pack again with the FINAL repeat.
+    if (tex_anim_b.w > 0.5) {
+        vec2 repeat_st = uv_scale;
+        vec2 offset_st = vec2(uv_offset.x - 0.5 + 0.5 * uv_scale.x, 0.5 - 0.5 * uv_scale.y - uv_offset.y);
+        float rot = uv_rotation;
+        slng_tex_anim(repeat_st, offset_st, rot);
+        vec2 packed = vec2(0.5 - 0.5 * repeat_st.x + offset_st.x, 0.5 - 0.5 * repeat_st.y - offset_st.y);
+        return slng_place_uv(uv, repeat_st, packed, rot);
+    }
     return slng_place_uv(uv, uv_scale, uv_offset, uv_rotation);
 }
 
