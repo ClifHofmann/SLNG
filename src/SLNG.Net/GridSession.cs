@@ -295,6 +295,9 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         });
     }
 
+    // How many glTF material override messages LibreMetaverse failed to parse this session (see below).
+    private int _gltfOverrideParseFailures;
+
     private bool FilterLibreMetaverseLog(Microsoft.Extensions.Logging.LogLevel level, string message)
     {
         // BUG-NET-31: LibreMetaverse's seed-capability retry calls itself without delay or limit and
@@ -302,6 +305,17 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // Needs the Warning level to reach this filter; see GridSession.SeedCapability.cs.
         if (SeedCapabilityGuard.IsRetryLine(message))
             AbortLibreMetaverseSeedRetry();
+
+        // SLNG does not apply glTF material overrides yet, and LibreMetaverse's notation parser rejects
+        // some of the simulator's override payloads ("Unknown type marker ','"), with a full stack trace
+        // per message -- 16 in one Sirens session. Say it once per session; the rest are counted.
+        if (message.Contains("Failed to parse GltfMaterialOverride", StringComparison.Ordinal))
+        {
+            if (System.Threading.Interlocked.Increment(ref _gltfOverrideParseFailures) == 1)
+                Console.Error.WriteLine("[GltfOverride] LibreMetaverse could not parse a glTF material override " +
+                                        "from the region (SLNG does not apply overrides yet); further ones are not printed.");
+            return false;
+        }
 
         if (!SLNG.Core.EventQueueHealth.TryReadEventQueueFailure(message, out var simulatorText))
             return true;
