@@ -430,6 +430,8 @@ public static class PrimShaderFamily
     /// <summary>FEAT-PERF-16: the packed llSetTextureAnim of a face (see SLNG.Core.TextureAnimShader).</summary>
     public static readonly StringName TexAnimA = "tex_anim_a";
     public static readonly StringName TexAnimB = "tex_anim_b";
+    public static readonly StringName PbrUvA = "pbr_uv_a";
+    public static readonly StringName PbrUvB = "pbr_uv_b";
 
     /// <summary>SL TexGen, NORMALISED for the shader: 0 = default, 1 = planar. The wire value
     /// for planar is 2 (see FaceTexture.TexGen); it is collapsed to a 0/1 flag here so the

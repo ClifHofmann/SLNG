@@ -14,6 +14,8 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx;
 
+// BUG-RENDER-48: draws after the water, so it fogs its own below-surface fragments (prim_common.gdshaderinc).
+#define SLNG_WATER_FOG_BLEND
 #include "res://materials/prim/prim_common.gdshaderinc"
 
 varying vec3 v_view_position;

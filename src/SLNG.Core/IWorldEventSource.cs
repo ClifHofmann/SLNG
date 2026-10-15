@@ -24,4 +24,5 @@ public interface IWorldEventSource
     event EventHandler<NameResolvedEvent>? NameResolved;
     event EventHandler<NameResolvedEvent>? DisplayNameResolved;
     event EventHandler<TeleportProgressEvent>? TeleportProgressReceived;
+    event EventHandler<GltfMaterialOverrideEvent>? GltfMaterialOverrideReceived;
 }

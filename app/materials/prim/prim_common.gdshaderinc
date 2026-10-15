@@ -59,6 +59,11 @@ uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 uniform float uv_rotation = 0.0;
 
+// FEAT-RENDER-26: a glTF face with a texture-transform override (base-colour slot). a = (scale.xy, offset.xy),
+// b = (rotation in radians, 1 = in use). Replaces the face's legacy placement, as in the viewer (llface.cpp:1475).
+uniform vec4 pbr_uv_a = vec4(1.0, 1.0, 0.0, 0.0);
+uniform vec4 pbr_uv_b = vec4(0.0);
+
 // FEAT-PERF-16: llSetTextureAnim, evaluated here instead of by ObjectRenderer every frame.
 // a = (mode bits, SizeX, SizeY, Start), b = (Length, Rate, start time, 1 = animated).
 // Packed by SLNG.Core.TextureAnimShader.Pack; mirrored by TextureAnimShader.Evaluate (tests).
@@ -203,6 +208,7 @@ vec2 slng_planar_uv(vec3 vertex, vec3 normal) {
 // Windlight / EEP goes here (Phase 5). Included from the shared include so prims, avatars,
 // terrain and water all route through the same implementation.
 #include "res://materials/slng_atmospherics.gdshaderinc"
+#include "res://materials/slng_water_fog.gdshaderinc"
 
 // Takes and RETURNS the coordinate rather than using an `inout` parameter. The caller passes
 // the UV built-in, and Godot does not treat built-ins as ordinary variables inside user
@@ -301,12 +307,28 @@ void slng_tex_anim(inout vec2 repeat_st, inout vec2 offset_st, inout float rotat
     offset_st = vec2(fc, 0.0);                                         // plain slide
 }
 
+// KHR_texture_transform exactly as the viewer's shader does it (textureUtilV.glsl:36-49): scale, then rotate, then
+// offset, about the top-left corner. uv is SLNG's mesh UV (top-origin V); the viewer flips V before and after, and
+// SLNG's flipV meshes make those two flips cancel, so the same formula applies directly.
+// C# mirror: GltfTextureTransform.Apply. Change both together.
+vec2 slng_khr_uv(vec2 uv) {
+    float s = sin(pbr_uv_b.x);
+    float c = cos(pbr_uv_b.x);
+    vec2 sc = uv * pbr_uv_a.xy;
+    return vec2(c * sc.x + s * sc.y, -s * sc.x + c * sc.y) + pbr_uv_a.zw;
+}
+
 vec2 slng_transform_uv(vec2 uv, vec3 vertex, vec3 normal) {
     // TexGen chooses the base coordinate; the transform below is identical either way. The
     // viewer has the same shape: getGeometryVolume computes planar tc and then calls the very
     // same xform() the default path uses (llface.cpp:1808-1812).
     if (uv_texgen == 1) {
         uv = slng_planar_uv(vertex, normal);
+    }
+    // FEAT-RENDER-26: an animated face keeps the animation (it already replaces the placement); otherwise a face
+    // with a texture-transform override uses it instead of the legacy placement.
+    if (pbr_uv_b.y > 0.5 && tex_anim_b.w <= 0.5) {
+        return slng_khr_uv(uv);
     }
     // FEAT-PERF-16: an animated face. uv_offset is packed as (0.5 - 0.5*repeatU + offsetU,
     // 0.5 - 0.5*repeatV - offsetV) (ObjectRenderer.ApplyAnimatedPlacement / BuildFaceMaterialAsync);
@@ -584,6 +606,28 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
     vec3 atmos_additive;
     out_albedo = slng_apply_atmospherics(albedo.rgb, view_position, atmos_additive);
 
+    // BUG-RENDER-48: a BLENDED face below the water surface fogs its own colour, `colour * D + rgb`
+    // (applySkyAndWaterFog, waterFogF.glsl:115-144), INSTEAD of the atmospheric haze -- the viewer picks one
+    // or the other by which side of the water plane the fragment is on. Needed only by the variants that
+    // draw AFTER the water (every blend_mix one, which Godot sorts behind the water's RenderPriority -1,
+    // BUG-RENDER-05); an opaque or scissored face is fogged through the frame the water refracts, so doing
+    // it here too would fog it twice. Those variants #define SLNG_WATER_FOG_BLEND before this include.
+    // The fog rides the existing channels: D scales the albedo (and the glTF emission below), the water
+    // colour goes in the additive that already reaches EMISSION unlit, as the atmospheric in-scatter does.
+    // slng_water_blend_fog also folds in the water SURFACE's fresnel (what the viewer's water does to everything
+    // drawn before it, which for these faces is itself): the transmission weighs the fog, the reflected-sky sheen
+    // is added on top -- see slng_water_surface_transmission / slng_water_surface_reflection.
+    float water_fog_keep = 1.0;
+#ifdef SLNG_WATER_FOG_BLEND
+    if (slng_water_fog_applies(view_position)) {
+        vec3 water_reflection;
+        vec4 water_fog = slng_water_blend_fog(view_position, water_reflection);
+        out_albedo = albedo.rgb * water_fog.a;
+        atmos_additive = water_fog.rgb + water_reflection;
+        water_fog_keep = water_fog.a;
+    }
+#endif
+
     out_metallic = metallic_factor;
     out_roughness = roughness_factor;
 
@@ -792,7 +836,7 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         if (has_emission_texture) {
             emission *= texture(emission_texture, uv).rgb;
         }
-        out_emission = emission + atmos_additive;
+        out_emission = emission * water_fog_keep + atmos_additive;
     }
 
     // SL fullbright: the face is lit by nothing. Route the (already atmospherics-applied) albedo

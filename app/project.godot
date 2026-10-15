@@ -177,6 +177,26 @@ slng_cloud_variance={
 "type": "float",
 "value": 1.0
 }
+slng_water_fog_color={
+"type": "vec3",
+"value": Vector3(0.0012, 0.0194, 0.0512)
+}
+slng_water_fog_density={
+"type": "float",
+"value": 2.0
+}
+slng_water_fog_ks={
+"type": "float",
+"value": 1.0
+}
+slng_water_plane_view={
+"type": "color",
+"value": Color(0, 1, 0, 1000000)
+}
+slng_water_fresnel={
+"type": "vec2",
+"value": Vector2(0.3999, 0.5)
+}
 
 [rendering]
 

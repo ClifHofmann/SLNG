@@ -495,6 +495,11 @@ public record ObjectMediaEvent(
     string Version, MediaFace?[] Faces
 ) : IWorldEvent;
 
+/// <summary>FEAT-RENDER-26: a GenericStreamingMessage 0x4175, parsed. Addressed by LOCAL id (the message carries no
+/// UUID), so it can arrive before its object. REPLACES the object's whole override set; empty = none.</summary>
+public record GltfMaterialOverrideEvent(
+    ulong RegionHandle, uint LocalId, IReadOnlyDictionary<int, GltfMaterialOverride> Faces) : IWorldEvent;
+
 /// <summary>Represents the properties of an object (name, description, creator, owner, etc.).</summary>
 public record ObjectPropertiesEvent(
     ulong RegionHandle,

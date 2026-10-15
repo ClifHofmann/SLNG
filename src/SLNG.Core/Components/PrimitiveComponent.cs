@@ -106,6 +106,15 @@ public class PrimitiveComponent : IComponent
     /// <see cref="TextureId"/>/<see cref="ColorTint"/> for the whole object.</summary>
     public FaceTexture[]? Faces { get; set; }
 
+    /// <summary>The face a surface without its own record is built from: the same fields ObjectRenderer's own default
+    /// face uses (ApplyFaceMaterialsAsync), so a stamped face grown from it renders identically.</summary>
+    public FaceTexture DefaultFace() => new(TextureId, RenderMaterialId, LegacyMaterialId, ColorTint,
+        RepeatU, RepeatV, OffsetU, OffsetV, Rotation, TexGen, Fullbright);
+
+    /// <summary>FEAT-RENDER-26: true while <see cref="Faces"/> carries stamped overrides. Lets WorldSimulation skip the
+    /// per-update re-stamp in O(1) for the 99% of prims that never had one.</summary>
+    public bool HasPbrOverrides { get; set; }
+
     /// <summary>llSetTextureAnim state from the ObjectUpdate TextureAnim block, or null when the
     /// object has none. Drives the per-frame UV placement of the animated faces (see
     /// <see cref="TextureAnimator"/>); the face's own repeat/offset/rotation still supplies every

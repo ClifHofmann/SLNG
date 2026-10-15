@@ -1,0 +1,164 @@
+config_version=5
+
+[application]
+config/name="waterfogprobe"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/vsync/vsync_mode=0
+
+[rendering]
+renderer/rendering_method="forward_plus"
+rendering_device/driver.windows="vulkan"
+anti_aliasing/quality/msaa_3d=1
+
+[shader_globals]
+
+slng_viewer_sunlit={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+slng_legacy_specular_scale={
+"type": "float",
+"value": 1.0
+}
+slng_anim_time={
+"type": "float",
+"value": 0.0
+}
+slng_ambient={
+"type": "color",
+"value": Color(0.25, 0.25, 0.25, 1)
+}
+slng_blue_density={
+"type": "color",
+"value": Color(0.2447, 0.4487, 0.7599, 1)
+}
+slng_blue_horizon={
+"type": "color",
+"value": Color(0.4954, 0.4954, 0.6399, 1)
+}
+slng_haze_density={
+"type": "float",
+"value": 0.7
+}
+slng_haze_horizon={
+"type": "float",
+"value": 0.19
+}
+slng_density_multiplier={
+"type": "float",
+"value": 0.0001
+}
+slng_distance_multiplier={
+"type": "float",
+"value": 0.8
+}
+slng_max_y={
+"type": "float",
+"value": 1605.0
+}
+slng_glow={
+"type": "color",
+"value": Color(5, 0.001, -0.4799, 1)
+}
+slng_cloud_shadow={
+"type": "float",
+"value": 0.2699
+}
+slng_sun_moon_glow_factor={
+"type": "float",
+"value": 1.0
+}
+slng_dome_offset={
+"type": "float",
+"value": 0.96
+}
+slng_sunlight_color={
+"type": "color",
+"value": Color(0.7342, 0.7815, 0.8999, 1)
+}
+slng_sun_disc_color={
+"type": "color",
+"value": Color(1, 1, 1, 1)
+}
+slng_moonlight_color={
+"type": "color",
+"value": Color(0.5, 0.5, 0.5, 1)
+}
+slng_haze_color={
+"type": "color",
+"value": Color(0.5, 0.5, 0.5, 1)
+}
+slng_star_brightness={
+"type": "float",
+"value": 250.0
+}
+slng_sun_direction_view={
+"type": "vec3",
+"value": Vector3(0, 1, 0)
+}
+slng_sun_direction={
+"type": "vec3",
+"value": Vector3(0, 1, 0)
+}
+slng_moon_direction={
+"type": "vec3",
+"value": Vector3(0, -1, 0)
+}
+slng_sun_scale={
+"type": "float",
+"value": 1.0
+}
+slng_moon_scale={
+"type": "float",
+"value": 1.0
+}
+slng_moon_brightness={
+"type": "float",
+"value": 0.5
+}
+slng_cloud_color={
+"type": "color",
+"value": Color(0.4099, 0.4099, 0.4099, 1)
+}
+slng_cloud_pos_density1={
+"type": "color",
+"value": Color(1, 0.526, 1, 1)
+}
+slng_cloud_pos_density2={
+"type": "color",
+"value": Color(1, 0.526, 1, 1)
+}
+slng_cloud_scale={
+"type": "float",
+"value": 0.4199
+}
+slng_cloud_variance={
+"type": "float",
+"value": 1.0
+}
+slng_water_fog_color={
+"type": "vec3",
+"value": Vector3(0.0012, 0.0194, 0.0512)
+}
+slng_water_fog_density={
+"type": "float",
+"value": 2.0
+}
+slng_water_fog_ks={
+"type": "float",
+"value": 1.0
+}
+slng_water_fresnel={
+"type": "vec2",
+"value": Vector2(0.3999, 0.5)
+}
+slng_water_plane_view={
+"type": "color",
+"value": Color(0, 1, 0, 1000000)
+}
+

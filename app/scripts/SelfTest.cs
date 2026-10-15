@@ -248,6 +248,7 @@ public static partial class SelfTest
         results.Add(CheckBatchPotentialCost(tree)); // FEAT-PERF-20
         results.Add(CheckRemovalHidesAtOnce(tree)); // BUG-NET-34
         results.Add(CheckTextureAnimInShader(tree)); // FEAT-PERF-16
+        results.Add(CheckPbrOverrideApply(tree)); // FEAT-RENDER-26
         results.Add(CheckMeshAssetCollisionAndRemovals(tree)); // BUG-PERF-11
         results.Add(CheckDormantAndSculptShapes(tree)); // BUG-PERF-11
         results.Add(CheckAttachMeshPreparedOffMainThread()); // BUG-PERF-08
