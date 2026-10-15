@@ -244,6 +244,8 @@ public static partial class SelfTest
         results.Add(CheckUrgentCollisionQueue(tree)); // BUG-PERF-11
         results.Add(CheckCullSlice(tree)); // BUG-PERF-11
         results.Add(CheckMirrorGate(tree)); // FEAT-PERF-15
+        results.Add(CheckBatchPotential(tree)); // FEAT-PERF-20
+        results.Add(CheckBatchPotentialCost(tree)); // FEAT-PERF-20
         results.Add(CheckMeshAssetCollisionAndRemovals(tree)); // BUG-PERF-11
         results.Add(CheckDormantAndSculptShapes(tree)); // BUG-PERF-11
         results.Add(CheckAttachMeshPreparedOffMainThread()); // BUG-PERF-08

@@ -155,6 +155,13 @@ public partial class ObjectRenderer : Node3D
         public Godot.Vector3 Scl = Godot.Vector3.One;
         public bool Shown;
 
+        // FEAT-PERF-20 Phase 0: when the object last MOVED or turned (its first placement does not
+        // count), so the [BatchPotential] tally can tell static scenery from movers. Written in
+        // UpdateVisual next to Pos; the SL rotation is kept to compare against.
+        public double LastMovedAt = double.NegativeInfinity;
+        public bool PlacedOnce;
+        public System.Numerics.Quaternion PlacedRotation;
+
         // BUG-PERF-11: EnsureCollisionShape left the shape null because it is being built (or queued)
         // elsewhere; the sweep only looks for a ready one while this is set, instead of reading
         // CollisionShape.Shape (an interop call) for every object on every visit.
@@ -820,6 +827,9 @@ public partial class ObjectRenderer : Node3D
         _travelAgent = agentPos;
         _travelView = viewPos;
         _travelInit = true;
+
+        // FEAT-PERF-20 Phase 0: the [BatchPotential] tally (off unless --diag / --batch-potential).
+        TickBatchPotential(viewPos, camNode);
 
         if (_cullCursor >= _cullOrder.Count)
         {
@@ -3241,7 +3251,12 @@ public partial class ObjectRenderer : Node3D
         if (transform != null)
         {
             using var posPart = MainThreadWorkQueue.Part("uv.pos");
-            state.Pos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+            var newPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
+            if (state.PlacedOnce && (newPos != state.Pos || transform.Rotation != state.PlacedRotation))
+                state.LastMovedAt = NowSeconds();
+            state.PlacedOnce = true;
+            state.PlacedRotation = transform.Rotation;
+            state.Pos = newPos;
             state.MeshInstance.Position = state.Pos;
             state.DormantUntilTravel = double.NegativeInfinity;   // moved: its distance margin no longer holds
 

@@ -65,6 +65,15 @@ public static class RenderConfig
     public static bool EnableInstancing = true;
 
     /// <summary>
+    /// FEAT-PERF-20 Phase 0: the <c>[BatchPotential]</c> tally -- what the scene's prim draws would
+    /// cost if identical materials were shared and/or static prims were merged per cell. Diagnostic
+    /// only (it changes nothing that is drawn) and not free -- up to
+    /// <c>ObjectRenderer.BatchPotentialSliceMs</c> of main thread per frame while a pass runs -- so it
+    /// is off unless the client was started with <c>--diag</c> or <c>--batch-potential</c>.
+    /// </summary>
+    public static bool BatchPotential;
+
+    /// <summary>
     /// FEAT-PERF-06: an object farther than this (metres, to whichever of avatar/camera is nearer)
     /// stops casting a directional shadow. The shadow DEPTH pass draws the scene once per CSM
     /// split, so a distant object is drawn 2 extra times for a shadow the atmosphere haze hides

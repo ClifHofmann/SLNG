@@ -143,6 +143,13 @@ public static class Diagnostics
             || HasFlag(OS.GetCmdlineUserArgs(), "--no-instancing"))
             RenderConfig.EnableInstancing = false;
 
+        // FEAT-PERF-20 Phase 0: --batch-potential (implied by --diag) turns on the [BatchPotential]
+        // tally, so the batching options can be measured without the rest of --diag's logging.
+        if (Enabled
+            || HasFlag(OS.GetCmdlineArgs(), "--batch-potential")
+            || HasFlag(OS.GetCmdlineUserArgs(), "--batch-potential"))
+            RenderConfig.BatchPotential = true;
+
         GD.Print($"[Diagnostics] high-frequency foliage alpha = {RenderConfig.HighFrequencyFoliageAlpha}" +
                  $" (hashScale={RenderConfig.FoliageHashScale}" +
                  $" coreAlpha={RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)})" +

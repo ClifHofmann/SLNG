@@ -76,6 +76,11 @@ param(
     # perf overlay (and the [Instancing] line in logs/slng-perf.log). Passes --no-instancing.
     [switch]$NoInstancing,
 
+    # FEAT-PERF-20 Phase 0: the [BatchPotential] line in logs/slng-perf.log -- how many prim draws
+    # shared materials and per-cell merges would leave -- without the log flood of -Diag.
+    # Passes --batch-potential.
+    [switch]$BatchPotential,
+
     # BUG-AVATAR-07: stop AvatarController's ground clamp from pulling the local agent DOWN to its
     # own ground reading (pushing UP out of geometry still happens). The reference viewer has no
     # equivalent of that downward pull -- the simulator owns the agent's Z, and
@@ -194,6 +199,10 @@ if ($AlphaSortFreeze) {
 if ($NoInstancing) {
     Write-Host "      MultiMesh instancing OFF (--no-instancing)" -ForegroundColor Yellow
     $userArgs += '--no-instancing'
+}
+if ($BatchPotential) {
+    Write-Host "      [BatchPotential] tally ON (--batch-potential)" -ForegroundColor Cyan
+    $userArgs += '--batch-potential'
 }
 if ($NoGroundDrop) {
     Write-Host "      ground clamp will not pull the avatar DOWN (--no-ground-drop)" -ForegroundColor Magenta
