@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-PERF-17`
 - **Track:** `render` / `assets`
-- **Status:** `🧪 Review`. Part A built (v0.27.33-alpha); Part B is built later in a separate session.
-- **Owner:** `gemini` (Part A)
+- **Status:** `🚧 In Progress`. Part A built (v0.27.33-alpha, 🧪); Part B in progress.
+- **Owner:** `gemini` (Part A), `claude` (Part B)
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [MVP6-1](MVP6-1-performance-program.md), [ADR 0004](../adr/0004-performance-architecture.md) pillar P4
 
 ## Overview & Goal
@@ -256,27 +256,142 @@ synchronous render-server read: do it only in this fallback, at most every 2 s.
 
 ---
 
-## Part B: block-compressed textures (later, separate session)
+## Part B: block-compressed textures
 
-Outline only; the session that builds it refines this section first.
+### Why
 
-- **Encoding:** compress on workers. BC1 for opaque, BC3 or BC7 for alpha, mipmaps compressed
-  too.
-  - Check what Godot 4.7 can do at runtime in an **exported** build: `Image.Compress` depends on
-    modules that may be editor-only.
-  - Otherwise use a C# or native BC encoder. Cite it, justify it, and check the licence is
-    compatible.
-- **Upload and cache:** upload the compressed formats. Store the result in the decoded disk cache
-  (FEAT-PERF-11) as a new versioned format, so a warm start uploads without re-encoding.
-- **Must stay correct:**
-  - `AlphaStats` and `_alphaModes` (measured before compression)
-  - avatar bakes and Bakes-on-Mesh
-  - texture animation
-  - shrink and sharpen
-  - per-format byte accounting in `GpuCache`
-- **Setting:** a switch to disable compression.
-- **Acceptance:** VRAM before and after at the same spot, and the A5.5 low-VRAM test again with
-  better visual results. No visible loss on alpha edges or skin.
+Godot 4.7's Vulkan allocator keeps freed VRAM until a whole block is empty, so the process sits at
+its **high-water mark** (BUG-PERF-19). The only lasting fix is a lower peak, and RGBA8 textures are
+the biggest item: at a quiet region `[VramBreakdown]` showed 3.78 GB of texture cache plus 2 GB of
+textures outside it. Block compression stores a texture in 1/8 (BC1) or 1/4 (BC3) of its RGBA8 bytes.
+
+### B0. What Godot can do in an exported build (checked)
+
+Nothing. The stock 4.7 templates have no texture compressor:
+
+- `modules/etcpak/register_types.cpp` (4.7-stable) sets `_image_compress_bc_func` / `etc1` / `etc2`
+  only under `#ifdef TOOLS_ENABLED`.
+- `modules/cvtt/config.py` and `modules/betsy/config.py`: `can_build` returns
+  `env.editor_build or env["cvtt_export_templates"]` / `env["betsy_export_templates"]`.
+- Measured: a GDScript probe exported to a `.pck` and run with
+  `windows_release_x86_64_console.exe` from the installed 4.7.stable.mono templates, windowed and
+  headless: `Image.compress(COMPRESS_S3TC | BPTC | ETC | ETC2 | ASTC)` all return
+  `ERR_UNAVAILABLE` ("Parameter `_image_compress_bc_func` is null"). The same script in the editor
+  compresses. `Image.decompress()` of DXT1/BPTC works in the template (bcdec is not editor-only).
+
+So we encode ourselves.
+
+### B1. Encoder: our own BC1/BC3 in C# (`src/SLNG.Assets/BcEncoder.cs`)
+
+- **Algorithm:** stb_dxt's (Fabian Giesen, public domain / MIT; this repository is MIT), written
+  anew for spans: table-optimal endpoints for a single-colour block; otherwise the principal colour
+  axis by power iteration, its extreme texels as endpoints, projection matching, two least-squares
+  refits kept only if they lower the error. Alpha (BC3): both block modes (8 values, or 6 plus exact
+  0/255), the smaller error wins.
+- **No new package, no `unsafe`, no native code.** Rejected: BCnEncoder.NET (MIT, a NuGet
+  dependency plus its own, BC7 far too slow for a worker); Compressonator / ISPC texcomp (a native
+  DLL per platform in the export); ImageMagick's DDS writer (already referenced, but a full image
+  round trip per level).
+- **BC1 for opaque, BC3 for alpha. No BC7.** Godot samples `FORMAT_DXT1` as `BC1_RGB` with alpha
+  forced to 1 (`texture_storage.cpp`), so anything with an alpha below 255 goes BC3. BC7 is the
+  same size as BC3 (8 bpp); a fast BC7 (mode 6 only) puts alpha on the colour line and loses cutout
+  edges, a good one is a mode search an order of magnitude slower. BC3's separate alpha block keeps
+  0 and 255 exact.
+- **Always 4-colour mode** (c0 > c1): BC1's 3-colour mode's fourth entry is black in Godot's RGB
+  view.
+- **Measured, Release, one thread** (scratch bench over 400 random textures of the user's decoded
+  cache, 357 Mpx): BC1 **30.9 ms/Mpx**, BC3 **28.7 ms/Mpx** -- about 41 ms for a 1024² texture with
+  its mips, against 47.6 ms for its full J2K decode. Quality, RGB PSNR over visible texels: BC1
+  median **38.5 dB** (p10 31.0); BC3 colour median 39.2 dB, alpha median **49.9 dB** (min 35.0).
+  Worst cases looked at 4x: foliage cutouts and grass are indistinguishable; the worst BC1 case
+  (21 dB) is a fine fabric-weave **normal map**, visibly noisier. Two refits instead of one cost
+  5 % time for +0.2 dB; the projection matcher saved 20 % at the same PSNR.
+- **Verified:** xUnit against a decoder written from the format description and against
+  ImageMagick's DDS reader (max difference 1 level); Godot's own decoder in the selftest.
+
+### B2. Which textures
+
+| Texture | Compressed | Why |
+|---|---|---|
+| World faces (diffuse, specular, PBR base colour / metallic-roughness / emissive), particles, terrain, worn (non-bake) avatar textures and HUDs | yes | the bulk of the cache |
+| Normal maps (legacy and PBR) | **no** | the worst measured loss (above); BC5 needs a shader change -- follow-up |
+| Avatar bakes and Bakes-on-Mesh (`bakeChannel`) | **no** | skin; ~11 per avatar and protected near; the task's default |
+| UI (profiles, icons, map tiles, world map), environment (sun / moon / cloud) | no | few, sharp edges / shader-sensitive |
+
+SL's own viewer has the same switch: `RenderCompressTextures` (settings.xml, default 0,
+"EXPERIMENTAL"), driver-side compression of every fetched texture except UI images
+(`llviewertexturelist.cpp:1687`) and media (`llviewertexture.cpp:3242`).
+
+Rules: sides must be multiples of 4 (every SL power-of-two texture from 4 up), else RGBA8. The
+per-call opt-in is `GetOrUploadTextureAsync(compress: true)`, and the switch
+`GpuCache.CompressTextures` (the setting, B6) must be on.
+
+### B3. Pipeline
+
+- **Cold (no compressed copy):** unchanged up to the RGBA8 image on the worker (FixAlphaEdges, LOD
+  resize, admission). The alpha numbers (`_alphaModes`, `_alphaMaskable`, `_alphaStats`) are
+  measured on those **uncompressed** pixels, as before. Then Godot's `GenerateMipmaps`, then
+  `BcEncoder.EncodeChain` over the whole chain, then `Image.CreateFromData(DXT1 | DXT5, mipmaps)`.
+  All on the image-prep worker (`RunOnImageWorker`); the main thread only uploads. The format is
+  chosen before admission from the decoded pixels' alpha, so admission sizes the texture in its
+  real bytes.
+- **Store:** the encoded chain plus the alpha numbers go to the decoded disk cache (B5), from a
+  clean decode only.
+- **Warm:** before asking for RGBA pixels, `AssetService.TryGetCompressedTextureAsync`. If the copy
+  is at least as large as the level the screen asks for, the upload is a slice of its mip chain
+  (`CompressedTextureData.Slice`): no J2K decode, no RGBA read, no encode. Admission's extra levels
+  are slices too. Too small (the camera is closer than on any earlier visit): the cold path, whose
+  larger encode replaces the stored copy.
+- **Sharpen** (`TryUpgradeCachedTexture`): the same order -- the compressed copy if large enough,
+  else RGBA + encode.
+- **Shrink** (FEAT-PERF-25 worker path): a compressed texture shrinks by slicing the stored copy
+  one level down when there is one; else the RGBA source as today, then encode. Still applied on the
+  Refine lane, 2 per frame.
+- **Fresh-texture grace** (BUG-PERF-18) and texture animation (UV transforms) are untouched.
+
+### B4. Byte accounting
+
+`TextureAdmission.TextureBytes(w, h, mips, format)`: RGBA8 as before (base + 1/3), BC exactly as
+Godot lays it out (`BcLayout.ChainBytes`: each level padded to 4x4 blocks, down to 1x1; a 1024²
+chain is 699,064 B in BC1, 1,398,128 B in BC3). Every place that sizes or re-sizes an entry
+(admission, commit, sharpen, shrink) uses the format of the image it uploads. Each cache entry
+remembers its format; `[GpuCache]` gets `bcMB=` (compressed bytes resident), `[VramBreakdown]` the
+same split.
+
+### B5. Disk cache
+
+`DecodedTextureCache`: a new file per texture, `{id}_gpu_v1.dec`, magic `SLGB`, version 1, a
+40-byte header (format, mipmaps, maskable, size, source size, alpha mode / min / fractions, payload
+length) and the LZ4'd chain. It holds the **largest** level encoded so far (a smaller encode never
+replaces it); every smaller level is a slice. Stale when the `.j2c` is newer, deleted on a parse
+error and by `Invalidate`, evicted with the rest (`*.dec`). The RGBA entries are unchanged
+(version 1); `Invalidate` and the r0 prune now cover every reduce level up to `MaxDiscardLevel`
+(they stopped at 3).
+
+### B6. Setting
+
+`GraphicsSettings.CompressTextures` (`compress_textures`, default **on**, presets do not change
+it), a checkbox on the Graphics preferences page next to the texture memory, en-US / de-DE strings,
+a line in `BENUTZERHANDBUCH.md`. It applies to textures loaded or re-sized from then on.
+
+### B7. Logging
+
+`[GpuCompress]` every 10 s while anything happened (perf sidecar; godot.log under `--diag`):
+textures encoded per format, Mpx, encode ms total / per Mpx / max, upload ms per format on the main
+thread, warm hits from the disk cache, shrinks by slicing, MB saved against RGBA8.
+
+### B8. Selftests
+
+Compress/upload round trip (Godot decodes our blocks back within PSNR bounds, the alpha numbers
+equal the uncompressed ones), accounting per format (entry size == Godot's own data size), disk-cache
+round trip and a warm upload with no encode, slice-shrink.
+
+### B9. Acceptance
+
+VRAM before/after at the same spot (`[VramBreakdown]`, `[GpuCache]`, `[Perf]`: texture cache MB,
+Godot video MB, process MB), encode ms per texture, upload ms, warm-start time; the A5.5 low-VRAM
+test (`-VramBudget 3500`) with better visual results; no visible loss on alpha edges, text boards
+or skin.
 
 ## Sub-tasks / Progress
 
@@ -285,4 +400,9 @@ Outline only; the session that builds it refines this section first.
 - [x] A3 `--vram-budget` flag
 - [x] A4 wiring, setting, UI, log fields
 - [x] A5 acceptance checks reported
-- [ ] Part B (separate session)
+- [x] B0 encoder availability checked
+- [x] B1 encoder + tests
+- [ ] B3-B5 pipeline, accounting, disk cache
+- [ ] B6 setting, UI, manual
+- [ ] B7-B8 logging, selftests
+- [ ] B9 measurements reported
