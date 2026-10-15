@@ -731,6 +731,101 @@ public partial class ObjectRenderer
     }
 
     /// <summary>
+    /// FEAT-PERF-15: the Mirrors switch, end to end through the real cull sweep. With mirrors off nothing is scanned
+    /// and no surface carries the planar shader; on, a vertical fullbright + Shiny HIGH panel becomes the mirror
+    /// while a NEARER horizontal one (a floor) does not; a sim-flagged mirror wins in any orientation; and off
+    /// again hands the surface its own shader and layer back at once.
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestMirrorGate(World world)
+    {
+        var failures = new List<string>();
+        void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
+        void Settle() => MainThreadWorkQueue.Pump(double.MaxValue);
+        void Sweeps() { for (int i = 0; i < 40; i++) _Process(10.0); }   // several full passes, each published at its end
+
+        var original = new Shader { Code = "shader_type spatial; void fragment() { ALBEDO = vec3(1.0); }" };
+        var made = new List<Entity>();
+        try
+        {
+            var agent = world.GetOrCreateEntity(SelfTestRegion, 1);
+            agent.SetComponent(new AvatarComponent(Guid.NewGuid(), "Self", "Resident", isLocalAgent: true));
+            agent.SetComponent(new TransformComponent(new System.Numerics.Vector3(128f, 128f, 25f), System.Numerics.Quaternion.Identity));
+            _Process(0.01);   // learns the agent position
+
+            // A fullbright + Shiny HIGH panel of the given size, "metres" from the agent, on a stand-in shader so
+            // the swap to the planar shader and back is visible.
+            (Entity E, VisualState State) AddPanel(uint localId, Godot.Vector3 size, float metres)
+            {
+                var e = SelfTestAddPrim(world, localId, 0, animated: false);
+                made.Add(e);
+                var state = _visuals[e.Id];
+                state.Pos = _agentPos + new Godot.Vector3(metres, 0f, 0f);
+                state.MeshInstance.Mesh = new BoxMesh { Size = size };
+                var material = new ShaderMaterial { Shader = original };
+                material.SetShaderParameter(PrimShaderFamily.Fullbright, true);
+                material.SetShaderParameter(PrimShaderFamily.LegacyShininess, 1.0f);
+                state.MeshInstance.SetSurfaceOverrideMaterial(0, material);
+                _legacyMirrors.Add(e.Id);
+                return (e, state);
+            }
+
+            // Y is up in Godot: a floor is thin along Y, a wall panel thin along Z.
+            var floor = AddPanel(2001, new Godot.Vector3(4f, 0.1f, 3f), metres: 2f);
+            var wall = AddPanel(2002, new Godot.Vector3(4f, 3f, 0.1f), metres: 8f);
+            var flaggedFloor = AddPanel(2003, new Godot.Vector3(4f, 0.1f, 3f), metres: 20f);
+            Settle();
+
+            Godot.Shader? ShaderOf(VisualState state) => (state.MeshInstance.GetSurfaceOverrideMaterial(0) as ShaderMaterial)?.Shader;
+
+            // Off (the state before anyone has said otherwise): no scan, nothing chosen, no planar shader.
+            Sweeps();
+            Expect(_mirrorScanBestId == Guid.Empty && _activeMirrorId == Guid.Empty && !MirrorPosition.HasValue,
+                   "mirrors off: a mirror was scanned for or chosen");
+            Expect(ShaderOf(wall.State) == original && ShaderOf(floor.State) == original,
+                   "mirrors off: a surface carries a shader other than its own");
+
+            // On: the vertical panel, not the nearer floor.
+            SetMirrorsEnabled(true);
+            Sweeps();
+            Expect(_activeMirrorId == wall.E.Id,
+                   $"mirrors on: expected the wall panel, chose {(_activeMirrorId == floor.E.Id ? "the nearer floor" : _activeMirrorId.ToString())}");
+            Expect(PlanarMirrorActive && ShaderOf(wall.State) == PrimShaderFamily.Mirror, "mirrors on: the wall panel is not on the planar shader");
+            Expect(ShaderOf(floor.State) == original, "mirrors on: the floor was put on the planar shader");
+
+            // A sim-flagged mirror wins in any orientation, even a floor that is farther away.
+            _flaggedMirrors.Add(flaggedFloor.E.Id);
+            Sweeps();
+            Expect(_activeMirrorId == flaggedFloor.E.Id, "a flagged mirror lying flat did not outrank the wall panel");
+            Expect(ShaderOf(wall.State) == original && wall.State.MeshInstance.Layers == DefaultVisualLayer,
+                   "the wall panel was not handed back when the flagged mirror took over");
+
+            // Off again: at once, no sweep needed.
+            SetMirrorsEnabled(false);
+            Expect(_activeMirrorId == Guid.Empty && !MirrorPosition.HasValue && !PlanarMirrorActive, "mirrors off: the chosen mirror was not dropped");
+            Expect(ShaderOf(flaggedFloor.State) == original && flaggedFloor.State.MeshInstance.Layers == DefaultVisualLayer,
+                   "mirrors off: the surface did not get its own shader and layer back");
+            Sweeps();
+            Expect(_activeMirrorId == Guid.Empty && _mirrorScanBestId == Guid.Empty, "mirrors off: the sweep picked a mirror again");
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            SetMirrorsEnabled(false);
+            _agentPosKnown = false;
+            foreach (var e in made)
+                if (_visuals.ContainsKey(e.Id)) RemoveVisual(e.Id.ToString());
+            Settle();
+        }
+
+        return failures.Count == 0
+            ? (true, "off: no scan and no planar shader; on: a wall panel beats a nearer floor, a flagged floor beats both, off restores the surface at once")
+            : (false, string.Join("; ", failures));
+    }
+
+    /// <summary>
     /// BUG-PERF-11: verifies that:
     /// 1. LOD changes retain the first collision shape built for a mesh asset via _meshAssetCollisionShapes.
     /// 2. Entity removals are queued in _pendingRemovals and drained under a frame budget rather than freezing inline.

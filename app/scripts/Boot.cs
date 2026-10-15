@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.49-alpha";
+    public const string AppVersion = "v0.27.52-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -2421,21 +2421,22 @@ public partial class Boot : Control
         if (_mirrorReflection == null || _objectRenderer == null) return;
         using var _phase = MainThreadPhase.Enter("planar-mirror");
 
-        var camera = GetViewport()?.GetCamera3D();
-        var mirror = _objectRenderer.MirrorPosition;
-
-        // FEAT-PERF-25: off on a small card -- a second scene render with render buffers of up to
-        // 1920 px per side, kept allocated while idle; Release gives those back.
-        if (!_graphicsSettings.PlanarMirrorAllowed)
+        // FEAT-PERF-15: the Mirrors setting (the viewer's RenderMirrors, off on every preset), under the
+        // FEAT-PERF-25 low-VRAM cap. The renderer is told every frame -- it ignores an unchanged answer --
+        // and on "off" it stops scanning for a mirror and puts the surface back on its own shader and layer,
+        // so a former mirror renders like any other face. Release gives back the second scene render's
+        // buffers (up to 1920 px per side, kept allocated while idle).
+        bool mirrorsAllowed = _graphicsSettings.PlanarMirrorAllowed;
+        _objectRenderer.SetMirrorsEnabled(mirrorsAllowed);
+        if (!mirrorsAllowed)
         {
             _mirrorReflection.Release();
-            // The mirror surface keeps its shader; without a texture it shows the shader's
-            // "no reflection" default rather than the last frame the viewport rendered.
-            _objectRenderer.SetMirrorTexture(null);
             _planarMirrorWasActive = false;
             return;
         }
 
+        var camera = GetViewport()?.GetCamera3D();
+        var mirror = _objectRenderer.MirrorPosition;
         bool rendered = camera != null
                         && mirror.HasValue
                         && _objectRenderer.PlanarMirrorActive

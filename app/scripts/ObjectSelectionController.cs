@@ -606,6 +606,8 @@ namespace SLNG.App
 
                             if (mouseBtn.ButtonIndex == MouseButton.Left && !mouseBtn.ShiftPressed)
                             {
+                                // The ray sees colliders only: name the collider-less surfaces lying here.
+                                ObjectRenderer.LogObjectsAtPoint(result["position"].AsVector3());
                                 if (_editSessionOpen)
                                 {
                                     DeselectAll();

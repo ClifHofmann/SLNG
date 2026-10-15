@@ -84,6 +84,13 @@ public partial class ObjectRenderer : Node3D
         // each one had before. Null when this object is not the chosen mirror.
         public List<(int Surface, Shader Original)>? MirrorSurfaces;
 
+        // FEAT-PERF-15: the last answer to "does the front face of this object point up or down?" for the
+        // heuristic mirror sources, and when it was asked. A mirror candidate re-asks this at most every
+        // MirrorShapeRecheckSeconds instead of on every visit of the cull sweep (it reads the node's
+        // transform and mesh bounds through interop).
+        public bool MirrorFacesVertical;
+        public double MirrorShapeCheckedAt = double.NegativeInfinity;
+
         // GpuCache key of the mesh this object currently references (Guid.Empty = none).
         // BUG-RENDER-16: this is the MERGED key -- geometry plus the surface-merge pattern the
         // object's own texturing implies -- so two objects that share geometry but not that
@@ -317,6 +324,18 @@ public partial class ObjectRenderer : Node3D
     public const uint MirrorVisualLayer = 1u << 19;
 
     private const uint DefaultVisualLayer = 1u;
+
+    /// <summary>FEAT-PERF-15: the viewer's <c>RenderMirrors</c>. Boot sets it every frame from
+    /// <c>GraphicsSettings.PlanarMirrorAllowed</c> (the Mirrors setting under the low-VRAM cap). Off is
+    /// the state before anyone has said otherwise, and it means no candidate scan, no chosen mirror and no
+    /// planar shader on any surface -- the reference viewer runs neither the planar mirror nor the hero
+    /// probe without it (llheroprobemanager.cpp:78, :226).</summary>
+    private bool _mirrorsEnabled;
+
+    /// <summary>FEAT-PERF-15: how long a heuristic candidate's "faces up or down" answer is kept. A
+    /// mirror that is turned or resized is picked up at the next re-check; one that does not move costs
+    /// one bounds read per this many seconds instead of one per sweep visit.</summary>
+    private const double MirrorShapeRecheckSeconds = 2.0;
 
     private Guid _activeMirrorId;
 
@@ -839,11 +858,7 @@ public partial class ObjectRenderer : Node3D
             }
             else
             {
-                MirrorPosition = null;
-                MirrorRadius = 0f;
-                MirrorNormal = Godot.Vector3.Zero;
-                MirrorExtents = Godot.Vector3.Zero;
-                SetActiveMirror(Guid.Empty);
+                ClearMirrorSelection();
             }
             _mirrorScanBestId = Guid.Empty;
             _mirrorScanBestDSq = float.MaxValue;
@@ -1115,7 +1130,10 @@ public partial class ObjectRenderer : Node3D
                 // hash lookup against data the state already carries -- no entity or component
                 // access -- and only when a mirror-grade material has actually been seen at all,
                 // which for most scenes is never.
-                if ((_flaggedMirrors.Count > 0 || _legacyMirrors.Count > 0 || _mirrorMaterials.Count > 0)
+                //
+                // FEAT-PERF-15: not at all while mirrors are off (the viewer's RenderMirrors).
+                if (_mirrorsEnabled
+                    && (_flaggedMirrors.Count > 0 || _legacyMirrors.Count > 0 || _mirrorMaterials.Count > 0)
                     && shown && !state.ResourcesReleased)
                 {
                     bool flagged = _flaggedMirrors.Contains(id);
@@ -1124,7 +1142,15 @@ public partial class ObjectRenderer : Node3D
                     // nothing extra.
                     bool legacy = _legacyMirrors.Contains(id)
                                   && EffectiveBoundingRadius(state) >= LegacyMirrorMinRadiusMeters;
-                    bool qualifies = flagged || legacy || _mirrorMaterials.Contains(state.LoadedMaterialId);
+                    // FEAT-PERF-15: the reference viewer has ONE rule -- only an object the sim flagged
+                    // FLAG_MIRROR becomes a mirror / hero-probe subject (llvovolume.cpp:4536,
+                    // llheroprobemanager.cpp:141). The two other sources here are ours: they recognise a
+                    // recipe (fullbright + Shiny HIGH, a smooth glTF material), and a floor, a beach or a
+                    // polished tile is made from the very same recipe. So they must also face sideways;
+                    // a flagged mirror is the creator's word and is taken in any orientation. The shape
+                    // test is lazy -- only a heuristic candidate that is not flagged ever pays for it.
+                    bool heuristic = legacy || _mirrorMaterials.Contains(state.LoadedMaterialId);
+                    bool qualifies = flagged || (heuristic && !FacesUpOrDown(state, nowSec));
 
                     // BUG-RENDER-24: rank before distance. The reference viewer has no material
                     // heuristic at all, so a surface that merely LOOKS mirror-grade must never
@@ -1240,7 +1266,8 @@ public partial class ObjectRenderer : Node3D
         MainThreadWorkQueue.RecordPartExternal("cull.scan", "vis", tVis * toMs);
         MainThreadWorkQueue.RecordPartExternal("cull.scan", "coll", tColl * toMs);
         MainThreadWorkQueue.RecordPartExternal("cull.scan", "res", tRes * toMs);
-        MainThreadWorkQueue.RecordPartExternal("cull.scan", "mirror", tMirror * toMs);
+        // FEAT-PERF-15: no mirror line at all while mirrors are off, not a line reading 0.00.
+        if (_mirrorsEnabled) MainThreadWorkQueue.RecordPartExternal("cull.scan", "mirror", tMirror * toMs);
         MainThreadWorkQueue.RecordPartExternal("cull.scan", "lod", tLod * toMs);
         MainThreadWorkQueue.RecordPartExternal("cull.scan", "inst", tInst * toMs);
 
@@ -1725,6 +1752,37 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
+    /// <summary>Diagnostic, on a left-click that the physics ray answered with the ground: the shown
+    /// objects whose world bounds contain the hit point, each with the same [FaceParams] dump a click on
+    /// it would give. The ray only sees colliders, so a phantom decal or a mesh with physics shape None
+    /// (a wet-sand overlay, a shore-wave strip) is unclickable here although the reference viewer picks
+    /// it by its rendered geometry -- without this the surface a report is about cannot be named.</summary>
+    public static void LogObjectsAtPoint(Godot.Vector3 point)
+    {
+        var renderer = _instance;
+        if (renderer?._world == null) return;
+
+        // Smallest bounds first: a whole-island mesh or a parcel-sized skirt holds every point near it,
+        // and the surface a report is about is usually the thin one lying on the ground.
+        var hits = new List<(Guid Id, float Size)>();
+        foreach (var (id, state) in renderer._visuals)
+        {
+            if (!state.Shown || !IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) continue;
+            var bounds = (state.MeshInstance.GlobalTransform * state.MeshInstance.GetAabb()).Grow(0.25f);
+            if (bounds.HasPoint(point)) hits.Add((id, bounds.Size.Length()));
+        }
+        hits.Sort((a, b) => a.Size.CompareTo(b.Size));
+
+        GD.Print($"[GroundClick] ground hit at ({point.X:0.#},{point.Y:0.#},{point.Z:0.#}); " +
+                 $"{hits.Count} shown object(s) hold the point in their bounds");
+        foreach (var (id, size) in hits.Take(4))
+        {
+            if (renderer._world.GetEntity(id) is not { } entity) continue;
+            GD.Print($"[GroundClick] object {entity.LocalId} bounds {size:0.#} m");
+            LogFaceTextureParams(entity);
+        }
+    }
+
     private static string DescribeLiveMaterial(ShaderMaterial mat)
     {
         static Variant P(ShaderMaterial m, StringName name) => m.GetShaderParameter(name);
@@ -1747,8 +1805,9 @@ public partial class ObjectRenderer : Node3D
         string specDesc = "none";
         string normalDesc = "none";
         var specTexel = Godot.Vector3.One;
+        float specAlpha = 1f;
         float normalAlpha = 1f;
-        if (hasSpec) specDesc = DescribeTexture(P(mat, PrimShaderFamily.SpecularTexture), out specTexel, out _);
+        if (hasSpec) specDesc = DescribeTexture(P(mat, PrimShaderFamily.SpecularTexture), out specTexel, out specAlpha);
         if (hasNormal) normalDesc = DescribeTexture(P(mat, PrimShaderFamily.NormalTexture), out _, out normalAlpha);
         string albedoTex = B(P(mat, PrimShaderFamily.HasAlbedoTexture))
             ? DescribeTexture(P(mat, PrimShaderFamily.AlbedoTexture), out _, out _)
@@ -1763,7 +1822,7 @@ public partial class ObjectRenderer : Node3D
             hasSpec, new System.Numerics.Vector3(specTexel.X, specTexel.Y, specTexel.Z),
             new System.Numerics.Vector3(tint.X, tint.Y, tint.Z), hasNormal, normalAlpha,
             gloss, env, shiny, metallic, roughness,
-            new System.Numerics.Vector3(albedo.R, albedo.G, albedo.B)));
+            new System.Numerics.Vector3(albedo.R, albedo.G, albedo.B), specAlpha));
 
         // A viewer-specular twin (BUG-RENDER-44) hands Godot the viewer's gloss-reflection weight instead of
         // the map luminance, and its sun highlight comes from light(), so the roughness/specular above are
@@ -5026,11 +5085,7 @@ public partial class ObjectRenderer : Node3D
         // mirrors hang; a panel rotated off the world axes gets the nearest axis, which is still
         // far closer than a basis column chosen by a local extent.
         var world = state.MeshInstance.GlobalTransform * state.MeshInstance.GetAabb();
-        var extents = world.Size;
-
-        Godot.Vector3 axis = extents.X <= extents.Y && extents.X <= extents.Z ? Godot.Vector3.Right
-                           : extents.Y <= extents.Z ? Godot.Vector3.Up
-                           : Godot.Vector3.Back;
+        var axis = ThinnestAxis(world.Size);
 
         var centre = world.GetCenter();
         float side = axis.Dot(fromSide - centre);
@@ -5041,6 +5096,65 @@ public partial class ObjectRenderer : Node3D
         if (Mathf.Abs(side) < 0.05f) return Godot.Vector3.Zero;
 
         return side < 0f ? -axis : axis;
+    }
+
+    /// <summary>The world axis a box with these extents is flattest along -- the normal of a panel, up to
+    /// sign. Ties prefer X, then Y.</summary>
+    private static Godot.Vector3 ThinnestAxis(Godot.Vector3 extents)
+        => extents.X <= extents.Y && extents.X <= extents.Z ? Godot.Vector3.Right
+         : extents.Y <= extents.Z ? Godot.Vector3.Up
+         : Godot.Vector3.Back;
+
+    /// <summary>FEAT-PERF-15: whether this object's front face points mostly up or down
+    /// (<see cref="MirrorCandidatePolicy.IsUpright"/>), asked of the same normal the planar mirror itself
+    /// is aimed with (<see cref="FrontFaceNormal"/>: the thinnest axis of the world-space bounds), so a
+    /// surface is only ever rejected for a plane it would also have been mirrored along. Answered from a
+    /// per-visual cache, refreshed every <see cref="MirrorShapeRecheckSeconds"/>; the mesh bounds are the
+    /// engine's own cached AABB, not a read-back of the vertex data (BUG-PERF-15). A mesh that is not there
+    /// yet is not a mirror yet: unknown counts as "up or down" and is asked again at the next visit.</summary>
+    private static bool FacesUpOrDown(VisualState state, double nowSec)
+    {
+        if (nowSec - state.MirrorShapeCheckedAt < MirrorShapeRecheckSeconds) return state.MirrorFacesVertical;
+
+        if (!IsInstanceValid(state.MeshInstance) || state.MeshInstance.Mesh == null) return true;
+
+        var world = state.MeshInstance.GlobalTransform * state.MeshInstance.GetAabb();
+        state.MirrorFacesVertical = !MirrorCandidatePolicy.IsUpright(ThinnestAxis(world.Size).Y);
+        state.MirrorShapeCheckedAt = nowSec;
+        return state.MirrorFacesVertical;
+    }
+
+    /// <summary>FEAT-PERF-15: the viewer's <c>RenderMirrors</c>. Turning it off puts every surface that was a
+    /// mirror back on its own shader and layer at once (not at the next sweep) and drops the chosen mirror,
+    /// so nothing of it is left -- the hero probe loses its subject with it. Turning it on starts a fresh
+    /// scan; a mirror appears when the next cull sweep completes.</summary>
+    public void SetMirrorsEnabled(bool on)
+    {
+        if (on == _mirrorsEnabled) return;
+        _mirrorsEnabled = on;
+
+        _mirrorScanBestId = Guid.Empty;
+        _mirrorScanBestDSq = float.MaxValue;
+        _mirrorScanBestFlagged = false;
+
+        if (!on)
+        {
+            // Before the shader goes back: the sampler would otherwise keep the last frame of a viewport
+            // that is about to be released.
+            SetMirrorTexture(null);
+            ClearMirrorSelection();
+        }
+    }
+
+    /// <summary>No mirror: restores the previous one's own shader and visual layer (SetActiveMirror) and zeroes
+    /// what Boot reads.</summary>
+    private void ClearMirrorSelection()
+    {
+        MirrorPosition = null;
+        MirrorRadius = 0f;
+        MirrorNormal = Godot.Vector3.Zero;
+        MirrorExtents = Godot.Vector3.Zero;
+        SetActiveMirror(Guid.Empty);
     }
 
     /// <summary>BUG-RENDER-32: turns the chosen mirror's qualifying surfaces into planar mirrors,

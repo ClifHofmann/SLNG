@@ -67,6 +67,46 @@ public class LegacyShadeMirrorTests
         Assert.Equal(env, viaShiny.Metallic, 4);
     }
 
+    /// <summary>The Sirens shoreline sand (2026-10-15): Environment 100, glossiness 51, a specular map whose
+    /// ALPHA marks the wet band (0..1, mean ~0.65). The viewer masks the environment intensity with that
+    /// alpha (`env = env_intensity * spec.a`, materialF.glsl:306); without the mask the whole face was a
+    /// sharp 39 % mirror of the sky, in Firestorm wet sand.</summary>
+    [Fact]
+    public void TheSpecularMapsAlphaMasksTheEnvironmentIntensity()
+    {
+        LegacyShadeMirror.Inputs Sand(float specAlpha) => Floor(100f / 255f) with
+        {
+            SpecularGlossiness = 51f / 255f,
+            SpecularAlpha = specAlpha,
+        };
+
+        var dry = LegacyShadeMirror.Predict(Sand(0f));
+        Assert.Equal(0f, dry.EnvIntensity);
+        Assert.Equal(LegacyShadeMirror.GlossinessToRoughness(51f / 255f), dry.Roughness, 4);
+        Assert.Equal(0f, dry.Metallic, 4);
+
+        var wet = LegacyShadeMirror.Predict(Sand(1f));
+        Assert.Equal(100f / 255f, wet.EnvIntensity, 4);
+        Assert.Equal(0f, wet.Roughness);
+
+        var half = LegacyShadeMirror.Predict(Sand(0.5f));
+        Assert.Equal(50f / 255f, half.EnvIntensity, 4);
+    }
+
+    [Fact]
+    public void TheShaderMasksTheEnvironmentIntensityWithTheSpecularAlphaToo()
+    {
+        string shader = File.ReadAllText(Path.Combine(RepoRoot(), "app", "materials", "prim", "prim_common.gdshaderinc"));
+        Assert.Contains("env_intensity = specular_environment * spec_texel.a;", shader);
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "SLNG.sln"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new InvalidOperationException("SLNG.sln not found above the test binaries");
+    }
+
     [Fact]
     public void BelowShinyLowTheMirrorLobeRampsInRatherThanSnapping()
     {

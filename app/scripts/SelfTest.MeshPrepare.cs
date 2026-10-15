@@ -559,6 +559,29 @@ public static partial class SelfTest
         }
     }
 
+    /// <summary>FEAT-PERF-15: see <see cref="ObjectRenderer.SelfTestMirrorGate"/>.</summary>
+    private static Check CheckMirrorGate(SceneTree tree)
+    {
+        const string Name = "mirrors off by default, floors never heuristic mirrors";
+        var objects = new ObjectRenderer();
+        try
+        {
+            tree.Root.AddChild(objects);
+            var world = new SLNG.Core.ECS.World();
+            objects.Initialize(world, null!, null!);
+            var (passed, detail) = objects.SelfTestMirrorGate(world);
+            return new Check(Name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
     /// <summary>BUG-PERF-11: see <see cref="ObjectRenderer.SelfTestDormantAndSculptShapes"/>.</summary>
     private static Check CheckDormantAndSculptShapes(SceneTree tree)
     {

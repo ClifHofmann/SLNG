@@ -57,6 +57,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private CheckBox _postFxProbeAmbientCheck = null!;
     private CheckBox _postFxSsrCheck = null!;
     private CheckBox _postFxHeroProbeCheck = null!;
+    private CheckBox _mirrorsCheck = null!;
 
     // Hardware sub-tab controls
     private OptionButton _vsyncOption = null!;
@@ -486,6 +487,11 @@ public partial class GraphicsPreferencesPage : VBoxContainer
 
         _postFxHeroProbeCheck = AddCheck(_panelGeneral, L10n.Tr("ui.preferences.post_fx_hero_probe"), _settings.PostFxHeroProbe,
                                          on => { if (!_refreshing) { _settings.SetPostFxHeroProbe(on); _apply(); UpdatePresetIndicator(); } });
+
+        // FEAT-PERF-15: the viewer's RenderMirrors. Off on every preset; takes effect at once, no relog.
+        _mirrorsCheck = AddCheck(_panelGeneral, L10n.Tr("ui.preferences.mirrors"), _settings.Mirrors,
+                                 on => { if (!_refreshing) { _settings.SetMirrors(on); _apply(); UpdatePresetIndicator(); } });
+        _mirrorsCheck.TooltipText = L10n.Tr("ui.preferences.mirrors_tooltip");
     }
 
     // --- Sub-Tab 2: Hardware (Hardware) -----------------------------------------------------
@@ -1053,6 +1059,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             _postFxProbeAmbientCheck.ButtonPressed = _settings.PostFxProbeAmbient;
             _postFxSsrCheck.ButtonPressed = _settings.PostFxSsr;
             _postFxHeroProbeCheck.ButtonPressed = _settings.PostFxHeroProbe;
+            _mirrorsCheck.ButtonPressed = _settings.Mirrors;
 
             // Hardware
             _vsyncOption.Select(Mathf.Clamp(_settings.VSyncMode, 0, _vsyncOption.ItemCount - 1));

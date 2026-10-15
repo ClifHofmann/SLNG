@@ -79,9 +79,11 @@ public sealed class GraphicsSettings
     public LowVramPolicy.Request Effective { get; private set; }
     public IReadOnlyList<string> CapChanges { get; private set; } = Array.Empty<string>();
 
-    /// <summary>Whether the planar mirror (BUG-RENDER-32) may render: it has no switch of its own, only
-    /// the low-VRAM cap.</summary>
-    public bool PlanarMirrorAllowed => !_applied || Effective.PlanarMirror;
+    /// <summary>Whether mirrors (the planar mirror of BUG-RENDER-32 and the candidate scan that also feeds the
+    /// hero probe) may exist at all: <see cref="Mirrors"/> after the low-VRAM cap. Before the first
+    /// <see cref="Apply"/> it is the setting alone (off unless the user turned it on), not "allowed until a cap says
+    /// otherwise".</summary>
+    public bool PlanarMirrorAllowed => _applied ? Effective.PlanarMirror : Mirrors;
 
     /// <summary><see cref="PostFxHeroProbe"/> after the low-VRAM cap.</summary>
     public bool HeroProbeAllowed => _applied ? Effective.HeroProbe : PostFxHeroProbe;
@@ -125,6 +127,12 @@ public sealed class GraphicsSettings
     /// nearest mirror only, and off entirely when none is in range, but still the first thing to
     /// turn off if a mirror-heavy parcel ever costs too much.</summary>
     public bool PostFxHeroProbe { get; private set; } = true;
+
+    /// <summary>FEAT-PERF-15: the viewer's <c>RenderMirrors</c> -- whether realtime mirrors exist at all.
+    /// Off on every preset, as in featuretable.txt (0 on Low through Ultra): a mirror renders the scene a
+    /// second time, measured at Sirens (Ultra) as ~6k draws and ~8 ms CPU of a 36k-draw frame. Applies at
+    /// runtime: off hands the surface back its own material and stops the candidate scan.</summary>
+    public bool Mirrors { get; private set; } = false;
 
     // No PostFxVolumetricFog. Godot's volumetric fog is a second, flat-density fog model with
     // nothing region-aware behind it, and FEAT-RENDER-01 Phase 5 replaced distance haze entirely
@@ -182,6 +190,7 @@ public sealed class GraphicsSettings
         PostFxProbeAmbient = (bool)cfg.GetValue(Section, "post_fx_probe_ambient", PostFxProbeAmbient);
         PostFxSsr = (bool)cfg.GetValue(Section, "post_fx_ssr", PostFxSsr);
         PostFxHeroProbe = (bool)cfg.GetValue(Section, "post_fx_hero_probe", PostFxHeroProbe);
+        Mirrors = (bool)cfg.GetValue(Section, "mirrors", Mirrors);
         Shadows = (bool)cfg.GetValue(Section, "shadows", Shadows);
         ShadowBlur = (float)cfg.GetValue(Section, "shadow_blur", ShadowBlur);
         ShadowResolution = (int)cfg.GetValue(Section, "shadow_resolution", ShadowResolution);
@@ -214,6 +223,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "post_fx_probe_ambient", PostFxProbeAmbient);
         cfg.SetValue(Section, "post_fx_ssr", PostFxSsr);
         cfg.SetValue(Section, "post_fx_hero_probe", PostFxHeroProbe);
+        cfg.SetValue(Section, "mirrors", Mirrors);
         cfg.SetValue(Section, "shadows", Shadows);
         cfg.SetValue(Section, "shadow_blur", ShadowBlur);
         cfg.SetValue(Section, "shadow_resolution", ShadowResolution);
@@ -242,6 +252,7 @@ public sealed class GraphicsSettings
     public void SetPostFxProbeAmbient(bool on) { PostFxProbeAmbient = on; Save(); }
     public void SetPostFxSsr(bool on) { PostFxSsr = on; Save(); }
     public void SetPostFxHeroProbe(bool on) { PostFxHeroProbe = on; Save(); }
+    public void SetMirrors(bool on) { Mirrors = on; Save(); }
     public void SetShadows(bool on) { Shadows = on; Save(); }
     public void SetShadowBlur(float blur) { ShadowBlur = blur; Save(); }
     public void SetShadowResolution(int res) { ShadowResolution = res; Save(); }
@@ -278,6 +289,7 @@ public sealed class GraphicsSettings
                 PostFxProbeAmbient = false;
                 PostFxSsr = false;
                 PostFxHeroProbe = false;
+                Mirrors = false;
                 VolumeLodFactor = 1.0f;
                 SmallObjectCullPixels = 4f;
                 MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetLowCap;
@@ -297,6 +309,7 @@ public sealed class GraphicsSettings
                 PostFxProbeAmbient = false;
                 PostFxSsr = false;
                 PostFxHeroProbe = false;
+                Mirrors = false;
                 VolumeLodFactor = 1.25f;
                 SmallObjectCullPixels = 3f;
                 MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetMediumCap;
@@ -316,6 +329,7 @@ public sealed class GraphicsSettings
                 PostFxProbeAmbient = false;
                 PostFxSsr = true;
                 PostFxHeroProbe = true;
+                Mirrors = false;
                 VolumeLodFactor = 2.0f;
                 SmallObjectCullPixels = 2f;
                 MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetHighCap;
@@ -335,6 +349,7 @@ public sealed class GraphicsSettings
                 PostFxProbeAmbient = false;
                 PostFxSsr = true;
                 PostFxHeroProbe = true;
+                Mirrors = false;
                 VolumeLodFactor = 3.0f;
                 SmallObjectCullPixels = 1f;
                 MaxFullyRenderedAvatars = AvatarLimitPolicy.PresetUltraCap;
@@ -369,6 +384,7 @@ public sealed class GraphicsSettings
                 !PostFxProbeAmbient &&
                 !PostFxSsr &&
                 !PostFxHeroProbe &&
+                !Mirrors &&
                 !SmallObjectShadows &&
                 Math.Abs(VolumeLodFactor - 1.0f) < 0.05f &&
                 MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetLowCap,
@@ -384,6 +400,7 @@ public sealed class GraphicsSettings
                 !PostFxProbeAmbient &&
                 !PostFxSsr &&
                 !PostFxHeroProbe &&
+                !Mirrors &&
                 !SmallObjectShadows &&
                 Math.Abs(VolumeLodFactor - 1.25f) < 0.05f &&
                 MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetMediumCap,
@@ -399,6 +416,7 @@ public sealed class GraphicsSettings
                 !PostFxProbeAmbient &&
                 PostFxSsr &&
                 PostFxHeroProbe &&
+                !Mirrors &&
                 !SmallObjectShadows &&
                 Math.Abs(VolumeLodFactor - 2.0f) < 0.05f &&
                 MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetHighCap,
@@ -414,6 +432,7 @@ public sealed class GraphicsSettings
                 !PostFxProbeAmbient &&
                 PostFxSsr &&
                 PostFxHeroProbe &&
+                !Mirrors &&
                 SmallObjectShadows &&
                 Math.Abs(VolumeLodFactor - 3.0f) < 0.05f &&
                 MaxFullyRenderedAvatars == AvatarLimitPolicy.PresetUltraCap,
@@ -463,6 +482,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "post_fx_probe_ambient", PostFxProbeAmbient);
         cfg.SetValue(section, "post_fx_ssr", PostFxSsr);
         cfg.SetValue(section, "post_fx_hero_probe", PostFxHeroProbe);
+        cfg.SetValue(section, "mirrors", Mirrors);
         cfg.SetValue(section, "shadows", Shadows);
         cfg.SetValue(section, "shadow_blur", ShadowBlur);
         cfg.SetValue(section, "shadow_resolution", ShadowResolution);
@@ -506,6 +526,7 @@ public sealed class GraphicsSettings
         PostFxProbeAmbient = (bool)cfg.GetValue(section, "post_fx_probe_ambient", PostFxProbeAmbient);
         PostFxSsr = (bool)cfg.GetValue(section, "post_fx_ssr", PostFxSsr);
         PostFxHeroProbe = (bool)cfg.GetValue(section, "post_fx_hero_probe", PostFxHeroProbe);
+        Mirrors = (bool)cfg.GetValue(section, "mirrors", Mirrors);
         Shadows = (bool)cfg.GetValue(section, "shadows", Shadows);
         ShadowBlur = (float)cfg.GetValue(section, "shadow_blur", ShadowBlur);
         ShadowResolution = (int)cfg.GetValue(section, "shadow_resolution", ShadowResolution);
@@ -561,7 +582,7 @@ public sealed class GraphicsSettings
     {
         var requested = new LowVramPolicy.Request(
             Msaa, PostFxSsao, ProjectSsaoHalfSize, PostFxSsil, ShadowResolution, ProjectReflectionSize,
-            PlanarMirror: true, HeroProbe: PostFxHeroProbe);
+            PlanarMirror: Mirrors, HeroProbe: PostFxHeroProbe);
         return LowVramCaps ? LowVramPolicy.Cap(requested, VramTier, changes) : requested;
     }
 

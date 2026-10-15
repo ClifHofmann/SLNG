@@ -118,7 +118,8 @@ public static class LegacyShadeMirror
         float LegacyShininess,      // Shiny level as the viewer packs it: 0, .25, .5, .75
         float MetallicFactor,
         float RoughnessFactor,
-        Vector3 Albedo);
+        Vector3 Albedo,
+        float SpecularAlpha = 1f);  // alpha of the specular map where it is sampled; 1 for an RGB map
 
     public readonly record struct Result(
         float Glossiness, float Roughness, float Metallic, float Specular, float EnvIntensity, Vector3 Albedo);
@@ -149,7 +150,8 @@ public static class LegacyShadeMirror
             specular = glossiness > 0f
                 ? Math.Clamp(Vector3.Dot(spec, new Vector3(0.2126f, 0.7152f, 0.0722f)), 0f, 1f)
                 : 0f;
-            envIntensity = i.SpecularEnvironment;
+            // The viewer's `env = env_intensity * spec.a` (materialF.glsl:306): the map's alpha masks it.
+            envIntensity = i.SpecularEnvironment * i.SpecularAlpha;
             metallic = Math.Clamp(i.MetallicFactor + envIntensity * specular, 0f, 1f);
         }
         else if (i.LegacyShininess > 0f)
