@@ -280,25 +280,37 @@ with the same material. Shared materials also make the cell key cheap, because i
     parent casts. Cheap to remove separately.
   - `static`: surfaces a cell would take.
 
-### Results (to be filled in from the user's run)
+### Results (Sirens Beach, 2026-10-15)
+
+Spot 1: v0.27.54 before the merge (mirror on, Object Detail 8, 53 avatars). Spot 2: v0.27.55, main after the
+FEAT-PERF-14/15/20 merge (mirrors off, Object Detail 4), another place and direction.
 
 | Measure | Sirens spot 1 | Sirens spot 2 | Notes |
 |---|---|---|---|
-| `[Perf]` drawsScene / drawsShadow | | | |
-| `[Perf]` renderCpuMs / postFlushMs / fps | | | |
-| `[Instancing]` grouped objects / groups | | | |
-| objs / instanced / animesh | | | |
-| main surf / now | | | `now` vs `drawsScene`: how much of the scene is prims |
-| main shared (A) | | | |
-| main cell32 / cell64 (B) | | | |
-| main both32 / both64 (C) | | | |
-| keys / private (anim, sel, mirror, media) | | | |
-| blend / depthPass / hidden / static | | | |
-| shadow surf / now | | | cascade factor = drawsShadow ÷ now |
-| shadow shared / cell32 / cell64 / both32 / both64 | | | |
-| keyCheck | | | must be ≥ 95 % equal |
-| pass s / avgMs / worstMs; `diag.batch` | | | cost check, ≤ 0.5 ms/frame |
-| **Decision** (rule above) | | | |
+| `[Perf]` drawsScene / drawsShadow | 5.8k / 7.9k | 12.0k / 8.2k | |
+| `[Perf]` renderCpuMs / postFlushMs / fps | 15 / 16 / 25-27 | 21 / 18 / 22-23 | spot 2: scriptsMs 25 is now as large as renderCpu |
+| `[Instancing]` grouped objects / groups | 3337 / 565 | 3561 / 727 | |
+| objs / instanced / animesh | 12180 / 3339 / 0 | 12491 / 3561 / 0 | |
+| main surf / now | 5335 / 5195 | 10678 / 10382 | prims are ~86-90 % of `drawsScene` |
+| main shared (A) | 3797 (-27 %) | 7586 (-27 %) | |
+| main cell32 / cell64 (B) | 3927 / 3780 | 7915 / 7572 | |
+| main both32 / both64 (C) | 3880 / 3733 | 7862 / 7519 | C is 1-2 % under A |
+| keys / private (anim, sel, mirror, media) | 1955 / 260 (260, 0, 0, 0) | 3429 / 1627 (1627, 0, 0, 0) | all private faces are texture animation |
+| blend / depthPass / hidden / static | 1555 / 0 / 338 / 3199 | 2431 / 0 / 578 / 6132 | |
+| shadow surf / now | 3596 / 3437 | 1145 / 962 | cascade factor 2.3 / 8.5 |
+| shadow shared / cell32 / cell64 / both32 / both64 | 2540 / 2465 / 2375 / 2456 / 2366 | 656 / 652 / 613 / 633 / 594 | |
+| keyCheck | 48/48 | 48/48 | |
+| pass s / avgMs / worstMs; `diag.batch` | 5.3 / 0.40 / 0.48 | 5.4-5.9 / 0.40 / 0.49; 0.40 avg | within 0.5 ms |
+| **Decision** (rule above) | A: 0.73 <= 0.8, yes. B: 0.98 > 0.75, no | A: 0.73, yes. B: 0.99, no | **Build A1. Close B for now.** |
+
+**Reading.** Sharing materials removes about a quarter of the prim draws in both passes; merging per cell adds
+almost nothing on top, because what remains is unique meshes. Two further levers fall out of the line:
+- **Texture animation** is the only reason a face needs a private material here (260 and 1627 faces). With
+  FEAT-PERF-16 (animation evaluated from `TIME` in the shader) those faces become shareable too, and the main
+  thread loses `obj-ticks.texanim` (105 ms per second at spot 2, ~4.6 ms per frame). FEAT-PERF-16 goes first or
+  together with A1.
+- **`hidden`** BUG-RENDER-16 placeholders (338 and 578) are a draw each in the main pass and again in the shadow
+  pass, for nothing visible.
 
 ### Headless numbers (selftest, this machine, not a region)
 
