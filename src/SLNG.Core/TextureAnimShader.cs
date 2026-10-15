@@ -37,7 +37,6 @@ public static class TextureAnimShader
         if (b.W < 0.5f) return TextureAnimFrame.Idle;
 
         int mode = (int)(a.X + 0.5f);
-        if ((mode & 1) == 0) return TextureAnimFrame.Idle;
 
         bool isLoop = (mode & 2) != 0;
         bool isReverse = (mode & 4) != 0;

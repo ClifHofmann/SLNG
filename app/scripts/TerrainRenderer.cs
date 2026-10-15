@@ -550,11 +550,20 @@ public partial class TerrainRenderer : Node3D
         // BUG-NET-34: a REMOVED region's terrain is freed by the next rebuild, which can be 10 s away;
         // until then it would lie at its old place, inside the new region. Hide it and stop it
         // colliding now.
-        if (_world != null && !_world.Terrains.ContainsKey(regionHandle)
-            && _regions.TryGetValue(regionHandle, out var node))
+        if (_world != null && _regions.TryGetValue(regionHandle, out var node))
         {
-            node.Root.Visible = false;
-            node.StaticBody.CollisionLayer = 0;
+            if (!_world.Terrains.ContainsKey(regionHandle))
+            {
+                node.Root.Visible = false;
+                node.StaticBody.CollisionLayer = 0;
+            }
+            else if (!node.Root.Visible)
+            {
+                // Back before the rebuild freed the old node (a quick teleport A -> B -> A): show it and
+                // let it collide again now, not at the next rebuild up to 10 s later.
+                node.Root.Visible = true;
+                node.StaticBody.CollisionLayer = PhysicsLayers.Terrain;
+            }
         }
     }
 

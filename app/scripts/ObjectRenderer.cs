@@ -685,6 +685,10 @@ public partial class ObjectRenderer : Node3D
         state.Shown = false;
         if (IsInstanceValid(state.StaticBody)) state.StaticBody.CollisionLayer = 0;
         if (state.LightNode != null && IsInstanceValid(state.LightNode)) state.LightNode.Visible = false;
+        // An animesh object's rigged body is not a child of this node: it lives in AvatarRenderer's
+        // control avatar, so hiding the prim would leave it standing at the old place. Release it now;
+        // RemoveVisual's own call is then a no-op (ReleaseControlAvatar clears ControlAvatarOwned).
+        ReleaseControlAvatar(state);
 
         _removalHideTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         _removalHideCount++;
@@ -2554,16 +2558,9 @@ public partial class ObjectRenderer : Node3D
     {
         if (anim is not { IsOn: true } running)
         {
-            if (_texAnims.Remove(entityId))
+            if (_texAnims.Remove(entityId) && _visuals.TryGetValue(entityId, out var state))
             {
-                if (_visuals.TryGetValue(entityId, out var state) && _world != null)
-                {
-                    var prim = _world.GetEntity(entityId)?.GetComponent<PrimitiveComponent>();
-                    if (prim != null)
-                    {
-                        ApplyTexAnimUniforms(state, prim, null);
-                    }
-                }
+                ApplyTexAnimUniforms(state, null);
             }
             return;
         }
@@ -2586,14 +2583,27 @@ public partial class ObjectRenderer : Node3D
         }
 
         _texAnims[entityId] = new TexAnimState { Anim = running, A = a, B = b };
-        if (_visuals.TryGetValue(entityId, out var visualState))
-        {
-            visualState.TexAnimNeedsReapply = true;
-        }
 
         // FEAT-PERF-06: an animating face must not be frozen inside a MultiMesh -- pull it out so
         // its own shader can run the flipbook. The cull sweep leaves it out while _texAnims holds it.
+        bool wasInstanced = _instanceGroups?.IsInstanced(entityId) == true;
         _instanceGroups?.Leave(entityId);
+
+        if (_visuals.TryGetValue(entityId, out var visualState))
+        {
+            if (wasInstanced)
+            {
+                // Leave() handed this node the GROUP's shared material. Writing the animation into it
+                // would animate every instance still drawn by that group, so build the object's own
+                // materials instead; their landing sets TexAnimNeedsReapply (FEAT-PERF-16 review).
+                visualState.TexAnimNeedsReapply = false;
+                _ = ApplyFaceMaterialsAsync(visualState);
+            }
+            else
+            {
+                visualState.TexAnimNeedsReapply = true;
+            }
+        }
 
         // Report every animation the client actually starts, once per object, without --diag and
         // without needing the object to be clicked. "The animation runs the wrong way" is not
@@ -2646,10 +2656,7 @@ public partial class ObjectRenderer : Node3D
             // it reapplies when materials are rebuilt.
             if (state.ResourcesReleased) continue;
 
-            var prim = _world.GetEntity(entityId)?.GetComponent<PrimitiveComponent>();
-            if (prim == null) continue;
-
-            ApplyTexAnimUniforms(state, prim, anim);
+            ApplyTexAnimUniforms(state, anim);
             state.TexAnimNeedsReapply = false;
         }
     }
@@ -2983,7 +2990,7 @@ public partial class ObjectRenderer : Node3D
     /// <summary>FEAT-PERF-16: writes the packed animation (or "off") onto the face materials of one object.
     /// Faces the animation does not cover get "off". Runs when an animation starts, changes or stops, and
     /// after a material rebuild -- never per frame.</summary>
-    private void ApplyTexAnimUniforms(VisualState state, PrimitiveComponent prim, TexAnimState? anim)
+    private void ApplyTexAnimUniforms(VisualState state, TexAnimState? anim)
     {
         if (!IsInstanceValid(state.MeshInstance)) return;
 
@@ -3016,6 +3023,8 @@ public partial class ObjectRenderer : Node3D
         }
     }
 
+    // "Off" erases the parameter (nil = the shader default) instead of writing a zero vector, so the material
+    // compares equal to one that was never animated (MaterialFingerprint, FEAT-PERF-20's material key).
     private static void ApplyTexAnimToMaterial(ShaderMaterial mat, bool covered, Godot.Vector4 a, Godot.Vector4 b)
     {
         if (covered)
@@ -3025,7 +3034,7 @@ public partial class ObjectRenderer : Node3D
         }
         else
         {
-            mat.SetShaderParameter(PrimShaderFamily.TexAnimB, Godot.Vector4.Zero);
+            mat.SetShaderParameter(PrimShaderFamily.TexAnimB, default(Variant));
         }
 
         if (mat.NextPass is ShaderMaterial core && ReferenceEquals(core.Shader, PrimShaderFamily.DepthCore))
@@ -3037,7 +3046,7 @@ public partial class ObjectRenderer : Node3D
             }
             else
             {
-                core.SetShaderParameter(PrimShaderFamily.TexAnimB, Godot.Vector4.Zero);
+                core.SetShaderParameter(PrimShaderFamily.TexAnimB, default(Variant));
             }
         }
     }
@@ -6050,8 +6059,7 @@ public partial class ObjectRenderer : Node3D
         bool hasMedia = _world?.GetEntity(state.EntityId)?.GetComponent<PrimitiveComponent>()?.MediaFaces != null;
 
         bool disqualified =
-            state.PendingRemoval
-            || _instanceSuppressed.Contains(state.EntityId)
+            _instanceSuppressed.Contains(state.EntityId)
             || state.ResourcesReleased
             || state.SplitChildren != null
             || state.LightNode != null

@@ -153,7 +153,7 @@ public partial class ObjectRenderer
             }
 
             return failures.Count == 0
-                ? (true, "looping 4x4 flipbook on face 1 verified, static uniforms untouched, sentinel preserved across ticks, stop resets uniforms, slng_anim_time ticking")
+                ? (true, "looping 4x4 flipbook on face 1 verified, static uniforms untouched, sentinel preserved across ticks, stop resets uniforms (slng_anim_time readback not checked headless)")
                 : (false, string.Join("; ", failures));
         }
         catch (Exception ex)
