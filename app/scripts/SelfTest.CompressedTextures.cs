@@ -266,4 +266,54 @@ public static partial class SelfTest
             try { System.IO.Directory.Delete(dir, true); } catch { }
         }
     }
+
+    /// <summary>
+    /// FEAT-PERF-17 Part B (code review): a resident texture and its replacement can be held in different
+    /// formats. A RGBA8 256 (uploaded while the setting was off) must sharpen to a BC1 512 although the BC1
+    /// chain has fewer bytes; and with the setting switched off, a BC texture that shrinks stays BC -- its
+    /// RGBA8 half size would be as large or larger, and a shrink is there to give bytes back.
+    /// </summary>
+    private static Check CheckCompressedAcrossFormats()
+    {
+        const string Name = "sharpen and shrink across formats";
+        var problems = new List<string>();
+        var cache = new GpuCache(512L << 20) { CompressTextures = false };
+        try
+        {
+            const int S = 512;
+            var data = CompressTestTexture(S, alpha: false);
+
+            var id = Guid.NewGuid();
+            var (tex, _, _) = cache.SelfTestUpload(id, data, (S / 2) * (S / 2), true, 1, compress: false);
+            if (tex == null || tex.GetWidth() != S / 2 || cache.SelfTestEntry(id).Format != GpuTextureFormat.Rgba8)
+                return new Check(Name, false, $"setup: resident {tex?.GetWidth()} {cache.SelfTestEntry(id).Format}");
+            cache.GetOrUploadTextureAsync(id, null, true, compress: true);   // a diffuse caller
+            cache.CompressTextures = true;
+            var sharpen = cache.SelfTestPrepareSharpen(id, data, S * S);
+            if (!sharpen.HasImage || sharpen.Width != S || sharpen.Format != GpuTextureFormat.Bc1)
+                problems.Add($"RGBA8 {S / 2} -> sharpen gave image={sharpen.HasImage} nothingSharper={sharpen.NothingSharper} {sharpen.Width} {sharpen.Format}");
+            if (cache.SelfTestReservedBytes != 0) problems.Add($"{cache.SelfTestReservedBytes} B still reserved after the sharpen");
+
+            var bcId = Guid.NewGuid();
+            var small = CompressTestTexture(256, alpha: false);
+            cache.SelfTestUpload(bcId, small, 0f, true, 1, compress: true);
+            cache.CompressTextures = false;
+            var (nw, _) = cache.SelfTestShrinkNow(bcId, small);
+            var (format, size) = cache.SelfTestEntry(bcId);
+            if (nw != 128 || format != GpuTextureFormat.Bc1 || size != BcLayout.ChainBytes(GpuTextureFormat.Bc1, 128, 128, true))
+                problems.Add($"BC1 256 shrunk with the setting off: {nw} px, {format}, {size} B");
+
+            return problems.Count == 0
+                ? new Check(Name, true, $"RGBA8 {S / 2} sharpened to BC1 {S}; BC1 256 shrank to BC1 128 with the setting off")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            cache.DisposeAll();
+        }
+    }
 }

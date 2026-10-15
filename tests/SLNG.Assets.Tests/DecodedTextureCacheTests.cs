@@ -250,4 +250,31 @@ public class DecodedTextureCacheTests : IDisposable
         await _cache.PutGpuAsync(id, good with { Format = GpuTextureFormat.Rgba8 });
         Assert.False(File.Exists(_cache.GetGpuCachePath(id)));
     }
+
+    [Fact]
+    public async Task Gpu_BusyFile_IsKeptForTheNextRead()
+    {
+        var id = Guid.NewGuid();
+        await _cache.PutGpuAsync(id, Compressed(64, GpuTextureFormat.Bc1));
+        string path = _cache.GetGpuCachePath(id);
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Null(await _cache.TryGetGpuAsync(id));   // a sharing violation is not corruption
+        }
+        Assert.True(File.Exists(path));
+        Assert.NotNull(await _cache.TryGetGpuAsync(id));
+    }
+
+    [Fact]
+    public async Task Gpu_WriteThatCannotReplaceTheFile_LeavesNoTempFile()
+    {
+        var id = Guid.NewGuid();
+        await _cache.PutGpuAsync(id, Compressed(64, GpuTextureFormat.Bc1));
+        string path = _cache.GetGpuCachePath(id);
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await _cache.PutGpuAsync(id, Compressed(128, GpuTextureFormat.Bc1));  // the move cannot replace an open file
+        }
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(path)!, "*.tmp*"));
+    }
 }

@@ -119,6 +119,11 @@ public sealed class DecodedTextureCache
             try { File.SetLastAccessTimeUtc(filePath, DateTime.UtcNow); } catch { }
             return data;
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Busy (a writer replacing it, a virus scanner), not corrupt: keep it for the next read.
+            return null;
+        }
         catch
         {
             TryDelete(filePath);
@@ -163,6 +168,7 @@ public sealed class DecodedTextureCache
 
         int maxLz4Len = LZ4Codec.MaximumOutputSize(data.Data.Length);
         byte[]? rented = null;
+        string tempPath = targetPath + ".tmp." + Guid.NewGuid().ToString("N");
         try
         {
             rented = ArrayPool<byte>.Shared.Rent(GpuHeaderSize + maxLz4Len);
@@ -171,7 +177,6 @@ public sealed class DecodedTextureCache
             int compressedLen = LZ4Codec.Encode(data.Data, 0, data.Data.Length, rented, GpuHeaderSize, maxLz4Len, LZ4Level.L00_FAST);
             int totalFileLen = GpuHeaderSize + compressedLen;
 
-            string tempPath = targetPath + ".tmp." + Guid.NewGuid().ToString("N");
             using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
             {
                 await stream.WriteAsync(rented.AsMemory(0, totalFileLen)).ConfigureAwait(false);
@@ -184,6 +189,9 @@ public sealed class DecodedTextureCache
         }
         catch (Exception ex)
         {
+            // The target can be open for reading (File.Move cannot replace it then): the copy is simply
+            // made again next time, but the temp file must not be left behind uncounted.
+            try { File.Delete(tempPath); } catch { }
             Console.Error.WriteLine($"[DecodedCache] Failed to write cache file '{targetPath}': {ex.Message}");
         }
         finally
@@ -399,6 +407,7 @@ public sealed class DecodedTextureCache
         int maxLz4Len = LZ4Codec.MaximumOutputSize(uncompressedLen);
 
         byte[]? rented = null;
+        string tempPath = targetPath + ".tmp." + Guid.NewGuid().ToString("N");
         try
         {
             rented = ArrayPool<byte>.Shared.Rent(HeaderSize + maxLz4Len);
@@ -416,7 +425,6 @@ public sealed class DecodedTextureCache
             int compressedLen = LZ4Codec.Encode(rgba, 0, uncompressedLen, rented, HeaderSize, maxLz4Len, LZ4Level.L00_FAST);
             int totalFileLen = HeaderSize + compressedLen;
 
-            string tempPath = targetPath + ".tmp." + Guid.NewGuid().ToString("N");
             using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
             {
                 await stream.WriteAsync(rented.AsMemory(0, totalFileLen)).ConfigureAwait(false);
@@ -433,6 +441,7 @@ public sealed class DecodedTextureCache
         }
         catch (Exception ex)
         {
+            try { File.Delete(tempPath); } catch { }
             Console.Error.WriteLine($"[DecodedCache] Failed to write cache file '{targetPath}': {ex.Message}");
         }
         finally

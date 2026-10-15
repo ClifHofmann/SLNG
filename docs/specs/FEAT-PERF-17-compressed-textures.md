@@ -450,6 +450,13 @@ or skin.
 - [x] B9 offline measurements reported
 - [ ] B9 in-world acceptance (same-spot VRAM, `-VramBudget 3500`, visual check)
 - Follow-up: BC5 normal maps (needs the shaders to rebuild Z), BC7 for alpha if BC3 shows its limits
+- Note: the shrink pass skips entries under `ShrinkFloorBytes` (512 KB, tuned for RGBA8). BC1 and BC3
+  textures up to 512² are below it now and are never shrunk (RGBA8: up to 256²). Acceptable -- they are
+  4-8x smaller -- but the shrink pass has fewer candidates than before.
+- Review fixes (v0.27.47): a sharpen compares sizes, not bytes, when resident and new formats differ (a
+  RGBA8 256 could not sharpen to a BC1 512); a BC texture stays BC when it shrinks with the setting off;
+  a busy cache file is not deleted, a failed write leaves no temp file; the source alpha scan runs only
+  for a texture that may be compressed.
 - Follow-up (mobile goal): a GPU without BC support makes Godot decompress DXT to RGBA8 on upload
   (`texture_storage.cpp`), so the cache would book 1/8 of what it holds; every desktop target supports
   BC. Mobile needs ETC2/ASTC and a check of `texture_is_format_supported_for_usage` before choosing BC.
