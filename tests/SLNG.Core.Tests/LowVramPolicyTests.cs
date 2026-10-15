@@ -191,6 +191,29 @@ public class LowVramPolicyTests
         Assert.Contains(changes, c => c.StartsWith("MSAA 4x -> off"));
     }
 
+    // FEAT-PERF-15: the Mirrors setting is what GraphicsSettings feeds in as Request.PlanarMirror. Off there
+    // means off here, on every tier, and a cap that has nothing to turn off must not claim it did.
+    [Theory]
+    [InlineData(LowVramPolicy.TierNone)]
+    [InlineData(LowVramPolicy.TierSmall)]
+    [InlineData(LowVramPolicy.TierTiny)]
+    public void Mirrors_setting_off_keeps_the_planar_mirror_off_whatever_the_card(int tier)
+    {
+        var changes = new List<string>();
+
+        var result = LowVramPolicy.Cap(Maxed() with { PlanarMirror = false }, tier, changes);
+
+        Assert.False(result.PlanarMirror);
+        Assert.DoesNotContain(changes, c => c.Contains("planar mirror"));
+    }
+
+    [Fact]
+    public void Mirrors_setting_on_survives_a_big_card_and_is_capped_on_a_small_one()
+    {
+        Assert.True(LowVramPolicy.Cap(Maxed(), LowVramPolicy.TierNone).PlanarMirror);
+        Assert.False(LowVramPolicy.Cap(Maxed(), LowVramPolicy.TierSmall).PlanarMirror);
+    }
+
     [Theory]
     // MSAA values: 0 off, 1 2x, 2 4x, 3 8x.
     [InlineData(LowVramPolicy.TierSmall, 0, 0)]

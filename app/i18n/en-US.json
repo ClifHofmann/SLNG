@@ -734,6 +734,8 @@
       "post_fx_probe_ambient": "Probe Ambient Light",
       "post_fx_ssr": "Screen-Space Reflections",
       "post_fx_hero_probe": "Real-Time Mirrors",
+      "mirrors": "Mirrors",
+      "mirrors_tooltip": "Live mirrors. Renders the whole scene a second time while a mirror is in view, so it is off in every preset, as in the official viewer. The real-time mirror probe above needs it too.",
       "tab_licenses": "Licences",
       "licenses_heading": "Third-party notices and attribution",
       "licenses_missing": "The third-party notice file is missing from this build. This is a licensing problem, not a display one — please report it.",

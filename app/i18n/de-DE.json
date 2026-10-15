@@ -734,6 +734,8 @@
       "post_fx_probe_ambient": "Sonden-Umgebungslicht",
       "post_fx_ssr": "Spiegelungen (Bildschirmraum)",
       "post_fx_hero_probe": "Echtzeit-Spiegel",
+      "mirrors": "Spiegel",
+      "mirrors_tooltip": "Live-Spiegel. Rendert die ganze Szene ein zweites Mal, solange ein Spiegel im Bild ist, und ist deshalb in jedem Preset aus, wie im offiziellen Viewer. Die Echtzeit-Spiegel-Sonde oben braucht es ebenfalls.",
       "tab_licenses": "Lizenzen",
       "licenses_heading": "Hinweise und Namensnennung zu Fremdmaterial",
       "licenses_missing": "Die Datei mit den Fremdmaterial-Hinweisen fehlt in diesem Build. Das ist ein Lizenzproblem, kein Anzeigeproblem — bitte melden.",
