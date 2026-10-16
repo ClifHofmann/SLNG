@@ -58,6 +58,24 @@ namespace SLNG.App;
 /// because the sync before it waits for exactly that. <c>rtBusyMs</c> is how long after scripts end
 /// the render side was still busy, and <c>rtLagMs</c> is how far behind it still was when the
 /// flush ended. When <c>tailMs</c> is about <c>rtLagMs</c>, the tail is waiting.</para>
+///
+/// <para><b>FEAT-PERF-24: the render thread's own frame.</b> Once the tail is an honest wait, the
+/// question is what the render thread does with its frame, and the viewport timers cover only part of
+/// it. Two more markers bracket the queued draw: one queued in <c>frame_pre_draw</c>, which
+/// <c>RenderingServerDefault::draw</c> emits right before it queues <c>_draw</c>
+/// (<c>rendering_server_default.cpp:443-449</c>, 4.7-stable), and one queued from the main thread's
+/// <c>ScriptServer::frame()</c> hook, the first managed code after <c>draw()</c> returns
+/// (<c>main.cpp:5085-5105</c>; C# runs posts to <see cref="Dispatcher.SynchronizationContext"/>
+/// there). Almost nothing else is queued between them (a later pre_draw handler's setter, or what a
+/// continuation posted earlier queues; a frame whose end marker went out more than 1 ms late is left
+/// out), so their gap is <c>_draw</c>: <c>drawCallMs</c>.
+/// The rest of the render thread's cycle, up to the marker at the flush end, executes the commands
+/// the main thread queued meanwhile: <c>commandMs</c> = <c>cmdScripts</c> (physics, input and our
+/// scripts) + <c>cmdFlush</c> (deferred calls, skeleton writes). The render thread can only have been
+/// idle before the main thread queued the next marker; that time, and the tail after the flush-end
+/// marker, are <c>rtIdleMaxMs</c>, an upper bound. drawCall + command + idleMax is the render
+/// thread's cycle, about <c>frameMs</c>. <see cref="RenderSections"/> splits <c>drawCallMs</c>
+/// further.</para>
 /// </summary>
 public partial class FrameTimeline : Node
 {
@@ -75,6 +93,14 @@ public partial class FrameTimeline : Node
     private static Callable _rtAfterScriptsMarker, _rtAfterFlushMarker, _onFlushed;
     private static bool _rtMarkersOn;
     private static SceneTree? _tree;
+
+    // FEAT-PERF-24: the draw bracket. The two stamps are written on the render thread; the two
+    // "queued" times are the main thread's.
+    private static long _rtDrawStart, _rtDrawEnd, _drawStartQueued, _drawEndQueued;
+    private static Callable _rtDrawStartMarker, _rtDrawEndMarker;
+    private static SendOrPostCallback? _queueDrawEnd;
+    private static double _drawCallSum, _cmdScriptsSum, _cmdFlushSum, _rtIdleSum;
+    private static int _drawFrames;
 
     private bool _isEnd;
 
@@ -97,6 +123,16 @@ public partial class FrameTimeline : Node
     /// flush end.</summary>
     public static double RtBusyMs { get; private set; } = -1;
     public static double RtLagMs { get; private set; } = -1;
+
+    /// <summary>FEAT-PERF-24, separate mode with <c>--diag</c> only, else -1: per frame, the render
+    /// thread inside <c>_draw</c>; executing the commands queued from the previous pre_draw to scripts
+    /// end, and from there to the flush end; and the rest of its cycle, in which it may have been idle
+    /// (an upper bound). See the class summary.</summary>
+    public static double DrawCallMs { get; private set; } = -1;
+    public static double CmdScriptsMs { get; private set; } = -1;
+    public static double CmdFlushMs { get; private set; } = -1;
+    public static double RtIdleMaxMs { get; private set; } = -1;
+    public static double CommandMs => CmdScriptsMs < 0 ? -1 : CmdScriptsMs + CmdFlushMs;
 
     /// <summary>Prims removed (<c>QueueFree</c>d) per frame: the delete-queue half of the tail.</summary>
     public static double FreesPerFrame { get; private set; }
@@ -125,8 +161,36 @@ public partial class FrameTimeline : Node
             // a timestamp write and nothing else (the same rule as RenderThread.Probe).
             _rtAfterScriptsMarker = Callable.From(() => Volatile.Write(ref _rtAfterScripts, Stopwatch.GetTimestamp()));
             _rtAfterFlushMarker = Callable.From(() => Volatile.Write(ref _rtAfterFlush, Stopwatch.GetTimestamp()));
+            _rtDrawStartMarker = Callable.From(() => Volatile.Write(ref _rtDrawStart, Stopwatch.GetTimestamp()));
+            _rtDrawEndMarker = Callable.From(OnRenderThreadDrawEnd);
+            _queueDrawEnd = _ =>
+            {
+                _drawEndQueued = Stopwatch.GetTimestamp();
+                RenderingServer.CallOnRenderThread(_rtDrawEndMarker);
+            };
+            RenderSections.Install();
             _rtMarkersOn = true;
         }
+    }
+
+    /// <summary>Render thread, right after <c>_draw</c>: the stamp, then <see cref="RenderSections"/>
+    /// reads Godot's captures (the one exception to "a timestamp write and nothing else", and it calls
+    /// only RenderingDevice getters that must run on this thread).</summary>
+    private static void OnRenderThreadDrawEnd()
+    {
+        long now = Stopwatch.GetTimestamp();
+        Volatile.Write(ref _rtDrawEnd, now);
+        RenderSections.OnDrawEnd(Volatile.Read(ref _rtDrawStart), now);
+    }
+
+    /// <summary>Main thread, in pre_draw: brackets the draw about to be queued. The start marker lands
+    /// in the queue right before <c>_draw</c>; the end marker is queued from the frame() hook after
+    /// <c>draw()</c> returns.</summary>
+    private static void BracketDraw(long preDraw)
+    {
+        _drawStartQueued = preDraw;
+        RenderingServer.CallOnRenderThread(_rtDrawStartMarker);
+        Dispatcher.SynchronizationContext.Post(_queueDrawEnd!, null);
     }
 
     /// <summary>The timer's handler: the main thread's deferred flush and transform notifications
@@ -154,6 +218,31 @@ public partial class FrameTimeline : Node
         _rtBusySum += Ms(afterScripts - _scriptsEnd);
         _rtLagSum += Ms(afterFlush - flushMark);
         _rtFrames++;
+        AccumulateDrawSplit(preDraw, afterScripts, afterFlush, flushMark);
+    }
+
+    /// <summary>The previous frame's draw and the render thread's cycle after it, up to this frame's
+    /// pre_draw (separate mode, <c>--diag</c>). Read before this frame's start marker is queued.</summary>
+    private static void AccumulateDrawSplit(long preDraw, long afterScripts, long afterFlush, long flushMark)
+    {
+        long start = Volatile.Read(ref _rtDrawStart), end = Volatile.Read(ref _rtDrawEnd);
+        long startQueued = _drawStartQueued, endQueued = _drawEndQueued;
+        // Both stamps must belong to the draw queued at the previous pre_draw, and the end marker must
+        // have been queued right after it: a continuation posted earlier runs first in frame(), and
+        // what it queued would sit inside the bracket.
+        if (startQueued == 0 || start < startQueued || endQueued < startQueued || end < endQueued
+            || end < start || afterScripts < end || Ms(endQueued - startQueued) > 1.0)
+        {
+            return;
+        }
+        _drawCallSum += Ms(end - start);
+        // Each command stretch counts only from the moment its marker was queued, or from where the
+        // previous one ended if that was later: from then on the render thread had work waiting.
+        _cmdScriptsSum += Ms(afterScripts - System.Math.Max(end, _scriptsEnd));
+        _cmdFlushSum += Ms(afterFlush - System.Math.Max(afterScripts, flushMark));
+        _rtIdleSum += Ms(System.Math.Max(0, _scriptsEnd - end)) + Ms(System.Math.Max(0, flushMark - afterScripts))
+                    + Ms(System.Math.Max(0, preDraw - afterFlush));
+        _drawFrames++;
     }
 
     private static void OnPreDraw()
@@ -164,18 +253,17 @@ public partial class FrameTimeline : Node
 
         long previous = _lastPostDraw; // in this mode: the previous frame's pre_draw
         _lastPostDraw = now;
-        if (previous == 0 || !(previous < _processFrame && _processFrame <= _scriptsStart
-                               && _scriptsStart <= _scriptsEnd && _scriptsEnd <= now))
+        if (previous != 0 && previous < _processFrame && _processFrame <= _scriptsStart
+            && _scriptsStart <= _scriptsEnd && _scriptsEnd <= now)
         {
-            return;
+            _preFlushSum += Ms(_scriptsStart - _processFrame);
+            _scriptsSum += Ms(_scriptsEnd - _scriptsStart);
+            _postFlushSum += Ms(now - _scriptsEnd);
+            _frameSum += Ms(now - previous);
+            _frames++;
+            AccumulateSplit(now);
         }
-
-        _preFlushSum += Ms(_scriptsStart - _processFrame);
-        _scriptsSum += Ms(_scriptsEnd - _scriptsStart);
-        _postFlushSum += Ms(now - _scriptsEnd);
-        _frameSum += Ms(now - previous);
-        _frames++;
-        AccumulateSplit(now);
+        if (_rtMarkersOn) BracketDraw(now);
     }
 
     public override void _Process(double delta)
@@ -240,6 +328,26 @@ public partial class FrameTimeline : Node
         RtLagMs = _rtFrames > 0 ? _rtLagSum / _rtFrames : -1;
         _flushSum = _tailSum = _rtBusySum = _rtLagSum = 0;
         _splitFrames = _rtFrames = 0;
+
+        DrawCallMs = _drawFrames > 0 ? _drawCallSum / _drawFrames : -1;
+        CmdScriptsMs = _drawFrames > 0 ? _cmdScriptsSum / _drawFrames : -1;
+        CmdFlushMs = _drawFrames > 0 ? _cmdFlushSum / _drawFrames : -1;
+        RtIdleMaxMs = _drawFrames > 0 ? _rtIdleSum / _drawFrames : -1;
+        _drawCallSum = _cmdScriptsSum = _cmdFlushSum = _rtIdleSum = 0;
+        _drawFrames = 0;
+        if (_rtMarkersOn) RenderSections.Settle();
+    }
+
+    /// <summary>The FEAT-PERF-24 render-thread fields of the <c>[Perf]</c> line, keys always present,
+    /// "-" without <c>--diag</c> on a separate render thread. The composite values use the invariant
+    /// culture so their commas stay separators.</summary>
+    public static string DescribeRenderThread()
+    {
+        static string Ms1(double ms) => ms < 0 ? "-" : ms.ToString("F1");
+        static string Inv(double ms) => ms < 0 ? "-" : ms.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+        return $"drawCallMs={Ms1(DrawCallMs)} commandMs={Ms1(CommandMs)} rtIdleMaxMs={Ms1(RtIdleMaxMs)} " +
+               $"cmdSplit=scripts:{Inv(CmdScriptsMs)},flush:{Inv(CmdFlushMs)} " +
+               $"drawSplit=pre:{Inv(RenderSections.PreMs)},vp:{Inv(RenderSections.ViewportsMs)},post:{Inv(RenderSections.PostMs)}";
     }
 
     private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;

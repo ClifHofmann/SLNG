@@ -305,6 +305,9 @@ public partial class StatsOverlay : PanelContainer
             // tail (delete queue, RenderingServer sync); rt* only with --diag on a separate render thread.
             $"flushMs={FrameTimeline.FlushMs:F1} tailMs={FrameTimeline.TailMs:F1} " +
             $"rtBusyMs={MsOrDash(FrameTimeline.RtBusyMs)} rtLagMs={MsOrDash(FrameTimeline.RtLagMs)} " +
+            // FEAT-PERF-24: the render thread's cycle: inside _draw vs executing queued commands, and
+            // _draw cut at the viewport timestamps (same --diag / separate-mode condition).
+            $"{FrameTimeline.DescribeRenderThread()} " +
             $"frees={FrameTimeline.FreesPerFrame:F1} drawMs={FrameTimeline.DrawMs:F1} " +
             $"renderCpuMs={RenderTimes.CpuMs:F1} renderGpuMs={RenderTimes.GpuMs:F1} setupMs={RenderTimes.SetupCpuMs:F1} " +
             $"views={RenderTimes.Describe(compact: true)} draws={_lastDrawCalls:F0} drawsScene={RenderTimes.MainVisibleDraws} drawsShadow={RenderTimes.MainShadowDraws} " +
@@ -316,6 +319,9 @@ public partial class StatsOverlay : PanelContainer
         // Immediately after the [Perf] line, so a session log reads as: what the frame looked like,
         // then what the main thread actually spent that frame's time on.
         MainThreadWorkQueue.ReportCosts();
+
+        // FEAT-PERF-24: with Godot's --gpu-profile, the render thread's _draw by named section.
+        if (RenderSections.Describe() is { } sections) EmitPerfLine(sections);
 
         // Per-phase frame cost. [WorkCost] covers queued work only; this covers the frame itself,
         // which is where the remaining steady cost has to be -- the queue totals no longer come

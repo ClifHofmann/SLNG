@@ -131,7 +131,13 @@ param(
     # -1 (default) = whatever the Graphics preference says. Compare `draws`, `drawsScene`, `drawsShadow`,
     # `renderCpuMs` and fps in the [Perf] lines, and read the [RangeCull] line for what was held back.
     # Passes --small-cull=<px>.
-    [double]$SmallCull = -1
+    [double]$SmallCull = -1,
+
+    # FEAT-PERF-24: Godot's own --gpu-profile. It prints the GPU time per render pass once a second into
+    # godot.log, and makes Godot capture a timestamp at every pass inside the render thread's draw, which
+    # -Diag then turns into an [RtSections] line (render-thread CPU per named section: probes, viewports,
+    # shadows, ...). Costs a little itself; for a measuring run only.
+    [switch]$GpuProfile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -246,6 +252,10 @@ if ($SmallCull -ge 0) {
     $scText = if ($SmallCull -eq 0) { 'OFF' } else { "$SmallCull px" }
     Write-Host "      small-object cull $scText for this run (--small-cull)" -ForegroundColor Yellow
     $userArgs += "--small-cull=$($SmallCull.ToString([cultureinfo]::InvariantCulture))"
+}
+if ($GpuProfile) {
+    Write-Host "      GPU profile ON (--gpu-profile, engine flag)" -ForegroundColor Yellow
+    $clientArgs += '--gpu-profile'
 }
 if ($userArgs.Count -gt 0) {
     $clientArgs += @('--') + $userArgs
