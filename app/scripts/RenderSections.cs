@@ -65,7 +65,9 @@ internal static class RenderSections
     private static bool _sawProfileCaptures;
     private static List<KeyValuePair<string, double>> _lastSpans = new();
 
-    /// <summary>Per drawn frame of the last window, else -1: bracket start to the first viewport's
+    /// <summary>Per drawn frame of the last window, else -1 (every bracketed draw whose captures came
+    /// back, which is not exactly <c>drawCallMs</c>'s set of frames, so the two can differ while the
+    /// region loads): bracket start to the first viewport's
     /// <c>vp_begin</c> (scene/canvas update, probes), first <c>vp_begin</c> to last <c>vp_end</c> (the
     /// viewports, about <c>renderCpuMs</c>), last <c>vp_end</c> to bracket end (blit, canvas,
     /// <c>end_frame</c>).</summary>
@@ -91,14 +93,19 @@ internal static class RenderSections
         Volatile.Write(ref _offsetUsec, godotUsec - (before + after) * 0.5 * _usecPerTick);
     }
 
-    /// <summary>Render thread: one draw has ended. Records its bracket and splits whichever earlier
-    /// draw Godot's captures now describe.</summary>
-    public static void OnDrawEnd(long start, long end)
+    /// <summary>Render thread: one draw has ended. Records its bracket, unless FrameTimeline found its
+    /// end marker late (<paramref name="usable"/> false: the bracket may hold queued commands, and
+    /// <c>drawCallMs</c> leaves that draw out too), and splits whichever earlier draw Godot's captures
+    /// now describe. The captures are read every frame either way: each set is handed out only once.</summary>
+    public static void OnDrawEnd(long start, long end, bool usable)
     {
         var rd = _rd;
         if (rd == null || _failed) return;
-        _ring[_ringNext] = (start, end);
-        _ringNext = (_ringNext + 1) % RingSize;
+        if (usable)
+        {
+            _ring[_ringNext] = (start, end);
+            _ringNext = (_ringNext + 1) % RingSize;
+        }
         try
         {
             ReadCaptures(rd);

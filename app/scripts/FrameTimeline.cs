@@ -102,6 +102,11 @@ public partial class FrameTimeline : Node
     private static double _drawCallSum, _cmdScriptsSum, _cmdFlushSum, _rtIdleSum;
     private static int _drawFrames;
 
+    /// <summary>A draw whose end marker was queued later than this after its pre_draw is left out: a
+    /// continuation posted earlier runs first in frame(), and what it queued would sit inside the
+    /// bracket.</summary>
+    private const double LateEndMarkerMs = 1.0;
+
     private bool _isEnd;
 
     /// <summary>Averages per frame over the last <see cref="Settle"/> window. They add up to
@@ -180,7 +185,10 @@ public partial class FrameTimeline : Node
     {
         long now = Stopwatch.GetTimestamp();
         Volatile.Write(ref _rtDrawEnd, now);
-        RenderSections.OnDrawEnd(Volatile.Read(ref _rtDrawStart), now);
+        // Both "queued" times were written before their markers were queued, and the main thread
+        // cannot reach the next pre_draw before this has run (its sync waits for it).
+        bool onTime = Ms(Volatile.Read(ref _drawEndQueued) - Volatile.Read(ref _drawStartQueued)) <= LateEndMarkerMs;
+        RenderSections.OnDrawEnd(Volatile.Read(ref _rtDrawStart), now, onTime);
     }
 
     /// <summary>Main thread, in pre_draw: brackets the draw about to be queued. The start marker lands
@@ -228,10 +236,9 @@ public partial class FrameTimeline : Node
         long start = Volatile.Read(ref _rtDrawStart), end = Volatile.Read(ref _rtDrawEnd);
         long startQueued = _drawStartQueued, endQueued = _drawEndQueued;
         // Both stamps must belong to the draw queued at the previous pre_draw, and the end marker must
-        // have been queued right after it: a continuation posted earlier runs first in frame(), and
-        // what it queued would sit inside the bracket.
+        // have gone out on time (LateEndMarkerMs).
         if (startQueued == 0 || start < startQueued || endQueued < startQueued || end < endQueued
-            || end < start || afterScripts < end || Ms(endQueued - startQueued) > 1.0)
+            || end < start || afterScripts < end || Ms(endQueued - startQueued) > LateEndMarkerMs)
         {
             return;
         }
