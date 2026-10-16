@@ -410,6 +410,107 @@ public sealed class WorldSimulation : IDisposable
         }
     }
 
+    // ---- FEAT-RENDER-27: client-side target omega -------------------------------------------------
+
+    /// <summary>Every entity carrying a <see cref="SpinComponent"/>: the few objects that have ever
+    /// turned under llTargetOmega. Entities that left the world are dropped on the next frame.</summary>
+    private readonly List<Entity> _spinning = new();
+
+    /// <summary>What the renderer has to move every frame: each turning entity and every prim
+    /// linked under it, each once. Rebuilt, not allocated, when it may have changed.</summary>
+    private readonly List<Entity> _spinDriven = new();
+    private readonly HashSet<System.Guid> _spinDrivenSeen = new();
+    private bool _spinDrivenDirty;
+    private float _spinDrivenAge;
+
+    /// <summary>Safety net for a link, unlink or removal that did not mark the list dirty. Cheap: a
+    /// rebuild visits only the turning objects and their children.</summary>
+    private const float SpinDrivenMaxAgeSeconds = 1f;
+
+    /// <summary>FEAT-RENDER-27: the prims whose drawn transform changes every frame because they,
+    /// or the linkset root above them, turn under target omega. The renderer moves exactly these;
+    /// every other object costs nothing per frame. The same list instance for the whole session,
+    /// read on the main thread after <see cref="AdvanceSpins"/>.</summary>
+    public IReadOnlyList<Entity> SpinDrivenEntities => _spinDriven;
+
+    /// <summary>FEAT-RENDER-27: turns every turning object on by one frame, as the viewer's
+    /// <c>idleUpdate</c> does (llviewerobject.cpp:2503-2510): scaled by the region's time dilation,
+    /// and not while the object is selected. Call once per frame on the main thread, after
+    /// <see cref="Pump"/>.</summary>
+    public void AdvanceSpins(float deltaSeconds)
+    {
+        for (int i = _spinning.Count - 1; i >= 0; i--)
+        {
+            var entity = _spinning[i];
+            var spin = entity.GetComponent<SpinComponent>();
+            if (spin == null || !ReferenceEquals(_world.GetEntity(entity.Id), entity))
+            {
+                _spinning[i] = _spinning[^1];
+                _spinning.RemoveAt(_spinning.Count - 1);
+                _spinDrivenDirty = true;
+                continue;
+            }
+
+            if (spin.IsTurning && !_world.IsSelected(entity)) spin.Advance(deltaSeconds * spin.TimeDilation);
+        }
+
+        _spinDrivenAge += deltaSeconds;
+        if (_spinDrivenDirty || _spinDrivenAge >= SpinDrivenMaxAgeSeconds) RebuildSpinDriven();
+    }
+
+    private void RebuildSpinDriven()
+    {
+        _spinDrivenDirty = false;
+        _spinDrivenAge = 0f;
+        _spinDriven.Clear();
+        _spinDrivenSeen.Clear();
+        foreach (var entity in _spinning)
+        {
+            if (entity.GetComponent<SpinComponent>()?.IsTurning == true) AddSpinDriven(entity);
+        }
+    }
+
+    private void AddSpinDriven(Entity entity)
+    {
+        if (!_spinDrivenSeen.Add(entity.Id)) return;
+        _spinDriven.Add(entity);
+        if (!_children.TryGetValue((entity.RegionHandle, entity.LocalId), out var children)) return;
+        foreach (var childId in children)
+        {
+            var child = _world.GetEntity(childId);
+            if (child != null) AddSpinDriven(child);
+        }
+    }
+
+    /// <summary>FEAT-RENDER-27: hands one object update's omega to the object's
+    /// <see cref="SpinComponent"/>, creating it the first time the object turns. An object that has
+    /// never turned gets none: its omega is zero and there is nothing turned to keep.</summary>
+    private void ApplySpin(Entity entity, ObjectUpdateEvent e, bool isPhysical)
+    {
+        var spin = entity.GetComponent<SpinComponent>();
+        if (spin == null)
+        {
+            if (e.AngularVelocity == Vector3.Zero) return;
+            spin = new SpinComponent();
+            entity.SetComponent(spin);
+            _spinning.Add(entity);
+        }
+
+        bool wasTurning = spin.IsTurning;
+        spin.ApplyUpdate(e.Rotation, e.AngularVelocity, isPhysical, e.ResetsSpin);
+        spin.TimeDilation = System.Math.Clamp(e.TimeDilation, 0f, 1f);
+        if (spin.IsTurning != wasTurning) _spinDrivenDirty = true;
+
+        if (!spin.IsTurning && spin.Rotation == Quaternion.Identity)
+        {
+            // Nothing turned and nothing turning: an ordinary object again, drawn where the simulator
+            // has it and free to be instanced. AdvanceSpins drops it from the list.
+            entity.RemoveComponent<SpinComponent>();
+            return;
+        }
+        _world.NotifyComponentUpdated(entity, spin);
+    }
+
     private static bool IsFinite(Vector3 v) =>
         float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
 
@@ -592,7 +693,10 @@ public sealed class WorldSimulation : IDisposable
         {
             var key = (e.RegionHandle, e.ParentLocalId);
             if (!_children.TryGetValue(key, out var set)) _children[key] = set = new HashSet<System.Guid>();
-            set.Add(entity.Id);
+            // FEAT-RENDER-27: a prim just linked under a turning one has to turn with it from now on.
+            if (set.Add(entity.Id) && _spinning.Count > 0
+                && _world.GetEntity(e.RegionHandle, e.ParentLocalId)?.GetComponent<SpinComponent>() is { IsTurning: true })
+                _spinDrivenDirty = true;
         }
         RecomposeChildren(e.RegionHandle, e.LocalId);
 
@@ -696,6 +800,9 @@ public sealed class WorldSimulation : IDisposable
             // signals "no longer animesh" only by omitting the block from a FULL update.
             prim.IsAnimatedMesh = e.IsAnimatedMesh;
         }
+
+        // FEAT-RENDER-27: after the flags, so a physical object's reset rule sees its current flag.
+        ApplySpin(entity, e, prim.IsPhysical);
 
         // FEAT-ANIMESH-02: ObjectAnimation names a prim by its object UUID. Index it now, and take
         // up any list that arrived before the object did -- before the notification below, so a
@@ -1598,6 +1705,8 @@ public sealed class WorldSimulation : IDisposable
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
         _gltfOverrides.Remove((e.Entity.RegionHandle, e.Entity.LocalId));
+        // FEAT-RENDER-27: the renderer must stop moving it (and AdvanceSpins drops it).
+        if (e.Entity.HasComponent<SpinComponent>()) _spinDrivenDirty = true;
 
         var objectId = e.Entity.GetComponent<MetadataComponent>()?.Id ?? System.Guid.Empty;
         if (objectId == System.Guid.Empty) return;

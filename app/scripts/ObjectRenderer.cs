@@ -165,6 +165,10 @@ public partial class ObjectRenderer : Node3D
         public bool PlacedOnce;
         public System.Numerics.Quaternion PlacedRotation;
 
+        // FEAT-RENDER-27: drawn where client-side target omega has turned it (the prim or the root above
+        // it carries a SpinComponent). Such a prim is kept out of the MultiMesh groups.
+        public bool SpinDriven;
+
         // BUG-PERF-11: EnsureCollisionShape left the shape null because it is being built (or queued)
         // elsewhere; the sweep only looks for a ready one while this is set, instead of reading
         // CollisionShape.Shape (an interop call) for every object on every visit.
@@ -878,6 +882,7 @@ public partial class ObjectRenderer : Node3D
         using (MainThreadPhase.Enter("obj-ticks"))
         {
             using (MainThreadPhase.Enter("obj-ticks.texanim")) TickTextureAnimations();
+            using (MainThreadPhase.Enter("obj-ticks.spin")) TickTargetOmega(); // FEAT-RENDER-27
             using (MainThreadPhase.Enter("obj-ticks.selection")) TickSelectionOutlines();
 
             using (MainThreadPhase.Enter("obj-ticks.alpha-census")) TickAlphaSortCensus();
@@ -3362,16 +3367,25 @@ public partial class ObjectRenderer : Node3D
         if (transform != null)
         {
             using var posPart = MainThreadWorkQueue.Part("uv.pos");
-            var newPos = RenderConfig.ToGodot(entity.RegionHandle, transform.Position);
-            if (state.PlacedOnce && (newPos != state.Pos || transform.Rotation != state.PlacedRotation))
+            // FEAT-RENDER-27: where client-side target omega has turned it, exactly as TickTargetOmega
+            // places it every frame -- otherwise an update landing after this frame's tick would draw
+            // the prim at the server's rotation for a frame. Unchanged for anything that never turned.
+            var drawnPosition = transform.Position;
+            var drawnRotation = transform.Rotation;
+            state.SpinDriven = _world != null
+                && TargetOmega.TryGetRenderTransform(_world, entity, transform, out drawnPosition, out drawnRotation);
+            if (state.SpinDriven) _instanceGroups?.Leave(state.EntityId);
+
+            var newPos = RenderConfig.ToGodot(entity.RegionHandle, drawnPosition);
+            if (state.PlacedOnce && (newPos != state.Pos || drawnRotation != state.PlacedRotation))
                 state.LastMovedAt = NowSeconds();
             state.PlacedOnce = true;
-            state.PlacedRotation = transform.Rotation;
+            state.PlacedRotation = drawnRotation;
             state.Pos = newPos;
             state.MeshInstance.Position = state.Pos;
             state.DormantUntilTravel = double.NegativeInfinity;   // moved: its distance margin no longer holds
 
-            var slQuat = new Godot.Quaternion(transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
+            var slQuat = new Godot.Quaternion(drawnRotation.X, drawnRotation.Z, -drawnRotation.Y, drawnRotation.W);
             state.MeshInstance.Quaternion = slQuat;
 
             // FEAT-PERF-06: if this prim is drawn by a MultiMesh, its own node moving does nothing
@@ -6182,7 +6196,8 @@ public partial class ObjectRenderer : Node3D
     /// sorted-transparent kind — those depend on per-object sort depth and the BUG-RENDER-16
     /// split — and never an alpha-discard kind either, i.e. no Scissor/ScissorEdge/Hash:
     /// BUG-RENDER-17 found MultiMesh instancing of those renders wrong, see
-    /// <see cref="HasAlphaDiscard"/>), no running texture animation, no split children, no
+    /// <see cref="HasAlphaDiscard"/>), no running texture animation, no target-omega turn
+    /// (FEAT-RENDER-27, moved every frame through its own node), no split children, no
     /// light/particle child, no MOAP media face (MVP3-3 — its material's albedo gets swapped
     /// live, well after any grouping, which would leak one prim's fetched media onto every other
     /// instance sharing it).</para></summary>
@@ -6221,6 +6236,8 @@ public partial class ObjectRenderer : Node3D
             || state.LightNode != null
             || state.ParticlesNode != null
             || _texAnims.ContainsKey(state.EntityId)
+            // FEAT-RENDER-27: moved every frame by TickTargetOmega through its own node.
+            || state.SpinDriven
             || hasMedia
             || !IsInstanceValid(state.MeshInstance)
             || !state.Shown;
