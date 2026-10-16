@@ -81,6 +81,14 @@ public static class RenderConfig
     public static bool ShareMaterials { get; set; } = false;
 
     /// <summary>
+    /// FEAT-PERF-24: worn rigged meshes of one avatar whose skins are identical (same bone and
+    /// bind matrix in every slot) share one <c>Skin</c>, so the skeleton writes those binds to the
+    /// RenderingServer once per re-pose instead of once per mesh. The palette is bit-identical, so
+    /// nothing changes on screen. On by default; <c>--no-share-skins</c> turns it off for the A/B.
+    /// </summary>
+    public static bool ShareSkins { get; set; } = true;
+
+    /// <summary>
     /// FEAT-PERF-06: an object farther than this (metres, to whichever of avatar/camera is nearer)
     /// stops casting a directional shadow. The shadow DEPTH pass draws the scene once per CSM
     /// split, so a distant object is drawn 2 extra times for a shadow the atmosphere haze hides

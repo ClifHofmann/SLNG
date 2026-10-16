@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-24`
 - **Track:** `render` | `perf`
-- **Status:** `⏸️ Pending`
+- **Status:** `🚧 In Progress` (Phase 0 split built; skin sharing confirmed in-world 2026-10-16: 21 → 26.5 fps at Sirens; P0-b/P0-c and the gate still open)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [ADR 0004](../adr/0004-performance-architecture.md) pillar P2, plan in [MVP6-1](MVP6-1-performance-program.md)
 - **Depends on:** FEAT-PERF-13 (render thread), BUG-PERF-15 (no read-backs). **Feeds:** FEAT-PERF-14, FEAT-PERF-20, FEAT-PERF-21.
@@ -84,6 +84,201 @@ Changing who owns them does not.
 moved prims and removed nodes only. The visible "flush" is the render side. Phase 0 checks this
 claim with numbers before anything big is built.
 
+### 2026-10-16 finding: at Sirens the flush is skin-bind commands, not prims
+
+Measured at Sirens Beach on v0.27.63 (`rt=separate`, `-ShareMaterials`, vsync off), 25 `[Perf]` lines
+09:02–09:04: fps 19–23, `scriptsMs` 16–32 (median ~20), `postFlushMs` 22–30 (median ~26),
+`renderCpuMs` 22–30 (median ~24), `renderGpuMs` 13–16, `setupMs` 0–5. The frame (~47 ms) is scripts
+plus postFlush, so the two threads do not overlap. Cutting draws from 24k to 21k did not move it.
+
+**What Godot 4.7 does (source read, 4.7-stable).**
+
+- The main thread blocks only in `RenderingServer::sync()` (`main.cpp:5073`) and in synchronous
+  calls. `CommandQueueMT::_flush` drops its lock while a command runs (`command_queue_mt.h:191-193`),
+  so setters never wait for a draw.
+- Each setter from the main thread costs a lock, a copy into the queue and
+  `WorkerThreadPool::notify_yield_over` (a second, global lock plus a condition-variable wake,
+  `command_queue_mt.h:137-149`, `worker_thread_pool.cpp:634-652`). In Safe mode the same call is
+  a direct function call.
+- `Skeleton3D` handles `NOTIFICATION_UPDATE_SKELETON` (deferred, so it runs in the message-queue
+  flush **after** our scripts, inside `postFlushMs`). For every skin bound to it, it sends
+  **one `skeleton_bone_set_transform` per bind** (`skeleton_3d.cpp:349-406`). Meshes share that
+  work only when they hold the **same `Skin` object** (`register_skin`, `skeleton_3d.cpp`:
+  `if (E->skin == p_skin) return E`).
+- SLNG built a new `Skin` for every rigged mesh (`AvatarRenderer.BindRiggedSkin`). The same spot's
+  `[AvatarCost]` line: 17 full avatars, `skinnedMeshes=2825`, `skinBinds=158649`, all animating.
+  That is ~158,000 RenderingServer commands per frame from skeletons alone.
+
+**Bench (headless, Godot 4.7, a scratch GDScript project, 300 frames each).** 17 skeletons × 166
+skinned meshes × 56 binds, one bone re-posed per skeleton per frame. `flushMs` = scripts end to a
+zero-length timer, the same cut as P0-a.
+
+| Mode | Distinct skins / skeleton | Writes / frame | flushMs | ns / write |
+|---|---|---|---|---|
+| safe | 166 (own skin per mesh) | 158,032 | 3.9 | 25 |
+| **separate** | 166 | 158,032 | **14.6–17.5** | 93–111 |
+| separate | 40 (shared) | 38,080 | 4.0 | 105 |
+| separate | 10 (shared) | 9,520 | 1.5 | 161 |
+| separate, render thread held for 40 ms | 166 | 158,032 | 9.8 | 62 (no lock contention) |
+
+The render thread works through the same commands at ~22 ns each with the dummy renderer, ~3.4 ms
+per frame, plus the real skeleton-buffer writes. So the cost lands mostly on the main thread, in
+the flush, and grows linearly with the number of distinct skins.
+
+**Can sharing help? Offline over the asset cache** (60,362 `.mesh` files, 35,575 rigged): only
+**8,898 distinct skin contents** (same joints and bit-identical inverse-bind matrices), and 46,005
+distinct (joint, matrix) pairs out of 1,273,912. Most meshes come in groups that share one skin (a
+mesh body's pieces), so whole-skin sharing removes about three quarters of the writes.
+
+**Cause, in one line.** By the bench, about 15 ms of the 26 ms `postFlushMs` at Sirens is our own flush work
+(the in-world `flushMs` / `tailMs` split below confirms or corrects this):
+`Skeleton3D` writing ~158k skin binds as separate RenderingServer commands, ~100 ns each with the
+separate render thread. That cost exists only because every rigged mesh had its own `Skin`. The rest
+is the real wait for the render thread, which also has to execute those commands
+(`renderCpuMs` does not count them).
+
+**Fix (v0.27.64-alpha, branch `fix/FEAT-PERF-24-render-overlap`).** `BindRiggedSkin` hands out one
+`Skin` per distinct content per avatar (`SLNG.Core.Avatars.SkinBindKey`: bone and the bind matrix's
+exact bits, per slot). The palette is bit-identical, so nothing on screen changes. The cache is
+cleared when the binds are rebuilt after a shape change. It is on by default. `--no-share-skins`
+(`run-client.ps1 -NoShareSkins`) is the A/B switch.
+
+**New readings.**
+
+- `[Perf]`: `flushMs`, `tailMs` (always), `rtBusyMs`, `rtLagMs` (with `--diag` in separate mode), `frees`.
+- `[AvatarCost]`: `skinWrites` (binds written per re-pose, distinct skins only),
+  `skelUpdatesPerFrame`, `skinWritesPerFrame`, `sharedSkins=shared/bound`, `shareSkins=on|off`.
+
+**Measurement plan for the in-world A/B** (same spot, same settings, `-Diag`, wait for `queue=0`, stand
+2 minutes each):
+
+1. `run-client.ps1 -Diag -ShareMaterials -NoShareSkins` (the old behaviour);
+2. `run-client.ps1 -Diag -ShareMaterials` (shared skins).
+
+Compare the medians of `[Perf]` `fps`, `postFlushMs`, `flushMs`, `tailMs`, `rtLagMs`, `scriptsMs`,
+`renderCpuMs`, and `[AvatarCost]` `skinWritesPerFrame` and `skinWrites` against `boundSkinBinds`.
+Expected: `skinWritesPerFrame` falls about 3–4×, and `flushMs` falls by roughly
+0.1 µs × the writes saved. If `tailMs ≈ rtLagMs` afterwards, the frame is then render-thread-bound,
+and the lever moves to the render side.
+
+**In-world A/B result (2026-10-16, Sirens Beach, v0.27.65, `-Diag -ShareMaterials`, ~50 avatars, 17
+full and animating).** Steady windows only (after loading, `queue` < 1,000). Off = `-NoShareSkins`,
+09:49:17–09:50:07, 11 windows. On = 09:51:17–09:51:52, 8 windows.
+
+| Median | Off | On | Change |
+|---|---|---|---|
+| fps | 21 | **26.5** | +26 % |
+| p99Ms | ~91 | ~50 | |
+| scriptsMs | 18.7 | 17.5 | |
+| postFlushMs | 27.2 | **19.2** | −8 |
+| flushMs | 14.8 | **6.7** | −8.1 |
+| tailMs | 12.5 | 12.6 | |
+| rtLagMs | 11.5 | 12.0 | |
+| renderCpuMs | 24.8 | 22.0 | −2.8 |
+| `[AvatarCost]` skinWritesPerFrame | 140,400 | **12,400** | ÷ 11 |
+| skinWrites (per re-pose) vs boundSkinBinds | 140,800 / 140,130 | 13,000 / 133,991 | |
+
+Whole-skin sharing removed 91 % of the writes in-world, more than the cache-wide estimate (75 %).
+Avatars at one spot wear the same mesh bodies and heads. `flushMs` fell by 8.1 ms for ~128k fewer
+writes, which is 63 ns per write, the bench's uncontended figure.
+
+**What is left.** `tailMs ≈ rtLagMs` (~12 ms) in both runs, so the tail is now an honest wait: the
+render thread is the slower side. Per frame it needs ~37 ms (scripts end + `rtLagMs`, about the
+frame). Only ~24 ms of that is `renderCpuMs + setupMs`. The remaining ~13 ms is outside the viewport
+timers: command execution, skeleton and other buffer uploads, `end_frame`/present and probes. The
+next levers are therefore on the render side: fewer draws (FEAT-PERF-14/20/21), and splitting that
+unmeasured ~13 ms. The per-avatar palette (below) would take `flushMs` down by at most ~0.8 ms more.
+It is no longer the bottleneck.
+
+**`queue` never reaches 0 at Sirens, in either run, and did not on v0.27.63 either** (floor ~50–60).
+This is not a backlog. At this spot ~2,900 `visual.update` items per second (moving objects) plus
+the cull slices flow through `MainThreadWorkQueue`, so some are always waiting when the overlay
+samples. For an A/B, wait until `queue` stays in the hundreds, not until it is 0.
+
+**Next step if the gain is too small.** Use one skin palette per avatar instead of whole-skin
+sharing: one slot per distinct (bone, bind) pair, with each mesh's vertex bone indices remapped to
+it. Offline, that leaves ~1 in 28 pairs, so a full avatar would write a few hundred binds per
+re-pose instead of ~9,000. It touches the rig worker (the slots are cut there), the pick chunks and
+the split surfaces. It needs its own task.
+
+**For the gate below.** None of this is prim-node cost. It strengthens the no-go reading for
+Phase 2: the ~26 ms was never the node tree.
+
+### 2026-10-16 finding: the render thread's unmeasured ~13 ms is `end_frame` recording every draw
+
+**Reading (v0.27.66, branch `fix/FEAT-PERF-24-rt-split`, `--diag`, separate render thread).** Two more
+render-thread markers bracket the queued `_draw`. One is queued in `frame_pre_draw`, which
+`RenderingServerDefault::draw` emits right before it queues `_draw` (`rendering_server_default.cpp:443-449`).
+The other is queued from the frame() hook after `draw()` returns (C# runs posts to
+`Dispatcher.SynchronizationContext` in `ScriptServer::frame()`, `main.cpp:5085-5105`). A frame whose end
+marker went out more than 1 ms late is left out.
+
+- `drawCallMs`: inside `_draw`.
+- `commandMs`: executing queued commands outside `_draw`, split as `cmdSplit=scripts,flush`.
+- `rtIdleMaxMs`: at most this much of the cycle was idle.
+
+The three add up to the render thread's cycle, about `frameMs`. `drawSplit=pre,vp,post` cuts `_draw` at
+Godot's own `vp_begin`/`vp_end` timestamps, whose CPU times `RenderSections` reads on the render thread:
+
+- `pre`: scene/canvas update, particles, `render_probes`.
+- `vp`: the viewports, which is `renderCpuMs`.
+- `post`: the blit to the screen, `canvas_render->update` and `end_frame`.
+
+With Godot's `--gpu-profile` (`run-client.ps1 -GpuProfile`), an `[RtSections]` line names the CPU time
+between every capture inside `_draw`, and godot.log gets Godot's per-pass GPU profile.
+
+**Sirens Beach, same spot as above** (`-Diag -ShareMaterials -GpuProfile`, 10:20:26–10:21:01, 8 windows,
+`queue` 50–214), against a 15 s look out to sea (10:20:09–10:20:19, 3 windows):
+
+| Median | Beach | Sea |
+|---|---|---|
+| fps | 23 | 46 |
+| draws (scene / shadow) | 23,830 (12,650 / 10,880) | 1,389 (360 / 720) |
+| `drawCallMs` | **41.1** | 5.4 |
+| `drawSplit` pre / vp / post | 2.7 / 25.8 / **12.6** | 2.5 / 1.7 / 1.2 |
+| `renderCpuMs` / `setupMs` | 25.8 / 1.8 | 1.7 / 2.0 |
+| `commandMs` (scripts + flush) | **1.2** (0.15 + 1.0) | 0.0 |
+| `rtIdleMaxMs` | 0.55 | 16.5 |
+| `tailMs` / `rtLagMs` | 16.1 / 15.5 | 0.1 / 0.0 |
+| `renderGpuMs` / Godot GPU-profile total | 10.6 / 10–14 | 4.8 / – |
+
+At the beach the render thread is never idle. Its cycle (41.1 + 1.2 + 0.55 = 42.9 ms) is the frame period
+at 23 fps, and pre + vp + post = 41.1 = `drawCallMs`. The gap between the viewport timers and the frame
+is therefore `post`, 12.6 ms, and nothing else of size:
+
+- **Not the queued commands.** `commandMs` is 1.2 ms: the 12.4k skin binds and the ~2,900 `visual.update`
+  setters per second execute in about 1 ms per frame.
+- **Not reflection probes.** `render_probes` sits in `pre`, which is 2.7 ms in total. Of that, 1.8 ms is
+  `Prepare Render Frame` (scene and canvas update) and 0.7 ms is the stretch before it. The follow probe
+  re-bakes every ~2–3 s (`[ReflProbe] bake #100`), but averaged over the frames that adds at most ~0.2 ms.
+  There is no mirror and no hero probe here.
+- **Not a GPU or present wait.** The GPU works 10–14 ms of the 43 ms cycle, so the fence for the frame
+  slot (`_begin_frame` → `_stall_for_frame`) has long been signalled. V-Sync is off, so present does not
+  block. The fixed part of `post` (blit, canvas, submit, present) is at most the 1.2 ms the sea view shows.
+- **It is per draw.** `post` goes from 1.2 to 12.6 ms as draws go from 1.4k to 23.8k: 0.51 µs per draw.
+  `[RtSections]`: `< Render Viewports → end` = 12.6 ms, against shadows 7.2, depth pre-pass 5.9, opaque
+  5.6, 3D setup 2.5, shadow cull 2.3 and transparent 2.0 inside the viewports.
+
+**What it is (4.7-stable source).** `end_frame` is `RenderingDevice::swap_buffers` → `_end_frame` →
+`draw_graph.end()` (`rendering_device.cpp:8123`). Since Godot 4.3, a viewport render only records its
+draws into the render graph, and the viewport CPU timer times exactly that. `RenderingDeviceGraph::end`
+reorders the recorded commands (`RENDER_GRAPH_REORDER`) and only then writes every draw, bind and push
+constant into the Vulkan command buffer, after the last `vp_end`. Every draw is therefore paid for twice
+on the render thread: ~1.07 µs inside the viewport timer (cull, render list, graph record) and ~0.51 µs in
+`end_frame`, ~1.6 µs in all. The 10.9k shadow draws cost ~9.5 ms inside the viewport (shadow render 7.2 +
+cull 2.3) plus ~5.6 ms in `end_frame`, ~15 ms of the cycle.
+
+**Consequence.** The render thread is the limit at Sirens. It is draw-bound, and nothing outside the draw
+path (commands, probes, GPU) is worth chasing. Each draw removed saves ~1.6 µs on the render thread, ~50 %
+more than `renderCpuMs` suggests, so 10k fewer draws ≈ 16 ms ≈ the render-thread wait in `tailMs`.
+The levers are the draw-count tasks: FEAT-PERF-14 (small-object cull), FEAT-PERF-20 (shared materials),
+FEAT-PERF-21, and fewer shadow casters or cascades (the shadow pass is almost half the draws).
+
+`drawSplit` counts every bracketed draw whose captures came back, so while the region loads it can
+differ from `drawCallMs` (fixed in v0.27.67: a late end marker now drops the draw from both). The
+loading window at 10:19:47 also shows `renderCpuMs=6148914983294305`: Godot's measured viewport time
+underflowed once. That is an existing `RenderTimes` read, not this change.
+
 ## Phase 0: the measurement probe
 
 ### P0-a: split `postFlushMs` in Separate mode (`--diag` only, FrameTimeline)
@@ -102,7 +297,15 @@ New `[Perf]` fields:
 - `flushMs` = flush marker − scripts end (deferred calls and transforms);
 - `tailMs` = `frame_pre_draw` − flush marker (delete queue plus `sync()` wait);
 - `rtBusyMs` = render marker − scripts end (how long the render side was still busy);
-- `freesPerFrame` from a counter in `RemoveVisual`.
+- `rtLagMs` = a second render marker, queued at the flush marker, − the flush marker (how far
+  behind the render side still was when the main thread's flush ended);
+- `frees` (per frame) from a counter in `RemoveVisual`.
+
+*As built (v0.27.64):* `flushMs` / `tailMs` are always in `[Perf]` (one zero-length timer per frame
+costs microseconds); only the two render markers need `--diag` and separate mode, and read `-`
+otherwise. Both markers have run by `frame_pre_draw`, because the `sync()` before it waits for
+them, so they are read in the same frame. The self test checks that ordering against a
+synchronous call (`render-thread markers run before a sync returns`).
 
 If `tailMs ≈ rtBusyMs − flushMs`, the tail is waiting. A self test asserts that the markers arrive in
 order.
@@ -394,6 +597,7 @@ Estimates, to be replaced by the Phase 0 numbers.
 - `app/scripts/ObjectSelectionController.cs`, `app/scripts/Input/CursorManager.cs`,
   `app/scripts/AvatarController.cs`: `PickResolver` (Phase 3)
 - `app/scripts/FrameTimeline.cs`, `app/scripts/UI/StatsOverlay.cs`: P0-a fields
+- `app/scripts/AvatarRenderer.cs` (`BindRiggedSkin` / `SharedOrNewSkin`, `[AvatarCost]`), `src/SLNG.Core/Avatars/SkinBindKey.cs`, `app/scripts/AvatarRenderer.SharedSkins.SelfTest.cs`: skin sharing (2026-10-16)
 - `app/scripts/SelfTest.PrimBench.cs` (P0-c), `app/scripts/SelfTest.PrimBackend.cs` (parity, RID leaks)
 - `app/scripts/RenderConfig.cs`, `app/scripts/Diagnostics.cs` (`--prim-backend`),
   `app/scripts/UI/GraphicsSettings.cs`, `app/scripts/UI/GraphicsPreferencesPage.cs` (toggle)
@@ -402,7 +606,8 @@ Estimates, to be replaced by the Phase 0 numbers.
 
 ## Sub-tasks / Progress
 
-- [ ] P0-a: FrameTimeline flush / tail / render-busy split (`--diag`) + ordering self test
+- [x] P0-a: FrameTimeline flush / tail / render-busy split (`--diag`) + ordering self test (v0.27.64)
+- [x] Sirens 2026-10-16: postFlushMs explained (skin-bind commands), skin sharing built (v0.27.64), in-world A/B: 21 → 26.5 fps, flushMs 14.8 → 6.7
 - [ ] P0-b: Safe-mode run at the baseline spot, numbers recorded here
 - [ ] P0-c: `--prim-bench` S0–S6 + ray parity, headless and windowed, table recorded here
 - [ ] Gate decision written here

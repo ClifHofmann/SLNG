@@ -155,6 +155,11 @@ public static class Diagnostics
             || HasFlag(OS.GetCmdlineUserArgs(), "--share-materials"))
             RenderConfig.ShareMaterials = true;
 
+        // FEAT-PERF-24: --no-share-skins gives every rigged mesh its own Skin again (the A/B).
+        if (HasFlag(OS.GetCmdlineArgs(), "--no-share-skins")
+            || HasFlag(OS.GetCmdlineUserArgs(), "--no-share-skins"))
+            RenderConfig.ShareSkins = false;
+
         GD.Print($"[Diagnostics] high-frequency foliage alpha = {RenderConfig.HighFrequencyFoliageAlpha}" +
                  $" (hashScale={RenderConfig.FoliageHashScale}" +
                  $" coreAlpha={RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)})" +
@@ -166,6 +171,7 @@ public static class Diagnostics
 
         GD.Print($"[Diagnostics] instancing = {(RenderConfig.EnableInstancing ? "on" : "off (--no-instancing)")} (FEAT-PERF-06)");
         GD.Print($"[Diagnostics] share-materials = {(RenderConfig.ShareMaterials ? "on (--share-materials)" : "off")} (FEAT-PERF-20)");
+        GD.Print($"[Diagnostics] share-skins = {(RenderConfig.ShareSkins ? "on" : "off (--no-share-skins)")} (FEAT-PERF-24)");
 
         // FEAT-PERF-14: --small-cull=N sets the small-object cull threshold (screen radius in pixels)
         // for this run whatever the Graphics preference says; 0 turns the cull off. The A/B switch for

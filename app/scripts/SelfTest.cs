@@ -54,9 +54,9 @@ public static partial class SelfTest
     /// <summary>Where a selftest run keeps every log it writes: the engine's own
     /// <c>godot.log</c> (via <c>--log-file</c>) and the client's <c>slng-perf.log</c>. A selftest
     /// that logged next to the developer's real ones would rotate the live <c>godot.log</c> away
-    /// (Godot keeps ~10 files) and truncate <c>slng-perf.log</c>; against a client that is still
-    /// running it truncates the file the client is writing, which leaves a NUL gap where its
-    /// output was. The first lost three sessions' evidence on 2026-10-08.</summary>
+    /// (Godot keeps ~10 files) and, until v0.27.65 rotated it too, truncate <c>slng-perf.log</c>;
+    /// against a client that is still running it truncated the file the client was writing, which
+    /// left a NUL gap where its output was. The first lost three sessions' evidence on 2026-10-08.</summary>
     public const string LogDir = "user://logs/selftest";
 
     /// <summary>The directory the client writes its own log files to: <see cref="LogDir"/> under a
@@ -263,6 +263,8 @@ public static partial class SelfTest
         results.Add(CheckCompressedWarmPathAndShrink()); // FEAT-PERF-17
         results.Add(CheckCompressedAcrossFormats()); // FEAT-PERF-17
         results.Add(CheckRenderThread()); // FEAT-PERF-13
+        results.Add(CheckRenderMarkersBeforeSync()); // FEAT-PERF-24 P0-a
+        results.Add(CheckSharedRiggedSkins(tree)); // FEAT-PERF-24
         results.Add(CheckMeshSurfaceCache()); // BUG-PERF-15
         results.Add(CheckDxgiVideoMemory()); // FEAT-PERF-17
         results.Add(CheckAvatarTextureRemoval()); // BUG-PERF-13

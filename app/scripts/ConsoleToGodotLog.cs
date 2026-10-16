@@ -165,15 +165,20 @@ internal static class PerfSidecar
             {
                 try
                 {
-                    // Under --selftest a different directory: Create below truncates, and the
-                    // developer's own client may be writing this very file (see SelfTest.LogDir).
+                    // Under --selftest a different directory, so a selftest never rotates the
+                    // developer's own sessions away (see SelfTest.LogDir).
                     string dir = ProjectSettings.GlobalizePath(SelfTest.UserLogsDir);
                     Directory.CreateDirectory(dir);
-                    // Truncate: one file per session, so reading it never means working out which
-                    // half belongs to the run being investigated.
+                    // One file per session, so reading it never means working out which half
+                    // belongs to the run being investigated. The previous session's file is kept
+                    // as slng-perf<stamp>.log, like godot.log, instead of being truncated, and as
+                    // many are kept as the engine keeps of godot.log.
+                    int maxFiles = ProjectSettings.GetSetting("debug/file_logging/max_log_files", 10).AsInt32();
+                    string path = SLNG.Core.LogRotation.Rotate(dir, "slng-perf", ".log", DateTime.Now, maxFiles);
+                    // FileShare.Delete: a client started while this one runs can move this file aside.
                     _writer = new StreamWriter(
-                        new FileStream(Path.Combine(dir, "slng-perf.log"), FileMode.Create,
-                                       System.IO.FileAccess.Write, FileShare.ReadWrite))
+                        new FileStream(path, FileMode.Create, System.IO.FileAccess.Write,
+                                       FileShare.ReadWrite | FileShare.Delete))
                     { AutoFlush = true };
                 }
                 catch

@@ -260,6 +260,18 @@ public static class RenderTimes
         return sb.Length > 0 ? sb.ToString() : "-";
     }
 
+    /// <summary>The name a viewport was tracked under, by its RID's id (Godot's <c>vp_begin_&lt;id&gt;</c>
+    /// timestamp names), or null. Main thread.</summary>
+    internal static string? NameOf(ulong viewportRidId)
+    {
+        foreach (var e in _entries)
+        {
+            if (e.Viewport != null && GodotObject.IsInstanceValid(e.Viewport) && e.Viewport.GetViewportRid().Id == viewportRidId)
+                return e.Name;
+        }
+        return null;
+    }
+
     private static int DrawCalls(Rid viewport, RenderingServer.ViewportRenderInfoType pass) =>
         RenderingServer.ViewportGetRenderInfo(viewport, pass, RenderingServer.ViewportRenderInfo.DrawCallsInFrame);
 

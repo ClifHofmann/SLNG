@@ -376,6 +376,7 @@ public partial class AvatarRenderer
         skeleton.Name = "Skeleton3D";
         visual.Root.AddChild(skeleton);
         visual.Skeleton = skeleton;
+        skeleton.SkeletonUpdated += () => visual.SkeletonUpdates++; // FEAT-PERF-24 [AvatarCost]
 
         // The default, undistorted skeleton (spec caveat 2: whether default-weight skeletal
         // distortion deltas are ever applied to a control avatar was not traced). LastDistortions

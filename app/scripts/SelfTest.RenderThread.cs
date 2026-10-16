@@ -107,4 +107,26 @@ public static partial class SelfTest
             ? new Check(Name, true, $"rendering on the {RenderThread.ModeName} thread, callbacks, saved choice and fingerprints behave")
             : new Check(Name, false, string.Join("; ", problems));
     }
+
+    /// <summary>FEAT-PERF-24 P0-a: FrameTimeline reads its render-thread markers at pre_draw on the
+    /// grounds that the sync before it waits for everything queued earlier. The same holds for any
+    /// synchronous RenderingServer call, so: queue two markers, make one sync call, and both must
+    /// have run, in queue order, between being queued and the call returning. In the default mode
+    /// the callables run inline, which the same ordering covers.</summary>
+    private static Check CheckRenderMarkersBeforeSync()
+    {
+        const string Name = "render-thread markers run before a sync returns";
+        long first = 0, second = 0;
+        long queued = System.Diagnostics.Stopwatch.GetTimestamp();
+        RenderingServer.CallOnRenderThread(Callable.From(() => Volatile.Write(ref first, System.Diagnostics.Stopwatch.GetTimestamp())));
+        RenderingServer.CallOnRenderThread(Callable.From(() => Volatile.Write(ref second, System.Diagnostics.Stopwatch.GetTimestamp())));
+        _ = RenderingServer.GetVideoAdapterName(); // a round trip in separate mode
+        long returned = System.Diagnostics.Stopwatch.GetTimestamp();
+        long a = Volatile.Read(ref first), b = Volatile.Read(ref second);
+
+        if (a == 0 || b == 0) return new Check(Name, false, "a marker had not run when the sync call returned");
+        if (!(queued <= a && a <= b && b <= returned))
+            return new Check(Name, false, $"out of order: queued {queued}, markers {a} / {b}, returned {returned}");
+        return new Check(Name, true, $"both markers ran in order before the sync returned ({RenderThread.ModeName} thread)");
+    }
 }
