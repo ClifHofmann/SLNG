@@ -238,6 +238,9 @@ public partial class AvatarRenderer : Node3D
         /// stopped so the sit pose doesn't persist while the server sends new standing animations.</summary>
         public uint PreviousSittingOnLocalId { get; set; }
 
+        /// <summary>BUG-AVATAR-12 --diag: the seat and tilt bucket the last [SeatPose] line was printed for.</summary>
+        public (uint Seat, int TiltBucket) LastSeatPoseKey { get; set; }
+
         public AvatarVisual()
         {
             Root = new Node3D();
@@ -1498,9 +1501,21 @@ public partial class AvatarRenderer : Node3D
                 // In Godot, the geometric foot is at FootOffsetY above the avatar scene root.
                 // Using (PelvisToFootZ + FootOffsetY) aligns the avatar's feet flush with the authored
                 // surface in Godot world space. If PelvisToFootZ is not yet available, falls back to sitPelvisY.
+                //
+                // BUG-AVATAR-12: the viewer's mRoot IS the pelvis (llavatarappearance.cpp:878 puts
+                // mPelvis at (0,0,0) under it) and takes the seat-resolved rotation, so a seat that
+                // tilts the avatar (a lying pose authored into the sit rotation, a swinging hammock)
+                // turns the body about its pelvis. Our Root is at the feet with the pelvis above it,
+                // so the pelvis offset and the hover are taken off along the avatar's own rotated
+                // up, not world up; subtracting them in world Y only swung a lying avatar about
+                // its feet and sank it a pelvis height below the seat.
                 int sitPelvisBone = visual.Skeleton != null ? visual.Skeleton.FindBone("mPelvis") : -1;
-                float sitPelvisY = (sitPelvisBone >= 0 && visual.Skeleton != null) ? GetBoneRootRelativeY(visual.Skeleton, sitPelvisBone) : 1.046f;
-                rootPos.Y = transform.Position.Z - sitPelvisY + avatar.HoverOffsetZ;
+                var sitPelvisLocal = (sitPelvisBone >= 0 && visual.Skeleton != null)
+                    ? GetBoneRootRelativeOrigin(visual.Skeleton, sitPelvisBone)
+                    : new Godot.Vector3(0f, 1.046f, 0f);
+                var seatPoint = rootPos;
+                rootPos = SeatedRootPosition(seatPoint, ToGodotRotation(transform.Rotation), sitPelvisLocal, avatar.HoverOffsetZ);
+                if (Diagnostics.Enabled) LogSeatPose(visual, avatar, transform, seatPoint, sitPelvisLocal, rootPos);
             }
             else if (!avatar.IsLocalAgent)
             {
@@ -1615,10 +1630,7 @@ public partial class AvatarRenderer : Node3D
                 }
             }
 
-            var slQuat = new Godot.Quaternion(
-                transform.Rotation.X, transform.Rotation.Z,
-                -transform.Rotation.Y, transform.Rotation.W);
-            visual.Root.Quaternion = slQuat;
+            visual.Root.Quaternion = ToGodotRotation(transform.Rotation);
 
             // Keep raycast collision capsule aligned with avatar height / sitting posture
             if (visual.CapsuleShape?.Shape is CapsuleShape3D cap)
@@ -5572,7 +5584,11 @@ public partial class AvatarRenderer : Node3D
                  $"hoverParam {visual.AvatarHoverParamZ:0.###} footOffsetY {visual.FootOffsetY:0.###} shoeOffset {visual.ShoeOffsetZ:0.###}");
     }
 
-    private static float GetBoneRootRelativeY(Skeleton3D skeleton, int boneIdx)
+    private static float GetBoneRootRelativeY(Skeleton3D skeleton, int boneIdx) =>
+        GetBoneRootRelativeOrigin(skeleton, boneIdx).Y;
+
+    /// <summary>The bone's rest origin in Root's frame (the skeleton sits at Root's origin).</summary>
+    private static Godot.Vector3 GetBoneRootRelativeOrigin(Skeleton3D skeleton, int boneIdx)
     {
         Transform3D globalRest = Transform3D.Identity;
         int current = boneIdx;
@@ -5582,7 +5598,54 @@ public partial class AvatarRenderer : Node3D
             globalRest = rest * globalRest;
             current = skeleton.GetBoneParent(current);
         }
-        return globalRest.Origin.Y;
+        return globalRest.Origin;
+    }
+
+    /// <summary>BUG-AVATAR-12 --diag: a seated avatar's placement inputs, in SL axes, once per seat and
+    /// per 15-degree step of tilt (a swinging seat would otherwise print every frame). <c>tilt</c> is
+    /// the angle between the avatar's up and world up; <c>preFixDrop</c> is how far below the seat
+    /// the pelvis landed before this fix (world-Y-only pelvis offset), 0 for an upright sit.</summary>
+    private static void LogSeatPose(AvatarVisual visual, AvatarComponent avatar, TransformComponent transform,
+        Godot.Vector3 seatPoint, Godot.Vector3 pelvisRestLocal, Godot.Vector3 rootPos)
+    {
+        var rotation = ToGodotRotation(transform.Rotation);
+        if (rotation.LengthSquared() > 1e-6f) rotation = rotation.Normalized();
+        else rotation = Godot.Quaternion.Identity;
+        var up = rotation * Godot.Vector3.Up;
+        float tilt = Mathf.RadToDeg(Mathf.Acos(Mathf.Clamp(up.Y, -1f, 1f)));
+        var key = (avatar.SittingOnLocalId, (int)(tilt / 15f));
+        if (visual.LastSeatPoseKey == key) return;
+        visual.LastSeatPoseKey = key;
+
+        var oldRoot = new Godot.Vector3(seatPoint.X, seatPoint.Y - pelvisRestLocal.Y + avatar.HoverOffsetZ, seatPoint.Z);
+        var oldPelvis = oldRoot + rotation * pelvisRestLocal;
+        var pelvis = rootPos + rotation * pelvisRestLocal;
+        var euler = ControlAvatarPlacement.EulerDegrees(transform.Rotation);
+        string seat = avatar.SittingOnObjectId == Guid.Empty ? "?" : avatar.SittingOnObjectId.ToString()[..8];
+        GD.Print($"[SeatPose] avatar={visual.AgentId.ToString()[..8]} ({avatar.FirstName}) seat={avatar.SittingOnLocalId}/{seat} " +
+                 $"seatPoint=({transform.Position.X:0.###}, {transform.Position.Y:0.###}, {transform.Position.Z:0.###}) " +
+                 $"rot=({euler.X:0.#}, {euler.Y:0.#}, {euler.Z:0.#})deg tilt={tilt:0.#}deg " +
+                 $"pelvisRest=({pelvisRestLocal.X:0.###}, {pelvisRestLocal.Y:0.###}, {pelvisRestLocal.Z:0.###}) hover={avatar.HoverOffsetZ:0.###} " +
+                 $"pelvisOffSeat={(pelvis - seatPoint).Length():0.###}m preFixDrop={seatPoint.Y - oldPelvis.Y:0.###}m " +
+                 $"preFixMiss={(oldPelvis - seatPoint).Length():0.###}m");
+    }
+
+    /// <summary>SL rotation to Godot (SL Z-up, Godot Y-up with SL Y = -Godot Z).</summary>
+    private static Godot.Quaternion ToGodotRotation(System.Numerics.Quaternion sl) =>
+        new(sl.X, sl.Z, -sl.Y, sl.W);
+
+    /// <summary>BUG-AVATAR-12: where Root goes for an avatar sitting on an object, so that its
+    /// pelvis lands on <paramref name="seatPoint"/> -- the seat-resolved wire position, which the
+    /// viewer gives mRoot and therefore the pelvis (llvoavatar.cpp:4745-4751) -- whatever the
+    /// avatar's rotation. The pelvis rest and the hover (<c>getHoverOffset() * getRotation()</c>)
+    /// are offsets in the avatar's own frame, so both turn with <paramref name="rotation"/>.</summary>
+    internal static Godot.Vector3 SeatedRootPosition(Godot.Vector3 seatPoint, Godot.Quaternion rotation,
+        Godot.Vector3 pelvisRestLocal, float hoverZ)
+    {
+        // A wire rotation is not always unit length, and Quaternion * Vector3 wants one.
+        float lengthSquared = rotation.LengthSquared();
+        rotation = lengthSquared > 1e-6f ? rotation.Normalized() : Godot.Quaternion.Identity;
+        return seatPoint + rotation * (new Godot.Vector3(0f, hoverZ, 0f) - pelvisRestLocal);
     }
 
     private static bool TryGetActivePelvisFixup(AvatarVisual visual, out float fixupZ)
