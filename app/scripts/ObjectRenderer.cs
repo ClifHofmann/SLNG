@@ -244,12 +244,22 @@ public partial class ObjectRenderer : Node3D
         public IReadOnlyList<SignaledAnimation> SeenSignaled = Array.Empty<SignaledAnimation>();
         public Guid AnimationRoot;
 
+        // FEAT-PERF-20 Phase A1: material keys currently held by this visual in PrimMaterialCache,
+        // and per-surface detached flags for copy-on-write surfaces (texanim, mirror, selection, MOAP).
+        public PrimMaterialKey[]? SurfaceMaterialKeys;
+        // FEAT-PERF-20 A1: per surface, the DetachReason bits that keep it on a private material copy (0 = shared).
+        public byte[]? SurfaceDetached;
+
         // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
         // first update always applies.
         public static readonly Guid NotLoaded = new("ffffffff-ffff-ffff-ffff-ffffffffffff");
     }
 
     private readonly Dictionary<Guid, VisualState> _visuals = new();
+
+    // FEAT-PERF-20 Phase A1: shared-material cache for prim faces.
+    private readonly PrimMaterialCache _materialCache = new();
+    internal PrimMaterialCache MaterialCache => _materialCache;
 
     // --- FEAT-RENDER-22: hero-probe (mirror) candidate tracking ------------------------------
     // SL renders ONE real-time "hero" probe for a mirror-grade surface -- heroBox/heroSphere/
@@ -1453,6 +1463,7 @@ public partial class ObjectRenderer : Node3D
 
         state.MeshInstance.Mesh = null;
         state.MeshInstance.MaterialOverride = null;
+        ReleaseSurfaceMaterials(state);
         ReleaseMeshRef(state);
 
         if (_gpuCache != null)
@@ -2376,6 +2387,7 @@ public partial class ObjectRenderer : Node3D
             if (_visuals.TryGetValue(id, out var soloState) && soloState.MeshInstance != null)
             {
                 SuppressInstancing(id, isSelected);
+                DetachVisualForSelection(id);
                 // Root colour for a prim that IS a root, child colour otherwise -- which is what
                 // the reference viewer does even when a child is the thing being edited
                 // (llselectmgr.cpp asks isRootEdit(), and a child prim answers false). This used
@@ -2403,6 +2415,8 @@ public partial class ObjectRenderer : Node3D
                 // is drawn by a MultiMesh. Evict the whole highlighted linkset; the cull sweep
                 // re-instances each part on deselect.
                 SuppressInstancing(kvp.Key, isSelected);
+                if (isSelected) DetachVisualForSelection(kvp.Key);
+                else ReturnVisualFromSelection(kvp.Key);
                 ApplySelectionOutline(kvp.Key, kvp.Value.MeshInstance, isSelected, isRoot);
             }
         }
@@ -2423,6 +2437,7 @@ public partial class ObjectRenderer : Node3D
         foreach (var (id, meshInstance) in _outlined.ToList())
         {
             if (IsInstanceValid(meshInstance)) ApplySelectionOutline(id, meshInstance, false, false);
+            ReturnVisualFromSelection(id);
             SuppressInstancing(id, false);
         }
         _outlined.Clear();
@@ -2514,6 +2529,7 @@ public partial class ObjectRenderer : Node3D
             // FEAT-ANIMESH-02: the object's other prims go on playing without this one's list. The
             // entity is already gone from the world, so the union read next frame leaves it out.
             if (state.AnimationRoot != Guid.Empty) ControlAvatars?.MarkControlAvatarAnimationsDirty(state.AnimationRoot);
+            ReleaseSurfaceMaterials(state);
             ReleaseMeshRef(state);
             state.MeshInstance.QueueFree();
             if (_gpuCache != null)
@@ -3021,8 +3037,15 @@ public partial class ObjectRenderer : Node3D
         // material for the whole node, so the animation drives that one.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
+            if (RenderConfig.ShareMaterials)
+            {
+                if (isAnimated) DetachSurfaceMaterial(state, 0, DetachReason.TexAnim);
+                else ReturnSurfaceMaterial(state, 0, DetachReason.TexAnim);
+            }
             if (state.MeshInstance.MaterialOverride is ShaderMaterial single)
                 ApplyTexAnimToMaterial(single, isAnimated, a, b);
+            else if (SurfaceMaterial(state, 0) is ShaderMaterial surfaceMat)
+                ApplyTexAnimToMaterial(surfaceMat, isAnimated, a, b);
             return;
         }
 
@@ -3035,6 +3058,12 @@ public partial class ObjectRenderer : Node3D
             int faceIdx = faceIndices[surf];
             // Face -1 (wire 255) means every face; anything else is a single SL face number.
             bool faceCovered = isAnimated && (animFace < 0 || faceIdx == animFace);
+            if (RenderConfig.ShareMaterials)
+            {
+                if (faceCovered) DetachSurfaceMaterial(state, surf, DetachReason.TexAnim);
+                else ReturnSurfaceMaterial(state, surf, DetachReason.TexAnim);
+            }
+
             if (SurfaceMaterial(state, surf) is not ShaderMaterial mat) continue;
 
             ApplyTexAnimToMaterial(mat, faceCovered, a, b);
@@ -3967,18 +3996,26 @@ public partial class ObjectRenderer : Node3D
         // Fallback solid / mesh without per-surface face info: one material for the whole node.
         if (!_meshFaceIndices.TryGetValue(state.LoadedMeshKey, out var faceIndices) || faceIndices.Length == 0)
         {
+            var wholeKey = PrimMaterialKey.Create(defaultFace, prim.Scale, variant: 0);
             System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> wholeNode;
             using (MainThreadWorkQueue.Part("mat.faces"))
                 wholeNode = BuildFaceMaterialAsync(defaultFace, prim.Scale, screenPixelArea, priority, prim.IsSculpt);
             var (mat, used) = await wholeNode;
             ApplyOnMainThread(state, () =>
             {
+                ReleaseSurfaceMaterials(state);
                 state.MeshInstance.MaterialOverride = mat;
                 state.TexAnimNeedsReapply = true;
-            }, used);
+                if (RenderConfig.ShareMaterials)
+                {
+                    state.SurfaceMaterialKeys = new[] { wholeKey };
+                    state.SurfaceDetached = new byte[1];
+                }
+            }, used, new[] { wholeKey });
             return;
         }
 
+        var keys = new PrimMaterialKey[faceIndices.Length];
         var faceTasks = new List<System.Threading.Tasks.Task<(int Surface, ShaderMaterial Material, List<Guid> Used)>>();
 
         using (MainThreadWorkQueue.Part("mat.faces"))
@@ -3988,6 +4025,7 @@ public partial class ObjectRenderer : Node3D
                 int faceIdx = faceIndices[surface];
                 FaceTexture ft = (prim.Faces != null && faceIdx >= 0 && faceIdx < prim.Faces.Length)
                     ? prim.Faces[faceIdx] : defaultFace;
+                keys[surface] = PrimMaterialKey.Create(ft, prim.Scale, variant: 0);
 
                 int surf = surface; // capture
                 faceTasks.Add(BuildFaceMaterialAsync(ft, prim.Scale, screenPixelArea, priority, prim.IsSculpt).ContinueWith(t =>
@@ -4049,11 +4087,19 @@ public partial class ObjectRenderer : Node3D
                 // or geometry change at all.
                 int fitWidth = mediaFace.AutoScale ? mediaFace.WidthPixels : 0;
                 int fitHeight = mediaFace.AutoScale ? mediaFace.HeightPixels : 0;
-                ApplyMediaImageAsync(material, mediaFace.CurrentUrl, fitWidth, fitHeight);
+                ApplyMediaImageAsync(state, surf, material, mediaFace.CurrentUrl, fitWidth, fitHeight);
             }
         }
 
-        ApplyOnMainThread(state, null, allUsed.Distinct().ToList());
+        ApplyOnMainThread(state, () =>
+        {
+            if (RenderConfig.ShareMaterials)
+            {
+                ReleaseSurfaceMaterials(state);
+                state.SurfaceMaterialKeys = keys;
+                state.SurfaceDetached = new byte[keys.Length];
+            }
+        }, allUsed.Distinct().ToList(), keys);
     }
 
     /// <summary>MVP3-3 Phase 3: fetches (or reuses the cached decode of) a MOAP face's direct-image
@@ -4065,7 +4111,7 @@ public partial class ObjectRenderer : Node3D
     /// <c>MediaImageService</c> itself, not repeated here). Only the FINAL GPU upload touches the
     /// main thread; the fetch, decode and any letterbox compositing run entirely on worker threads,
     /// same split as every other texture path (<c>GpuCache.cs</c>).</summary>
-    private void ApplyMediaImageAsync(ShaderMaterial material, string url, int fitWidth, int fitHeight)
+    private void ApplyMediaImageAsync(VisualState state, int surface, ShaderMaterial material, string url, int fitWidth, int fitHeight)
     {
         _ = SLNG.Assets.MediaImageService.FetchAsync(url, fitWidth, fitHeight).ContinueWith(t =>
         {
@@ -4077,9 +4123,11 @@ public partial class ObjectRenderer : Node3D
 
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
-                if (!IsInstanceValid(material)) return;
-                material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, ImageTexture.CreateFromImage(image));
-                material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+                if (!IsInstanceValid(state.MeshInstance)) return;
+                var targetMat = DetachSurfaceMaterial(state, surface, DetachReason.Media) ?? material;
+                if (!IsInstanceValid(targetMat)) return;
+                targetMat.SetShaderParameter(PrimShaderFamily.AlbedoTexture, ImageTexture.CreateFromImage(image));
+                targetMat.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
             }, label: "prim.media_image");
         });
     }
@@ -4089,7 +4137,7 @@ public partial class ObjectRenderer : Node3D
     /// applies above rather than left on CallDeferred, so the two keep their relative order -- a
     /// single queue is FIFO, whereas a mix of queued and deferred work would let the bookkeeping
     /// overtake the apply it belongs to.</summary>
-    private void ApplyOnMainThread(VisualState state, Action? action, List<Guid> usedTextures)
+    private void ApplyOnMainThread(VisualState state, Action? action, List<Guid> usedTextures, PrimMaterialKey[]? acquiredKeys = null)
     {
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
         {
@@ -4098,16 +4146,64 @@ public partial class ObjectRenderer : Node3D
                 action?.Invoke();
                 SetTexturesForVisual(state, usedTextures);
             }
-            else if (_gpuCache != null)
+            else
             {
-                foreach (var id in usedTextures) _gpuCache.ReleaseRef(id);
+                if (RenderConfig.ShareMaterials && acquiredKeys != null)
+                {
+                    foreach (var k in acquiredKeys)
+                    {
+                        _materialCache.Release(k);
+                    }
+                }
+                if (_gpuCache != null)
+                {
+                    foreach (var id in usedTextures) _gpuCache.ReleaseRef(id);
+                }
             }
         }, label: "material.refcount");
     }
 
     /// <summary>Builds one face's material (classic texture or PBR) and returns the texture ids
-    /// it references. Texture/material application is marshalled to the main thread.</summary>
+    /// it references. Texture/material application is marshalled to the main thread.
+    /// When <see cref="RenderConfig.ShareMaterials"/> is enabled, identical keys reuse the same ShaderMaterial.</summary>
     private async System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> BuildFaceMaterialAsync(FaceTexture ft, System.Numerics.Vector3 primScale, float screenPixelArea, float priority, bool isSculpted = false)
+    {
+        if (RenderConfig.ShareMaterials)
+        {
+            var key = PrimMaterialKey.Create(ft, primScale, variant: 0);
+            if (_materialCache.TryGet(key, out var existing))
+            {
+                if (existing.InFlightTask != null)
+                {
+                    existing.RefCount++;
+                    return await existing.InFlightTask;
+                }
+                if (existing.Material != null)
+                {
+                    existing.RefCount++;
+                    return (existing.Material, existing.UsedTextures);
+                }
+            }
+
+            var inFlight = DoBuildFaceMaterialAsync(ft, primScale, screenPixelArea, priority, isSculpted);
+            _materialCache.SetInFlight(key, inFlight);
+            try
+            {
+                var (mat, used) = await inFlight;
+                _materialCache.Register(key, mat, used);
+                return (mat, used);
+            }
+            catch
+            {
+                _materialCache.Remove(key);
+                throw;
+            }
+        }
+
+        return await DoBuildFaceMaterialAsync(ft, primScale, screenPixelArea, priority, isSculpted);
+    }
+
+    private async System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> DoBuildFaceMaterialAsync(FaceTexture ft, System.Numerics.Vector3 primScale, float screenPixelArea, float priority, bool isSculpted = false)
     {
         var used = new List<Guid>();
         var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
@@ -5332,8 +5428,11 @@ public partial class ObjectRenderer : Node3D
             if (state.MirrorSurfaces == null) return;
             foreach (var (surface, original) in state.MirrorSurfaces)
             {
+                // Put the shader back on whatever the surface wears first: with shared materials another
+                // reason (animation, selection, media) may keep the private copy alive after the mirror ends.
                 var mat = SurfaceMaterial(state, surface);
                 if (mat != null && original != null) mat.Shader = original;
+                if (RenderConfig.ShareMaterials) ReturnSurfaceMaterial(state, surface, DetachReason.Mirror);
             }
             state.MirrorSurfaces = null;
             return;
@@ -5355,7 +5454,11 @@ public partial class ObjectRenderer : Node3D
 
             swapped ??= new List<(int, Shader)>();
             swapped.Add((i, mat.Shader));
-            mat.Shader = PrimShaderFamily.Mirror;
+            if (RenderConfig.ShareMaterials)
+            {
+                mat = DetachSurfaceMaterial(state, i, DetachReason.Mirror);
+            }
+            if (mat != null) mat.Shader = PrimShaderFamily.Mirror;
         }
         state.MirrorSurfaces = swapped;
     }

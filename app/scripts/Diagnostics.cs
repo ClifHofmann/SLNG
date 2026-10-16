@@ -150,6 +150,11 @@ public static class Diagnostics
             || HasFlag(OS.GetCmdlineUserArgs(), "--batch-potential"))
             RenderConfig.BatchPotential = true;
 
+        // FEAT-PERF-20 Phase A1: --share-materials turns on shared prim materials across identical keys.
+        if (HasFlag(OS.GetCmdlineArgs(), "--share-materials")
+            || HasFlag(OS.GetCmdlineUserArgs(), "--share-materials"))
+            RenderConfig.ShareMaterials = true;
+
         GD.Print($"[Diagnostics] high-frequency foliage alpha = {RenderConfig.HighFrequencyFoliageAlpha}" +
                  $" (hashScale={RenderConfig.FoliageHashScale}" +
                  $" coreAlpha={RenderConfig.FoliageCoreAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture)})" +
@@ -160,6 +165,7 @@ public static class Diagnostics
                  $" (BUG-RENDER-16)");
 
         GD.Print($"[Diagnostics] instancing = {(RenderConfig.EnableInstancing ? "on" : "off (--no-instancing)")} (FEAT-PERF-06)");
+        GD.Print($"[Diagnostics] share-materials = {(RenderConfig.ShareMaterials ? "on (--share-materials)" : "off")} (FEAT-PERF-20)");
 
         // FEAT-PERF-14: --small-cull=N sets the small-object cull threshold (screen radius in pixels)
         // for this run whatever the Graphics preference says; 0 turns the cull off. The A/B switch for

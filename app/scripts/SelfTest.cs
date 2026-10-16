@@ -246,6 +246,7 @@ public static partial class SelfTest
         results.Add(CheckMirrorGate(tree)); // FEAT-PERF-15
         results.Add(CheckBatchPotential(tree)); // FEAT-PERF-20
         results.Add(CheckBatchPotentialCost(tree)); // FEAT-PERF-20
+        results.Add(CheckSharedMaterials(tree)); // FEAT-PERF-20 Phase A1
         results.Add(CheckRemovalHidesAtOnce(tree)); // BUG-NET-34
         results.Add(CheckTextureAnimInShader(tree)); // FEAT-PERF-16
         results.Add(CheckPbrOverrideApply(tree)); // FEAT-RENDER-26

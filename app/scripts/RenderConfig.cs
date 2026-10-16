@@ -74,6 +74,13 @@ public static class RenderConfig
     public static bool BatchPotential;
 
     /// <summary>
+    /// FEAT-PERF-20 Phase A1: share identical prim materials. Faces with equal <see cref="SLNG.Core.PrimMaterialKey"/>
+    /// share a single ShaderMaterial object, allowing Godot's Forward+ to merge draws into instanced calls.
+    /// Copy-on-write detaches a face when mutated (texanim, mirror, selection, MOAP). Default off.
+    /// </summary>
+    public static bool ShareMaterials { get; set; } = false;
+
+    /// <summary>
     /// FEAT-PERF-06: an object farther than this (metres, to whichever of avatar/camera is nearer)
     /// stops casting a directional shadow. The shadow DEPTH pass draws the scene once per CSM
     /// split, so a distant object is drawn 2 extra times for a shadow the atmosphere haze hides

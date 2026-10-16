@@ -19,13 +19,14 @@ public class PrimMaterialKeyTests
         Guid? texture = null, Guid? renderMaterial = null, Guid? legacyMaterial = null,
         Vector4? color = null, float repeatU = 1f, float repeatV = 1f,
         float offsetU = 0f, float offsetV = 0f, float rotation = 0f,
-        byte texGen = 0, bool fullbright = false, byte shiny = 0, bool hasMedia = false) =>
+        byte texGen = 0, bool fullbright = false, byte shiny = 0, bool hasMedia = false,
+        GltfMaterialOverride? pbrOverride = null) =>
         new(texture ?? TexA, renderMaterial ?? Guid.Empty, legacyMaterial ?? Guid.Empty,
             color ?? new Vector4(1, 1, 1, 1), repeatU, repeatV, offsetU, offsetV, rotation,
-            texGen, fullbright, shiny, hasMedia);
+            texGen, fullbright, shiny, hasMedia, pbrOverride);
 
-    private static PrimMaterialKey Key(FaceTexture face, Vector3? scale = null, ulong variant = 1) =>
-        PrimMaterialKey.Create(face, scale ?? Scale, variant);
+    private static PrimMaterialKey Key(FaceTexture face, Vector3? scale = null, ulong variant = 1, Vector4 texAnimA = default, Vector4 texAnimB = default) =>
+        PrimMaterialKey.Create(face, scale ?? Scale, variant, texAnimA, texAnimB);
 
     [Fact]
     public void EqualInputs_GiveEqualKeys_AndEqualHashes()
@@ -56,6 +57,7 @@ public class PrimMaterialKeyTests
         yield return new object[] { "fullbright", Face(fullbright: true) };
         yield return new object[] { "shiny", Face(shiny: 3) };
         yield return new object[] { "media", Face(hasMedia: true) };
+        yield return new object[] { "pbr override", Face(pbrOverride: new GltfMaterialOverride { Roughness = 0.5f }) };
     }
 
     [Theory]
@@ -112,5 +114,16 @@ public class PrimMaterialKeyTests
         var b = Key(Face(offsetU: -0f, rotation: -0f));
         Assert.Equal(a, b);
         Assert.Equal(a.GetHashCode(), b.GetHashCode());
+    }
+
+    [Fact]
+    public void TexAnim_SeparatesTheKeys()
+    {
+        var baseKey = Key(Face());
+        var animA = Key(Face(), texAnimA: new Vector4(2, 4, 4, 0));
+        var animB = Key(Face(), texAnimB: new Vector4(16, 10, 0, 1));
+        Assert.NotEqual(baseKey, animA);
+        Assert.NotEqual(baseKey, animB);
+        Assert.NotEqual(animA, animB);
     }
 }

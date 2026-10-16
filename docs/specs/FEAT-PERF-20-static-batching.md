@@ -367,13 +367,14 @@ almost nothing on top, because what remains is unique meshes. Two further levers
   construction (time-sliced, reports its own cost)
 - [x] Material key in `SLNG.Core`, tested (equal inputs → equal key; every uniform input separates keys)
 - [x] Headless selftests: hand-counted scene, cost bench
-- [ ] Sirens Beach numbers in the table above, and the decision written down
-- [ ] Phase A1 / B per the plan, each with its acceptance
+- [x] Sirens Beach numbers in the table above, and the decision written down
+- [x] Phase A1: shared-material cache with copy-on-write (v0.27.62-alpha)
+- [ ] Phase B per the plan (closed based on Sirens results, re-evaluate after FEAT-PERF-24)
 
 ## Sub-tasks / Progress
 
 - [x] Phase 0 measurement (v0.27.54-alpha)
-- [ ] Sirens measurement (user, needs a login)
-- [ ] Phase A1 shared-material cache
+- [x] Sirens measurement (user, needs a login) — 2026-10-15: A1 cuts ~27% draws, B adds 1-2%, Phase A1 decided
+- [x] Phase A1 shared-material cache (v0.27.62-alpha)
 - [ ] Phase B0 gate measurements
 - [ ] Phase B1/B2 merged cells (after FEAT-PERF-24 Phase 2, if the gate passes)
