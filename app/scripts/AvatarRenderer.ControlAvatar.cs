@@ -596,8 +596,11 @@ public partial class AvatarRenderer
             }
             else
             {
-                ApplyControlAvatarPlacement(ca, RenderConfig.ToGodot(root.RegionHandle, transform.Position),
-                    transform.Rotation);
+                // FEAT-RENDER-27: matchVolumeTransform reads the root drawable's rotation, which includes
+                // what client-side target omega has turned (llcontrolavatar.cpp:216-219). The world
+                // transform comes back unchanged for a root that never turned.
+                TargetOmega.TryGetRenderTransform(_world, root, transform, out var drawnAt, out var drawnRotation);
+                ApplyControlAvatarPlacement(ca, RenderConfig.ToGodot(root.RegionHandle, drawnAt), drawnRotation);
             }
 
             // FEAT-ANIMESH-02: re-read the signalled animations when a prim of the object said they

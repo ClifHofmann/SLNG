@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.69-alpha";
+    public const string AppVersion = "v0.27.71-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -3057,6 +3057,8 @@ public partial class Boot : Control
         // (mirrors the real viewer's interpolateLinearMotion) — must run after Pump() so this
         // frame's fresh Position/Velocity/TimeSinceUpdate are already applied before extrapolating.
         using (MainThreadPhase.Enter("extrapolate")) _worldSimulation?.ExtrapolateMovement((float)delta);
+        // FEAT-RENDER-27: turn the llTargetOmega objects on by this frame, before the renderers place them.
+        using (MainThreadPhase.Enter("spin")) _worldSimulation?.AdvanceSpins((float)delta);
         if (Diagnostics.Enabled) ReportAgentPacketGaps();
 
         // Refresh the position HUD a few times a second (the agent lookup scans entities).
@@ -4123,6 +4125,8 @@ public partial class Boot : Control
 
         _terrainRenderer?.Initialize(_world, _assetService, _gpuCache);
         _objectRenderer?.Initialize(_world, _assetService, _gpuCache);
+        // FEAT-RENDER-27: the prims the object renderer moves every frame, kept by the world simulation.
+        if (_objectRenderer != null) _objectRenderer.SpinDriven = _worldSimulation.SpinDrivenEntities;
         _avatarRenderer?.Initialize(_world, _assetService, _gpuCache, _session);
         // FEAT-ANIMESH-02: a control avatar plays the animations of its root AND every child prim, and
         // the world simulation already keeps the index that says which prims those are.

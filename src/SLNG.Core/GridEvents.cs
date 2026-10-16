@@ -401,7 +401,15 @@ public record ObjectUpdateEvent(
     // bit set. Read out of the raw packet bytes because LibreMetaverse skips the block; see
     // ExtendedMeshParams. Per prim -- the viewer honours only the ROOT's. Same terse-update
     // staleness as the light and reflection-probe fields, so applied under IsFullUpdate.
-    bool IsAnimatedMesh = false
+    bool IsAnimatedMesh = false,
+    // FEAT-RENDER-27: the object's target omega (llTargetOmega), radians per second about the axis
+    // it points along, in the parent's frame. Carried by every kind of update -- full, compressed
+    // and terse -- so unlike the flags above it is NOT gated by IsFullUpdate. See SpinComponent.
+    Vector3 AngularVelocity = default,
+    // FEAT-RENDER-27: an uncompressed full ObjectUpdate whose omega is exactly zero, on which the
+    // viewer drops everything it turned on the client (llviewerobject.cpp:1416); a compressed or
+    // terse update with a zero omega does not. Only raised for an object GridSession has seen turn.
+    bool ResetsSpin = false
 ) : IWorldEvent;
 
 /// <summary>Represents an update for an avatar. <paramref name="ScaleZ"/> is DIAGNOSTIC ONLY

@@ -1646,6 +1646,9 @@ public partial class AvatarRenderer : Node3D
                     visual.CapsuleShape.Position = new Godot.Vector3(0, targetHeight * 0.5f, 0);
                 }
             }
+
+            // FEAT-RENDER-27: a seat turning under target omega carries its sitters with it.
+            if (avatar.SittingOnLocalId != 0) CarryWithTurningSeat(visual, entity, avatar);
         }
 
         // FEAT-PERF-08: a reduced avatar still takes the skeleton's shape -- its root height comes from

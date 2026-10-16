@@ -380,7 +380,28 @@ public sealed partial class GridSession
     // updates too (ObjectManager.PacketHandlers.cs ObjectUpdateCompressedHandler, the PrimEventArgs
     // raise near the end), so invalidating here would race the compressed-block store and empty the
     // object cache. The uncompressed case is handled in OnRawObjectUpdatePacket.
-    private void OnObjectUpdate(object? sender, PrimEventArgs e) => RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true);
+    private void OnObjectUpdate(object? sender, PrimEventArgs e) =>
+        RaiseObjectUpdate(e.Simulator, e.Prim, isFullUpdate: true, timeDilation: e.TimeDilation / 65535.0f);
+
+    /// <summary>FEAT-RENDER-27: objects seen with a non-zero target omega, so that only their zero
+    /// omegas are worth remembering in <see cref="_zeroOmegaResets"/>. Never shrinks below what has
+    /// turned once in the session -- a few dozen on a busy region.</summary>
+    private readonly ConcurrentDictionary<(ulong, uint), byte> _turnedObjects = new();
+
+    /// <summary>FEAT-RENDER-27: a turned object whose latest UNCOMPRESSED ObjectUpdate carried an
+    /// omega of exactly zero, waiting for the event that reports it. The viewer drops what it turned
+    /// on the client on exactly that update (llviewerobject.cpp:1416, OUT_FULL only); a compressed
+    /// one keeps it. LibreMetaverse raises the same <c>ObjectUpdate</c> event for both, so the
+    /// difference is read off <c>ObjectDataBlockUpdate</c>, which only the uncompressed handler
+    /// raises -- synchronously, before it queues the event this marks.</summary>
+    private readonly ConcurrentDictionary<(ulong, uint), byte> _zeroOmegaResets = new();
+
+    private void OnObjectDataBlockUpdate(object? sender, ObjectDataBlockUpdateEventArgs e)
+    {
+        if (e.Prim is Avatar || e.Update.AngularVelocity != LibreMetaverse.Vector3.Zero) return;
+        var key = (e.Simulator.Handle, e.Block.ID);
+        if (_turnedObjects.ContainsKey(key)) _zeroOmegaResets[key] = 0;
+    }
 
     /// <summary>FEAT-ANIMESH-02. The sim's <c>ObjectAnimation</c> message for one prim -- see
     /// <see cref="ObjectAnimationConverter"/>. Every region's, not just the current one: a
@@ -544,7 +565,8 @@ public sealed partial class GridSession
             positionOverride: new System.Numerics.Vector3(e.Update.Position.X, e.Update.Position.Y, e.Update.Position.Z),
             rotationOverride: new System.Numerics.Quaternion(e.Update.Rotation.X, e.Update.Rotation.Y, e.Update.Rotation.Z, e.Update.Rotation.W),
             velocityOverride: new System.Numerics.Vector3(e.Update.Velocity.X, e.Update.Velocity.Y, e.Update.Velocity.Z),
-            timeDilation: e.TimeDilation / 65535.0f);
+            timeDilation: e.TimeDilation / 65535.0f,
+            angularVelocityOverride: new System.Numerics.Vector3(e.Update.AngularVelocity.X, e.Update.AngularVelocity.Y, e.Update.AngularVelocity.Z));
     }
 
     /// <summary>True for a <see cref="Primitive"/> LibreMetaverse manufactured rather than decoded
@@ -609,7 +631,8 @@ public sealed partial class GridSession
         System.Numerics.Vector3? positionOverride = null,
         System.Numerics.Quaternion? rotationOverride = null,
         System.Numerics.Vector3? velocityOverride = null,
-        float timeDilation = 1f)
+        float timeDilation = 1f,
+        System.Numerics.Vector3? angularVelocityOverride = null)
     {
         NoteObjectAnswered(simulator.Handle, prim.LocalID); // FEAT-NET-04: a sign of life, for the cache check
 
@@ -636,6 +659,16 @@ public sealed partial class GridSession
         var resolvedPosition = positionOverride ?? new System.Numerics.Vector3(prim.Position.X, prim.Position.Y, prim.Position.Z);
         var resolvedRotation = rotationOverride ?? new System.Numerics.Quaternion(prim.Rotation.X, prim.Rotation.Y, prim.Rotation.Z, prim.Rotation.W);
         var resolvedVelocity = velocityOverride ?? new System.Numerics.Vector3(prim.Velocity.X, prim.Velocity.Y, prim.Velocity.Z);
+
+        // FEAT-RENDER-27: target omega. A compressed update without the omega field leaves
+        // Primitive.AngularVelocity as it was, which is also what the viewer does (it only calls
+        // setAngularVelocity when the 0x80 flag is set, llviewerobject.cpp:1810).
+        var resolvedOmega = angularVelocityOverride
+            ?? new System.Numerics.Vector3(prim.AngularVelocity.X, prim.AngularVelocity.Y, prim.AngularVelocity.Z);
+        var spinKey = (simulator.Handle, prim.LocalID);
+        if (resolvedOmega != System.Numerics.Vector3.Zero) _turnedObjects.TryAdd(spinKey, 0);
+        // ContainsKey first: it reads without a lock, and almost every object has nothing waiting.
+        bool resetsSpin = isFullUpdate && _zeroOmegaResets.ContainsKey(spinKey) && _zeroOmegaResets.TryRemove(spinKey, out _);
 
         bool isMesh = false;
         Guid meshId = Guid.Empty;
@@ -892,7 +925,9 @@ public sealed partial class GridSession
             // FEAT-ANIMESH-01: read from the latch, last, right before the event goes out -- see
             // OnRawObjectUpdatePacket for why this can race the callback that writes it and what
             // makes that harmless.
-            IsAnimatedMeshLatched(simulator.Handle, prim.LocalID)));
+            IsAnimatedMeshLatched(simulator.Handle, prim.LocalID),
+            resolvedOmega,
+            resetsSpin));
     }
 
     /// <summary>MVP3-3 Phase 1: notices the MOAP "doorbell" (<paramref name="anyFaceHasMedia"/>

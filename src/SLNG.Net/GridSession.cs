@@ -774,6 +774,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator += OnChatFromSimulator;
         _client.Objects.ObjectUpdate += OnObjectUpdate;
         _client.Objects.TerseObjectUpdate += OnTerseObjectUpdate;
+        _client.Objects.ObjectDataBlockUpdate += OnObjectDataBlockUpdate; // FEAT-RENDER-27
         // FEAT-ANIMESH-02: what an animated mesh has been told to play. The library raises this for
         // every ObjectAnimation packet, empty lists included; the region's seed request already
         // asks for the capability OpenSim gates the message on (Caps.AllCapabilities).
@@ -926,6 +927,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         _client.Self.ChatFromSimulator -= OnChatFromSimulator;
         _client.Objects.ObjectUpdate -= OnObjectUpdate;
         _client.Objects.TerseObjectUpdate -= OnTerseObjectUpdate;
+        _client.Objects.ObjectDataBlockUpdate -= OnObjectDataBlockUpdate;
         _client.Objects.ObjectAnimation -= OnObjectAnimation;
         _client.Network.GenericStreamingMessage -= OnGenericStreamingMessage;
         _client.Self.AgentDataReply -= OnAgentDataReply;
