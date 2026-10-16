@@ -79,8 +79,8 @@ public sealed partial class GridSession
     }
 
     /// <summary>MVP2-1: once an avatar sits, its wire Position/Rotation become relative to the
-    /// seat prim (0 if standing) -- mirrors LibreMetaverse's own AgentManager.SimPosition/
-    /// SimRotation walk (AgentManager.cs, verified against the vendored source), generalized here
+    /// seat prim (0 if standing) -- started as LibreMetaverse's own AgentManager.SimPosition/
+    /// SimRotation walk (AgentManager.cs; see BUG-AVATAR-12 below for where it differs), generalized here
     /// to ANY avatar (not just the local agent, which is all LMV itself resolves) since GridSession
     /// is the one seam where every avatar's transform gets converted to world space regardless of
     /// who it belongs to -- nothing downstream (WorldSimulation, the renderer, the camera) needs to
@@ -95,8 +95,19 @@ public sealed partial class GridSession
     /// -- the caller decides what to do about a still-unresolved seat, this method only reports it
     /// rather than silently handing back a value that LOOKS like a world position but is actually
     /// a small offset from an unknown origin (reported live 2026-09-17: a seated avatar rezzing far
-    /// from her chair and only snapping to the right spot "after a while").</summary>
-    private static bool ResolveSeatedTransform(
+    /// from her chair and only snapping to the right spot "after a while").
+    ///
+    /// <para>BUG-AVATAR-12: composed the way the viewer's drawables are (<c>LLXformMatrix::
+    /// updateMatrix</c>): every ancestor turns the position AND the rotation below it, the child's
+    /// rotation applied first. It goes through <see cref="LinksetTransform"/> rather than
+    /// LibreMetaverse's <c>Quaternion</c> operator, whose product is the reverse of LL's (LMV
+    /// <c>a * b</c> is LL <c>b * a</c>; compare <c>Quaternion.Multiply</c> with
+    /// <c>llquaternion.cpp:534</c>) -- so the LL-looking <c>relRot * seat.Rotation</c> this used, and
+    /// LMV's own <c>SimRotation</c> still uses, applied the seat's tilt first. That is invisible on a
+    /// seat that only turns about Z and wrong on any tilted one: a hammock whose root is pitched
+    /// 90 degrees sat its avatars on their backs, beside it. The walk also used to add each
+    /// ancestor's position without its rotation.</para></summary>
+    internal static bool ResolveSeatedTransform(
         LibreMetaverse.Simulator sim, LibreMetaverse.Vector3 relPos, LibreMetaverse.Quaternion relRot,
         uint parentLocalId, out LibreMetaverse.Vector3 worldPos, out LibreMetaverse.Quaternion worldRot)
     {
@@ -106,23 +117,25 @@ public sealed partial class GridSession
 
         if (!sim.ObjectsPrimitives.TryGetValue(parentLocalId, out var seat) || seat == null) return false;
 
-        worldPos = seat.Position + relPos * seat.Rotation;
-        worldRot = relRot * seat.Rotation;
+        var pos = new System.Numerics.Vector3(relPos.X, relPos.Y, relPos.Z);
+        var rot = new System.Numerics.Quaternion(relRot.X, relRot.Y, relRot.Z, relRot.W);
+        (pos, rot) = LinksetTransform.ToWorld(pos, rot, ToNumerics(seat.Position), ToNumerics(seat.Rotation));
 
-        // Walk up a linked-seat's own parent chain (e.g. sitting on a child prim of a vehicle) --
-        // same loop LMV's SimPosition runs, position-only (LMV's own algorithm does not further
-        // rotate by each ancestor, so this deliberately doesn't either).
+        // Walk up a linked seat's own parent chain (a seat that is a child prim of a linkset or vehicle).
+        bool resolved = true;
         var p = seat;
         while (p != null && p.ParentID != 0)
         {
             if (sim.ObjectsAvatars.TryGetValue(p.ParentID, out var av) && av != null)
             {
+                // A seat worn by an avatar hangs off an attachment point, whose frame is not known
+                // here; its wearer's position is the best available offset.
                 p = av;
-                worldPos += p.Position;
+                pos += ToNumerics(p.Position);
             }
             else if (sim.ObjectsPrimitives.TryGetValue(p.ParentID, out p) && p != null)
             {
-                worldPos += p.Position;
+                (pos, rot) = LinksetTransform.ToWorld(pos, rot, ToNumerics(p.Position), ToNumerics(p.Rotation));
             }
             else
             {
@@ -130,11 +143,19 @@ public sealed partial class GridSession
                 // parts) is unresolved too -- same race as the seat itself, one level up. worldPos
                 // is short by whatever offset that ancestor would have added, so it's just as
                 // untrustworthy as the seat-not-found case above.
-                return false;
+                resolved = false;
+                break;
             }
         }
-        return true;
+
+        worldPos = new LibreMetaverse.Vector3(pos.X, pos.Y, pos.Z);
+        worldRot = new LibreMetaverse.Quaternion(rot.X, rot.Y, rot.Z, rot.W);
+        return resolved;
     }
+
+    private static System.Numerics.Vector3 ToNumerics(LibreMetaverse.Vector3 v) => new(v.X, v.Y, v.Z);
+
+    private static System.Numerics.Quaternion ToNumerics(LibreMetaverse.Quaternion q) => new(q.X, q.Y, q.Z, q.W);
 
     /// <summary>Per-LocalID cooldown so a burst of terse updates for a seated avatar whose seat is
     /// still unresolved (they can arrive several times a second) sends ONE
