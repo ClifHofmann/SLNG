@@ -204,6 +204,81 @@ the split surfaces. It needs its own task.
 **For the gate below.** None of this is prim-node cost. It strengthens the no-go reading for
 Phase 2: the ~26 ms was never the node tree.
 
+### 2026-10-16 finding: the render thread's unmeasured ~13 ms is `end_frame` recording every draw
+
+**Reading (v0.27.66, branch `fix/FEAT-PERF-24-rt-split`, `--diag`, separate render thread).** Two more
+render-thread markers bracket the queued `_draw`. One is queued in `frame_pre_draw`, which
+`RenderingServerDefault::draw` emits right before it queues `_draw` (`rendering_server_default.cpp:443-449`).
+The other is queued from the frame() hook after `draw()` returns (C# runs posts to
+`Dispatcher.SynchronizationContext` in `ScriptServer::frame()`, `main.cpp:5085-5105`). A frame whose end
+marker went out more than 1 ms late is left out.
+
+- `drawCallMs`: inside `_draw`.
+- `commandMs`: executing queued commands outside `_draw`, split as `cmdSplit=scripts,flush`.
+- `rtIdleMaxMs`: at most this much of the cycle was idle.
+
+The three add up to the render thread's cycle, about `frameMs`. `drawSplit=pre,vp,post` cuts `_draw` at
+Godot's own `vp_begin`/`vp_end` timestamps, whose CPU times `RenderSections` reads on the render thread:
+
+- `pre`: scene/canvas update, particles, `render_probes`.
+- `vp`: the viewports, which is `renderCpuMs`.
+- `post`: the blit to the screen, `canvas_render->update` and `end_frame`.
+
+With Godot's `--gpu-profile` (`run-client.ps1 -GpuProfile`), an `[RtSections]` line names the CPU time
+between every capture inside `_draw`, and godot.log gets Godot's per-pass GPU profile.
+
+**Sirens Beach, same spot as above** (`-Diag -ShareMaterials -GpuProfile`, 10:20:26–10:21:01, 8 windows,
+`queue` 50–214), against a 15 s look out to sea (10:20:09–10:20:19, 3 windows):
+
+| Median | Beach | Sea |
+|---|---|---|
+| fps | 23 | 46 |
+| draws (scene / shadow) | 23,830 (12,650 / 10,880) | 1,389 (360 / 720) |
+| `drawCallMs` | **41.1** | 5.4 |
+| `drawSplit` pre / vp / post | 2.7 / 25.8 / **12.6** | 2.5 / 1.7 / 1.2 |
+| `renderCpuMs` / `setupMs` | 25.8 / 1.8 | 1.7 / 2.0 |
+| `commandMs` (scripts + flush) | **1.2** (0.15 + 1.0) | 0.0 |
+| `rtIdleMaxMs` | 0.55 | 16.5 |
+| `tailMs` / `rtLagMs` | 16.1 / 15.5 | 0.1 / 0.0 |
+| `renderGpuMs` / Godot GPU-profile total | 10.6 / 10–14 | 4.8 / – |
+
+At the beach the render thread is never idle. Its cycle (41.1 + 1.2 + 0.55 = 42.9 ms) is the frame period
+at 23 fps, and pre + vp + post = 41.1 = `drawCallMs`. The gap between the viewport timers and the frame
+is therefore `post`, 12.6 ms, and nothing else of size:
+
+- **Not the queued commands.** `commandMs` is 1.2 ms: the 12.4k skin binds and the ~2,900 `visual.update`
+  setters per second execute in about 1 ms per frame.
+- **Not reflection probes.** `render_probes` sits in `pre`, which is 2.7 ms in total. Of that, 1.8 ms is
+  `Prepare Render Frame` (scene and canvas update) and 0.7 ms is the stretch before it. The follow probe
+  re-bakes every ~2–3 s (`[ReflProbe] bake #100`), but averaged over the frames that adds at most ~0.2 ms.
+  There is no mirror and no hero probe here.
+- **Not a GPU or present wait.** The GPU works 10–14 ms of the 43 ms cycle, so the fence for the frame
+  slot (`_begin_frame` → `_stall_for_frame`) has long been signalled. V-Sync is off, so present does not
+  block. The fixed part of `post` (blit, canvas, submit, present) is at most the 1.2 ms the sea view shows.
+- **It is per draw.** `post` goes from 1.2 to 12.6 ms as draws go from 1.4k to 23.8k: 0.51 µs per draw.
+  `[RtSections]`: `< Render Viewports → end` = 12.6 ms, against shadows 7.2, depth pre-pass 5.9, opaque
+  5.6, 3D setup 2.5, shadow cull 2.3 and transparent 2.0 inside the viewports.
+
+**What it is (4.7-stable source).** `end_frame` is `RenderingDevice::swap_buffers` → `_end_frame` →
+`draw_graph.end()` (`rendering_device.cpp:8123`). Since Godot 4.3, a viewport render only records its
+draws into the render graph, and the viewport CPU timer times exactly that. `RenderingDeviceGraph::end`
+reorders the recorded commands (`RENDER_GRAPH_REORDER`) and only then writes every draw, bind and push
+constant into the Vulkan command buffer, after the last `vp_end`. Every draw is therefore paid for twice
+on the render thread: ~1.07 µs inside the viewport timer (cull, render list, graph record) and ~0.51 µs in
+`end_frame`, ~1.6 µs in all. The 10.9k shadow draws cost ~9.5 ms inside the viewport (shadow render 7.2 +
+cull 2.3) plus ~5.6 ms in `end_frame`, ~15 ms of the cycle.
+
+**Consequence.** The render thread is the limit at Sirens. It is draw-bound, and nothing outside the draw
+path (commands, probes, GPU) is worth chasing. Each draw removed saves ~1.6 µs on the render thread, ~50 %
+more than `renderCpuMs` suggests, so 10k fewer draws ≈ 16 ms ≈ the render-thread wait in `tailMs`.
+The levers are the draw-count tasks: FEAT-PERF-14 (small-object cull), FEAT-PERF-20 (shared materials),
+FEAT-PERF-21, and fewer shadow casters or cascades (the shadow pass is almost half the draws).
+
+`drawSplit` counts every bracketed draw whose captures came back, so while the region loads it can
+differ from `drawCallMs` (fixed in v0.27.67: a late end marker now drops the draw from both). The
+loading window at 10:19:47 also shows `renderCpuMs=6148914983294305`: Godot's measured viewport time
+underflowed once. That is an existing `RenderTimes` read, not this change.
+
 ## Phase 0: the measurement probe
 
 ### P0-a: split `postFlushMs` in Separate mode (`--diag` only, FrameTimeline)
