@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-24`
 - **Track:** `render` | `perf`
-- **Status:** `🚧 In Progress` (Phase 0 split built, v0.27.64; skin-sharing fix waiting for the in-world A/B)
+- **Status:** `🚧 In Progress` (Phase 0 split built; skin sharing confirmed in-world 2026-10-16: 21 → 26.5 fps at Sirens; P0-b/P0-c and the gate still open)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [ADR 0004](../adr/0004-performance-architecture.md) pillar P2, plan in [MVP6-1](MVP6-1-performance-program.md)
 - **Depends on:** FEAT-PERF-13 (render thread), BUG-PERF-15 (no read-backs). **Feeds:** FEAT-PERF-14, FEAT-PERF-20, FEAT-PERF-21.
@@ -160,6 +160,40 @@ Compare the medians of `[Perf]` `fps`, `postFlushMs`, `flushMs`, `tailMs`, `rtLa
 Expected: `skinWritesPerFrame` falls about 3–4×, and `flushMs` falls by roughly
 0.1 µs × the writes saved. If `tailMs ≈ rtLagMs` afterwards, the frame is then render-thread-bound,
 and the lever moves to the render side.
+
+**In-world A/B result (2026-10-16, Sirens Beach, v0.27.65, `-Diag -ShareMaterials`, ~50 avatars, 17
+full and animating).** Steady windows only (after loading, `queue` < 1,000). Off = `-NoShareSkins`,
+09:49:17–09:50:07, 11 windows. On = 09:51:17–09:51:52, 8 windows.
+
+| Median | Off | On | Change |
+|---|---|---|---|
+| fps | 21 | **26.5** | +26 % |
+| p99Ms | ~91 | ~50 | |
+| scriptsMs | 18.7 | 17.5 | |
+| postFlushMs | 27.2 | **19.2** | −8 |
+| flushMs | 14.8 | **6.7** | −8.1 |
+| tailMs | 12.5 | 12.6 | |
+| rtLagMs | 11.5 | 12.0 | |
+| renderCpuMs | 24.8 | 22.0 | −2.8 |
+| `[AvatarCost]` skinWritesPerFrame | 140,400 | **12,400** | ÷ 11 |
+| skinWrites (per re-pose) vs boundSkinBinds | 140,800 / 140,130 | 13,000 / 133,991 | |
+
+Whole-skin sharing removed 91 % of the writes in-world, more than the cache-wide estimate (75 %).
+Avatars at one spot wear the same mesh bodies and heads. `flushMs` fell by 8.1 ms for ~128k fewer
+writes, which is 63 ns per write, the bench's uncontended figure.
+
+**What is left.** `tailMs ≈ rtLagMs` (~12 ms) in both runs, so the tail is now an honest wait: the
+render thread is the slower side. Per frame it needs ~37 ms (scripts end + `rtLagMs`, about the
+frame). Only ~24 ms of that is `renderCpuMs + setupMs`. The remaining ~13 ms is outside the viewport
+timers: command execution, skeleton and other buffer uploads, `end_frame`/present and probes. The
+next levers are therefore on the render side: fewer draws (FEAT-PERF-14/20/21), and splitting that
+unmeasured ~13 ms. The per-avatar palette (below) would take `flushMs` down by at most ~0.8 ms more.
+It is no longer the bottleneck.
+
+**`queue` never reaches 0 at Sirens, in either run, and did not on v0.27.63 either** (floor ~50–60).
+This is not a backlog. At this spot ~2,900 `visual.update` items per second (moving objects) plus
+the cull slices flow through `MainThreadWorkQueue`, so some are always waiting when the overlay
+samples. For an A/B, wait until `queue` stays in the hundreds, not until it is 0.
 
 **Next step if the gain is too small.** Use one skin palette per avatar instead of whole-skin
 sharing: one slot per distinct (bone, bind) pair, with each mesh's vertex bone indices remapped to
@@ -498,7 +532,7 @@ Estimates, to be replaced by the Phase 0 numbers.
 ## Sub-tasks / Progress
 
 - [x] P0-a: FrameTimeline flush / tail / render-busy split (`--diag`) + ordering self test (v0.27.64)
-- [x] Sirens 2026-10-16: postFlushMs explained (skin-bind commands), skin sharing built (v0.27.64); in-world A/B open
+- [x] Sirens 2026-10-16: postFlushMs explained (skin-bind commands), skin sharing built (v0.27.64), in-world A/B: 21 → 26.5 fps, flushMs 14.8 → 6.7
 - [ ] P0-b: Safe-mode run at the baseline spot, numbers recorded here
 - [ ] P0-c: `--prim-bench` S0–S6 + ray parity, headless and windowed, table recorded here
 - [ ] Gate decision written here
