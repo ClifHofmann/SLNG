@@ -81,6 +81,10 @@ param(
     # Passes --batch-potential.
     [switch]$BatchPotential,
 
+    # FEAT-PERF-20 Phase A1: share identical prim materials. Cuts draw calls by merging consecutive draws.
+    # Passes --share-materials.
+    [switch]$ShareMaterials,
+
     # BUG-AVATAR-07: stop AvatarController's ground clamp from pulling the local agent DOWN to its
     # own ground reading (pushing UP out of geometry still happens). The reference viewer has no
     # equivalent of that downward pull -- the simulator owns the agent's Z, and
@@ -203,6 +207,10 @@ if ($NoInstancing) {
 if ($BatchPotential) {
     Write-Host "      [BatchPotential] tally ON (--batch-potential)" -ForegroundColor Cyan
     $userArgs += '--batch-potential'
+}
+if ($ShareMaterials) {
+    Write-Host "      shared prim materials ON (--share-materials)" -ForegroundColor Cyan
+    $userArgs += '--share-materials'
 }
 if ($NoGroundDrop) {
     Write-Host "      ground clamp will not pull the avatar DOWN (--no-ground-drop)" -ForegroundColor Magenta

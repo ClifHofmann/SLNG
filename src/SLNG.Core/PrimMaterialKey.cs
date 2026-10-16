@@ -49,35 +49,46 @@ public readonly record struct PrimMaterialKey
     /// compared, never interpreted.</summary>
     public ulong Variant { get; }
 
+    /// <summary>FEAT-PERF-16: packed llSetTextureAnim uniforms (TextureAnimShader.Pack), or zero if not animated.</summary>
+    public Vector4 TexAnimA { get; }
+    public Vector4 TexAnimB { get; }
+
     // The hash, computed once: a key is hashed many times (every set the tally keeps, and later a
     // material cache), and the generated one walks every field each time. Zero on a
     // default-constructed key, which then hashes the slow way, so equality and hash still agree.
     private readonly int _hash;
 
-    private PrimMaterialKey(FaceTexture face, Vector3 planarScale, ulong variant)
+    private PrimMaterialKey(FaceTexture face, Vector3 planarScale, ulong variant, Vector4 texAnimA = default, Vector4 texAnimB = default)
     {
         Face = face;
         PlanarScale = planarScale;
         Variant = variant;
-        _hash = ComputeHash(face, planarScale, variant);
+        TexAnimA = texAnimA;
+        TexAnimB = texAnimB;
+        _hash = ComputeHash(face, planarScale, variant, texAnimA, texAnimB);
     }
 
-    /// <summary>Value equality over the normalised inputs and the variant.</summary>
+    /// <summary>Value equality over the normalised inputs, the variant and texture animation uniforms.</summary>
     public bool Equals(PrimMaterialKey other) =>
-        Variant == other.Variant && PlanarScale.Equals(other.PlanarScale) && Face.Equals(other.Face);
+        Variant == other.Variant
+        && PlanarScale.Equals(other.PlanarScale)
+        && Face.Equals(other.Face)
+        && TexAnimA.Equals(other.TexAnimA)
+        && TexAnimB.Equals(other.TexAnimB);
 
     /// <inheritdoc/>
-    public override int GetHashCode() => _hash != 0 ? _hash : ComputeHash(Face, PlanarScale, Variant);
+    public override int GetHashCode() => _hash != 0 ? _hash : ComputeHash(Face, PlanarScale, Variant, TexAnimA, TexAnimB);
 
-    private static int ComputeHash(in FaceTexture face, Vector3 planarScale, ulong variant)
+    private static int ComputeHash(in FaceTexture face, Vector3 planarScale, ulong variant, Vector4 texAnimA, Vector4 texAnimB)
     {
-        int h = HashCode.Combine(face, planarScale, variant);
+        int animHash = (texAnimA == Vector4.Zero && texAnimB == Vector4.Zero) ? 0 : HashCode.Combine(texAnimA, texAnimB);
+        int h = HashCode.Combine(face, planarScale, variant, animHash);
         return h != 0 ? h : 1;
     }
 
     /// <summary>The key of a face drawn with <paramref name="variant"/> on a prim of
     /// <paramref name="primScale"/>.</summary>
-    public static PrimMaterialKey Create(in FaceTexture face, Vector3 primScale, ulong variant)
+    public static PrimMaterialKey Create(in FaceTexture face, Vector3 primScale, ulong variant = 0, Vector4 texAnimA = default, Vector4 texAnimB = default)
     {
         bool planar = face.IsPlanar;
         var normalised = face with
@@ -85,6 +96,6 @@ public readonly record struct PrimMaterialKey
             TexGen = planar ? FaceTexture.TexGenPlanar : FaceTexture.TexGenDefault,
             Shiny = face.Shiny is >= 1 and <= 3 ? face.Shiny : (byte)0,
         };
-        return new PrimMaterialKey(normalised, planar ? primScale : Vector3.Zero, variant);
+        return new PrimMaterialKey(normalised, planar ? primScale : Vector3.Zero, variant, texAnimA, texAnimB);
     }
 }
