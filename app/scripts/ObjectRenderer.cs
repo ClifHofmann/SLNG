@@ -247,7 +247,8 @@ public partial class ObjectRenderer : Node3D
         // FEAT-PERF-20 Phase A1: material keys currently held by this visual in PrimMaterialCache,
         // and per-surface detached flags for copy-on-write surfaces (texanim, mirror, selection, MOAP).
         public PrimMaterialKey[]? SurfaceMaterialKeys;
-        public bool[]? SurfaceDetached;
+        // FEAT-PERF-20 A1: per surface, the DetachReason bits that keep it on a private material copy (0 = shared).
+        public byte[]? SurfaceDetached;
 
         // Sentinel distinct from Guid.Empty (which is a valid "no texture" value) so the
         // first update always applies.
@@ -3038,8 +3039,8 @@ public partial class ObjectRenderer : Node3D
         {
             if (RenderConfig.ShareMaterials)
             {
-                if (isAnimated) DetachSurfaceMaterial(state, 0);
-                else ReturnSurfaceMaterial(state, 0);
+                if (isAnimated) DetachSurfaceMaterial(state, 0, DetachReason.TexAnim);
+                else ReturnSurfaceMaterial(state, 0, DetachReason.TexAnim);
             }
             if (state.MeshInstance.MaterialOverride is ShaderMaterial single)
                 ApplyTexAnimToMaterial(single, isAnimated, a, b);
@@ -3059,8 +3060,8 @@ public partial class ObjectRenderer : Node3D
             bool faceCovered = isAnimated && (animFace < 0 || faceIdx == animFace);
             if (RenderConfig.ShareMaterials)
             {
-                if (faceCovered) DetachSurfaceMaterial(state, surf);
-                else ReturnSurfaceMaterial(state, surf);
+                if (faceCovered) DetachSurfaceMaterial(state, surf, DetachReason.TexAnim);
+                else ReturnSurfaceMaterial(state, surf, DetachReason.TexAnim);
             }
 
             if (SurfaceMaterial(state, surf) is not ShaderMaterial mat) continue;
@@ -4008,7 +4009,7 @@ public partial class ObjectRenderer : Node3D
                 if (RenderConfig.ShareMaterials)
                 {
                     state.SurfaceMaterialKeys = new[] { wholeKey };
-                    state.SurfaceDetached = new[] { false };
+                    state.SurfaceDetached = new byte[1];
                 }
             }, used, new[] { wholeKey });
             return;
@@ -4096,7 +4097,7 @@ public partial class ObjectRenderer : Node3D
             {
                 ReleaseSurfaceMaterials(state);
                 state.SurfaceMaterialKeys = keys;
-                state.SurfaceDetached = new bool[keys.Length];
+                state.SurfaceDetached = new byte[keys.Length];
             }
         }, allUsed.Distinct().ToList(), keys);
     }
@@ -4123,7 +4124,7 @@ public partial class ObjectRenderer : Node3D
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (!IsInstanceValid(state.MeshInstance)) return;
-                var targetMat = DetachSurfaceMaterial(state, surface) ?? material;
+                var targetMat = DetachSurfaceMaterial(state, surface, DetachReason.Media) ?? material;
                 if (!IsInstanceValid(targetMat)) return;
                 targetMat.SetShaderParameter(PrimShaderFamily.AlbedoTexture, ImageTexture.CreateFromImage(image));
                 targetMat.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
@@ -5427,15 +5428,11 @@ public partial class ObjectRenderer : Node3D
             if (state.MirrorSurfaces == null) return;
             foreach (var (surface, original) in state.MirrorSurfaces)
             {
-                if (RenderConfig.ShareMaterials)
-                {
-                    ReturnSurfaceMaterial(state, surface);
-                }
-                else
-                {
-                    var mat = SurfaceMaterial(state, surface);
-                    if (mat != null && original != null) mat.Shader = original;
-                }
+                // Put the shader back on whatever the surface wears first: with shared materials another
+                // reason (animation, selection, media) may keep the private copy alive after the mirror ends.
+                var mat = SurfaceMaterial(state, surface);
+                if (mat != null && original != null) mat.Shader = original;
+                if (RenderConfig.ShareMaterials) ReturnSurfaceMaterial(state, surface, DetachReason.Mirror);
             }
             state.MirrorSurfaces = null;
             return;
@@ -5459,7 +5456,7 @@ public partial class ObjectRenderer : Node3D
             swapped.Add((i, mat.Shader));
             if (RenderConfig.ShareMaterials)
             {
-                mat = DetachSurfaceMaterial(state, i);
+                mat = DetachSurfaceMaterial(state, i, DetachReason.Mirror);
             }
             if (mat != null) mat.Shader = PrimShaderFamily.Mirror;
         }

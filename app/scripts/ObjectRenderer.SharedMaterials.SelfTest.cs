@@ -63,7 +63,7 @@ public partial class ObjectRenderer
                 EntityId = e1.Id,
                 MeshInstance = mi1,
                 SurfaceMaterialKeys = new PrimMaterialKey[] { key },
-                SurfaceDetached = new bool[1]
+                SurfaceDetached = new byte[1]
             };
             _visuals[state1.EntityId] = state1;
 
@@ -77,7 +77,7 @@ public partial class ObjectRenderer
                 EntityId = e2.Id,
                 MeshInstance = mi2,
                 SurfaceMaterialKeys = new PrimMaterialKey[] { key },
-                SurfaceDetached = new bool[1]
+                SurfaceDetached = new byte[1]
             };
             _visuals[state2.EntityId] = state2;
 
