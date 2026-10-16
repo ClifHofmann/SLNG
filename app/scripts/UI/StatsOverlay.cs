@@ -300,7 +300,12 @@ public partial class StatsOverlay : PanelContainer
             $"worstMs={_worstSinceLog:F0} hitches={_hitchesSinceLog} ({hitchesPerSec:F1}/s) " +
             $"processMs={_lastProcessMs:F1} physicsMs={_lastPhysicsMs:F1} " +
             $"otherMs={FrameTimeline.OtherMs:F1} preFlushMs={FrameTimeline.PreFlushMs:F1} " +
-            $"scriptsMs={FrameTimeline.ScriptsMs:F1} postFlushMs={FrameTimeline.PostFlushMs:F1} drawMs={FrameTimeline.DrawMs:F1} " +
+            $"scriptsMs={FrameTimeline.ScriptsMs:F1} postFlushMs={FrameTimeline.PostFlushMs:F1} " +
+            // FEAT-PERF-24 P0-a: postFlush = flush (deferred calls, skeleton updates, transforms) +
+            // tail (delete queue, RenderingServer sync); rt* only with --diag on a separate render thread.
+            $"flushMs={FrameTimeline.FlushMs:F1} tailMs={FrameTimeline.TailMs:F1} " +
+            $"rtBusyMs={MsOrDash(FrameTimeline.RtBusyMs)} rtLagMs={MsOrDash(FrameTimeline.RtLagMs)} " +
+            $"frees={FrameTimeline.FreesPerFrame:F1} drawMs={FrameTimeline.DrawMs:F1} " +
             $"renderCpuMs={RenderTimes.CpuMs:F1} renderGpuMs={RenderTimes.GpuMs:F1} setupMs={RenderTimes.SetupCpuMs:F1} " +
             $"views={RenderTimes.Describe(compact: true)} draws={_lastDrawCalls:F0} drawsScene={RenderTimes.MainVisibleDraws} drawsShadow={RenderTimes.MainShadowDraws} " +
             $"drawsCanvas={RenderTimes.MainCanvasDraws} tris={_lastPrimitives / 1000.0:F0}k " +
@@ -330,6 +335,8 @@ public partial class StatsOverlay : PanelContainer
         _hitchesSinceLog = 0;
         _secondsSinceLog = 0;
     }
+
+    private static string MsOrDash(double ms) => ms < 0 ? "-" : ms.ToString("F1");
 
     private void Refresh()
     {

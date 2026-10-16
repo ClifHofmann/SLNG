@@ -263,6 +263,8 @@ public static partial class SelfTest
         results.Add(CheckCompressedWarmPathAndShrink()); // FEAT-PERF-17
         results.Add(CheckCompressedAcrossFormats()); // FEAT-PERF-17
         results.Add(CheckRenderThread()); // FEAT-PERF-13
+        results.Add(CheckRenderMarkersBeforeSync()); // FEAT-PERF-24 P0-a
+        results.Add(CheckSharedRiggedSkins(tree)); // FEAT-PERF-24
         results.Add(CheckMeshSurfaceCache()); // BUG-PERF-15
         results.Add(CheckDxgiVideoMemory()); // FEAT-PERF-17
         results.Add(CheckAvatarTextureRemoval()); // BUG-PERF-13

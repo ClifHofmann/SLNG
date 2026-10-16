@@ -2532,6 +2532,7 @@ public partial class ObjectRenderer : Node3D
             ReleaseSurfaceMaterials(state);
             ReleaseMeshRef(state);
             state.MeshInstance.QueueFree();
+            FrameTimeline.CountFree(); // FEAT-PERF-24 P0-a
             if (_gpuCache != null)
             {
                 foreach (var texId in state.UsedTextureIds)

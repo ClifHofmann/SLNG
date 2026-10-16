@@ -223,6 +223,15 @@ public partial class AvatarRenderer : Node3D
         // which are vertex-morphed AND re-skinned every shape update via RebuildBodyMorphs — a worn
         // mesh's own vertices never change with shape, so nothing else would ever revisit its Skin.
         public List<(MeshInstance3D Mi, MeshData MeshData, Guid MeshId)> RiggedAttachments { get; } = new();
+        // FEAT-PERF-24: this avatar's rigged skins by content (BindRiggedSkin). Godot shares a
+        // skeleton's per-re-pose bind writes only between meshes holding the same Skin object, so
+        // identical skins (the pieces of one mesh body or head) are handed out once. Per avatar,
+        // because each bind bakes in this avatar's BoneOwnScale and joint-override rests; cleared
+        // when the binds are rebuilt (RebuildRiggedAttachmentSkins). Dropping an entry only loses
+        // sharing for later meshes, never correctness.
+        public Dictionary<SLNG.Core.Avatars.SkinBindKey, Skin> SharedSkins { get; } = new();
+        // FEAT-PERF-24: skeleton updates (Skeleton3D.skeleton_updated) since the last [AvatarCost].
+        public int SkeletonUpdates { get; set; }
         public Godot.Control? NameTag { get; set; }
         /// <summary>Tracks the previous frame's SittingOnLocalId to detect sit→stand transitions.
         /// When transitioning from sitting to standing, the animation player must be forcefully
@@ -720,6 +729,7 @@ public partial class AvatarRenderer : Node3D
             skeleton.Name = "Skeleton3D";
             visual.Root.AddChild(skeleton);
             visual.Skeleton = skeleton;
+            skeleton.SkeletonUpdated += () => visual.SkeletonUpdates++; // FEAT-PERF-24 [AvatarCost]
 
             // Establish SL-accurate Rest + BoneOwnScale (see ApplyShape's doc comment) from the
             // very first frame, using each bone's BASE scale only (zero distortion — the real
@@ -5656,8 +5666,9 @@ public partial class AvatarRenderer : Node3D
         // skeleton rest instead (as the body parts do) only works for meshes whose bind pose
         // matches exactly — these OpenSim meshes don't, and exploded into petals.
 
-        var skin = new Skin();
         slotForJoint = new int[jointCount];
+        var slotBones = new List<int>(jointCount);
+        var slotBinds = new List<Transform3D>(jointCount);
 
         // Resolve every joint's bone index up front.
         var jointBone = new int[jointCount];
@@ -5725,11 +5736,62 @@ public partial class AvatarRenderer : Node3D
                 if (!IsFiniteTransform(bind)) bind = Transform3D.Identity;
             }
 
-            slotForJoint[j] = skin.GetBindCount();
-            skin.AddBind(bone, bind);
+            slotForJoint[j] = slotBones.Count;
+            slotBones.Add(bone);
+            slotBinds.Add(bind);
         }
-        if (skin.GetBindCount() == 0) return null;
+        if (slotBones.Count == 0) return null;
 
+        return SharedOrNewSkin(visual, skeleton, slotBones, slotBinds);
+    }
+
+    /// <summary>Upper bound on <see cref="AvatarVisual.SharedSkins"/>; past it the cache starts
+    /// over. A full outfit needs well under this (Sirens Beach: ~166 rigged meshes per avatar).</summary>
+    private const int MaxSharedSkinsPerAvatar = 256;
+
+    // FEAT-PERF-24: rigged skins handed out since the last [AvatarCost], and how many were shared.
+    private int _skinsBound, _skinsShared;
+
+    /// <summary>FEAT-PERF-24: the skin with exactly these binds that this avatar already uses, or a
+    /// new one. Godot's skeleton writes every bind of every distinct Skin bound to it on each
+    /// re-pose -- one RenderingServer command per bind, ~100 ns each on a separate render thread --
+    /// so a mesh body's dozens of identical skins cost dozens of times what one does
+    /// (<see cref="SLNG.Core.Avatars.SkinBindKey"/>). The key holds the binds' exact bits, so a
+    /// shared skin gives every mesh the palette it would have computed itself.</summary>
+    private Skin SharedOrNewSkin(AvatarVisual visual, Skeleton3D skeleton, List<int> bones, List<Transform3D> binds)
+    {
+        _skinsBound++;
+        // Only for the visual's own skeleton: the binds are this skeleton's rests and scales.
+        bool share = RenderConfig.ShareSkins && skeleton == visual.Skeleton;
+        SLNG.Core.Avatars.SkinBindKey? key = null;
+        if (share)
+        {
+            const int n = SLNG.Core.Avatars.SkinBindKey.FloatsPerBind;
+            var values = new float[binds.Count * n];
+            for (int i = 0; i < binds.Count; i++)
+            {
+                var t = binds[i];
+                var v = values.AsSpan(i * n, n);
+                v[0] = t.Basis.Row0.X; v[1] = t.Basis.Row0.Y; v[2] = t.Basis.Row0.Z;
+                v[3] = t.Basis.Row1.X; v[4] = t.Basis.Row1.Y; v[5] = t.Basis.Row1.Z;
+                v[6] = t.Basis.Row2.X; v[7] = t.Basis.Row2.Y; v[8] = t.Basis.Row2.Z;
+                v[9] = t.Origin.X; v[10] = t.Origin.Y; v[11] = t.Origin.Z;
+            }
+            key = new SLNG.Core.Avatars.SkinBindKey(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(bones), values);
+            if (visual.SharedSkins.TryGetValue(key, out var shared) && IsInstanceValid(shared))
+            {
+                _skinsShared++;
+                return shared;
+            }
+        }
+
+        var skin = new Skin();
+        for (int i = 0; i < bones.Count; i++) skin.AddBind(bones[i], binds[i]);
+        if (key != null)
+        {
+            if (visual.SharedSkins.Count >= MaxSharedSkinsPerAvatar) visual.SharedSkins.Clear();
+            visual.SharedSkins[key] = skin;
+        }
         return skin;
     }
 
@@ -6128,6 +6190,8 @@ public partial class AvatarRenderer : Node3D
     private void RebuildRiggedAttachmentSkins(AvatarVisual visual)
     {
         if (visual.Skeleton == null) return;
+        // FEAT-PERF-24: every bind changes with the scale; the rebuilt ones share among themselves.
+        visual.SharedSkins.Clear();
         foreach (var (mi, meshData, _) in visual.RiggedAttachments)
         {
             if (!IsInstanceValid(mi) || meshData.Skin == null) continue;
@@ -7056,6 +7120,7 @@ void fragment() {
     /// <summary>BUG-PERF-05: how often <see cref="ReportAvatarCost"/> writes its line.</summary>
     private const double AvatarCostIntervalSeconds = 5.0;
     private double _avatarCostAccum;
+    private int _avatarCostFrames;
 
     /// <summary>
     /// BUG-PERF-05: one <c>[AvatarCost]</c> line every few seconds with what the engine has to keep
@@ -7068,6 +7133,7 @@ void fragment() {
     /// </summary>
     private void ReportAvatarCost(double delta)
     {
+        _avatarCostFrames++;
         _avatarCostAccum += delta;
         if (_avatarCostAccum < AvatarCostIntervalSeconds) return;
         _avatarCostAccum = 0;
@@ -7075,6 +7141,11 @@ void fragment() {
         int avatars = 0, shown = 0, reduced = 0, animating = 0, skinned = 0, drawn = 0, binds = 0, shownBinds = 0, boundBinds = 0;
         int surfaces = 0, hiddenSurfaces = 0;
         int maxSkinned = 0;
+        // FEAT-PERF-24: what the skeletons really write. Godot writes each DISTINCT bound Skin's
+        // binds once per re-pose, so binds per re-pose = the bind counts of the distinct skins;
+        // times this window's re-poses (skeleton_updated) gives the RenderingServer commands.
+        long skinWrites = 0, writesInWindow = 0, skeletonUpdates = 0;
+        var distinctSkins = new HashSet<ulong>();
         foreach (var visual in _visuals.Values)
         {
             if (visual.Skeleton == null || !IsInstanceValid(visual.Skeleton)) continue;
@@ -7084,33 +7155,56 @@ void fragment() {
             if (visual.IsReduced) reduced++;
             if (isShown && !visual.IsReduced && visual.AnimPlayer.IsPlaying) animating++;
 
+            distinctSkins.Clear();
+            int avWrites = 0;
             if (!visual.IsReduced)
             {
                 int avSkinned = 0;
                 foreach (var node in visual.Skeleton.GetChildren())
                 {
                     CountSkin(node as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
-                              ref boundBinds, ref surfaces, ref hiddenSurfaces);
+                              ref boundBinds, ref surfaces, ref hiddenSurfaces, distinctSkins, ref avWrites);
                     foreach (var grandchild in node.GetChildren())
                         CountSkin(grandchild as MeshInstance3D, isShown, ref avSkinned, ref drawn, ref binds, ref shownBinds,
-                                  ref boundBinds, ref surfaces, ref hiddenSurfaces);
+                                  ref boundBinds, ref surfaces, ref hiddenSurfaces, distinctSkins, ref avWrites);
                 }
                 skinned += avSkinned;
                 if (avSkinned > maxSkinned) maxSkinned = avSkinned;
             }
+            else
+            {
+                // A reduced avatar keeps only its system body parts bound (the outfit is parked).
+                foreach (var part in visual.Parts.Values)
+                    if (IsInstanceValid(part) && part.Skin != null && !part.Skeleton.IsEmpty
+                        && distinctSkins.Add(part.Skin.GetInstanceId()))
+                        avWrites += part.Skin.GetBindCount();
+            }
+            skinWrites += avWrites;
+            skeletonUpdates += visual.SkeletonUpdates;
+            writesInWindow += (long)visual.SkeletonUpdates * avWrites;
+            visual.SkeletonUpdates = 0;
         }
+        int frames = Math.Max(1, _avatarCostFrames);
+        _avatarCostFrames = 0;
 
         SLNG.App.UI.StatsOverlay.EmitPerfLine(
             $"[AvatarCost] avatars={avatars} shown={shown} reduced={reduced} animating={animating} skinnedMeshes={skinned} " +
             $"drawnSkinnedMeshes={drawn} surfaces={surfaces} hiddenSurfaces={hiddenSurfaces} " +
             $"skinBinds={binds} shownSkinBinds={shownBinds} boundSkinBinds={boundBinds} maxSkinned={maxSkinned} " +
             $"rigNormal={_rigsWithNormalCount}/{_rigsPreparedCount} " +
-            $"reqHiddenSubmeshes={_submeshesHiddenCount}/{_submeshesTotalCount} controlAvatars={_controlAvatars.Count}");
+            $"reqHiddenSubmeshes={_submeshesHiddenCount}/{_submeshesTotalCount} controlAvatars={_controlAvatars.Count} " +
+            // FEAT-PERF-24: binds the skeletons write per re-pose (distinct skins only), re-poses
+            // and bind writes (RenderingServer commands) per frame, and rigged skins shared/bound.
+            $"skinWrites={skinWrites} skelUpdatesPerFrame={(double)skeletonUpdates / frames:F1} " +
+            $"skinWritesPerFrame={writesInWindow / frames} sharedSkins={_skinsShared}/{_skinsBound} " +
+            $"shareSkins={(RenderConfig.ShareSkins ? "on" : "off")}");
+        _skinsShared = _skinsBound = 0;
 
         // Surfaces are counted on the instance that owns the face: a split child counts its one
         // surface, and the parent's Hidden stand-in for it is not counted again.
         static void CountSkin(MeshInstance3D? mi, bool isShown, ref int skinned, ref int drawn, ref int binds,
-                              ref int shownBinds, ref int boundBinds, ref int surfaces, ref int hiddenSurfaces)
+                              ref int shownBinds, ref int boundBinds, ref int surfaces, ref int hiddenSurfaces,
+                              HashSet<ulong> distinctSkins, ref int writes)
         {
             if (mi?.Skin == null) return;
             int n = mi.Skin.GetBindCount();
@@ -7121,7 +7215,10 @@ void fragment() {
             // Still registered with the skeleton, i.e. updated on every re-pose. A split child shares
             // its parent's Skin and binding, so it is counted with the parent only.
             if (!mi.Skeleton.IsEmpty && !mi.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
+            {
                 boundBinds += n;
+                if (distinctSkins.Add(mi.Skin.GetInstanceId())) writes += n;
+            }
             if (mi.Mesh is not ArrayMesh mesh) return;
             for (int s = 0; s < mesh.GetSurfaceCount(); s++)
             {

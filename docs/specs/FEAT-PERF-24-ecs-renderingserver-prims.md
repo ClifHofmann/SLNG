@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-24`
 - **Track:** `render` | `perf`
-- **Status:** `⏸️ Pending`
+- **Status:** `🚧 In Progress` (Phase 0 split built, v0.27.64; skin-sharing fix waiting for the in-world A/B)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [ADR 0004](../adr/0004-performance-architecture.md) pillar P2, plan in [MVP6-1](MVP6-1-performance-program.md)
 - **Depends on:** FEAT-PERF-13 (render thread), BUG-PERF-15 (no read-backs). **Feeds:** FEAT-PERF-14, FEAT-PERF-20, FEAT-PERF-21.
@@ -84,6 +84,92 @@ Changing who owns them does not.
 moved prims and removed nodes only. The visible "flush" is the render side. Phase 0 checks this
 claim with numbers before anything big is built.
 
+### 2026-10-16 finding: at Sirens the flush is skin-bind commands, not prims
+
+Measured at Sirens Beach on v0.27.63 (`rt=separate`, `-ShareMaterials`, vsync off), 25 `[Perf]` lines
+09:02–09:04: fps 19–23, `scriptsMs` 16–32 (median ~20), `postFlushMs` 22–30 (median ~26),
+`renderCpuMs` 22–30 (median ~24), `renderGpuMs` 13–16, `setupMs` 0–5. The frame (~47 ms) is scripts
+plus postFlush, so the two threads do not overlap. Cutting draws from 24k to 21k did not move it.
+
+**What Godot 4.7 does (source read, 4.7-stable).**
+
+- The main thread blocks only in `RenderingServer::sync()` (`main.cpp:5073`) and in synchronous
+  calls. `CommandQueueMT::_flush` drops its lock while a command runs (`command_queue_mt.h:191-193`),
+  so setters never wait for a draw.
+- Each setter from the main thread costs a lock, a copy into the queue and
+  `WorkerThreadPool::notify_yield_over` (a second, global lock plus a condition-variable wake,
+  `command_queue_mt.h:137-149`, `worker_thread_pool.cpp:634-652`). In Safe mode the same call is
+  a direct function call.
+- `Skeleton3D` handles `NOTIFICATION_UPDATE_SKELETON` (deferred, so it runs in the message-queue
+  flush **after** our scripts, inside `postFlushMs`). For every skin bound to it, it sends
+  **one `skeleton_bone_set_transform` per bind** (`skeleton_3d.cpp:349-406`). Meshes share that
+  work only when they hold the **same `Skin` object** (`register_skin`, `skeleton_3d.cpp`:
+  `if (E->skin == p_skin) return E`).
+- SLNG built a new `Skin` for every rigged mesh (`AvatarRenderer.BindRiggedSkin`). The same spot's
+  `[AvatarCost]` line: 17 full avatars, `skinnedMeshes=2825`, `skinBinds=158649`, all animating.
+  That is ~158,000 RenderingServer commands per frame from skeletons alone.
+
+**Bench (headless, Godot 4.7, a scratch GDScript project, 300 frames each).** 17 skeletons × 166
+skinned meshes × 56 binds, one bone re-posed per skeleton per frame. `flushMs` = scripts end to a
+zero-length timer, the same cut as P0-a.
+
+| Mode | Distinct skins / skeleton | Writes / frame | flushMs | ns / write |
+|---|---|---|---|---|
+| safe | 166 (own skin per mesh) | 158,032 | 3.9 | 25 |
+| **separate** | 166 | 158,032 | **14.6–17.5** | 93–111 |
+| separate | 40 (shared) | 38,080 | 4.0 | 105 |
+| separate | 10 (shared) | 9,520 | 1.5 | 161 |
+| separate, render thread held for 40 ms | 166 | 158,032 | 9.8 | 62 (no lock contention) |
+
+The render thread works through the same commands at ~22 ns each with the dummy renderer, ~3.4 ms
+per frame, plus the real skeleton-buffer writes. So the cost lands mostly on the main thread, in
+the flush, and grows linearly with the number of distinct skins.
+
+**Can sharing help? Offline over the asset cache** (60,362 `.mesh` files, 35,575 rigged): only
+**8,898 distinct skin contents** (same joints and bit-identical inverse-bind matrices), and 46,005
+distinct (joint, matrix) pairs out of 1,273,912. Most meshes come in groups that share one skin (a
+mesh body's pieces), so whole-skin sharing removes about three quarters of the writes.
+
+**Cause, in one line.** By the bench, about 15 ms of the 26 ms `postFlushMs` at Sirens is our own flush work
+(the in-world `flushMs` / `tailMs` split below confirms or corrects this):
+`Skeleton3D` writing ~158k skin binds as separate RenderingServer commands, ~100 ns each with the
+separate render thread. That cost exists only because every rigged mesh had its own `Skin`. The rest
+is the real wait for the render thread, which also has to execute those commands
+(`renderCpuMs` does not count them).
+
+**Fix (v0.27.64-alpha, branch `fix/FEAT-PERF-24-render-overlap`).** `BindRiggedSkin` hands out one
+`Skin` per distinct content per avatar (`SLNG.Core.Avatars.SkinBindKey`: bone and the bind matrix's
+exact bits, per slot). The palette is bit-identical, so nothing on screen changes. The cache is
+cleared when the binds are rebuilt after a shape change. It is on by default. `--no-share-skins`
+(`run-client.ps1 -NoShareSkins`) is the A/B switch.
+
+**New readings.**
+
+- `[Perf]`: `flushMs`, `tailMs` (always), `rtBusyMs`, `rtLagMs` (with `--diag` in separate mode), `frees`.
+- `[AvatarCost]`: `skinWrites` (binds written per re-pose, distinct skins only),
+  `skelUpdatesPerFrame`, `skinWritesPerFrame`, `sharedSkins=shared/bound`, `shareSkins=on|off`.
+
+**Measurement plan for the in-world A/B** (same spot, same settings, `-Diag`, wait for `queue=0`, stand
+2 minutes each):
+
+1. `run-client.ps1 -Diag -ShareMaterials -NoShareSkins` (the old behaviour);
+2. `run-client.ps1 -Diag -ShareMaterials` (shared skins).
+
+Compare the medians of `[Perf]` `fps`, `postFlushMs`, `flushMs`, `tailMs`, `rtLagMs`, `scriptsMs`,
+`renderCpuMs`, and `[AvatarCost]` `skinWritesPerFrame` and `skinWrites` against `boundSkinBinds`.
+Expected: `skinWritesPerFrame` falls about 3–4×, and `flushMs` falls by roughly
+0.1 µs × the writes saved. If `tailMs ≈ rtLagMs` afterwards, the frame is then render-thread-bound,
+and the lever moves to the render side.
+
+**Next step if the gain is too small.** Use one skin palette per avatar instead of whole-skin
+sharing: one slot per distinct (bone, bind) pair, with each mesh's vertex bone indices remapped to
+it. Offline, that leaves ~1 in 28 pairs, so a full avatar would write a few hundred binds per
+re-pose instead of ~9,000. It touches the rig worker (the slots are cut there), the pick chunks and
+the split surfaces. It needs its own task.
+
+**For the gate below.** None of this is prim-node cost. It strengthens the no-go reading for
+Phase 2: the ~26 ms was never the node tree.
+
 ## Phase 0: the measurement probe
 
 ### P0-a: split `postFlushMs` in Separate mode (`--diag` only, FrameTimeline)
@@ -102,7 +188,15 @@ New `[Perf]` fields:
 - `flushMs` = flush marker − scripts end (deferred calls and transforms);
 - `tailMs` = `frame_pre_draw` − flush marker (delete queue plus `sync()` wait);
 - `rtBusyMs` = render marker − scripts end (how long the render side was still busy);
-- `freesPerFrame` from a counter in `RemoveVisual`.
+- `rtLagMs` = a second render marker, queued at the flush marker, − the flush marker (how far
+  behind the render side still was when the main thread's flush ended);
+- `frees` (per frame) from a counter in `RemoveVisual`.
+
+*As built (v0.27.64):* `flushMs` / `tailMs` are always in `[Perf]` (one zero-length timer per frame
+costs microseconds); only the two render markers need `--diag` and separate mode, and read `-`
+otherwise. Both markers have run by `frame_pre_draw`, because the `sync()` before it waits for
+them, so they are read in the same frame. The self test checks that ordering against a
+synchronous call (`render-thread markers run before a sync returns`).
 
 If `tailMs ≈ rtBusyMs − flushMs`, the tail is waiting. A self test asserts that the markers arrive in
 order.
@@ -394,6 +488,7 @@ Estimates, to be replaced by the Phase 0 numbers.
 - `app/scripts/ObjectSelectionController.cs`, `app/scripts/Input/CursorManager.cs`,
   `app/scripts/AvatarController.cs`: `PickResolver` (Phase 3)
 - `app/scripts/FrameTimeline.cs`, `app/scripts/UI/StatsOverlay.cs`: P0-a fields
+- `app/scripts/AvatarRenderer.cs` (`BindRiggedSkin` / `SharedOrNewSkin`, `[AvatarCost]`), `src/SLNG.Core/Avatars/SkinBindKey.cs`, `app/scripts/AvatarRenderer.SharedSkins.SelfTest.cs`: skin sharing (2026-10-16)
 - `app/scripts/SelfTest.PrimBench.cs` (P0-c), `app/scripts/SelfTest.PrimBackend.cs` (parity, RID leaks)
 - `app/scripts/RenderConfig.cs`, `app/scripts/Diagnostics.cs` (`--prim-backend`),
   `app/scripts/UI/GraphicsSettings.cs`, `app/scripts/UI/GraphicsPreferencesPage.cs` (toggle)
@@ -402,7 +497,8 @@ Estimates, to be replaced by the Phase 0 numbers.
 
 ## Sub-tasks / Progress
 
-- [ ] P0-a: FrameTimeline flush / tail / render-busy split (`--diag`) + ordering self test
+- [x] P0-a: FrameTimeline flush / tail / render-busy split (`--diag`) + ordering self test (v0.27.64)
+- [x] Sirens 2026-10-16: postFlushMs explained (skin-bind commands), skin sharing built (v0.27.64); in-world A/B open
 - [ ] P0-b: Safe-mode run at the baseline spot, numbers recorded here
 - [ ] P0-c: `--prim-bench` S0–S6 + ray parity, headless and windowed, table recorded here
 - [ ] Gate decision written here
