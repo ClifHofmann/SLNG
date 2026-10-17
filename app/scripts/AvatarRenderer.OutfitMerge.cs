@@ -271,7 +271,10 @@ public partial class AvatarRenderer
         item.MeshId = req.MeshId;
         item.SortingOffset = mi.SortingOffset;
         item.Rig = wanted ? RetainRig(prepared, slotForJoint, faceIndices, req) : null;
+        long oldLinkset = item.Linkset;
         SetLinksetOrder(item);
+        // Relinked while merged (rare): the old bucket lets go of it at once; the new one takes it in.
+        if (item.InBucket && oldLinkset != item.Linkset) _mergeTouched.Add((item.Visual, oldLinkset));
         item.Staging = mi;
         item.StagingSettled = false;
         item.Newest = null;

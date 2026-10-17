@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-23`
 - **Track:** `render`
-- **Status:** `🚧 In Progress` (Phase 0 gate passed 2026-10-17; Phase 1 built v0.27.74-alpha, off by default; in-world A/B open)
+- **Status:** `🚧 In Progress` (Phase 0 gate passed 2026-10-17; Phase 1 built v0.27.74-alpha, fixes to v0.27.76-alpha, off by default; in-world A/B open)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [ADR 0004](../adr/0004-performance-architecture.md)
   pillar P3, [MVP6-1](MVP6-1-performance-program.md)
