@@ -15,6 +15,11 @@ public static partial class SelfTest
     private static Check CheckParkedOutfitHidden(SceneTree tree) =>
         RunOnRenderer(tree, "parked avatars draw no outfit, cap holds (merge off)", r => r.SelfTestParkedOutfitHidden());
 
+    /// <summary>FEAT-PERF-23 fix: the runtime switch off, on, off again -- also mid-un-merge
+    /// (<c>AvatarRenderer.SelfTestOutfitMergeToggle</c>).</summary>
+    private static Check CheckOutfitMergeToggle(SceneTree tree) =>
+        RunOnRenderer(tree, "outfit merge switch off/on/off", r => r.SelfTestOutfitMergeToggle());
+
     private static Check RunOnRenderer(SceneTree tree, string name, Func<AvatarRenderer, (bool Passed, string Detail)> test)
     {
         var renderer = new AvatarRenderer();

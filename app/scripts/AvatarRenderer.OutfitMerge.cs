@@ -28,8 +28,10 @@ namespace SLNG.App;
 /// <para>A merged item keeps no instance of its own: <see cref="_riggedAttachments"/> has no entry for
 /// it. While a newer version of it is being rigged (a face change, a LOD raise), that version's
 /// staging instance is <b>held</b> -- in the tree, hidden, skin detached -- and the bucket keeps drawing
-/// the old one until the re-merge swaps them. An item that has to leave (selected, volatile, the
-/// setting going off) is re-rigged if it has no staging instance, and released at the next swap.</para>
+/// the old one until the re-merge swaps them. An item that has to leave (selected, volatile) is
+/// re-rigged if it has no staging instance, and released at the next swap. The setting going off
+/// rebuilds every merged item's own instance from what its bucket draws, in the swap that frees the
+/// bucket (no re-rig); a parked avatar lets go of its outfit instead.</para>
 ///
 /// <para><b>No read-backs.</b> The merge reads only managed arrays retained from the rig prepare
 /// (<see cref="RetainedRig"/>). Items rigged while the setting was off are adopted from the arrays
@@ -126,6 +128,11 @@ public partial class AvatarRenderer
         public required float SortingOffset { get; init; }
         public required FaceTexture[]? Faces { get; init; }
         public required FaceTexture DefaultFace { get; init; }
+
+        /// <summary>The asset the geometry came from: what an un-merge registers its rebuilt instance with
+        /// (<see cref="AvatarVisual.RiggedAttachments"/>, read again by a shape change's re-bind).</summary>
+        public MeshData? MeshData { get; init; }
+        public Guid MeshId { get; init; }
     }
 
     private sealed class MergeItem
@@ -171,6 +178,10 @@ public partial class AvatarRenderer
         public bool TextureAnimated;
         public double VolatileUntil = double.NegativeInfinity;
         public readonly Queue<double> Changes = new();
+
+        /// <summary>The staging's arrays are being converted on a worker (it was rigged while the setting
+        /// was off): the bucket keeps drawing the item until they are in, instead of releasing it.</summary>
+        public bool Retaining;
     }
 
     private sealed class OutfitBucket
@@ -379,7 +390,10 @@ public partial class AvatarRenderer
         }
         item.StagingSettled = AllMaterialsIn(mi);
         if (!item.StagingSettled) return;
-        // Without retained arrays (rigged while the setting was off) it can only be shown, not merged.
+        // Rigged while the setting was off (no tangents kept): its arrays are converted from the ones the
+        // staging was built from, and this runs again when they are in. Until then it is not mergeable, and
+        // a bucket that draws it keeps doing so (SnapshotBucket) -- releasing it now would strand it staged.
+        if (item.Rig == null && MergeEnabledFor(item.Visual) && BeginRetainFromStaging(item, mi)) return;
         item.Newest = item.Rig != null ? ReadMergeInput(item, mi) : null;
         item.Generation++;
         // A selected item waiting to be shown on its own goes at once; everything else is debounced.
@@ -422,6 +436,8 @@ public partial class AvatarRenderer
             SortingOffset = item.SortingOffset,
             Faces = item.Faces,
             DefaultFace = item.DefaultFace,
+            MeshData = item.Request?.MeshData,
+            MeshId = item.MeshId,
         };
     }
 
@@ -496,9 +512,10 @@ public partial class AvatarRenderer
         if (item.InBucket) _mergeTouched.Add((item.Visual, item.Linkset));
     }
 
-    /// <summary>Puts a selected, volatile or no-longer-wanted merged item back on its own instance: it is
+    /// <summary>Puts a selected, volatile or texture-animated merged item back on its own instance: it is
     /// released at the next swap of its bucket, once it has a staging instance to show. One that has
-    /// none is rigged again from its last request.</summary>
+    /// none is rigged again from its last request. (The setting going off does not come here:
+    /// <see cref="UnmergeAll"/>.)</summary>
     private void EjectMergeItem(MergeItem item, bool immediate)
     {
         item.Generation++;
@@ -573,8 +590,12 @@ public partial class AvatarRenderer
         if (RenderConfig.OutfitMerge != _outfitMergeApplied)
         {
             _outfitMergeApplied = RenderConfig.OutfitMerge;
+            // A job in flight decided under the other setting: its swap is discarded and its buckets are
+            // snapshot again under this one. Switched on mid-un-merge, that keeps every item still in a
+            // bucket where it is instead of finishing the un-merge first.
+            foreach (var item in _mergeItems.Values) item.Generation++;
             if (_outfitMergeApplied) AdoptAllStagedItems();
-            else EjectAllMergedItems();
+            else UnmergeAll();
             EmitOutfitProbeLine($"[OutfitMerge] {(_outfitMergeApplied ? "on" : "off")}: " +
                                 $"{_mergeItems.Count} item(s) tracked over {CountMergedAvatars()} avatar(s)");
         }
@@ -679,6 +700,10 @@ public partial class AvatarRenderer
         public required long Key { get; init; }
         public readonly List<(MergeItem Item, MergeInput Input, bool AbsorbStaging)> Included = new();
         public readonly List<MergeItem> Released = new();
+
+        /// <summary>Items the swap gives an instance of their own again, built from what the bucket draws
+        /// for them (the setting went off).</summary>
+        public readonly List<RebuiltItem> Rebuilt = new();
         public readonly Dictionary<MergeItem, int> Stamps = new();
         public OutfitBucketResult<OutfitMaterialKey>? Result;
         public Godot.Collections.Array[]? MergedArrays;
@@ -686,6 +711,24 @@ public partial class AvatarRenderer
         public readonly List<ArrayMesh> Meshes = new();
         public readonly List<ArrayMesh> SortedMeshes = new();
     }
+
+    /// <summary>One item an un-merge gives its own instance back: its engine arrays (packed on the worker,
+    /// item slots as the rig made them) and the mesh they are uploaded into.</summary>
+    private sealed class RebuiltItem
+    {
+        public RebuiltItem(MergeItem item, MergeInput input)
+        {
+            Item = item;
+            Input = input;
+        }
+
+        public MergeItem Item { get; }
+        public MergeInput Input { get; }
+        public Godot.Collections.Array[]? Arrays;
+        public ArrayMesh? Mesh;
+    }
+
+    private enum UploadKind { Merged, Sorted, Rebuilt }
 
     private sealed class MergeJob
     {
@@ -728,7 +771,8 @@ public partial class AvatarRenderer
             bucket.Immediate = false;
             buckets.Add(job.Bucket);
             inputs.Add(job.Input);
-            items += job.Bucket.Included.Count;
+            // A rebuilt item costs its swap an instance to build, as an absorbed one costs one to free.
+            items += job.Bucket.Included.Count + job.Bucket.Rebuilt.Count;
         }
         if (buckets.Count == 0) return;
 
@@ -759,21 +803,40 @@ public partial class AvatarRenderer
         {
             MergeInput? input = null;
             bool absorb = false;
+            bool rebuild = false;
             if (IsMergeEligible(item, now))
             {
                 input = item.Newest;
                 // Its staging (shown, or held) is replaced by the bucket.
                 absorb = item.Staging != null;
             }
-            else if (item.InBucket && item.Merged != null && !HasShowableStaging(item))
+            else if (item.InBucket && item.Merged != null)
             {
-                input = item.Merged; // keeps drawing its old self until it has something to show
+                bool enabled = MergeEnabledFor(item.Visual);
+                if (HasShowableStaging(item) && !(enabled && item.Retaining))
+                {
+                    // Released below: its own instance is shown at the swap.
+                }
+                else if (!enabled && item.Staging == null)
+                {
+                    // Switched off: its own instance is rebuilt from what the bucket draws -- the arrays and
+                    // materials are all here, so no re-rig, no material pass, and it goes in this swap.
+                    rebuild = true;
+                }
+                else
+                {
+                    input = item.Merged; // keeps drawing its old self until it has something to show
+                }
             }
 
             if (input != null)
             {
                 job.Included.Add((item, input, absorb));
                 items.Add(ToMergerInput(item, input));
+            }
+            else if (rebuild)
+            {
+                job.Rebuilt.Add(new RebuiltItem(item, item.Merged!));
             }
             else if (item.InBucket)
             {
@@ -838,6 +901,13 @@ public partial class AvatarRenderer
                     for (int b = 0; b < job.Buckets.Count; b++)
                     {
                         var jb = job.Buckets[b];
+                        // An un-merged item's own arrays: the rig's streams, item slots and all.
+                        foreach (var rebuilt in jb.Rebuilt)
+                        {
+                            var surfaces = rebuilt.Input.Rig.Surfaces;
+                            rebuilt.Arrays = new Godot.Collections.Array[surfaces.Length];
+                            for (int s = 0; s < surfaces.Length; s++) rebuilt.Arrays[s] = PackOutfitArrays(surfaces[s]);
+                        }
                         jb.Result = FindBucketResult(job.Result, jb.Key);
                         if (jb.Result == null) continue;
                         jb.MergedArrays = new Godot.Collections.Array[jb.Result.Surfaces.Count];
@@ -863,29 +933,36 @@ public partial class AvatarRenderer
 
         if (!ok)
         {
+            // Nothing to swap in (the gate was closed, or the merge threw): FinishMergeJob tries the buckets again.
+            job.Result = null;
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => FinishMergeJob(job), label: "avatar.merge.swap");
             return;
         }
 
         // In order, on the FIFO lane: binds, the uploads in batches, the swap.
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => CommitMergeBinds(job), label: "avatar.merge.binds");
-        var batch = new List<(JobBucket Bucket, bool Sorted, int Index)>();
+        var batch = new List<(JobBucket Bucket, UploadKind Kind, int Index, int Surface)>();
         int batchVertices = 0;
         foreach (var jb in job.Buckets)
         {
+            for (int r = 0; r < jb.Rebuilt.Count; r++)
+            {
+                var surfaces = jb.Rebuilt[r].Input.Rig.Surfaces;
+                for (int s = 0; s < surfaces.Length; s++) AddToBatch(jb, UploadKind.Rebuilt, r, s, surfaces[s].VertexCount);
+            }
             if (jb.Result == null) continue;
             for (int s = 0; s < jb.Result.Surfaces.Count; s++)
-                AddToBatch(jb, false, s, jb.Result.Surfaces[s].Arrays.VertexCount);
+                AddToBatch(jb, UploadKind.Merged, s, 0, jb.Result.Surfaces[s].Arrays.VertexCount);
             for (int s = 0; s < jb.Result.Sorted.Count; s++)
-                AddToBatch(jb, true, s, jb.Result.Sorted[s].Arrays.VertexCount);
+                AddToBatch(jb, UploadKind.Sorted, s, 0, jb.Result.Sorted[s].Arrays.VertexCount);
         }
         FlushBatch();
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => SwapMergeJob(job), label: "avatar.merge.swap");
 
-        void AddToBatch(JobBucket jb, bool sorted, int index, int vertices)
+        void AddToBatch(JobBucket jb, UploadKind kind, int index, int surface, int vertices)
         {
             if (batch.Count > 0 && batchVertices + vertices > MergeUploadBatchVertices) FlushBatch();
-            batch.Add((jb, sorted, index));
+            batch.Add((jb, kind, index, surface));
             batchVertices += vertices;
         }
 
@@ -950,12 +1027,19 @@ public partial class AvatarRenderer
 
     /// <summary>Main thread: hands a batch of merged surfaces to the engine, into meshes that are not in
     /// the tree yet.</summary>
-    private void UploadMergeBatch(MergeJob job, (JobBucket Bucket, bool Sorted, int Index)[] work)
+    private void UploadMergeBatch(MergeJob job, (JobBucket Bucket, UploadKind Kind, int Index, int Surface)[] work)
     {
         if (!MergeJobStillValid(job)) return;
-        foreach (var (jb, sorted, index) in work)
+        foreach (var (jb, kind, index, surface) in work)
         {
-            if (sorted)
+            if (kind == UploadKind.Rebuilt)
+            {
+                // An un-merged item's surfaces go into its own mesh, in order (batches run in order).
+                var rebuilt = jb.Rebuilt[index];
+                rebuilt.Mesh ??= new ArrayMesh();
+                rebuilt.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, rebuilt.Arrays![surface]);
+            }
+            else if (kind == UploadKind.Sorted)
             {
                 var mesh = new ArrayMesh();
                 mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, jb.SortedArrays![index]);
@@ -1143,6 +1227,20 @@ public partial class AvatarRenderer
             if (!RenderConfig.OutfitMerge) ForgetStagedItem(item);
         }
 
+        // Rebuilt: an instance of its own again, from the arrays and materials the bucket drew it with.
+        foreach (var rebuilt in jb.Rebuilt)
+        {
+            var item = rebuilt.Item;
+            item.InBucket = false;
+            item.Merged = null;
+            item.MergedRemap = null;
+            if (rebuilt.Mesh != null && rebuilt.Arrays != null && rebuilt.Mesh.GetSurfaceCount() == rebuilt.Arrays.Length)
+                CommitRebuiltStaging(item, rebuilt.Input, rebuilt.Mesh, rebuilt.Arrays, skeleton);
+            else if (item.Request is { } request && IsInstanceValid(request.Skeleton) && !_pendingRigs.ContainsKey(item.EntityId))
+                RequestRig(item.EntityId, request); // not expected: the uploads ran before this swap
+            if (!RenderConfig.OutfitMerge) ForgetStagedItem(item);
+        }
+
         bucket.Members.Clear();
         var contributors = result != null ? new HashSet<Guid>(result.Items) : new HashSet<Guid>();
         foreach (var (item, input, absorb) in jb.Included)
@@ -1168,6 +1266,59 @@ public partial class AvatarRenderer
         ReattachSkeleton(staging);
         staging.Visible = true;
         UpdateWornMeshVisibility(staging, item.Visual);
+    }
+
+    /// <summary>The un-merge of one item (the setting went off): an instance of its own, made the way
+    /// <see cref="CommitPreparedRig"/> makes one, from what the bucket drew -- the rig's arrays (uploaded by
+    /// the job into <paramref name="mesh"/>), its materials, its sorting offset -- with a skin of its own
+    /// slots, bound exactly as <see cref="BindRiggedSkin"/> binds them. Nothing is fetched, rigged or built
+    /// again, so the swap that frees the bucket shows it in the same queue item.</summary>
+    private void CommitRebuiltStaging(MergeItem item, MergeInput input, ArrayMesh mesh, Godot.Collections.Array[] arrays,
+        Skeleton3D skeleton)
+    {
+        var visual = item.Visual;
+        var rig = input.Rig;
+        var bones = new List<int>(rig.Slots.Length);
+        var binds = new List<Transform3D>(rig.Slots.Length);
+        foreach (var key in rig.Slots)
+        {
+            bones.Add(key.Bone);
+            binds.Add(ComputeOutfitBind(skeleton, visual, key));
+        }
+        var skin = SharedOrNewSkin(visual, skeleton, bones, binds);
+
+        // What the rig path leaves for a later split, an adoption (the setting on again) or a pick.
+        MeshSurfaceCache.Store(mesh, arrays);
+        RememberRigSurfaceFaces(mesh, rig.FaceIndices);
+
+        var mi = new MeshInstance3D
+        {
+            Name = "RiggedMesh",
+            Mesh = mesh,
+            Skin = skin,
+            CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8)),
+            SortingOffset = input.SortingOffset,
+        };
+        for (int s = 0; s < input.Materials.Length && s < mesh.GetSurfaceCount(); s++)
+            mi.SetSurfaceOverrideMaterial(s, input.Materials[s]);
+        skeleton.AddChild(mi);
+        mi.Skeleton = mi.GetPathTo(skeleton);
+
+        _riggedAttachments[item.EntityId] = mi;
+        if (input.MeshData != null) visual.RiggedAttachments.Add((mi, input.MeshData, input.MeshId));
+        if (visual.BomAttachments.TryGetValue(item.EntityId, out var bom))
+            visual.BomAttachments[item.EntityId] = bom with { Mi = mi };
+
+        // The blended surfaces onto their own instances again (BUG-RENDER-38), from the cached arrays; then
+        // shown, or hidden when every face is (or the wearer was parked meanwhile).
+        SplitSortedSurfaces(mi, input.MeshId);
+        UpdateWornMeshVisibility(mi, visual);
+
+        item.Staging = mi;
+        item.StagingSettled = true;
+        item.Held = false;
+        item.SortingOffset = input.SortingOffset;
+        RestoreWornHighlight(item.EntityId);
     }
 
     private static Material MaterialFor(Dictionary<Guid, MergeInput> inputs, Guid item, int surface) =>
@@ -1321,6 +1472,8 @@ public partial class AvatarRenderer
             SortingOffset = input.SortingOffset,
             Faces = input.Faces,
             DefaultFace = input.DefaultFace,
+            MeshData = input.MeshData,
+            MeshId = input.MeshId,
         };
         item.Merged = updated;
         // The newest version is this one only when no newer rig is on its way.
@@ -1398,43 +1551,104 @@ public partial class AvatarRenderer
 
     // ---- the setting switch ---------------------------------------------------------------------------
 
-    /// <summary>Switched off: every merged item goes back to its own instance. Each is re-rigged when it
-    /// has none, and released at its bucket's next swap -- the bucket draws it until then.</summary>
-    private void EjectAllMergedItems()
+    /// <summary>Switched off. A parked avatar lets go of its outfit (<see cref="UnloadAvatarOutfit"/>): its
+    /// buckets are never drawn and a job never runs for it, so un-merging it would leave merged nodes behind
+    /// until it is promoted; promotion loads the outfit again. A full avatar's buckets are un-merged at once
+    /// by their next job, which rebuilds each item's own instance from what the bucket draws (no re-rig) and
+    /// swaps it in with the bucket's removal. Staged items are simply let go.</summary>
+    private void UnmergeAll()
     {
-        foreach (var item in new List<MergeItem>(_mergeItems.Values))
+        foreach (var visual in new List<AvatarVisual>(_visuals.Values))
         {
-            if (item.InBucket) EjectMergeItem(item, immediate: false);
-            else ForgetStagedItem(item);
+            var state = visual.OutfitMerge;
+            if (state == null) continue;
+            if (visual.IsReduced)
+            {
+                UnloadAvatarOutfit(visual);
+                continue;
+            }
+            foreach (var item in new List<MergeItem>(state.Items.Values))
+                if (!item.InBucket) ForgetStagedItem(item);
+            if (visual.OutfitMerge == null) continue;
+            foreach (var bucket in state.Buckets.Values) MarkDirty(bucket, immediate: true);
+            DropMergeStateIfEmpty(visual);
         }
+        // Items of avatars that are gone or never had a state: nothing draws them from a bucket.
+        foreach (var item in new List<MergeItem>(_mergeItems.Values))
+            if (!item.InBucket) ForgetStagedItem(item);
     }
 
     /// <summary>Switched on: items rigged while it was off have no retained arrays. They are adopted
     /// from the arrays <see cref="MeshSurfaceCache"/> already holds for their instance, converted to
-    /// managed ones on a worker.</summary>
+    /// managed ones on a worker -- also those still tracked (a newer version rigged while it was off waits,
+    /// held, for its bucket). Parked avatars are adopted when they are promoted (<see cref="SetAvatarFull"/>).</summary>
     private void AdoptAllStagedItems()
     {
-        foreach (var (entityId, mi) in _riggedAttachments)
+        foreach (var visual in _visuals.Values)
+            if (!visual.IsReduced) AdoptStagedItemsOf(visual);
+    }
+
+    /// <summary>Every worn rigged item of <paramref name="visual"/> that has its own instance and no retained
+    /// arrays starts its adoption.</summary>
+    private void AdoptStagedItemsOf(AvatarVisual visual)
+    {
+        if (!MergeEnabledFor(visual) || visual.IsReduced) return;
+        foreach (var entityId in visual.WornAttachmentEntities)
         {
-            if (_mergeItems.ContainsKey(entityId)) continue;
-            if (!_attachmentToAvatar.TryGetValue(entityId, out var wearer) || !_visuals.TryGetValue(wearer, out var visual)) continue;
-            if (!MergeEnabledFor(visual) || visual.IsReduced) continue;
+            if (!_riggedAttachments.TryGetValue(entityId, out var mi)) continue;
+            if (_mergeItems.TryGetValue(entityId, out var tracked))
+            {
+                // A settled staging without arrays: converted now. An unsettled one does it when it settles.
+                if (tracked.Rig == null && ReferenceEquals(tracked.Staging, mi) && tracked.StagingSettled)
+                    BeginRetainFromStaging(tracked, mi);
+                continue;
+            }
             AdoptStagedItem(entityId, mi, visual);
         }
     }
 
     private void AdoptStagedItem(Guid entityId, MeshInstance3D mi, AvatarVisual visual)
     {
-        if (!IsInstanceValid(mi) || mi.Mesh is not ArrayMesh mesh || mi.GetParent() != visual.Skeleton) return;
-        if (!MeshSurfaceCache.TryGetSurfaces(mesh, out var arrays) || !_rigSurfaceFaces.TryGetValue(mesh, out var faceIndices)) return;
+        if (!IsInstanceValid(mi) || mi.Mesh is not ArrayMesh || mi.GetParent() != visual.Skeleton) return;
         if (!_attachmentMeshIds.TryGetValue(entityId, out var meshInfo)) return;
-        (MeshInstance3D Mi, MeshData MeshData, Guid MeshId)? record = null;
-        foreach (var r in visual.RiggedAttachments) if (r.Mi == mi) { record = r; break; }
-        if (record is not { } found || found.MeshData.Skin == null) return;
+        var found = RiggedRecordOf(visual, mi);
+        if (found?.MeshData.Skin == null) return;
 
-        var skeleton = visual.Skeleton!;
+        var item = NewMergeItem(entityId, visual);
+        item.Request = new PendingRig(found.Value.MeshData, visual, visual.Skeleton!, found.Value.MeshId, meshInfo.Faces,
+                                      meshInfo.DefaultFace, _avatarSkeleton, WantPick: false);
+        item.Faces = meshInfo.Faces;
+        item.DefaultFace = meshInfo.DefaultFace;
+        item.MeshId = found.Value.MeshId;
+        item.SortingOffset = mi.SortingOffset;
+        item.Staging = mi;
+        SetLinksetOrder(item);
+        item.Generation++;
+        if (!BeginRetainFromStaging(item, mi)) ForgetStagedItem(item);
+    }
+
+    private static (MeshInstance3D Mi, MeshData MeshData, Guid MeshId)? RiggedRecordOf(AvatarVisual visual, MeshInstance3D mi)
+    {
+        foreach (var r in visual.RiggedAttachments) if (r.Mi == mi) return r;
+        return null;
+    }
+
+    /// <summary>Starts converting the arrays <paramref name="mi"/> was built from (kept by
+    /// <see cref="MeshSurfaceCache"/>) into the item's retained ones, on a worker; the item's staging then
+    /// settles again and can merge. False when there is nothing to convert from.</summary>
+    private bool BeginRetainFromStaging(MergeItem item, MeshInstance3D mi)
+    {
+        if (item.Retaining) return true;
+        var visual = item.Visual;
+        if (!IsInstanceValid(mi) || mi.Mesh is not ArrayMesh mesh || visual.Skeleton == null || mi.GetParent() != visual.Skeleton)
+            return false;
+        if (!MeshSurfaceCache.TryGetSurfaces(mesh, out var arrays) || !_rigSurfaceFaces.TryGetValue(mesh, out var faceIndices))
+            return false;
+        var skinData = (RiggedRecordOf(visual, mi)?.MeshData ?? item.Request?.MeshData)?.Skin;
+        if (skinData == null) return false;
+
+        var skeleton = visual.Skeleton;
         // The joint-to-slot map BindRiggedSkin made for this skin: bound joints in order.
-        var skinData = found.MeshData.Skin;
         var slotForJoint = new int[skinData.JointNames.Length];
         int next = 0;
         for (int j = 0; j < slotForJoint.Length; j++)
@@ -1443,19 +1657,10 @@ public partial class AvatarRenderer
             slotForJoint[j] = skeleton.FindBone(name) >= 0 ? next++ : -1;
         }
         var slots = SlotKeysFor(skinData, skeleton, slotForJoint);
-        if (slots == null) return;
+        if (slots == null) return false;
 
-        var item = NewMergeItem(entityId, visual);
-        item.Request = new PendingRig(found.MeshData, visual, skeleton, found.MeshId, meshInfo.Faces, meshInfo.DefaultFace,
-                                      _avatarSkeleton, WantPick: false);
-        item.Faces = meshInfo.Faces;
-        item.DefaultFace = meshInfo.DefaultFace;
-        item.MeshId = found.MeshId;
-        item.SortingOffset = mi.SortingOffset;
-        item.Staging = mi;
-        SetLinksetOrder(item);
-        item.Generation++;
-
+        item.Retaining = true;
+        var entityId = item.EntityId;
         var surfaces = (Godot.Collections.Array[])arrays.Clone();
         _ = Task.Run(() =>
         {
@@ -1466,16 +1671,24 @@ public partial class AvatarRenderer
                 catch (Exception ex) { GD.PushWarning($"[OutfitMerge] adopting {entityId:N} failed: {ex.Message}"); }
                 finally { EngineWorkerGate.Exit(); }
             }
-            if (rig == null) return;
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
+                item.Retaining = false;
                 if (!_mergeItems.TryGetValue(entityId, out var live) || !ReferenceEquals(live, item)
                     || !ReferenceEquals(item.Staging, mi) || item.Rig != null)
                     return;
+                if (rig == null)
+                {
+                    // Nothing to merge it from: it stays on its own instance, and a bucket lets it go.
+                    item.Generation++;
+                    MarkBucketDirty(item, immediate: false);
+                    return;
+                }
                 item.Rig = rig;
                 NoteStagingSettled(entityId, mi);
             }, label: "avatar.merge.adopt");
         });
+        return true;
     }
 
     /// <summary>Worker: a staging mesh's retained engine arrays as managed ones. Read-only on arrays

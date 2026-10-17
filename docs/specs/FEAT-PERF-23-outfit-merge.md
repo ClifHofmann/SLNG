@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-23`
 - **Track:** `render`
-- **Status:** `🚧 In Progress` (Phase 0 gate passed 2026-10-17; Phase 1 built v0.27.74-alpha, fixes to v0.27.76-alpha, off by default; in-world A/B open)
+- **Status:** `🚧 In Progress` (Phase 0 gate passed 2026-10-17; Phase 1 built v0.27.74-alpha, fixes to v0.27.80-alpha, off by default; in-world A/B open)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [ADR 0004](../adr/0004-performance-architecture.md)
   pillar P3, [MVP6-1](MVP6-1-performance-program.md)
@@ -495,10 +495,11 @@ default.
   untouched: remote avatars have no rigged colliders.
 - **Face change / LOD raise on a merged item:** the new staging instance is **held** (in the tree, hidden, skin
   detached; `UpdateWornMeshVisibility` and the unpark loop keep it so) while the bucket draws the old version; the
-  re-merge absorbs it. An item that must leave (selected, volatile, texture animation starts, setting off) is
+  re-merge absorbs it. An item that must leave (selected, volatile, texture animation starts) is
   **ejected**: re-rigged from its last request when it has no staging instance (a worker prepare, the normal rig
   path) and released at the next swap once that instance has its materials. Until then the bucket keeps its old
-  geometry, so the item is never both shown nor both missing.
+  geometry, so the item is never both shown nor both missing. (The setting going off does not eject: see the
+  runtime switch.)
 - **BoM:** `BomAttachments` is keyed by entity (an entry without an instance for a merged item). A new bake on a
   merged item is built per BoM face and put on the drawing surface in place (`avatar.merge.bom`); only a change of
   role (the Blend line, or a texture failing) re-merges.
@@ -507,12 +508,46 @@ default.
   least 256 slots and more than twice what the buckets still point at.
 - **Park / unpark / unload:** buckets and sorted instances are hidden and detached / shown and re-attached; unload
   frees them, the skin and the retained arrays. A whole-linkset detach frees its bucket in the same frame, no job.
-- **Runtime switch:** off ejects every merged item (re-rig, release at the swap) and drops the state once empty;
-  on adopts items rigged while it was off from the arrays `MeshSurfaceCache` already holds, converted on a worker.
+- **Runtime switch** (as of v0.27.80, see *Fixes after the first in-world test*): either direction first bumps every
+  item's generation, so a job in flight is discarded and its buckets are snapshot again under the new setting. Off:
+  a parked avatar with merge state lets go of its outfit (`UnloadAvatarOutfit`; promotion loads it again); a full
+  avatar's buckets are due at once and their next job **rebuilds** each item's own instance from what the bucket
+  draws (the retained arrays packed on the worker, uploaded with the bucket's batches, the item's own materials and
+  sorting offset, a skin of its own slots via `ComputeOutfitBind` + `SharedOrNewSkin`, split again by
+  `SplitSortedSurfaces`), in the same swap that frees the bucket; no re-rig, no material pass. A held staging that
+  has not settled yet is waited for. On: every staged item without retained arrays -- also one still tracked, and a
+  parked avatar's on promotion -- is converted from the arrays `MeshSurfaceCache` holds (`BeginRetainFromStaging`);
+  while that runs (`Retaining`) its bucket keeps drawing it instead of releasing it.
 - **`[AvatarCost]`** gains `outfitMerge mergedAvatars buckets sortedInstances stagedItems mergedItems outfitSlots
   mergeCpuMB mergeJobs mergeDiscarded`; `boundSkinBinds` counts each distinct `Skin` once per avatar.
 - **Phase 0 probe 3 (the main-thread merge toggle) is retired**: the real path is the A/B now. Probe 1
   (`[OutfitProbe]`; merged items have no instance and are reported apart) and probe 2 (the bench) stay.
+
+**Fixes after the first in-world test** (2026-10-17, Sirens Beach on Agni, ~60 avatars; v0.27.78 logs).
+
+1. **"Reduced avatars draw their full outfits" with the setting off.** Two things were mixed up in the report.
+   (a) The numbers were the cap, not a regression: Preferences > Graphics > max. fully rendered avatars was moved
+   from 16 to 28 during the 14:51 run (`[AvatarLimit] ... cap 15/19/23/28`, `preferences.cfg`
+   `max_fully_rendered_avatars=28`), and `[AvatarCost] reduced` counts the avatars outside the draw distance too
+   (`avatars=63 shown=35 reduced=34` is `[AvatarLimit] shown 29 full, 6 reduced (5 parked) (cap 28)` plus 28 out of
+   view). `drawnSkinnedMeshes` counts full avatars only: 3,583 over 29 un-merged outfits is the same ~125 per avatar
+   as v0.27.73's 2,034 over 17. The cap held. (b) A real, older bug (since BUG-PERF-16's park): the
+   `avatar.split_sorted` item that ends a worn mesh's material pass re-attached the skeleton and showed the
+   instance without asking whether its wearer had been parked in the meantime. With textures taking seconds on a
+   busy sim, an avatar that lost its slot while its outfit was still texturing drew its rigged items (and bound
+   their skins) over the jelly doll. Fixed in **v0.27.79**: `UpdateWornMeshVisibility` takes the wearer and keeps a
+   reduced wearer's item hidden and detached. Self test `parked avatars draw no outfit, cap holds (merge off)`.
+2. **Off -> on never re-merged** (`slng-perf.log` 14:55:02-14:55:58). Off ejected all ~3,600 merged items into a
+   full re-rig; 2,940 rig commits went through in the 13 s before the switch back, but their material passes were
+   still queued, so nothing was released yet (`mergeJobs=0`). Rigged while off, those held stagings had no retained
+   arrays. Switching on then skipped them (still tracked) and their buckets' next jobs, seeing a settled staging that
+   was not mergeable, released them: `stagedItems=3579`, `mergedAvatars 3 -> 1`, and nothing ever adopted them again.
+   Fixed in **v0.27.80** (runtime switch above): off rebuilds instead of re-rigging (the self test's un-merge is one
+   job round, no rig prepared); on (also mid-un-merge) keeps what is still in a bucket and converts every staging
+   without arrays before it may be released. Off also leaves no merged node on a parked avatar. Self test `outfit
+   merge switch off/on/off`.
+3. **Checkbox vs `--outfit-merge`** (v0.27.78): a click clears `RenderConfig.OutfitMergeArg`, the box shows the
+   setting in effect. Unchanged by the above.
 
 **Deviations from the design above, and why.**
 
@@ -531,7 +566,8 @@ separate, V-Sync off), 3 x 30 s per state once loading has settled:
 
 1. `tools/run-client.ps1 -Diag -ShareMaterials -NoOutfitMerge`, then the same with `-OutfitMerge` -- or one run,
    switching Preferences > Graphics > Hardware > "Merge other avatars' worn meshes" (drop the first `[Perf]` window
-   after each switch; switching off re-rigs every merged item, so give it a few seconds).
+   after each switch; switching off rebuilds the merged items from their buckets, on re-merges them, both within a
+   few seconds).
 2. Read `[Perf]` (`fps draws drawsScene drawsShadow renderCpuMs postFlushMs rtLagMs`), `[AvatarCost]` (`buckets
    mergedItems stagedItems sortedInstances skinWrites mergeCpuMB mergeJobs mergeDiscarded`) and `[WorkCost]` for
    `avatar.merge.*` (max <= 4 ms, avg <= 1 ms) and `worker.outfitmerge`.

@@ -6998,6 +6998,11 @@ void fragment() {
 
         ApplyJellyDoll(visual);
         RecomputeMeshVisibility(visual);
+
+        // FEAT-PERF-23: parked while an un-merge (the setting just went off) was still in flight. No job runs
+        // for a parked avatar, so its buckets would stay until promotion: the outfit goes instead, as it
+        // does for an avatar that stays out of view (promotion loads it again).
+        if (!RenderConfig.OutfitMerge && visual.OutfitMerge != null) UnloadAvatarOutfit(visual);
     }
 
     private void SetAvatarFull(AvatarVisual visual)
@@ -7032,6 +7037,8 @@ void fragment() {
                 }
             }
             UnparkOutfitMerge(visual);
+            // FEAT-PERF-23: items staged while it was parked (or before the setting went on) merge now.
+            if (_outfitMergeApplied) AdoptStagedItemsOf(visual);
 
             foreach (var attId in visual.WornAttachmentEntities)
             {
