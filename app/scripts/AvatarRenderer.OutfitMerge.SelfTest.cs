@@ -139,6 +139,11 @@ public partial class AvatarRenderer
                     continue;
                 }
                 palettes[id] = Palette(skeleton, mi.Skin);
+                // The retained managed arrays are exactly what the staging instance was given.
+                if (!_mergeItems.TryGetValue(id, out var retained) || retained.Rig == null)
+                    problems.Add($"item {MergeShort(id)} kept no arrays for the merge");
+                else if (!MeshSurfaceCache.TryGetSurfaces(mesh, out var given) || !SameStreams(given, retained.Rig))
+                    problems.Add($"item {MergeShort(id)}: the retained arrays differ from the ones its instance was built from");
                 for (int s = 0; s < mesh.GetSurfaceCount(); s++)
                 {
                     var split = mi.GetNodeOrNull<MeshInstance3D>(SortedSurfaceName(s));
@@ -335,6 +340,33 @@ public partial class AvatarRenderer
                                           uvs.ToArray(), indices.ToArray(), f, weights.ToArray()));
         }
         return new MeshData(submeshes, new MeshSkin(joints, ibms, System.Numerics.Matrix4x4.Identity, 0f));
+    }
+
+    /// <summary>Every stream of every surface, bit for bit: the engine arrays a staging instance got
+    /// against the managed ones the merge keeps.</summary>
+    private static bool SameStreams(Godot.Collections.Array[] given, RetainedRig rig)
+    {
+        if (given.Length != rig.Surfaces.Length) return false;
+        for (int s = 0; s < given.Length; s++)
+        {
+            var a = given[s];
+            var r = rig.Surfaces[s];
+            var positions = a[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+            var normals = a[(int)Mesh.ArrayType.Normal].AsVector3Array();
+            var uvs = a[(int)Mesh.ArrayType.TexUV].AsVector2Array();
+            if (positions.Length != r.Positions.Length || normals.Length != r.Normals.Length || uvs.Length != r.UVs.Length) return false;
+            for (int v = 0; v < positions.Length; v++)
+            {
+                if (positions[v] != new Godot.Vector3(r.Positions[v].X, r.Positions[v].Y, r.Positions[v].Z)) return false;
+                if (normals[v] != new Godot.Vector3(r.Normals[v].X, r.Normals[v].Y, r.Normals[v].Z)) return false;
+                if (uvs[v] != new Godot.Vector2(r.UVs[v].X, r.UVs[v].Y)) return false;
+            }
+            if (!a[(int)Mesh.ArrayType.Tangent].AsFloat32Array().AsSpan().SequenceEqual(r.Tangents)) return false;
+            if (!a[(int)Mesh.ArrayType.Bones].AsInt32Array().AsSpan().SequenceEqual(r.Bones)) return false;
+            if (!a[(int)Mesh.ArrayType.Weights].AsFloat32Array().AsSpan().SequenceEqual(r.Weights)) return false;
+            if (!a[(int)Mesh.ArrayType.Index].AsInt32Array().AsSpan().SequenceEqual(r.Indices)) return false;
+        }
+        return true;
     }
 
     /// <summary>What a skin puts each slot at in the rest pose: globalRest(bone) * bind, the product Godot's

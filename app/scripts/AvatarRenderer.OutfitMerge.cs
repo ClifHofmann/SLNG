@@ -70,6 +70,11 @@ public partial class AvatarRenderer
     /// <summary>A slot table this much bigger than what its buckets still use is rebuilt.</summary>
     private const int CompactMinSlots = 256;
 
+    /// <summary>Items one job takes in at most (whole buckets; at least one): the swap frees every
+    /// absorbed staging instance in one queue item, so an avatar's first merge is cut into several
+    /// jobs instead of one swap that removes ~150 nodes.</summary>
+    private const int MaxItemsPerJob = 48;
+
     private const string OutfitBucketName = "OutfitBucket";
     private const string OutfitSortedName = "OutfitSorted";
 
@@ -374,7 +379,8 @@ public partial class AvatarRenderer
         // Without retained arrays (rigged while the setting was off) it can only be shown, not merged.
         item.Newest = item.Rig != null ? ReadMergeInput(item, mi) : null;
         item.Generation++;
-        MarkBucketDirty(item, immediate: false);
+        // A selected item waiting to be shown on its own goes at once; everything else is debounced.
+        MarkBucketDirty(item, immediate: item.InBucket && item.Selected);
     }
 
     private static bool AllMaterialsIn(MeshInstance3D mi)
@@ -423,12 +429,14 @@ public partial class AvatarRenderer
         if (input == null || item.Selected || now < item.VolatileUntil) return false;
         if (!MergeEnabledFor(item.Visual) || item.Visual.IsReduced) return false;
         if (_world?.GetEntity(item.EntityId)?.GetComponent<PrimitiveComponent>()?.TextureAnim != null) return false;
-        // A Bakes-on-Mesh face waits for its bake: the bake decides the Kind.
-        foreach (int faceIndex in input.Rig.FaceIndices)
+        // A Bakes-on-Mesh face waits for its bake -- the bake decides the Kind -- and for a material
+        // built from THAT bake (one built before the bake id arrived is untextured).
+        var faceIndices = input.Rig.FaceIndices;
+        for (int s = 0; s < faceIndices.Length && s < input.Facts.Length; s++)
         {
-            var face = ResolveFaceTexture(input.Faces, input.DefaultFace, faceIndex);
-            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(face.TextureId, out int bake)
-                && !item.Visual.LoadedTextures.ContainsKey(bake))
+            var face = ResolveFaceTexture(input.Faces, input.DefaultFace, faceIndices[s]);
+            if (!SLNG.Assets.BakedTextureIds.TryGetBakeIndex(face.TextureId, out int bake)) continue;
+            if (!item.Visual.LoadedTextures.TryGetValue(bake, out var bakeId) || input.Facts[s].Texture != bakeId)
                 return false;
         }
         return true;
@@ -696,16 +704,28 @@ public partial class AvatarRenderer
         bool compact = state.CompactPending;
         state.CompactPending = false;
 
+        // The avatar's items by linkset, once: each is looked at once per job, not once per bucket.
+        var byLinkset = new Dictionary<long, List<MergeItem>>();
+        foreach (var item in state.Items.Values)
+        {
+            if (!byLinkset.TryGetValue(item.Linkset, out var list)) byLinkset[item.Linkset] = list = new();
+            list.Add(item);
+        }
+
         var buckets = new List<JobBucket>();
         var inputs = new List<OutfitBucketInput<OutfitMaterialKey>>();
+        int items = 0;
         foreach (var bucket in state.Buckets.Values)
         {
             if (!compact && !IsDue(bucket, now)) continue;
-            var job = SnapshotBucket(state, bucket, now);
+            // A compaction must cover every bucket (they all move to the new skin together).
+            if (!compact && buckets.Count > 0 && items >= MaxItemsPerJob) break;
+            var job = SnapshotBucket(bucket, byLinkset.GetValueOrDefault(bucket.Key), now);
             bucket.FirstDirty = double.NaN;
             bucket.Immediate = false;
             buckets.Add(job.Bucket);
             inputs.Add(job.Input);
+            items += job.Bucket.Included.Count;
         }
         if (buckets.Count == 0) return;
 
@@ -727,13 +747,13 @@ public partial class AvatarRenderer
     /// <summary>Freezes what one bucket's merge reads: per item of the linkset, its newest input when it
     /// may merge, its current merged input when it is in the bucket and has nothing to be shown instead
     /// yet, nothing otherwise (released or never in).</summary>
-    private (JobBucket Bucket, OutfitBucketInput<OutfitMaterialKey> Input) SnapshotBucket(OutfitMergeAvatar state, OutfitBucket bucket, double now)
+    private (JobBucket Bucket, OutfitBucketInput<OutfitMaterialKey> Input) SnapshotBucket(OutfitBucket bucket,
+        List<MergeItem>? linkset, double now)
     {
         var job = new JobBucket { Key = bucket.Key };
         var items = new List<OutfitItemInput<OutfitMaterialKey>>();
-        foreach (var item in state.Items.Values)
+        foreach (var item in linkset ?? new List<MergeItem>())
         {
-            if (item.Linkset != bucket.Key) continue;
             MergeInput? input = null;
             bool absorb = false;
             if (IsMergeEligible(item, now))
@@ -1302,11 +1322,9 @@ public partial class AvatarRenderer
         item.Merged = updated;
         // The newest version is this one only when no newer rig is on its way.
         if (ReferenceEquals(item.Newest, input)) item.Newest = updated;
-        if (roleChanged)
-        {
-            item.Generation++;
-            MarkBucketDirty(item, immediate: true);
-        }
+        // A job in flight read the old materials: it must not swap them back in.
+        item.Generation++;
+        if (roleChanged) MarkBucketDirty(item, immediate: true);
     }
 
     // ---- park, unpark, unload ---------------------------------------------------------------------
