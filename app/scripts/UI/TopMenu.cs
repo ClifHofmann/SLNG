@@ -58,6 +58,11 @@ namespace SLNG.App.UI
         public Action? OnToggleHeadFollowsCamera;
         public Action? OnOpenActiveAnimations;
         public Action? OnOpenMaterialLab;
+        /// <summary>FEAT-PERF-23 Phase 0: logs the [OutfitProbe] counts.</summary>
+        public Action? OnOutfitProbe;
+        /// <summary>FEAT-PERF-23 Phase 0: toggles the outfit-merge probe; the argument is true for the
+        /// per-linkset variant. Returns the mode now applied (0 off, 1 per avatar, 2 per linkset).</summary>
+        public Func<bool, int>? OnToggleOutfitMergeProbe;
         /// <summary>FEAT-UI-24: Invoked when the user clicks the location readout to copy the SLURL.</summary>
         public Action<string>? OnCopySlurl;
         /// <summary>FEAT-UI-24: Invoked when the user toggles the top-bar FPS display.</summary>
@@ -91,6 +96,7 @@ namespace SLNG.App.UI
 
         private PopupMenu? _viewMenu;
         private PopupMenu? _avatarMenu;
+        private PopupMenu? _devMenu;
         private PopupMenu? _holdPoseMenu;
         private PopupMenu? _freezeMenu;
         private bool _freezeSelfChecked;
@@ -227,6 +233,17 @@ namespace SLNG.App.UI
                 DisplayServer.ClipboardSet(slurl);
                 OnCopySlurl?.Invoke(slurl);
             }
+        }
+
+        /// <summary>FEAT-PERF-23 Phase 0: checks the outfit-merge probe entry that is on (0 off, 1 per
+        /// avatar, 2 per linkset).</summary>
+        public void SetOutfitMergeProbeUI(int mode)
+        {
+            if (_devMenu == null) return;
+            int perAvatar = _devMenu.GetItemIndex(6);
+            int perLinkset = _devMenu.GetItemIndex(7);
+            if (perAvatar >= 0) _devMenu.SetItemChecked(perAvatar, mode == 1);
+            if (perLinkset >= 0) _devMenu.SetItemChecked(perLinkset, mode == 2);
         }
 
         /// <summary>Updates the checked state of the Always Run menu item.</summary>
@@ -639,6 +656,10 @@ namespace SLNG.App.UI
             AddHinted(devMenu, "ui.menu.create_test_skin", 2, KeyActionIds.DevCreateTestSkin);
             devMenu.AddItem(L10n.Tr("ui.menu.bake_test_pattern"), 3);
             devMenu.AddItem(L10n.Tr("ui.menu.material_lab"), 4);
+            devMenu.AddSeparator();
+            devMenu.AddItem(L10n.Tr("ui.menu.outfit_probe"), 5);
+            devMenu.AddCheckItem(L10n.Tr("ui.menu.outfit_merge_probe"), 6);
+            devMenu.AddCheckItem(L10n.Tr("ui.menu.outfit_merge_probe_linkset"), 7);
             devMenu.IdPressed += (id) =>
             {
                 if (id == 2) OnCreateTestSkin?.Invoke();
@@ -646,7 +667,11 @@ namespace SLNG.App.UI
                 else if (id == 0) OnToggleWireframe?.Invoke();
                 else if (id == 1) OnMeasureRenderBaseline?.Invoke();
                 else if (id == 4) OnOpenMaterialLab?.Invoke();
+                else if (id == 5) OnOutfitProbe?.Invoke();
+                else if (id == 6 && OnToggleOutfitMergeProbe != null) SetOutfitMergeProbeUI(OnToggleOutfitMergeProbe(false));
+                else if (id == 7 && OnToggleOutfitMergeProbe != null) SetOutfitMergeProbeUI(OnToggleOutfitMergeProbe(true));
             };
+            _devMenu = devMenu;
             menuBar.AddChild(devMenu);
 
             _favoritesBar = new FavoritesBar();

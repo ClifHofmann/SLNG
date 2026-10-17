@@ -839,6 +839,7 @@ public partial class AvatarRenderer : Node3D
         ForgetPendingWearer(entityId);
         if (_visuals.TryGetValue(entityId, out var visual))
         {
+            ReleaseOutfitMergeProbe(visual); // FEAT-PERF-23 Phase 0
             if (visual.IsParked || visual.HasLoadedOutfit)
             {
                 UnloadAvatarOutfit(visual);
@@ -5941,6 +5942,8 @@ public partial class AvatarRenderer : Node3D
                  (geo.OrphanedVertices > 0 ? $" [PINNED TO SKIN SLOT 0 = bone \"{skeleton.GetBoneName(skin.GetBindBone(0))}\"]" : ""));
 
         faceIndices = geo.FaceIndices();
+        // FEAT-PERF-23 Phase 0: the probe keys surfaces by the face they were built for.
+        RememberRigSurfaceFaces(arrayMesh, faceIndices);
         return new MeshInstance3D
         {
             Mesh = arrayMesh,
@@ -6834,6 +6837,8 @@ void fragment() {
     private void SetAvatarReduced(AvatarVisual visual)
     {
         if (visual.IsReduced) return;
+        // FEAT-PERF-23 Phase 0: a merge probe on this avatar gives its originals back before they are parked.
+        ReleaseOutfitMergeProbe(visual);
         visual.IsReduced = true;
         visual.StateChangedAt = NowSeconds;
 
