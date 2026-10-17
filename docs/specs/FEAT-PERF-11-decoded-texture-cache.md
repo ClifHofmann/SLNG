@@ -59,7 +59,7 @@ Measured on 2026-10-08 against the user's real client cache (`user://cache/asset
    - Display is never blocked: `AssetService.FetchAndDecodeTextureAsync` immediately returns `TextureData` to `GpuCache.PrepareImageAsync`.
    - The write to disk occurs on a background `Task.Run` worker, writing to a `.tmp` file and renaming atomically.
 6. **Size Budget & Eviction:**
-   - Configurable budget: default 4096 MB (4 GB), setting `DecodedTextureCacheSizeMb` in `preferences.cfg`.
+   - Configurable budget: default 16384 MB (16 GB, raised by BUG-PERF-20), setting `DecodedTextureCacheSizeMb` in `preferences.cfg`.
    - Toggle: `DecodedTextureCacheEnabled` (default: true).
    - Eviction: LRU based on `LastAccessTimeUtc`, pruning to 85% of budget when exceeded.
    - Eviction is completely non-destructive: `.j2c` codestreams remain untouched, so evicted textures can always be reconstructed if needed.

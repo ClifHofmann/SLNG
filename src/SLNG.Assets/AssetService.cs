@@ -183,7 +183,7 @@ public class AssetService
     /// <summary>Persistent disk cache of decoded textures (FEAT-PERF-11).</summary>
     public DecodedTextureCache DecodedCache { get; }
 
-    public AssetService(GridSession session, string cacheDirectory, long decodedCacheSizeMb = 4096)
+    public AssetService(GridSession session, string cacheDirectory, long decodedCacheSizeMb = 16384)
     {
         _session = session;
         _cacheDir = cacheDirectory;

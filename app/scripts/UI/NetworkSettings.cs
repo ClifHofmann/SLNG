@@ -31,8 +31,9 @@ public sealed class NetworkSettings
     /// <summary>FEAT-PERF-11: whether decoded textures are cached to disk to skip J2K decodes on revisits.</summary>
     public bool DecodedCacheEnabled { get; private set; } = true;
 
-    /// <summary>FEAT-PERF-11: maximum decoded texture disk cache budget in megabytes (default 4 GB).</summary>
-    public int DecodedCacheSizeMb { get; private set; } = 4096;
+    /// <summary>FEAT-PERF-11: maximum decoded texture disk cache budget in megabytes (default 16 GB).</summary>
+    // BUG-PERF-20: 4 GB held about one region's decoded textures (RGBA + BC copies share it), so a region hop evicted the last one.
+    public int DecodedCacheSizeMb { get; private set; } = 16384;
 
     public void Load()
     {
@@ -40,7 +41,7 @@ public sealed class NetworkSettings
         if (cfg.Load(ConfigPath) != Error.Ok) return;
         MaxBandwidthKbps = Sanitize((float)cfg.GetValue(Section, "max_bandwidth_kbps", DefaultBandwidthKbps));
         DecodedCacheEnabled = (bool)cfg.GetValue(Section, "decoded_cache_enabled", true);
-        DecodedCacheSizeMb = Mathf.Max(256, (int)cfg.GetValue(Section, "decoded_cache_size_mb", 4096));
+        DecodedCacheSizeMb = Mathf.Max(256, (int)cfg.GetValue(Section, "decoded_cache_size_mb", 16384));
     }
 
     public void SetMaxBandwidthKbps(float value)

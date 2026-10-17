@@ -25,7 +25,7 @@ public sealed class DecodedTextureCache
     /// <summary>Whether the decoded texture cache is active (defaults to true).</summary>
     public bool Enabled { get; set; } = true;
 
-    /// <summary>Maximum cache size in bytes (defaults to 4 GB).</summary>
+    /// <summary>Maximum cache size in bytes (defaults to 16 GB).</summary>
     public long MaxCacheSizeBytes
     {
         get => _maxCacheSizeBytes;
@@ -35,7 +35,7 @@ public sealed class DecodedTextureCache
     /// <summary>Currently used cache size in bytes.</summary>
     public long CurrentSizeBytes => Interlocked.Read(ref _currentSizeBytes);
 
-    public DecodedTextureCache(string baseCacheDir, long maxSizeBytes = 4L * 1024 * 1024 * 1024)
+    public DecodedTextureCache(string baseCacheDir, long maxSizeBytes = 16L * 1024 * 1024 * 1024)
     {
         _cacheDir = Path.Combine(baseCacheDir, "decoded");
         _maxCacheSizeBytes = maxSizeBytes;
