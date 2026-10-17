@@ -3726,7 +3726,9 @@ public partial class AvatarRenderer : Node3D
             // Reattached first: the split reads the skeleton through mi.Skeleton.
             ReattachSkeleton(mi);
             SplitSortedSurfaces(mi, meshId);
-            UpdateWornMeshVisibility(mi);
+            // FEAT-PERF-23 fix: with the wearer, so a pass that ends after the avatar was parked (textures are
+            // slow on a busy sim) detaches and hides the item again instead of drawing it on the jelly doll.
+            UpdateWornMeshVisibility(mi, avatarVisual);
             // FEAT-PERF-23: the item's materials are in -- it can join its linkset's bucket.
             if (entityId != Guid.Empty) NoteStagingSettled(entityId, mi);
         }, label: "avatar.split_sorted");
@@ -3760,11 +3762,14 @@ public partial class AvatarRenderer : Node3D
     /// (<see cref="DetachSkeleton"/>); <see cref="ReattachSkeleton"/> restores the path before the
     /// next material pass looks at it.</para>
     /// </remarks>
-    private void UpdateWornMeshVisibility(MeshInstance3D mi)
+    /// <param name="owner">The wearer, when the caller knows it. A reduced (parked) wearer's item stays hidden
+    /// and detached whatever its faces say: its material pass can finish after the park (FEAT-PERF-23 fix).</param>
+    private void UpdateWornMeshVisibility(MeshInstance3D mi, AvatarVisual? owner = null)
     {
         if (!IsInstanceValid(mi) || mi.Skin == null || mi.Mesh is not ArrayMesh mesh) return;
-        // FEAT-PERF-23: held while its bucket still draws the item -- never shown from here.
-        if (_mergeHeld.Contains(mi))
+        // FEAT-PERF-23: held while its bucket still draws the item -- never shown from here. And never on a
+        // parked avatar: the stand-in is the jelly doll alone.
+        if (_mergeHeld.Contains(mi) || owner is { IsReduced: true })
         {
             if (mi.Visible) mi.Visible = false;
             DetachSkeleton(mi);
@@ -7023,7 +7028,7 @@ void fragment() {
                 {
                     ReattachSkeleton(rMi);
                     rMi.Visible = true;
-                    UpdateWornMeshVisibility(rMi); // keeps a held one (FEAT-PERF-23) hidden
+                    UpdateWornMeshVisibility(rMi, visual); // keeps a held one (FEAT-PERF-23) hidden
                 }
             }
             UnparkOutfitMerge(visual);

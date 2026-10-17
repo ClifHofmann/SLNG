@@ -1167,7 +1167,7 @@ public partial class AvatarRenderer
         _mergeHeld.Remove(staging);
         ReattachSkeleton(staging);
         staging.Visible = true;
-        UpdateWornMeshVisibility(staging);
+        UpdateWornMeshVisibility(staging, item.Visual);
     }
 
     private static Material MaterialFor(Dictionary<Guid, MergeInput> inputs, Guid item, int surface) =>

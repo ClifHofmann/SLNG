@@ -269,6 +269,7 @@ public static partial class SelfTest
         results.Add(CheckSharedRiggedSkins(tree)); // FEAT-PERF-24
         results.Add(CheckOutfitProbe(tree)); // FEAT-PERF-23 Phase 0
         results.Add(CheckOutfitMerge(tree)); // FEAT-PERF-23 Phase 1
+        results.Add(CheckParkedOutfitHidden(tree)); // FEAT-PERF-23 fix: merge off, parked avatars
         results.Add(CheckOutfitMergeUploadBench()); // FEAT-PERF-23 Phase 0, probe 2
         results.Add(CheckSeatedPelvisOnSeat(tree)); // BUG-AVATAR-12
         results.Add(CheckMeshSurfaceCache()); // BUG-PERF-15

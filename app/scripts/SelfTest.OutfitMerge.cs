@@ -7,19 +7,26 @@ public static partial class SelfTest
 {
     /// <summary>FEAT-PERF-23 Phase 1: the real outfit merge on a hand-built remote avatar (see
     /// <c>AvatarRenderer.SelfTestOutfitMerge</c>).</summary>
-    private static Check CheckOutfitMerge(SceneTree tree)
+    private static Check CheckOutfitMerge(SceneTree tree) =>
+        RunOnRenderer(tree, "outfit merge skins like separate items", r => r.SelfTestOutfitMerge());
+
+    /// <summary>FEAT-PERF-23 fix: with the merge off, a parked avatar draws no worn instance and the cap holds
+    /// (<c>AvatarRenderer.SelfTestParkedOutfitHidden</c>).</summary>
+    private static Check CheckParkedOutfitHidden(SceneTree tree) =>
+        RunOnRenderer(tree, "parked avatars draw no outfit, cap holds (merge off)", r => r.SelfTestParkedOutfitHidden());
+
+    private static Check RunOnRenderer(SceneTree tree, string name, Func<AvatarRenderer, (bool Passed, string Detail)> test)
     {
-        const string Name = "outfit merge skins like separate items";
         var renderer = new AvatarRenderer();
         try
         {
             tree.Root.AddChild(renderer);
-            var (passed, detail) = renderer.SelfTestOutfitMerge();
-            return new Check(Name, passed, detail);
+            var (passed, detail) = test(renderer);
+            return new Check(name, passed, detail);
         }
         catch (Exception ex)
         {
-            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+            return new Check(name, false, $"threw {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
