@@ -664,6 +664,8 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         {
             if (_refreshing) return;
             _settings.SetOutfitMerge(on);
+            // A click is the user's newer word: it overrides --outfit-merge for the rest of the session.
+            RenderConfig.OutfitMergeArg = null;
             _apply();
         });
         AddHint(_panelHardware, L10n.Tr("ui.preferences.outfit_merge_hint"));
@@ -1083,7 +1085,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             _textureMemAutoCheck.ButtonPressed = _settings.TextureMemoryAuto;
             _compressTexturesCheck.ButtonPressed = _settings.CompressTextures;
             _lowVramCapsCheck.ButtonPressed = _settings.LowVramCaps;
-            _outfitMergeCheck.ButtonPressed = _settings.OutfitMerge;
+            _outfitMergeCheck.ButtonPressed = RenderConfig.OutfitMergeArg ?? _settings.OutfitMerge; // what is in effect
             UpdateTextureMemControls();
 
             // Depth of Field
