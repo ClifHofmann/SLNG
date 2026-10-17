@@ -125,7 +125,9 @@ public partial class AvatarRenderer : Node3D
         // any worn mesh consumes — used to hide the matching system body parts — and the worn
         // meshes whose face materials must be re-resolved when a new server bake arrives.
         public HashSet<int> AttachmentBakeChannels { get; } = new();
-        public List<(MeshInstance3D Mi, int[] FaceIndices, FaceTexture[]? Faces, FaceTexture DefaultFace)> BomAttachments { get; } = new();
+        // FEAT-PERF-23: keyed by the worn ENTITY, not by its instance. A merged item has no instance of
+        // its own (Mi is null then) and must still hide the system parts its bake covers.
+        public Dictionary<Guid, BomEntry> BomAttachments { get; } = new();
         public Dictionary<Guid, (FaceTexture[]? Faces, FaceTexture DefaultFace)> WornAttachmentFaces { get; } = new();
         // Per-bone OWN scale (base + shape distortion), keyed by bone name — deliberately NOT
         // multiplied by any ancestor's scale. Verified against LLXformMatrix::update()/
@@ -232,6 +234,8 @@ public partial class AvatarRenderer : Node3D
         public Dictionary<SLNG.Core.Avatars.SkinBindKey, Skin> SharedSkins { get; } = new();
         // FEAT-PERF-24: skeleton updates (Skeleton3D.skeleton_updated) since the last [AvatarCost].
         public int SkeletonUpdates { get; set; }
+        // FEAT-PERF-23: this avatar's outfit merge (outfit skin, buckets, items), null when none.
+        public OutfitMergeAvatar? OutfitMerge { get; set; }
         public Godot.Control? NameTag { get; set; }
         /// <summary>Tracks the previous frame's SittingOnLocalId to detect sit→stand transitions.
         /// When transitioning from sitting to standing, the animation player must be forcefully
@@ -256,6 +260,10 @@ public partial class AvatarRenderer : Node3D
             }
         }
     }
+
+    /// <summary>A worn mesh's Bakes-on-Mesh registration: its instance (null while a merged item has
+    /// none), the face each surface was built for, and its face records.</summary>
+    private readonly record struct BomEntry(MeshInstance3D? Mi, int[] FaceIndices, FaceTexture[]? Faces, FaceTexture DefaultFace);
 
     private World? _world;
     private AssetService? _assetService;
@@ -544,6 +552,7 @@ public partial class AvatarRenderer : Node3D
         if (!_visuals.ContainsKey(id)
             && !_attachmentNodes.ContainsKey(id)
             && !_riggedAttachments.ContainsKey(id)
+            && !_mergeItems.ContainsKey(id)            // FEAT-PERF-23: a merged item has no instance of its own
             && !_attachmentMeshIds.ContainsKey(id)
             && !_pendingRigs.ContainsKey(id)
             && !_attachNewest.ContainsKey(id)
@@ -839,11 +848,11 @@ public partial class AvatarRenderer : Node3D
         ForgetPendingWearer(entityId);
         if (_visuals.TryGetValue(entityId, out var visual))
         {
-            ReleaseOutfitMergeProbe(visual); // FEAT-PERF-23 Phase 0
             if (visual.IsParked || visual.HasLoadedOutfit)
             {
                 UnloadAvatarOutfit(visual);
             }
+            UnloadOutfitMerge(visual); // FEAT-PERF-23: buckets, outfit skin, retained arrays
 
             foreach (var attId in visual.WornAttachmentEntities)
             {
@@ -899,6 +908,8 @@ public partial class AvatarRenderer : Node3D
         _attachNewest.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
         ReleaseEditPause(entityId);
+        // FEAT-PERF-23: a merged item leaves its bucket (freed when its whole linkset is gone).
+        ForgetMergeItem(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
         {
             removedRigged = riggedMesh;
@@ -953,9 +964,9 @@ public partial class AvatarRenderer : Node3D
                 ownerVisual.WornAttachmentFaces.Remove(entityId);
             }
             // M4-7: a detached BoM mesh body/head must un-hide the system part it was covering.
-            // QueueFree above is deferred, so drop the entry by reference here — RecomputeMesh-
-            // Visibility's IsInstanceValid sweep would still see it live this frame.
-            if (removedRigged != null) ownerVisual.BomAttachments.RemoveAll(e => e.Mi == removedRigged);
+            // QueueFree above is deferred, so drop the entry here -- by entity (FEAT-PERF-23), which
+            // also covers a merged item with no instance of its own.
+            ownerVisual.BomAttachments.Remove(entityId);
             RecomputeMeshVisibility(ownerVisual);
             // BUG-AVATAR-10: and the joint overrides and pelvis fixup it put on the avatar go with it
             // (viewer parity: removeAttachmentOverridesForObject). The same deferral applies -- the
@@ -1784,9 +1795,14 @@ public partial class AvatarRenderer : Node3D
             // bakes to attachment faces).
             if (anyBakeChanged && visual.BomAttachments.Count > 0)
             {
-                foreach (var e in visual.BomAttachments)
-                    if (IsInstanceValid(e.Mi))
-                        _ = ApplyFaceMaterialsAsync(e.Mi, e.FaceIndices, e.Faces, e.DefaultFace, visual);
+                foreach (var (wornId, e) in visual.BomAttachments.ToArray())
+                {
+                    if (e.Mi != null && IsInstanceValid(e.Mi))
+                        _ = ApplyFaceMaterialsAsync(e.Mi, e.FaceIndices, e.Faces, e.DefaultFace, visual, entityId: wornId);
+                    // FEAT-PERF-23: a merged item's BoM surfaces take the new bake in place.
+                    if (_mergeItems.TryGetValue(wornId, out var merged) && merged.InBucket)
+                        _ = RefreshMergedBomMaterialsAsync(merged);
+                }
             }
         }
 
@@ -2445,6 +2461,10 @@ public partial class AvatarRenderer : Node3D
         // flip on to the rest of the linkset, and notice a mesh that is on the wrong side of the flag.
         bool routeChanged = SyncWornAnimesh(entityId, entity, prim);
 
+        // FEAT-PERF-23: a texture animation that starts (or stops) moves a merged item out of (or back
+        // into) its bucket; the update is otherwise a duplicate and returns below.
+        NoteMergeItemUpdate(entityId, prim);
+
         var defaultFace = isMeshAttachment
             ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
             : default;
@@ -2601,12 +2621,22 @@ public partial class AvatarRenderer : Node3D
         {
             if (prim.IsMesh && prim.MeshId != Guid.Empty)
             {
+                // FEAT-PERF-23: a face or mesh change counts towards the merge's volatile rule; a
+                // pure LOD raise does not.
+                var wantedLod = PickAttachmentDetailLevel(avatarVisual);
+                if (_mergeItems.Count > 0 && _attachmentMeshIds.TryGetValue(entityId, out var before))
+                {
+                    bool sameFaces = before.DefaultFace == defaultFace
+                        && (before.Faces == prim.Faces || (before.Faces != null && prim.Faces != null && before.Faces.AsSpan().SequenceEqual(prim.Faces)));
+                    NoteMergeItemReload(entityId, faceChange: before.MeshId != prim.MeshId || !sameFaces);
+                }
+
                 // Set BEFORE kicking off the async load (not after it completes) so a second
                 // redundant UpdateAttachment arriving while this load is still in flight sees
                 // it immediately and hits the early-return guard above instead of starting an
                 // overlapping duplicate load.
                 _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace,
-                                                attachment.AvatarEntityId, PickAttachmentDetailLevel(avatarVisual));
+                                                attachment.AvatarEntityId, wantedLod);
                 _attachmentPrimSignatures.TryRemove(entityId, out _);
                 _attachmentLocalPoses[entityId] = (transform != null ? transform.Position : System.Numerics.Vector3.Zero,
                                                    transform != null ? transform.Rotation : System.Numerics.Quaternion.Identity);
@@ -2885,6 +2915,14 @@ public partial class AvatarRenderer : Node3D
             if (WornLinksetRoot(worn) != rootLocalId) return false;
             isRoot = worn.LocalId == rootLocalId;
             return true;
+        }
+
+        // FEAT-PERF-23: the outline is drawn on an item's own instance, so a selected merged item goes
+        // back to staging (its outline appears with it at the swap) and returns on deselect.
+        if (_mergeItems.Count > 0)
+        {
+            foreach (var wornId in new List<Guid>(_mergeItems.Keys))
+                if (Wanted(wornId, out _)) SetMergeItemSelected(wornId, selected);
         }
 
         foreach (var (wornId, rigged) in _riggedAttachments)
@@ -3232,7 +3270,15 @@ public partial class AvatarRenderer : Node3D
         _riggedAttachments.Remove(entityId);
         ClearRiggedPickBodies(entityId);
         visual.RiggedAttachments.RemoveAll(r => r.Mi == existing);
-        visual.BomAttachments.RemoveAll(r => r.Mi == existing);
+        // FEAT-PERF-23: a merged item's bucket still draws it (and its bake still covers the body), so
+        // its BoM entry stays, without an instance.
+        bool merged = _mergeItems.TryGetValue(entityId, out var item) && item.InBucket;
+        if (visual.BomAttachments.TryGetValue(entityId, out var bom) && bom.Mi == existing)
+        {
+            if (merged) visual.BomAttachments[entityId] = bom with { Mi = null };
+            else visual.BomAttachments.Remove(entityId);
+        }
+        if (item != null && ReferenceEquals(item.Staging, existing)) DropMergeStaging(item);
         if (IsInstanceValid(existing))
         {
             DetachSkeleton(existing);
@@ -3464,7 +3510,11 @@ public partial class AvatarRenderer : Node3D
 
         // BUG-AVATAR-10: an animated object's mesh is skinned to the object's own skeleton, not the
         // wearer's. Before anything below touches the wearer.
-        if (TryRouteWornRigToControlAvatar(entityId, req)) return;
+        if (TryRouteWornRigToControlAvatar(entityId, req))
+        {
+            ForgetMergeItem(entityId); // FEAT-PERF-23: never merged; it leaves its bucket
+            return;
+        }
 
         // Anything already rigged for this entity is replaced, not joined. Without this,
         // several updates arriving before the queue drains each ADD a rigged MeshInstance
@@ -3484,6 +3534,7 @@ public partial class AvatarRenderer : Node3D
             {
                 MainThreadWorkQueue.Measure("avatar.rig.jointpos", () => ApplyWornJointOverrides(entityId, req));
             }
+            ForgetMergeItem(entityId); // FEAT-PERF-23: nothing to draw, so nothing in a bucket either
             RecomputeMeshVisibility(req.Visual);
             return;
         }
@@ -3497,7 +3548,11 @@ public partial class AvatarRenderer : Node3D
         int[] slotForJoint = System.Array.Empty<int>();
         MainThreadWorkQueue.Measure("avatar.rig.bind",
             () => skin = BindRiggedSkin(req.MeshData.Skin!, req.Skeleton, req.Visual, out slotForJoint));
-        if (skin == null) return;
+        if (skin == null)
+        {
+            ForgetMergeItem(entityId);
+            return;
+        }
 
         var prepared = ready.Mesh;
         if (!slotForJoint.AsSpan().SequenceEqual(prepared.SlotForJoint))
@@ -3506,7 +3561,8 @@ public partial class AvatarRenderer : Node3D
             // the node built from it, so the two agree. Should they ever not, the weights
             // would point at the wrong binds -- the geometry is built again, here.
             GD.PushWarning($"[RiggedMesh] mesh {req.MeshId:N}: joint slots differ between worker and skeleton -- rebuilt on the main thread");
-            prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace, req.WantPick);
+            prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace, req.WantPick,
+                                         keepTangents: prepared.Tangents != null);
         }
 
         MeshInstance3D? built = null;
@@ -3539,6 +3595,9 @@ public partial class AvatarRenderer : Node3D
         // Skin is already assigned on the instance; the skeleton path must be set after
         // the node is in the tree so Godot can resolve and drive the skinning.
         mi.Skeleton = mi.GetPathTo(req.Skeleton);
+        // FEAT-PERF-23: keep the managed arrays for a merge, and hold the instance hidden while the
+        // item's bucket still draws its previous version.
+        NoteRiggedCommit(entityId, req, prepared, slotForJoint, faceIndices, mi);
         RestoreWornHighlight(entityId);
         MainThreadWorkQueue.RecordExternal("avatar.rig.scene", sceneClock.Elapsed.TotalMilliseconds);
 
@@ -3546,10 +3605,10 @@ public partial class AvatarRenderer : Node3D
         // BUG-PERF-08: and they are built one per queue item (label avatar.rig.pick), after this item.
         QueueRiggedPickBodies(mi, req.Visual, req.Skeleton, entityId, prepared.PickChunks);
         MainThreadWorkQueue.Measure("avatar.rig.bom",
-            () => RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId));
+            () => RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId, entityId));
         // Only the part before its first unfinished await runs here.
         MainThreadWorkQueue.Measure("avatar.rig.materials",
-            () => _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId));
+            () => _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId, entityId));
     }
 
     /// <summary>BUG-RENDER-12: resolves a submesh's SL face record exactly the way
@@ -3603,9 +3662,11 @@ public partial class AvatarRenderer : Node3D
     /// texture each face independently — many parts are flat colour tints with no texture.
     /// <paramref name="avatarVisual"/> (when the mesh is worn on an avatar) resolves
     /// Bakes-on-Mesh faces to that avatar's server-baked textures.</summary>
+    /// <param name="entityId">The worn entity of a rigged item, so the outfit merge (FEAT-PERF-23) learns
+    /// when its materials are all in; empty for everything else.</param>
     private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(
         MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace,
-        AvatarVisual? avatarVisual = null, Guid meshId = default)
+        AvatarVisual? avatarVisual = null, Guid meshId = default, Guid entityId = default)
     {
         if (mi.Mesh is not ArrayMesh am) return;
         int surfaceCount = am.GetSurfaceCount();
@@ -3666,6 +3727,8 @@ public partial class AvatarRenderer : Node3D
             ReattachSkeleton(mi);
             SplitSortedSurfaces(mi, meshId);
             UpdateWornMeshVisibility(mi);
+            // FEAT-PERF-23: the item's materials are in -- it can join its linkset's bucket.
+            if (entityId != Guid.Empty) NoteStagingSettled(entityId, mi);
         }, label: "avatar.split_sorted");
     }
 
@@ -3700,6 +3763,13 @@ public partial class AvatarRenderer : Node3D
     private void UpdateWornMeshVisibility(MeshInstance3D mi)
     {
         if (!IsInstanceValid(mi) || mi.Skin == null || mi.Mesh is not ArrayMesh mesh) return;
+        // FEAT-PERF-23: held while its bucket still draws the item -- never shown from here.
+        if (_mergeHeld.Contains(mi))
+        {
+            if (mi.Visible) mi.Visible = false;
+            DetachSkeleton(mi);
+            return;
+        }
         bool anyDrawn = false;
         int count = mesh.GetSurfaceCount();
         for (int s = 0; s < count && !anyDrawn; s++)
@@ -3882,7 +3952,9 @@ public partial class AvatarRenderer : Node3D
     {
         if (ft.IsInvisible)
         {
-            return new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+            var hidden = new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+            RecordFaceMaterialFacts(hidden, new FaceMaterialFacts(PrimShaderFamily.Kind.Opaque, 0f, Guid.Empty, Failed: false, Hidden: true));
+            return hidden;
         }
 
         var tint = ft.Color == default
@@ -4087,10 +4159,10 @@ public partial class AvatarRenderer : Node3D
             {
                 material.SetShaderParameter(PrimShaderFamily.AlbedoColor, new Godot.Color(1f, 1f, 1f, 0f));
                 material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, false);
-                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface);
+                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface, texId, failed: true);
             }
 
-            return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId);
         }
 
         LogHudFace(surface, meshId, faceIndex, ft, tint, $"textured {built.GetWidth()}x{built.GetHeight()}");
@@ -4141,7 +4213,7 @@ public partial class AvatarRenderer : Node3D
         if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
             scissorThreshold = BomAlphaScissorThreshold;
 
-        return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+        return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId);
     }
 
     /// <summary>One line per worn-HUD face, unconditional (not behind --diag) and deduplicated.
@@ -4202,9 +4274,13 @@ public partial class AvatarRenderer : Node3D
     /// <see cref="BuildFaceMaterialAsync"/> must all go through it -- an early return that skipped
     /// it would leave a translucent face on the opaque shader, which renders it fully solid with
     /// no error anywhere.</summary>
+    /// <param name="texture">The texture the face samples (the bake, for BoM), empty for none.</param>
+    /// <param name="failed">The texture did not load: the face is the alpha-0 Blend card.</param>
     private static ShaderMaterial FinishFaceMaterial(ShaderMaterial material, PrimShaderFamily.Kind kind,
-        float scissorThreshold, PrimShaderFamily.Surface surface)
+        float scissorThreshold, PrimShaderFamily.Surface surface, Guid texture = default, bool failed = false)
     {
+        // FEAT-PERF-23: what this material is, for the outfit merge's material key and its roles.
+        RecordFaceMaterialFacts(material, new FaceMaterialFacts(kind, scissorThreshold, texture, failed, Hidden: false));
         material.Shader = PrimShaderFamily.Select(kind, surface);
         if (kind == PrimShaderFamily.Kind.Scissor)
             material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, scissorThreshold);
@@ -4395,7 +4471,8 @@ public partial class AvatarRenderer : Node3D
     /// system body parts stay hidden — the viewer's LLVOAvatar::updateMeshVisibility.
     /// Main thread only (mutates node visibility).</summary>
     private void RegisterBomAndUpdateVisibility(
-        AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace, Guid meshId = default)
+        AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace,
+        Guid meshId, Guid entityId)
     {
         bool usesBom = false;
         var channels = new System.Collections.Generic.SortedSet<int>();
@@ -4410,8 +4487,11 @@ public partial class AvatarRenderer : Node3D
         if (faces != null) foreach (var f in faces) Scan(f);
         Scan(defaultFace);
 
+        // Keyed by entity (FEAT-PERF-23): the newest instance replaces the old one's entry.
         if (usesBom)
-            avatarVisual.BomAttachments.Add((mi, faceIndices, faces, defaultFace));
+            avatarVisual.BomAttachments[entityId] = new BomEntry(mi, faceIndices, faces, defaultFace);
+        else
+            avatarVisual.BomAttachments.Remove(entityId);
 
         // FEAT-AVATAR-01: says whether a worn mesh takes part in Bakes-on-Mesh at all. A mesh head
         // that registers NO channels renders from its own textures (or grey, if it has none) and no
@@ -4471,11 +4551,15 @@ public partial class AvatarRenderer : Node3D
             return;
         }
 
-        avatarVisual.BomAttachments.RemoveAll(e => !IsInstanceValid(e.Mi));
+        // An instance that was freed takes its entry along; a merged item has none and keeps it.
+        List<Guid>? gone = null;
+        foreach (var (wornId, e) in avatarVisual.BomAttachments)
+            if (e.Mi != null && !IsInstanceValid(e.Mi)) (gone ??= new()).Add(wornId);
+        if (gone != null) foreach (var wornId in gone) avatarVisual.BomAttachments.Remove(wornId);
 
         var ch = avatarVisual.AttachmentBakeChannels;
         ch.Clear();
-        foreach (var e in avatarVisual.BomAttachments)
+        foreach (var e in avatarVisual.BomAttachments.Values)
         {
             void Scan(FaceTexture f)
             {
@@ -4714,6 +4798,7 @@ public partial class AvatarRenderer : Node3D
         _preparedRigs.TryRemove(entityId, out _);
         _rigsPreparing.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
+        ForgetMergeItem(entityId); // FEAT-PERF-23: off the body, out of its bucket
         if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
         {
             hudMovedRigged = staleRigged;
@@ -4727,7 +4812,7 @@ public partial class AvatarRenderer : Node3D
         {
             hudOwnerVisual.WornAttachmentFaces.Remove(entityId);
             // M4-7: same as detach — a mesh moved onto a HUD point no longer hides the body.
-            if (hudMovedRigged != null) hudOwnerVisual.BomAttachments.RemoveAll(e => e.Mi == hudMovedRigged);
+            hudOwnerVisual.BomAttachments.Remove(entityId);
             RecomputeMeshVisibility(hudOwnerVisual);
             // BUG-AVATAR-10: nor does it keep shaping the skeleton it left (overrides, locks, fixup).
             if (hudMovedRigged != null) hudOwnerVisual.RiggedAttachments.RemoveAll(r => r.Mi == hudMovedRigged);
@@ -5770,46 +5855,52 @@ public partial class AvatarRenderer : Node3D
             int bone = jointBone[j];
             if (bone < 0) { slotForJoint[j] = -1; continue; }
 
-            var ibm = skinData.InverseBindMatrices[j];
-            // Bind_godot = C⁻¹ · InverseBind_SL · C   (verified change-of-basis). bind-shape is
-            // applied to the vertices below, NOT folded in here — matching the SL viewer
-            // (LLSkinningUtil: palette = invBind·jointWorld; bind-shape pre-applied to verts).
-            // AffineInverse (not Inverse): Inverse() assumes an orthonormal basis and only
-            // transposes it, which is wrong once non-uniform scale is baked in (bone.Scale from
-            // the XML, or shape distortion) — AffineInverse does a real matrix invert.
-            Transform3D bind = ibm == System.Numerics.Matrix4x4.Identity
-                ? ComputeGlobalRestTransform(skeleton, bone).AffineInverse()
-                : RowMatrixToTransform(SlToGodotInv * ibm * SlToGodot);
-
-            // ApplyShape keeps every Rest a pure rotation (no scale — see its doc comment), so
-            // Godot's own live pose (used internally every frame for skinning: pose * bind) never
-            // carries any bone's own scale either. Inject it into the BIND instead — algebraically
-            // equivalent and pose-independent: for W = livePose (no scale) and W' = W with this
-            // bone's own scale injected into its basis, W.AffineInverse()*W' reduces to a pure
-            // Diag(ownScale) transform (the rotation/position cancel out), so pre-multiplying it
-            // once here reproduces exactly SL's invBind·jointWorld(with own scale) every frame
-            // without needing to recompute anything per-pose.
-            if (visual.BoneOwnScale.TryGetValue(skeleton.GetBoneName(bone), out var ownScale))
-                bind = InjectOwnScale(bind, ownScale);
-
-            // A NaN/Inf bind — a degenerate inverse-bind matrix in the mesh asset, or a singular
-            // rest — poisons every vertex weighted to this joint and Godot then warns "Vector3
-            // cannot be normalized, the elements must be finite". Fall back to the computed rest
-            // (scale-clamped in ApplyShape, so finite) rather than feed the skin palette garbage.
-            if (!IsFiniteTransform(bind))
-            {
-                GD.PushWarning($"[Avatar] non-finite skin bind for bone '{skeleton.GetBoneName(bone)}' — using computed rest");
-                bind = ComputeGlobalRestTransform(skeleton, bone).AffineInverse();
-                if (!IsFiniteTransform(bind)) bind = Transform3D.Identity;
-            }
-
             slotForJoint[j] = slotBones.Count;
             slotBones.Add(bone);
-            slotBinds.Add(bind);
+            slotBinds.Add(ComputeRiggedBind(skeleton, visual, bone, skinData.InverseBindMatrices[j]));
         }
         if (slotBones.Count == 0) return null;
 
         return SharedOrNewSkin(visual, skeleton, slotBones, slotBinds);
+    }
+
+    /// <summary>One joint's bind: the asset's inverse-bind matrix in Godot axes (or the bone's live
+    /// inverse rest for an identity matrix), with the avatar's own scale for the bone injected. The one
+    /// place this is computed, so a per-item skin and the outfit skin (FEAT-PERF-23) are bit-identical.</summary>
+    private static Transform3D ComputeRiggedBind(Skeleton3D skeleton, AvatarVisual visual, int bone, System.Numerics.Matrix4x4 ibm)
+    {
+        // Bind_godot = C⁻¹ · InverseBind_SL · C   (verified change-of-basis). bind-shape is
+        // applied to the vertices below, NOT folded in here — matching the SL viewer
+        // (LLSkinningUtil: palette = invBind·jointWorld; bind-shape pre-applied to verts).
+        // AffineInverse (not Inverse): Inverse() assumes an orthonormal basis and only
+        // transposes it, which is wrong once non-uniform scale is baked in (bone.Scale from
+        // the XML, or shape distortion) — AffineInverse does a real matrix invert.
+        Transform3D bind = ibm == System.Numerics.Matrix4x4.Identity
+            ? ComputeGlobalRestTransform(skeleton, bone).AffineInverse()
+            : RowMatrixToTransform(SlToGodotInv * ibm * SlToGodot);
+
+        // ApplyShape keeps every Rest a pure rotation (no scale — see its doc comment), so
+        // Godot's own live pose (used internally every frame for skinning: pose * bind) never
+        // carries any bone's own scale either. Inject it into the BIND instead — algebraically
+        // equivalent and pose-independent: for W = livePose (no scale) and W' = W with this
+        // bone's own scale injected into its basis, W.AffineInverse()*W' reduces to a pure
+        // Diag(ownScale) transform (the rotation/position cancel out), so pre-multiplying it
+        // once here reproduces exactly SL's invBind·jointWorld(with own scale) every frame
+        // without needing to recompute anything per-pose.
+        if (visual.BoneOwnScale.TryGetValue(skeleton.GetBoneName(bone), out var ownScale))
+            bind = InjectOwnScale(bind, ownScale);
+
+        // A NaN/Inf bind — a degenerate inverse-bind matrix in the mesh asset, or a singular
+        // rest — poisons every vertex weighted to this joint and Godot then warns "Vector3
+        // cannot be normalized, the elements must be finite". Fall back to the computed rest
+        // (scale-clamped in ApplyShape, so finite) rather than feed the skin palette garbage.
+        if (!IsFiniteTransform(bind))
+        {
+            GD.PushWarning($"[Avatar] non-finite skin bind for bone '{skeleton.GetBoneName(bone)}' — using computed rest");
+            bind = ComputeGlobalRestTransform(skeleton, bone).AffineInverse();
+            if (!IsFiniteTransform(bind)) bind = Transform3D.Identity;
+        }
+        return bind;
     }
 
     /// <summary>Upper bound on <see cref="AvatarVisual.SharedSkins"/>; past it the cache starts
@@ -6272,6 +6363,8 @@ public partial class AvatarRenderer : Node3D
                 if (child is MeshInstance3D split && split.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
                     split.Skin = skin;
         }
+        // FEAT-PERF-23: the outfit skin is re-bound in place -- one pass over its slots.
+        RebindOutfitSkin(visual);
     }
 
     /// <summary>
@@ -6837,8 +6930,6 @@ void fragment() {
     private void SetAvatarReduced(AvatarVisual visual)
     {
         if (visual.IsReduced) return;
-        // FEAT-PERF-23 Phase 0: a merge probe on this avatar gives its originals back before they are parked.
-        ReleaseOutfitMergeProbe(visual);
         visual.IsReduced = true;
         visual.StateChangedAt = NowSeconds;
 
@@ -6863,7 +6954,7 @@ void fragment() {
         // hidden/disabled so Godot performs zero skin-bind updates or draw calls.
         bool hasOutfit = visual.HasLoadedOutfit
             || visual.RiggedAttachments.Count > 0
-            || visual.WornAttachmentEntities.Any(id => _attachmentNodes.ContainsKey(id) || _riggedAttachments.ContainsKey(id));
+            || visual.WornAttachmentEntities.Any(id => _attachmentNodes.ContainsKey(id) || IsRiggedOnWearer(id));
 
         if (hasOutfit)
         {
@@ -6878,6 +6969,8 @@ void fragment() {
                     rMi.Visible = false;
                 }
             }
+            // FEAT-PERF-23: the merged outfit parks as a few instances on one skin.
+            ParkOutfitMerge(visual);
 
             foreach (var attId in visual.WornAttachmentEntities)
             {
@@ -6930,9 +7023,10 @@ void fragment() {
                 {
                     ReattachSkeleton(rMi);
                     rMi.Visible = true;
-                    UpdateWornMeshVisibility(rMi);
+                    UpdateWornMeshVisibility(rMi); // keeps a held one (FEAT-PERF-23) hidden
                 }
             }
+            UnparkOutfitMerge(visual);
 
             foreach (var attId in visual.WornAttachmentEntities)
             {
@@ -6951,7 +7045,7 @@ void fragment() {
             // Catch any attachments that arrived while parked and were never loaded
             foreach (var attId in visual.WornAttachmentEntities)
             {
-                if (!_riggedAttachments.ContainsKey(attId) && !_attachmentNodes.ContainsKey(attId))
+                if (!IsRiggedOnWearer(attId) && !_attachmentNodes.ContainsKey(attId))
                 {
                     CallDeferred(nameof(UpdateAttachment), attId.ToString());
                 }
@@ -7000,7 +7094,7 @@ void fragment() {
             _rigsPreparing.TryRemove(attId, out _);
             _attachNewest.TryRemove(attId, out _);
 
-            if (_riggedAttachments.TryGetValue(attId, out _))
+            if (IsRiggedOnWearer(attId)) // FEAT-PERF-23: a merged item has overrides to give back too
             {
                 DiscardRiggedAttachment(attId, visual);
                 ReleaseWornJointOverrides(visual, attId);
@@ -7053,6 +7147,7 @@ void fragment() {
         }
         visual.RiggedAttachments.Clear();
         visual.BomAttachments.Clear();
+        UnloadOutfitMerge(visual);
         RecomputeMeshVisibility(visual);
     }
 
@@ -7268,7 +7363,9 @@ void fragment() {
             // and bind writes (RenderingServer commands) per frame, and rigged skins shared/bound.
             $"skinWrites={skinWrites} skelUpdatesPerFrame={(double)skeletonUpdates / frames:F1} " +
             $"skinWritesPerFrame={writesInWindow / frames} sharedSkins={_skinsShared}/{_skinsBound} " +
-            $"shareSkins={(RenderConfig.ShareSkins ? "on" : "off")}");
+            $"shareSkins={(RenderConfig.ShareSkins ? "on" : "off")} " +
+            // FEAT-PERF-23: the outfit merge.
+            DescribeOutfitMergeCost());
         _skinsShared = _skinsBound = 0;
 
         // Surfaces are counted on the instance that owns the face: a split child counts its one
@@ -7283,12 +7380,13 @@ void fragment() {
             if (mi.Visible) drawn++;
             binds += n;
             if (isShown) shownBinds += n;
-            // Still registered with the skeleton, i.e. updated on every re-pose. A split child shares
-            // its parent's Skin and binding, so it is counted with the parent only.
-            if (!mi.Skeleton.IsEmpty && !mi.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
+            // Still registered with the skeleton, i.e. updated on every re-pose. Godot keeps one binding
+            // per Skin, so each distinct Skin counts once: a split child shares its parent's, and every
+            // bucket and sorted instance of a merged outfit shares the outfit skin (FEAT-PERF-23).
+            if (!mi.Skeleton.IsEmpty && distinctSkins.Add(mi.Skin.GetInstanceId()))
             {
                 boundBinds += n;
-                if (distinctSkins.Add(mi.Skin.GetInstanceId())) writes += n;
+                writes += n;
             }
             if (mi.Mesh is not ArrayMesh mesh) return;
             for (int s = 0; s < mesh.GetSurfaceCount(); s++)
@@ -7308,6 +7406,8 @@ void fragment() {
         {
             RemoveVisual(removeId);
         }
+        // FEAT-PERF-23: after the removals, so a linkset taken off this frame frees its bucket at once.
+        TickOutfitMerge();
 
         float dt = (float)delta;
         ReportAvatarCost(delta);

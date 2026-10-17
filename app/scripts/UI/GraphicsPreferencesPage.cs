@@ -72,6 +72,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
     private Label _textureMemUsage = null!;
     private CheckBox _compressTexturesCheck = null!;
     private CheckBox _lowVramCapsCheck = null!;
+    private CheckBox _outfitMergeCheck = null!;
     private Label _lowVramCapsState = null!;
 
     // Depth of Field sub-tab controls
@@ -657,6 +658,15 @@ public partial class GraphicsPreferencesPage : VBoxContainer
         _lowVramCapsState.AddThemeColorOverride("font_color", new Color(0.65f, 0.65f, 0.65f));
         _lowVramCapsState.AddThemeFontSizeOverride("font_size", 12);
         _panelHardware.AddChild(_lowVramCapsState);
+
+        // FEAT-PERF-23: merge other avatars' worn meshes. Not part of the presets; off until the A/B.
+        _outfitMergeCheck = AddCheck(_panelHardware, L10n.Tr("ui.preferences.outfit_merge"), _settings.OutfitMerge, on =>
+        {
+            if (_refreshing) return;
+            _settings.SetOutfitMerge(on);
+            _apply();
+        });
+        AddHint(_panelHardware, L10n.Tr("ui.preferences.outfit_merge_hint"));
     }
 
     private void UpdateTextureMemControls()
@@ -1073,6 +1083,7 @@ public partial class GraphicsPreferencesPage : VBoxContainer
             _textureMemAutoCheck.ButtonPressed = _settings.TextureMemoryAuto;
             _compressTexturesCheck.ButtonPressed = _settings.CompressTextures;
             _lowVramCapsCheck.ButtonPressed = _settings.LowVramCaps;
+            _outfitMergeCheck.ButtonPressed = _settings.OutfitMerge;
             UpdateTextureMemControls();
 
             // Depth of Field

@@ -151,7 +151,9 @@ public partial class AvatarRenderer
         request.AttachParent.AddChild(mi);
         AddAttachmentPickBody(mi, arrayMesh, avatarVisual, entityId, prepared.PickFaces);
         RestoreWornHighlight(entityId);
-        RegisterBomAndUpdateVisibility(avatarVisual, mi, prepared.FaceIndices, request.Faces, request.DefaultFace, request.MeshId);
+        // FEAT-PERF-23: a worn item that was rigged and merged is static now -- it leaves its bucket.
+        ForgetMergeItem(entityId);
+        RegisterBomAndUpdateVisibility(avatarVisual, mi, prepared.FaceIndices, request.Faces, request.DefaultFace, request.MeshId, entityId);
         _ = ApplyFaceMaterialsAsync(mi, prepared.FaceIndices, request.Faces, request.DefaultFace, avatarVisual, request.MeshId);
     }
 

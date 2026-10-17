@@ -226,7 +226,7 @@ public partial class AvatarRenderer
         // The ordinary attachment -- not rigged, not an animated root, no control avatar in sight --
         // costs these three reads and nothing more.
         bool onControlAvatar = _controlAvatarOfPrim.ContainsKey(entityId);
-        bool rigged = onControlAvatar || _riggedAttachments.ContainsKey(entityId);
+        bool rigged = onControlAvatar || IsRiggedOnWearer(entityId); // FEAT-PERF-23: merged items too
         bool flagKnown = prim != null && (prim.IsAnimatedMesh || _wornAnimatedRootsSeen.Contains(entityId));
         if (_controlAvatars.Count == 0 && !rigged && !flagKnown) return false;
 

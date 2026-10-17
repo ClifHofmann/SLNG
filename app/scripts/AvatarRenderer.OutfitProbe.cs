@@ -7,18 +7,16 @@ using SLNG.Core;
 
 namespace SLNG.App;
 
-/// <summary>FEAT-PERF-23 Phase 0: the measurement probe that gates the outfit merge. Develop menu only;
-/// nothing here runs unless the person asks for it, and nothing that is drawn changes while the merge
-/// toggle is off. Spec: docs/specs/FEAT-PERF-23-outfit-merge.md, "Phase 0".
+/// <summary>FEAT-PERF-23 Phase 0: the measurement probe that gated the outfit merge. Develop menu only;
+/// nothing here changes what is drawn. Spec: docs/specs/FEAT-PERF-23-outfit-merge.md, "Phase 0".
 ///
 /// <list type="number">
 /// <item><b><c>[OutfitProbe]</c></b> (<see cref="LogOutfitProbe"/>): per full avatar, what its worn rigged
-/// meshes cost today and what a per-linkset or per-avatar merge would leave. Counts only.</item>
+/// meshes cost on their own instances and what a per-linkset or per-avatar merge would leave. Counts
+/// only; items the Phase 1 merge already holds have no instance and are reported apart.</item>
 /// <item>The upload microbenchmark is <see cref="BenchSkinnedUpload"/>, run by <c>--selftest</c>.</item>
-/// <item><b>Outfit merge (probe)</b> (<see cref="ToggleOutfitMergeProbe"/>): merges every full non-self
-/// avatar's rigged items for real, so <c>[Perf]</c> can be read with and without. It measures engine
-/// cost, not looks: pending bakes, late materials, outfit and shape changes are not followed while it
-/// is on.</item>
+/// <item>Probe 3, the main-thread naive merge toggle, was retired with Phase 1: the real merge
+/// (<c>AvatarRenderer.OutfitMerge.cs</c>, Graphics setting and <c>--outfit-merge</c>) is the A/B now.</item>
 /// </list>
 ///
 /// <para><b>No read-backs.</b> Everything comes from managed data and from scene-side getters that do
@@ -38,40 +36,9 @@ public partial class AvatarRenderer
     private static void RememberRigSurfaceFaces(ArrayMesh mesh, int[] faceIndices) =>
         _rigSurfaceFaces.AddOrUpdate(mesh, faceIndices);
 
-    // ---- State of the merge toggle --------------------------------------------------------------
-
-    /// <summary>How the probe merges: off, one bucket per avatar, or one bucket per worn linkset (Phase 1's shape).</summary>
-    internal enum OutfitMergeProbeMode { Off, PerAvatar, PerLinkset }
-
-    private OutfitMergeProbeMode _outfitMergeProbe = OutfitMergeProbeMode.Off;
-
-    /// <summary>The merge the toggle currently has applied.</summary>
-    internal OutfitMergeProbeMode OutfitMergeProbe => _outfitMergeProbe;
-
-    /// <summary>One avatar's applied merge: the originals it hid and the instances it built.</summary>
-    private sealed class OutfitProbeMerge
-    {
-        public readonly List<MeshInstance3D> Originals = new();
-        public readonly List<MeshInstance3D> Built = new();
-    }
-
-    private readonly Dictionary<AvatarVisual, OutfitProbeMerge> _outfitProbeMerges = new();
-
-    /// <summary>Originals the merge hid, so the count probe still reads them as drawn.</summary>
-    private readonly HashSet<MeshInstance3D> _outfitProbeHidden = new();
-
-    private const string OutfitProbeMergedName = "OutfitProbeMerged";
-    private const string OutfitProbeSortedName = "OutfitProbeSorted";
-
     // ---- One rigged item as both probes see it ----------------------------------------------------
 
     private enum ProbeKind { Pending, Opaque, Scissor, Hash, Blend, Hidden }
-
-    /// <summary>The spec's material key: two faces with equal keys get identical materials.
-    /// <see cref="FaceTexture"/> equality already means "identical material inputs" (BUG-RENDER-12); the
-    /// resolved texture (the bake, for BoM), the Kind and the scissor threshold cover what is derived from
-    /// the texture.</summary>
-    private readonly record struct OutfitMaterialKey(FaceTexture Face, Guid Texture, PrimShaderFamily.Kind Kind, float Threshold);
 
     private sealed class ProbeSurface
     {
@@ -135,7 +102,7 @@ public partial class AvatarRenderer
                 Mesh = mesh,
                 // Without an entity (it left the world a moment ago) the item is a linkset of its own.
                 Linkset = entity != null ? WornLinksetRoot(entity) : -1 - items.Count,
-                Drawn = mi.Visible || _outfitProbeHidden.Contains(mi),
+                Drawn = mi.Visible,
             };
             if (MeshSurfaceCache.TryGetSurfaces(mesh, out var arrays)) item.Arrays = arrays;
             item.FacesKnown = _rigSurfaceFaces.TryGetValue(mesh, out var faceIndices);
@@ -270,8 +237,11 @@ public partial class AvatarRenderer
         var (perAvatar, others) = RunOutfitProbe();
         foreach (var (visual, tally) in perAvatar)
             EmitOutfitProbeLine($"[OutfitProbe] avatar={visual.EntityId.ToString("N")[..8]} self={(visual.IsSelf ? "yes" : "no")} {tally.Describe()}");
-        string total = $"[OutfitProbe] total others avatars={others.Avatars} merge={OutfitMergeModeName(_outfitMergeProbe)} {others.Describe()} " +
-                       $"ms={clock.Elapsed.TotalMilliseconds:F1}";
+        int merged = 0;
+        foreach (var item in _mergeItems.Values) if (item.InBucket) merged++;
+        // Merged items (FEAT-PERF-23 Phase 1) have no instance of their own, so they are not counted above.
+        string total = $"[OutfitProbe] total others avatars={others.Avatars} outfitMerge={(RenderConfig.OutfitMerge ? "on" : "off")} " +
+                       $"mergedItems={merged} (not counted) {others.Describe()} ms={clock.Elapsed.TotalMilliseconds:F1}";
         EmitOutfitProbeLine(total);
         return perAvatar.Count;
     }
@@ -398,386 +368,6 @@ public partial class AvatarRenderer
             h = (h ^ (ulong)q) * 1099511628211UL;
         }
         return h;
-    }
-
-    // ---- Probe 3: Outfit merge (probe) ------------------------------------------------------------
-
-    internal static string OutfitMergeModeName(OutfitMergeProbeMode mode) => mode switch
-    {
-        OutfitMergeProbeMode.PerAvatar => "perAvatar",
-        OutfitMergeProbeMode.PerLinkset => "perLinkset",
-        _ => "off",
-    };
-
-    /// <summary>Develop menu "Outfit merge (probe)": turns <paramref name="mode"/> on, or off when it is
-    /// the one already applied. Switching modes restores first. Returns the mode now applied and the
-    /// line it logged.</summary>
-    internal (OutfitMergeProbeMode Mode, string Line) ToggleOutfitMergeProbe(OutfitMergeProbeMode mode)
-    {
-        string? offLine = null;
-        if (_outfitMergeProbe != OutfitMergeProbeMode.Off)
-        {
-            offLine = RestoreAllOutfitMergeProbe();
-            if (mode == _outfitMergeProbe || mode == OutfitMergeProbeMode.Off)
-            {
-                _outfitMergeProbe = OutfitMergeProbeMode.Off;
-                return (OutfitMergeProbeMode.Off, offLine);
-            }
-        }
-        if (mode == OutfitMergeProbeMode.Off) return (OutfitMergeProbeMode.Off, offLine ?? "[OutfitMergeProbe] already off");
-        _outfitMergeProbe = mode;
-        return (mode, ApplyOutfitMergeProbe(mode));
-    }
-
-    /// <summary>Called where an avatar stops being full (reduce/park) or leaves: its originals come back
-    /// before that path handles them, and the merged instances go.</summary>
-    private void ReleaseOutfitMergeProbe(AvatarVisual visual)
-    {
-        if (_outfitProbeMerges.Count == 0 || !_outfitProbeMerges.Remove(visual, out var merge)) return;
-        RestoreOutfitMerge(merge);
-    }
-
-    private string RestoreAllOutfitMergeProbe()
-    {
-        var clock = Stopwatch.StartNew();
-        int avatars = 0, restored = 0, gone = 0, reshown = 0;
-        foreach (var merge in _outfitProbeMerges.Values)
-        {
-            avatars++;
-            var (r, g, s) = RestoreOutfitMerge(merge);
-            restored += r; gone += g; reshown += s;
-        }
-        _outfitProbeMerges.Clear();
-        _outfitProbeHidden.Clear();
-        string line = $"[OutfitMergeProbe] off avatars={avatars} restored={restored} gone={gone} reshown={reshown} " +
-                      $"ms={clock.Elapsed.TotalMilliseconds:F1}";
-        EmitOutfitProbeLine(line);
-        return line;
-    }
-
-    /// <summary>Frees the built instances and puts the originals back the way the unpark path does
-    /// (skeleton path back, shown, then the regular all-hidden rule). <c>gone</c>: originals freed while
-    /// merged (an outfit change). <c>reshown</c>: originals the regular path had already shown again
-    /// (a late material), i.e. drawn twice for part of the window.</summary>
-    private (int Restored, int Gone, int Reshown) RestoreOutfitMerge(OutfitProbeMerge merge)
-    {
-        foreach (var built in merge.Built)
-        {
-            if (!IsInstanceValid(built)) continue;
-            // Out of the tree now, not at the end of the frame: its skin stops being written at once,
-            // [AvatarCost] does not count it, and a re-merge in the same frame reuses its name.
-            built.Skeleton = new NodePath();
-            built.GetParent()?.RemoveChild(built);
-            built.QueueFree();
-        }
-        int restored = 0, gone = 0, reshown = 0;
-        foreach (var mi in merge.Originals)
-        {
-            _outfitProbeHidden.Remove(mi);
-            if (!IsInstanceValid(mi) || mi.IsQueuedForDeletion())
-            {
-                gone++;
-                continue;
-            }
-            if (mi.Visible) reshown++;
-            ReattachSkeleton(mi);
-            mi.Visible = true;
-            UpdateWornMeshVisibility(mi);
-            restored++;
-        }
-        return (restored, gone, reshown);
-    }
-
-    private sealed class MergeGroup
-    {
-        public long Bucket;
-        public Material Material = null!;
-        public readonly List<(Godot.Collections.Array Arrays, int[] Remap)> Parts = new();
-    }
-
-    private string ApplyOutfitMergeProbe(OutfitMergeProbeMode mode)
-    {
-        var clock = Stopwatch.StartNew();
-        var byWearer = RiggedItemsByWearer();
-        int avatars = 0, items = 0, instBefore = 0, instAfter = 0, surfBefore = 0, surfAfter = 0, uploads = 0;
-        int uncached = 0, pending = 0, hiddenItems = 0, maxUploadVerts = 0;
-        long bindsBefore = 0, slotsAfter = 0;
-        double uploadMs = 0, maxUploadMs = 0, worstAvatarMs = 0;
-
-        foreach (var (avatarId, visual) in _visuals)
-        {
-            if (visual.IsSelf || !IsOutfitProbeCandidate(visual)) continue;
-            var avatarClock = Stopwatch.StartNew();
-            byWearer.TryGetValue(avatarId, out var rigged);
-            var eligible = new List<ProbeItem>();
-            foreach (var item in CollectProbeItems(visual, rigged))
-            {
-                if (!item.Drawn) { hiddenItems++; continue; }
-                if (item.Pending) { pending++; continue; }
-                if (!item.Mergeable) { uncached++; continue; }
-                eligible.Add(item);
-            }
-            if (eligible.Count == 0) continue;
-
-            var skeleton = visual.Skeleton!;
-            var outfitSkin = new Skin();
-            var slotOf = new Dictionary<(int Bone, Transform3D Pose), int>();
-            var remapOfSkin = new Dictionary<ulong, int[]>();
-            var groups = new Dictionary<(long Bucket, OutfitMaterialKey Key), MergeGroup>();
-            var groupOrder = new List<MergeGroup>();
-            var sorted = new List<(ProbeSurface Surface, Godot.Collections.Array Arrays, int[] Remap)>();
-
-            foreach (var item in eligible)
-            {
-                var skin = item.Mi.Skin!;
-                bindsBefore += skin.GetBindCount();
-                if (!remapOfSkin.TryGetValue(skin.GetInstanceId(), out var remap))
-                {
-                    remap = new int[skin.GetBindCount()];
-                    for (int b = 0; b < remap.Length; b++)
-                    {
-                        var key = (skin.GetBindBone(b), skin.GetBindPose(b));
-                        if (!slotOf.TryGetValue(key, out int slot))
-                        {
-                            slot = outfitSkin.GetBindCount();
-                            outfitSkin.AddBind(key.Item1, key.Item2);
-                            slotOf[key] = slot;
-                        }
-                        remap[b] = slot;
-                    }
-                    remapOfSkin[skin.GetInstanceId()] = remap;
-                }
-
-                instBefore += 1 + item.SplitChildren;
-                long bucket = mode == OutfitMergeProbeMode.PerLinkset ? item.Linkset : 0;
-                foreach (var surface in item.Surfaces)
-                {
-                    surfBefore += surface.Split ? 2 : 1;
-                    if (surface.Kind == ProbeKind.Hidden) continue;
-                    var arrays = item.Arrays![surface.Index];
-                    if (surface.Kind == ProbeKind.Blend)
-                    {
-                        sorted.Add((surface, arrays, remap));
-                        continue;
-                    }
-                    if (!groups.TryGetValue((bucket, surface.Key), out var group))
-                    {
-                        group = new MergeGroup { Bucket = bucket, Material = surface.Material! };
-                        groups[(bucket, surface.Key)] = group;
-                        groupOrder.Add(group);
-                    }
-                    group.Parts.Add((arrays, remap));
-                }
-            }
-
-            var merge = new OutfitProbeMerge();
-            var template = eligible[0].Mi;
-            var box = template.CustomAabb;
-
-            // Buckets: one per avatar, or one per linkset, each with one surface per material key.
-            var buckets = new Dictionary<long, (ArrayMesh Mesh, List<Material> Materials)>();
-            var bucketOrder = new List<long>();
-            foreach (var group in groupOrder)
-            {
-                if (!buckets.TryGetValue(group.Bucket, out var b))
-                {
-                    b = (new ArrayMesh(), new List<Material>());
-                    buckets[group.Bucket] = b;
-                    bucketOrder.Add(group.Bucket);
-                }
-                var arrays = ConcatSkinnedSurfaces(group.Parts, out int verts);
-                var t0 = Stopwatch.GetTimestamp();
-                b.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-                double ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-                uploads++; uploadMs += ms;
-                if (ms > maxUploadMs) { maxUploadMs = ms; maxUploadVerts = verts; }
-                b.Materials.Add(group.Material);
-                if (_outfitProbeKeepArrays) _outfitProbeArrays.AddOrUpdate(b.Mesh, Append(_outfitProbeArrays, b.Mesh, arrays));
-            }
-            int bucketIndex = 0;
-            foreach (long key in bucketOrder)
-            {
-                var (mesh, materials) = buckets[key];
-                var mi = new MeshInstance3D
-                {
-                    Name = mode == OutfitMergeProbeMode.PerLinkset ? $"{OutfitProbeMergedName}{bucketIndex}" : OutfitProbeMergedName,
-                    Mesh = mesh,
-                    Skin = outfitSkin,
-                    Layers = template.Layers,
-                    CastShadow = template.CastShadow,
-                    CustomAabb = box,
-                };
-                for (int s = 0; s < materials.Count; s++) mi.SetSurfaceOverrideMaterial(s, materials[s]);
-                skeleton.AddChild(mi);
-                mi.Skeleton = mi.GetPathTo(skeleton);
-                merge.Built.Add(mi);
-                bucketIndex++;
-                instAfter++;
-                surfAfter += materials.Count;
-            }
-
-            // Blend surfaces: one sorted instance each, on the outfit skin, at today's exact offset.
-            for (int i = 0; i < sorted.Count; i++)
-            {
-                var (surface, arrays, remap) = sorted[i];
-                var one = ConcatSkinnedSurfaces(new List<(Godot.Collections.Array, int[])> { (arrays, remap) }, out int verts);
-                var mesh = new ArrayMesh();
-                var t0 = Stopwatch.GetTimestamp();
-                mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, one);
-                double ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-                uploads++; uploadMs += ms;
-                if (ms > maxUploadMs) { maxUploadMs = ms; maxUploadVerts = verts; }
-                if (_outfitProbeKeepArrays) _outfitProbeArrays.AddOrUpdate(mesh, new[] { one });
-                var mi = new MeshInstance3D
-                {
-                    Name = $"{OutfitProbeSortedName}{i}",
-                    Mesh = mesh,
-                    Skin = outfitSkin,
-                    Layers = template.Layers,
-                    CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                    SortingOffset = surface.SortingOffset,
-                    CustomAabb = box,
-                };
-                mi.SetSurfaceOverrideMaterial(0, surface.Material);
-                skeleton.AddChild(mi);
-                mi.Skeleton = mi.GetPathTo(skeleton);
-                merge.Built.Add(mi);
-                instAfter++;
-                surfAfter++;
-            }
-
-            // Only now: the originals go, in the same frame the merge comes in.
-            foreach (var item in eligible)
-            {
-                DetachSkeleton(item.Mi);
-                item.Mi.Visible = false;
-                merge.Originals.Add(item.Mi);
-                _outfitProbeHidden.Add(item.Mi);
-            }
-            _outfitProbeMerges[visual] = merge;
-            avatars++;
-            items += eligible.Count;
-            slotsAfter += outfitSkin.GetBindCount();
-            worstAvatarMs = Math.Max(worstAvatarMs, avatarClock.Elapsed.TotalMilliseconds);
-        }
-
-        string line = $"[OutfitMergeProbe] on mode={OutfitMergeModeName(mode)} avatars={avatars} items={items} " +
-                      $"instances {instBefore} -> {instAfter} surfaces {surfBefore} -> {surfAfter} " +
-                      $"binds {bindsBefore} -> slots {slotsAfter} " +
-                      $"skipped: pending={pending} uncached={uncached} hiddenItems={hiddenItems} | " +
-                      $"upload: surfaces={uploads} totalMs={uploadMs:F1} maxMs={maxUploadMs:F2} ({maxUploadVerts} verts) | " +
-                      $"ms={clock.Elapsed.TotalMilliseconds:F1} worstAvatarMs={worstAvatarMs:F1}";
-        EmitOutfitProbeLine(line);
-        return line;
-    }
-
-    /// <summary>Self test only: keep the arrays each built mesh was made from, so the test can check the
-    /// bone remap without reading the mesh back. Off in the client, where nothing reads a probe bucket
-    /// back and the copy would only double its memory.</summary>
-    private static bool _outfitProbeKeepArrays;
-
-    private static readonly ConditionalWeakTable<ArrayMesh, Godot.Collections.Array[]> _outfitProbeArrays = new();
-
-    private static Godot.Collections.Array[] Append(ConditionalWeakTable<ArrayMesh, Godot.Collections.Array[]> table,
-        ArrayMesh mesh, Godot.Collections.Array arrays)
-    {
-        if (!table.TryGetValue(mesh, out var existing)) return new[] { arrays };
-        var grown = new Godot.Collections.Array[existing.Length + 1];
-        existing.CopyTo(grown, 0);
-        grown[^1] = arrays;
-        return grown;
-    }
-
-    /// <summary>Concatenates skinned surfaces into one: positions, normals, tangents, UVs and weights
-    /// as they are, bone slots through each part's item-to-outfit table, indices offset. A stream a
-    /// part lacks is filled with the neutral value, so the result is always consistent.</summary>
-    private static Godot.Collections.Array ConcatSkinnedSurfaces(List<(Godot.Collections.Array Arrays, int[] Remap)> parts, out int vertexCount)
-    {
-        var p = new Godot.Vector3[parts.Count][];
-        var n = new Godot.Vector3[parts.Count][];
-        var tg = new float[parts.Count][];
-        var uv = new Godot.Vector2[parts.Count][];
-        var bo = new int[parts.Count][];
-        var we = new float[parts.Count][];
-        var ix = new int[parts.Count][];
-        int verts = 0, indices = 0;
-        for (int i = 0; i < parts.Count; i++)
-        {
-            var a = parts[i].Arrays;
-            p[i] = Read(a, Mesh.ArrayType.Vertex).AsVector3Array();
-            n[i] = Read(a, Mesh.ArrayType.Normal).AsVector3Array();
-            tg[i] = Read(a, Mesh.ArrayType.Tangent).AsFloat32Array();
-            uv[i] = Read(a, Mesh.ArrayType.TexUV).AsVector2Array();
-            bo[i] = Read(a, Mesh.ArrayType.Bones).AsInt32Array();
-            we[i] = Read(a, Mesh.ArrayType.Weights).AsFloat32Array();
-            var index = Read(a, Mesh.ArrayType.Index);
-            ix[i] = index.VariantType == Variant.Type.Nil ? Sequence(p[i].Length) : index.AsInt32Array();
-            verts += p[i].Length;
-            indices += ix[i].Length;
-        }
-
-        var pos = new Godot.Vector3[verts];
-        var nrm = new Godot.Vector3[verts];
-        var tan = new float[verts * 4];
-        var tex = new Godot.Vector2[verts];
-        var bones = new int[verts * 4];
-        var weights = new float[verts * 4];
-        var idx = new int[indices];
-        int vOff = 0, iOff = 0;
-        for (int i = 0; i < parts.Count; i++)
-        {
-            int count = p[i].Length;
-            var remap = parts[i].Remap;
-            int fallback = remap.Length > 0 ? remap[0] : 0;
-            p[i].CopyTo(pos, vOff);
-            if (n[i].Length == count) n[i].CopyTo(nrm, vOff);
-            else for (int v = 0; v < count; v++) nrm[vOff + v] = Godot.Vector3.Up;
-            if (tg[i].Length == count * 4) tg[i].CopyTo(tan, vOff * 4);
-            else for (int v = 0; v < count; v++) { tan[(vOff + v) * 4] = 1f; tan[(vOff + v) * 4 + 3] = 1f; }
-            if (uv[i].Length == count) uv[i].CopyTo(tex, vOff);
-            if (bo[i].Length == count * 4 && we[i].Length == count * 4)
-            {
-                for (int k = 0; k < count * 4; k++)
-                {
-                    int slot = bo[i][k];
-                    bones[vOff * 4 + k] = slot >= 0 && slot < remap.Length ? remap[slot] : fallback;
-                    weights[vOff * 4 + k] = we[i][k];
-                }
-            }
-            else
-            {
-                for (int v = 0; v < count; v++)
-                {
-                    bones[(vOff + v) * 4] = fallback;
-                    weights[(vOff + v) * 4] = 1f;
-                }
-            }
-            for (int k = 0; k < ix[i].Length; k++) idx[iOff + k] = ix[i][k] + vOff;
-            vOff += count;
-            iOff += ix[i].Length;
-        }
-
-        var result = new Godot.Collections.Array();
-        result.Resize((int)Mesh.ArrayType.Max);
-        result[(int)Mesh.ArrayType.Vertex] = Variant.CreateFrom(pos);
-        result[(int)Mesh.ArrayType.Normal] = Variant.CreateFrom(nrm);
-        result[(int)Mesh.ArrayType.Tangent] = Variant.CreateFrom(tan);
-        result[(int)Mesh.ArrayType.TexUV] = Variant.CreateFrom(tex);
-        result[(int)Mesh.ArrayType.Bones] = Variant.CreateFrom(bones);
-        result[(int)Mesh.ArrayType.Weights] = Variant.CreateFrom(weights);
-        result[(int)Mesh.ArrayType.Index] = Variant.CreateFrom(idx);
-        vertexCount = verts;
-        return result;
-
-        static Variant Read(Godot.Collections.Array a, Mesh.ArrayType type) =>
-            (int)type < a.Count ? a[(int)type] : default;
-
-        static int[] Sequence(int count)
-        {
-            var s = new int[count];
-            for (int k = 0; k < count; k++) s[k] = k;
-            return s;
-        }
     }
 
     // ---- Probe 2: upload microbenchmark (--selftest) ---------------------------------------------

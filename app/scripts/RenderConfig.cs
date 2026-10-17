@@ -89,6 +89,17 @@ public static class RenderConfig
     public static bool ShareSkins { get; set; } = true;
 
     /// <summary>
+    /// FEAT-PERF-23 Phase 1: merge other avatars' worn rigged meshes per worn linkset and material onto one
+    /// skin per avatar (AvatarRenderer.OutfitMerge.cs). Graphics > Hardware, off by default until the
+    /// in-world A/B; switchable at runtime (off puts every item back on its own instance).
+    /// </summary>
+    public static bool OutfitMerge { get; set; } = false;
+
+    /// <summary>FEAT-PERF-23: the value of <c>--outfit-merge=on|off</c> when it was given. Wins over the
+    /// saved Graphics preference, like <see cref="SmallObjectCullArg"/>.</summary>
+    public static bool? OutfitMergeArg;
+
+    /// <summary>
     /// FEAT-PERF-06: an object farther than this (metres, to whichever of avatar/camera is nearer)
     /// stops casting a directional shadow. The shadow DEPTH pass draws the scene once per CSM
     /// split, so a distant object is drawn 2 extra times for a shadow the atmosphere haze hides

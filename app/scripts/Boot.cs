@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.73-alpha";
+    public const string AppVersion = "v0.27.74-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -961,23 +961,13 @@ public partial class Boot : Control
             _renderBaselineSampler.StartSample(AppVersion);
         };
 
-        // FEAT-PERF-23 Phase 0: the outfit-merge probe. The count goes to godot.log and slng-perf.log;
-        // the merge toggle swaps every full non-self avatar's worn rigged meshes for merged ones until
-        // it is switched off again (spec: "Phase 0 probe: how to measure").
+        // FEAT-PERF-23 Phase 0: the outfit-merge count probe, to godot.log and slng-perf.log. The merge
+        // itself is the Graphics setting / --outfit-merge since Phase 1.
         _topMenu.OnOutfitProbe = () =>
         {
             if (_avatarRenderer == null) return;
             int avatars = _avatarRenderer.LogOutfitProbe();
             ShowToast(SLNG.App.UI.L10n.TrFormat("ui.menu.outfit_probe_logged", avatars), 4f);
-        };
-        _topMenu.OnToggleOutfitMergeProbe = perLinkset =>
-        {
-            if (_avatarRenderer == null) return 0;
-            var (mode, _) = _avatarRenderer.ToggleOutfitMergeProbe(perLinkset
-                ? AvatarRenderer.OutfitMergeProbeMode.PerLinkset
-                : AvatarRenderer.OutfitMergeProbeMode.PerAvatar);
-            ShowToast(SLNG.App.UI.L10n.TrFormat("ui.menu.outfit_merge_probe_state", AvatarRenderer.OutfitMergeModeName(mode)), 4f);
-            return (int)mode;
         };
 
 

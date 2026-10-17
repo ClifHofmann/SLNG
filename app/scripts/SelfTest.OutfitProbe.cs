@@ -11,7 +11,7 @@ public static partial class SelfTest
     /// <c>AvatarRenderer.SelfTestOutfitProbe</c>).</summary>
     private static Check CheckOutfitProbe(SceneTree tree)
     {
-        const string Name = "outfit probe counts, merges and restores";
+        const string Name = "outfit probe counts";
         var renderer = new AvatarRenderer();
         try
         {
