@@ -426,26 +426,34 @@ Compare the medians per state. `[Perf]`: `fps`, `draws`, `drawsScene`, `drawsSha
 `renderGpuMs`. `[AvatarCost]`: `drawnSkinnedMeshes`, `skinWrites`, `skinWritesPerFrame`. The gate reads
 the per-linkset state; the per-avatar state is the ceiling.
 
-**In-world result** (to be filled in from the run):
+**In-world result** (2026-10-17, Sirens Beach, v0.27.73-alpha, `-Diag -ShareMaterials`, render thread
+separate, V-Sync off; `slng-perf.log` 11:10:30–11:12:50). Two off/on cycles per merge mode instead of
+3 × 30 s, but every switch moved the numbers the same way; 5 s windows right after a switch dropped.
+The cap-1 window was not run: the avatar-draw cut is taken from the probe's surface counts plus the
+measured total-draw drop, which agree.
 
-| Median | Off | Per linkset | Per avatar | Cap 1 |
-|---|---|---|---|---|
-| full avatars / items | | | | |
-| `[OutfitProbe]` total: surfaces now → perLinkset / perAvatar | | | | |
-| `[OutfitProbe]` total: keys perLinkset / perAvatar / texOnly | | | | |
-| `[OutfitProbe]` total: binds sum / skinWrites / distinct | | | | |
-| fps | | | | |
-| draws (scene / shadow) | | | | |
-| avatar draws (draws − cap-1 draws) | | | | |
-| `renderCpuMs` | | | | |
-| `drawSplit` post | | | | |
-| `rtLagMs` / `tailMs` | | | | |
-| `postFlushMs` / `flushMs` | | | | |
-| `processMs` / `renderGpuMs` | | | | |
-| `drawnSkinnedMeshes` / `skinWrites` | | | | |
-| `[OutfitMergeProbe]` upload maxMs / frame ms | | | | |
+| Median | Off | Per linkset | Per avatar |
+|---|---|---|---|
+| full non-self avatars / items | 16 / 1,806 | same | same |
+| `[OutfitProbe]` instances now → perLinkset / perAvatar | 1,912 → 511 / 355 | | |
+| `[OutfitProbe]` surfaces now → perLinkset / perAvatar | 2,235 → 748 / ~690 (−67 % / −69 %) | | |
+| `[OutfitProbe]` keys perLinkset / perAvatar / texOnly | 394 / 337 / 312 | | |
+| `[OutfitProbe]` binds sum / skinWrites / distinct | 97,621 / 9,365 / 5,198 | | |
+| fps | 21 | 27 (+28 %) | 27 |
+| draws (scene / shadow) | 30,700 (15,900 / 14,550) | 26,900 (14,480 / 12,180), −3,800 | 26,770 (14,410 / 12,100) |
+| `renderCpuMs` | 28.7–29.7 | 23.2–23.6 (−19 %) | 23.0–23.4 |
+| `postFlushMs` | 27–31 | 17–21 (−30 %) | 19–20 |
+| `[OutfitMergeProbe]` upload maxMs / toggle frame ms | | 1.24 / 144 | 1.36 / 132 |
 
-Decision: _open_.
+- Avatar draws: −3,800 total draws ≈ the probe's 2,235 → 748 surfaces in the scene pass plus their
+  shadow casts, so the avatar share fell by about two thirds (gate: ≥ 40 %).
+- `renderCpuMs` −19 % and `postFlushMs` −30 % (gate: ≥ 15 % of either).
+- Per avatar buys almost nothing over per linkset (~130 draws), so Phase 1's per-linkset buckets are the
+  right granularity; per-avatar packing (Phase 2) is low priority.
+- Bind dedupe is already small after FEAT-PERF-24 (`skinWrites` 9,365); draws were the cost, as expected.
+- `gone` 13–26 per off-switch: avatars whose outfit changed while merged (probe is a snapshot).
+
+Decision: **gate passed — build Phase 1.**
 
 ## Risks
 
@@ -532,7 +540,7 @@ Decision: _open_.
 - [x] Phase 0: `[OutfitProbe]` counts (v0.27.73-alpha)
 - [x] Phase 0: upload microbenchmark in `--selftest` (v0.27.73-alpha)
 - [x] Phase 0: merge toggle built, per avatar and per linkset (v0.27.73-alpha)
-- [ ] Phase 0: in-world naive-merge A/B and the decision
+- [x] Phase 0: in-world naive-merge A/B and the decision (2026-10-17: gate passed, build Phase 1)
 - [ ] Phase 1: `OutfitMerger` + xUnit tests (test-first)
 - [ ] Phase 1: readiness, buckets, merge job, commit and swap, outfit skin
 - [ ] Phase 1: `_riggedAttachments` readers, BoM by entity, bake arrival in place, re-bind
