@@ -411,7 +411,8 @@ public partial class InventoryPanel : SLNGWindow
 
             string payload = $"slng_item|{itemIdStr}|{name}|{canTransfer}|{isFolder}|{assetType}|{sourceFolder}";
 
-            var preview = new Label { Text = name };
+            bool isObject = !isFolder && (assetType == SLNG.Core.AssetTypeIds.Object || assetType == SLNG.Core.AssetTypeIds.Link);
+            var preview = new RezDragPreview(name, assetType, isObject);
             SetDragPreview(preview);
 
             return payload;

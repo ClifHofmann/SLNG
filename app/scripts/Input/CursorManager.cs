@@ -15,6 +15,7 @@ public partial class CursorManager : Node
     private ImageTexture? _magnifierTexture;
     private ImageTexture? _sitTexture;
     private ImageTexture? _touchTexture;
+    private ImageTexture? _rezTexture;
     private Guid _lastHoveredEntityId = Guid.Empty;
     private Godot.Input.CursorShape _lastReportedShape = Godot.Input.CursorShape.Arrow;
 
@@ -51,6 +52,14 @@ public partial class CursorManager : Node
         if (_touchTexture != null)
         {
             Godot.Input.SetCustomMouseCursor(_touchTexture, Godot.Input.CursorShape.PointingHand, new Vector2(10, 4));
+        }
+
+        // Box / rez cursor for dragging objects into the world (CanDrop & Drag shape)
+        _rezTexture = await RasterizeCursorGlyphAsync(iconFont, "add_box", 24, 2);
+        if (_rezTexture != null)
+        {
+            Godot.Input.SetCustomMouseCursor(_rezTexture, Godot.Input.CursorShape.CanDrop, new Vector2(16, 16));
+            Godot.Input.SetCustomMouseCursor(_rezTexture, Godot.Input.CursorShape.Drag, new Vector2(16, 16));
         }
     }
 
@@ -247,6 +256,8 @@ public partial class CursorManager : Node
         Godot.Input.SetCustomMouseCursor(null, Godot.Input.CursorShape.Cross);
         Godot.Input.SetCustomMouseCursor(null, Godot.Input.CursorShape.Help);
         Godot.Input.SetCustomMouseCursor(null, Godot.Input.CursorShape.PointingHand);
+        Godot.Input.SetCustomMouseCursor(null, Godot.Input.CursorShape.CanDrop);
+        Godot.Input.SetCustomMouseCursor(null, Godot.Input.CursorShape.Drag);
 
         _magnifierTexture?.Dispose();
         _magnifierTexture = null;
@@ -256,5 +267,8 @@ public partial class CursorManager : Node
 
         _touchTexture?.Dispose();
         _touchTexture = null;
+
+        _rezTexture?.Dispose();
+        _rezTexture = null;
     }
 }

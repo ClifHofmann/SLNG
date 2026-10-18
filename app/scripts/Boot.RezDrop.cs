@@ -8,21 +8,89 @@ public partial class Boot
 {
     public override bool _CanDropData(Vector2 atPosition, Variant data)
     {
-        if (_session == null || !_session.IsConnected) return false;
-        if (IsDropBlockedByUi(atPosition)) return false;
-        if (!TryReadRezItemDrop(data, out _, out _)) return false;
+        if (data.VariantType != Variant.Type.String) return false;
+        string str = data.AsString();
+        if (!str.StartsWith("slng_item|")) return false;
 
-        if (_objectSelectionController == null || !_objectSelectionController.TryGetWorldRezPoint(atPosition, out _))
-            return false;
+        bool isObj = TryReadRezItemDrop(data, out _, out _);
 
+        if (_session == null || !_session.IsConnected)
+        {
+            RezDragPreview.Active?.UpdateStatus(
+                L10n.Tr("ui.rez.not_connected"),
+                new Color(0.95f, 0.35f, 0.35f),
+                new Color(0.85f, 0.25f, 0.25f, 0.9f));
+            return true;
+        }
+
+        if (!isObj)
+        {
+            RezDragPreview.Active?.UpdateStatus(
+                L10n.Tr("ui.rez.status_not_object"),
+                new Color(0.95f, 0.4f, 0.4f),
+                new Color(0.85f, 0.3f, 0.3f, 0.9f));
+            return true;
+        }
+
+        if (IsDropBlockedByUi(atPosition))
+        {
+            RezDragPreview.Active?.UpdateStatus(
+                L10n.Tr("ui.rez.status_window"),
+                new Color(0.95f, 0.65f, 0.25f),
+                new Color(0.85f, 0.55f, 0.2f, 0.9f));
+            return true;
+        }
+
+        if (_objectSelectionController == null || !_objectSelectionController.TryGetWorldRezPoint(atPosition, out var hitPoint))
+        {
+            RezDragPreview.Active?.UpdateStatus(
+                L10n.Tr("ui.rez.status_no_surface"),
+                new Color(0.9f, 0.55f, 0.3f),
+                new Color(0.8f, 0.45f, 0.25f, 0.9f));
+            return true;
+        }
+
+        var slPos = RenderConfig.FromGodot(_session.CurrentRegionHandle, hitPoint);
+        if (!_session.CanBuildAt(slPos, out _))
+        {
+            RezDragPreview.Active?.UpdateStatus(
+                L10n.Tr("ui.rez.status_no_rights"),
+                new Color(0.95f, 0.3f, 0.3f),
+                new Color(0.9f, 0.25f, 0.25f, 0.9f));
+            return true;
+        }
+
+        RezDragPreview.Active?.UpdateStatus(
+            L10n.Tr("ui.rez.status_ready"),
+            new Color(0.35f, 0.95f, 0.45f),
+            new Color(0.25f, 0.85f, 0.4f, 0.9f));
         return true;
     }
 
     public override void _DropData(Vector2 atPosition, Variant data)
     {
-        if (_session == null || !_session.IsConnected) return;
-        if (IsDropBlockedByUi(atPosition)) return;
-        if (!TryReadRezItemDrop(data, out var itemId, out var itemName)) return;
+        if (data.VariantType != Variant.Type.String) return;
+        string str = data.AsString();
+        if (!str.StartsWith("slng_item|")) return;
+
+        if (_session == null || !_session.IsConnected)
+        {
+            ShowToast(L10n.Tr("ui.rez.not_connected"));
+            return;
+        }
+
+        bool isObj = TryReadRezItemDrop(data, out var itemId, out var itemName);
+        if (!isObj)
+        {
+            ShowToast(L10n.Tr("ui.rez.not_an_object"));
+            return;
+        }
+
+        if (IsDropBlockedByUi(atPosition))
+        {
+            ShowToast(L10n.Tr("ui.rez.blocked_by_ui"));
+            return;
+        }
 
         if (_objectSelectionController == null || !_objectSelectionController.TryGetWorldRezPoint(atPosition, out var hitPoint))
         {
@@ -70,19 +138,23 @@ public partial class Boot
         if (!bool.TryParse(parts[4], out bool isFolder) || isFolder) return false;
         if (!int.TryParse(parts[5], out int assetType)) return false;
 
-        if (assetType != AssetTypeIds.Object && assetType != AssetTypeIds.Link)
-            return false;
+        if (assetType == AssetTypeIds.Object)
+            return true;
 
-        if (_session != null && !_session.IsObjectItem(itemId))
-            return false;
+        if (assetType == AssetTypeIds.Link)
+        {
+            if (_session != null && !_session.IsObjectItem(itemId))
+                return false;
+            return true;
+        }
 
-        return true;
+        return false;
     }
 
     private bool IsDropBlockedByUi(Vector2 screenPosition)
     {
         var hovered = GetViewport()?.GuiGetHoveredControl();
-        if (hovered != null && hovered != this)
+        if (hovered != null && hovered != this && !IsDescendantOfDragPreview(hovered))
         {
             return true;
         }
@@ -105,5 +177,13 @@ public partial class Boot
         }
 
         return false;
+    }
+
+    private static bool IsDescendantOfDragPreview(Control? ctrl)
+    {
+        var active = RezDragPreview.Active;
+        if (active == null || ctrl == null) return false;
+        if (ctrl == active) return true;
+        return active.IsAncestorOf(ctrl);
     }
 }

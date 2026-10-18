@@ -27,6 +27,8 @@ Rezzing must respect parcel and sim permissions (owner permissions, public build
 - `src/SLNG.Core/RezObjectResult.cs`: neutral result enum for rez attempts.
 - `src/SLNG.Net/GridSession.Rez.cs`: `CanBuildAt`, `EvaluateParcelBuildRights`, and `RezObjectFromInventory`.
 - `app/scripts/ObjectSelectionController.cs`: exposes `TryGetWorldRezPoint` for raycasting from mouse position.
-- `app/scripts/Boot.cs`: `_CanDropData` and `_DropData` implementation on `Boot`, with UI occlusion check and toast notifications.
-- `app/i18n/en-US.json`, `app/i18n/de-DE.json`: localized toast strings.
+- `app/scripts/UI/RezDragPreview.cs`: floating cursor preview card with dynamic status and permission highlighting.
+- `app/scripts/Input/CursorManager.cs`: custom rez/box icon cursor for CanDrop/Drag.
+- `app/scripts/Boot.cs`, `app/scripts/Boot.RezDrop.cs`: `_CanDropData` and `_DropData` implementation on `Boot`, with UI occlusion check and toast notifications.
+- `app/i18n/en-US.json`, `app/i18n/de-DE.json`: localized toast and cursor status strings.
 - `tests/SLNG.Net.Tests/RezInventoryTests.cs`: unit tests for permissions and rez logic.
