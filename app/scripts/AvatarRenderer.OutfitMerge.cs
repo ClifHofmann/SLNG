@@ -83,9 +83,11 @@ public partial class AvatarRenderer
     // ---- what each face material is -------------------------------------------------------------
 
     /// <summary>What <see cref="BuildFaceMaterialAsync"/> decided for a material: its Kind, scissor
-    /// threshold, the texture it samples (the bake for BoM) and whether that texture failed (an
-    /// alpha-0 card). Recorded where the material is finished, which may be a pool thread.</summary>
-    private sealed record FaceMaterialFacts(PrimShaderFamily.Kind Kind, float Threshold, Guid Texture, bool Failed, bool Hidden);
+    /// threshold, the texture it samples (the bake for BoM; a PBR face's base colour, BUG-RENDER-49),
+    /// whether that texture failed (an alpha-0 card), and the Bakes-on-Mesh channel the texture came
+    /// from (-1 for none). Recorded where the material is finished, which may be a pool thread.</summary>
+    private sealed record FaceMaterialFacts(PrimShaderFamily.Kind Kind, float Threshold, Guid Texture, bool Failed, bool Hidden,
+        int BakeChannel = -1);
 
     private static readonly ConditionalWeakTable<Material, FaceMaterialFacts> _faceMaterialFacts = new();
 
@@ -102,9 +104,10 @@ public partial class AvatarRenderer
     }
 
     /// <summary>The spec's material key: two faces with equal keys get identical materials.
-    /// <see cref="FaceTexture"/> equality already means "identical material inputs" (BUG-RENDER-12); the
-    /// resolved texture (the bake, for BoM), the Kind and the scissor threshold cover what is derived from
-    /// the texture.</summary>
+    /// <see cref="FaceTexture"/> equality already means "identical material inputs" (BUG-RENDER-12) --
+    /// its RenderMaterialId and PbrOverride included, so two faces with different glTF materials never
+    /// share a key (BUG-RENDER-49); the resolved texture (the bake for BoM, a PBR face's base colour),
+    /// the Kind and the scissor threshold cover what is derived from the texture.</summary>
     private readonly record struct OutfitMaterialKey(FaceTexture Face, Guid Texture, PrimShaderFamily.Kind Kind, float Threshold);
 
     // ---- the state ------------------------------------------------------------------------------
@@ -453,12 +456,25 @@ public partial class AvatarRenderer
         var faceIndices = input.Rig.FaceIndices;
         for (int s = 0; s < faceIndices.Length && s < input.Facts.Length; s++)
         {
-            var face = ResolveFaceTexture(input.Faces, input.DefaultFace, faceIndices[s]);
-            if (!SLNG.Assets.BakedTextureIds.TryGetBakeIndex(face.TextureId, out int bake)) continue;
+            int bake = BakeChannelOf(input, faceIndices[s], s);
+            if (bake < 0) continue;
             if (!item.Visual.LoadedTextures.TryGetValue(bake, out var bakeId) || input.Facts[s].Texture != bakeId)
                 return false;
         }
         return true;
+    }
+
+    /// <summary>The Bakes-on-Mesh channel surface <paramref name="surface"/> samples, or -1. The facts
+    /// know it when the material recorded them -- for a PBR face the channel comes from its base colour,
+    /// not its legacy texture (BUG-RENDER-49). A material without facts falls back on the legacy texture,
+    /// as before.</summary>
+    private static int BakeChannelOf(MergeInput input, int faceIndex, int surface)
+    {
+        var facts = input.Facts[surface];
+        if (facts.BakeChannel >= 0) return facts.BakeChannel;
+        if (_faceMaterialFacts.TryGetValue(input.Materials[surface], out _)) return -1;
+        var face = ResolveFaceTexture(input.Faces, input.DefaultFace, faceIndex);
+        return SLNG.Assets.BakedTextureIds.TryGetBakeIndex(face.TextureId, out int bake) ? bake : -1;
     }
 
     private void MarkBucketDirty(MergeItem item, bool immediate)
@@ -1428,7 +1444,8 @@ public partial class AvatarRenderer
         {
             int faceIndex = s < rig.FaceIndices.Length ? rig.FaceIndices[s] : 0;
             var face = ResolveFaceTexture(input.Faces, input.DefaultFace, faceIndex);
-            if (!SLNG.Assets.BakedTextureIds.TryGetBakeIndex(face.TextureId, out _)) continue;
+            // BUG-RENDER-49: by what the material sampled -- a PBR face's base colour can be the bake.
+            if (s >= input.Facts.Length || BakeChannelOf(input, faceIndex, s) < 0) continue;
             var material = await BuildFaceMaterialAsync(face, visual, item.MeshId, faceIndex).ConfigureAwait(false);
             rebuilt.Add((s, material));
         }

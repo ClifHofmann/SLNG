@@ -243,6 +243,27 @@ public sealed class RiggedMeshBuilderTests
         Assert.Equal(Vector3.Zero, geo.BindPoseMax);
     }
 
+    [Fact]
+    public void A_pbr_face_keeps_its_geometry_whatever_its_legacy_texture_entry_says()
+    {
+        // BUG-RENDER-49: a glTF material decides a face's colour and alpha, not the TextureEntry
+        // (llface.cpp:1395-1400, llvovolume.cpp:5972-5979). A PBR garment whose legacy fallback is the
+        // transparent texture, or whose TE alpha is 0, is still drawn by the viewer -- dropping its
+        // triangles here would leave nothing for the material to colour.
+        var material = Guid.Parse("e69dde89-50f8-b85f-9a26-da60314acba6");
+        var pbrOverTransparent = default(FaceTexture) with { TextureId = FaceTexture.TransparentTextureId, RenderMaterialId = material };
+        var pbrOverZeroAlpha = default(FaceTexture) with { TextureId = Guid.NewGuid(), Color = new Vector4(1f, 1f, 1f, 0f), RenderMaterialId = material };
+
+        Assert.False(pbrOverTransparent.IsInvisible);
+        Assert.True(pbrOverTransparent.IsLegacyInvisible);
+        Assert.False(pbrOverZeroAlpha.IsInvisible);
+
+        var mesh = new MeshData(new[] { Triangle(0), Triangle(1) }, Skin(1));
+        var geo = RiggedMeshBuilder.Build(mesh, new[] { 0 }, fi => fi == 0 ? pbrOverTransparent : pbrOverZeroAlpha);
+
+        Assert.Equal(new[] { 0, 1 }, geo.FaceIndices());
+    }
+
     private static void AssertNear(float expected, float actual) => Assert.InRange(actual, expected - 1e-5f, expected + 1e-5f);
 
     private static void AssertNear(Vector3 expected, Vector3 actual)

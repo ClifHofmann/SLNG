@@ -33,17 +33,20 @@ public partial class SelfTest
 
             // 1. No override
             var matNoOverride = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
-            ObjectRenderer.ApplyPbrFactors(matNoOverride, pbr, null, Godot.Colors.White);
+            ObjectRenderer.ApplyPbrFactors(matNoOverride, pbr, null);
 
             Godot.Color noOvAlbedo = (Godot.Color)matNoOverride.GetShaderParameter(PrimShaderFamily.AlbedoColor);
             float noOvMetallic = (float)matNoOverride.GetShaderParameter(PrimShaderFamily.MetallicFactor);
             float noOvRoughness = (float)matNoOverride.GetShaderParameter(PrimShaderFamily.RoughnessFactor);
             bool noOvEmission = (bool)matNoOverride.GetShaderParameter(PrimShaderFamily.EmissionEnabled);
-            var noOvUvB = matNoOverride.GetShaderParameter(PrimShaderFamily.PbrUvB);
-            bool noOvUvBUnset = noOvUvB.VariantType == Variant.Type.Nil || ((Godot.Vector4)noOvUvB).Y <= 0.5f;
+            // BUG-RENDER-49: a PBR face is placed by its material's KHR transform, never the TextureEntry
+            // repeats -- with no override that is the identity, switched ON (pbr_uv_b.y = 1).
+            var noOvUvA = (Godot.Vector4)matNoOverride.GetShaderParameter(PrimShaderFamily.PbrUvA);
+            var noOvUvB = (Godot.Vector4)matNoOverride.GetShaderParameter(PrimShaderFamily.PbrUvB);
+            bool noOvIdentityKhr = noOvUvA == new Godot.Vector4(1f, 1f, 0f, 0f) && noOvUvB.X == 0f && noOvUvB.Y > 0.5f;
 
-            if (MathF.Abs(noOvAlbedo.R - 1f) > Tol || MathF.Abs(noOvMetallic - 0.5f) > Tol || MathF.Abs(noOvRoughness - 0.5f) > Tol || noOvEmission || !noOvUvBUnset || matNoOverride.Shader != PrimShaderFamily.Opaque)
-                return new Check(Name, false, "no override test failed");
+            if (MathF.Abs(noOvAlbedo.R - 1f) > Tol || MathF.Abs(noOvMetallic - 0.5f) > Tol || MathF.Abs(noOvRoughness - 0.5f) > Tol || noOvEmission || !noOvIdentityKhr || matNoOverride.Shader != PrimShaderFamily.Opaque)
+                return new Check(Name, false, $"no override test failed (pbr_uv_a={noOvUvA}, pbr_uv_b={noOvUvB})");
 
             // 2. Factors: colour (0.8,0.1,0.1,1), roughness 0.35, metallic 0, emissive (0.2,0,0)
             var ovFactors = new GltfMaterialOverride
@@ -55,7 +58,7 @@ public partial class SelfTest
             };
             var effFactors = PbrOverrideMerge.Apply(pbr, ovFactors);
             var matFactors = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
-            ObjectRenderer.ApplyPbrFactors(matFactors, effFactors, ovFactors, Godot.Colors.White);
+            ObjectRenderer.ApplyPbrFactors(matFactors, effFactors, ovFactors);
 
             Godot.Color fAlbedo = (Godot.Color)matFactors.GetShaderParameter(PrimShaderFamily.AlbedoColor);
             float fRoughness = (float)matFactors.GetShaderParameter(PrimShaderFamily.RoughnessFactor);
@@ -76,7 +79,7 @@ public partial class SelfTest
             };
             var effMask = PbrOverrideMerge.Apply(pbr, ovMask);
             var matMask = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
-            ObjectRenderer.ApplyPbrFactors(matMask, effMask, ovMask, Godot.Colors.White);
+            ObjectRenderer.ApplyPbrFactors(matMask, effMask, ovMask);
 
             float scissorThreshold = (float)matMask.GetShaderParameter(PrimShaderFamily.AlphaScissorThreshold);
             if (matMask.Shader != PrimShaderFamily.Scissor || MathF.Abs(scissorThreshold - 0.4f) > Tol)
@@ -90,7 +93,7 @@ public partial class SelfTest
             };
             var effBlend2Sided = PbrOverrideMerge.Apply(pbr, ovBlend2Sided);
             var matBlend2Sided = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
-            ObjectRenderer.ApplyPbrFactors(matBlend2Sided, effBlend2Sided, ovBlend2Sided, Godot.Colors.White);
+            ObjectRenderer.ApplyPbrFactors(matBlend2Sided, effBlend2Sided, ovBlend2Sided);
 
             var expectedTwin = PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.WorldPrim, doubleSided: true);
             if (matBlend2Sided.Shader != expectedTwin)
@@ -106,7 +109,7 @@ public partial class SelfTest
             };
             var effTransform = PbrOverrideMerge.Apply(pbr, ovTransform);
             var matTransform = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
-            ObjectRenderer.ApplyPbrFactors(matTransform, effTransform, ovTransform, Godot.Colors.White);
+            ObjectRenderer.ApplyPbrFactors(matTransform, effTransform, ovTransform);
 
             Godot.Vector4 uvA = (Godot.Vector4)matTransform.GetShaderParameter(PrimShaderFamily.PbrUvA);
             Godot.Vector4 uvB = (Godot.Vector4)matTransform.GetShaderParameter(PrimShaderFamily.PbrUvB);
@@ -117,8 +120,8 @@ public partial class SelfTest
             // 6. Equal in, equal out: MaterialFingerprint
             var matEq1 = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
             var matEq2 = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
-            ObjectRenderer.ApplyPbrFactors(matEq1, effTransform, ovTransform, Godot.Colors.White);
-            ObjectRenderer.ApplyPbrFactors(matEq2, effTransform, ovTransform, Godot.Colors.White);
+            ObjectRenderer.ApplyPbrFactors(matEq1, effTransform, ovTransform);
+            ObjectRenderer.ApplyPbrFactors(matEq2, effTransform, ovTransform);
 
             string fp1 = MaterialFingerprint.Of(matEq1);
             string fp2 = MaterialFingerprint.Of(matEq2);
@@ -128,7 +131,7 @@ public partial class SelfTest
             var ovDiff = ovTransform with { Roughness = 0.123f };
             var effDiff = PbrOverrideMerge.Apply(pbr, ovDiff);
             var matDiff = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
-            ObjectRenderer.ApplyPbrFactors(matDiff, effDiff, ovDiff, Godot.Colors.White);
+            ObjectRenderer.ApplyPbrFactors(matDiff, effDiff, ovDiff);
             string fpDiff = MaterialFingerprint.Of(matDiff);
             if (fp1 == fpDiff)
                 return new Check(Name, false, "materials with different roughness produced identical fingerprints");

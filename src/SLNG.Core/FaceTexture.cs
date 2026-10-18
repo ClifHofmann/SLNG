@@ -105,7 +105,17 @@ public readonly record struct FaceTexture(
     /// <summary>The well-known Second Life transparent texture UUID.</summary>
     public static readonly Guid TransparentTextureId = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
 
-    /// <summary>True when this face will draw nothing (transparent texture or color alpha &lt;= 0.001).</summary>
-    public bool IsInvisible =>
+    /// <summary>True when this face's TextureEntry says it draws nothing: the transparent texture, or a
+    /// colour alpha &lt;= 0.001. What a LEGACY face draws; see <see cref="IsInvisible"/> for a face
+    /// that also carries a glTF material.</summary>
+    public bool IsLegacyInvisible =>
         TextureId == TransparentTextureId || (Color != default && Color.W <= 0.001f);
+
+    /// <summary>True when this face will draw nothing. Only ever true for a face WITHOUT a glTF render
+    /// material (BUG-RENDER-49): the viewer takes a PBR face's colour and alpha from the material, never
+    /// from the TextureEntry (llface.cpp:1395-1400, llvovolume.cpp:5972-5979), so a PBR face whose legacy
+    /// fallback is the transparent texture or a zero alpha still draws. Whether a PBR face is invisible is
+    /// the material's to say (BLEND with base-colour alpha 0, llvovolume.cpp:6017-6022), which only the
+    /// renderer knows once it has the material.</summary>
+    public bool IsInvisible => RenderMaterialId == Guid.Empty && IsLegacyInvisible;
 }

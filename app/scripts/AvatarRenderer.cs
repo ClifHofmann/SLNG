@@ -3955,14 +3955,32 @@ public partial class AvatarRenderer : Node3D
         FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
         PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
     {
-        if (ft.IsInvisible)
+        if (ft.IsInvisible) return HiddenFaceMaterial();
+
+        // BUG-RENDER-49: the face's glTF material (with its FEAT-RENDER-26 override merged in) comes
+        // first, because it replaces the legacy texture, colour, alpha and fullbright outright -- "all
+        // other parameters ignored if gltf material is present" (llvovolume.cpp:6649-6650). Until
+        // v0.27.82 only its alpha mode was read here and the face kept sampling its legacy texture: a
+        // PBR pet rendered plain white (its legacy texture is IMG_WHITE) and a PBR bikini see-through.
+        SLNG.Assets.PbrMaterialData? pbr = null;
+        if (ft.RenderMaterialId != Guid.Empty)
         {
-            var hidden = new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
-            RecordFaceMaterialFacts(hidden, new FaceMaterialFacts(PrimShaderFamily.Kind.Opaque, 0f, Guid.Empty, Failed: false, Hidden: true));
-            return hidden;
+            var baseMaterial = await GetPbrMaterialAsync(ft.RenderMaterialId).ConfigureAwait(false);
+            if (baseMaterial != null) pbr = SLNG.Assets.PbrOverrideMerge.Apply(baseMaterial, ft.PbrOverride);
         }
 
-        var tint = ft.Color == default
+        // A PBR face is hidden by its material, never by its TextureEntry: the viewer does not draw a
+        // BLEND material whose base-colour alpha is 0 (llvovolume.cpp:6017-6022) -- the way a mesh body
+        // switches a PBR layer off through its override. A face whose material did not come falls back
+        // to its legacy self, legacy invisibility included.
+        if (pbr != null
+                ? pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Blend && pbr.BaseColorFactor.W <= 0f
+                : ft.IsLegacyInvisible)
+            return HiddenFaceMaterial();
+
+        // The TextureEntry colour does not tint a PBR face (llface.cpp:1395-1400); its base colour is
+        // set from the material below.
+        var tint = pbr != null || ft.Color == default
             ? new Color(1, 1, 1, 1)
             : new Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
 
@@ -3977,8 +3995,8 @@ public partial class AvatarRenderer : Node3D
 
         // FEAT-RENDER-06: a worn-mesh face can be fullbright too (LLTextureEntry::getFullbright).
         // The HUD surface is already `unshaded`, so this is a no-op there and meaningful only on
-        // world-space attachment faces.
-        material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
+        // world-space attachment faces. Never on a PBR face (BUG-RENDER-49, see above).
+        material.SetShaderParameter(PrimShaderFamily.Fullbright, pbr == null && ft.Fullbright);
 
         // Per-face UV repeats/offsets, same convention as ObjectRenderer's world-prim materials --
         // HUD buttons in particular are classically ONE texture atlas with per-face repeat/offset
@@ -4003,6 +4021,13 @@ public partial class AvatarRenderer : Node3D
             0.5f - 0.5f * ft.RepeatU + ft.OffsetU,
             0.5f - 0.5f * ft.RepeatV - ft.OffsetV));
 
+        // BUG-RENDER-49: a PBR face's base colour, metallic/roughness and emissive factors, and its
+        // placement -- the material's KHR transform, which the shader then uses INSTEAD of the
+        // TextureEntry repeats set just above. Same values a world prim gets (ObjectRenderer); only
+        // the shader choice differs, and that is made below for this surface.
+        if (pbr != null)
+            ObjectRenderer.ApplyPbrUniforms(material, pbr, ft.PbrOverride);
+
         // SL's per-face colour alpha (LLTextureEntry::getColor()) is a genuine transparency/blend
         // factor, independent of whatever alpha channel the texture image itself carries — many
         // worn items set a face's tint alpha to 0 specifically to hide it while keeping the object
@@ -4023,38 +4048,45 @@ public partial class AvatarRenderer : Node3D
         // entirely below when present — no reason to guess when we were told. Legacy
         // no-material content (this hair applier included) has no such record and falls through
         // to that heuristic unchanged.
+        // A PBR face's tint is white (above), so it never reaches this as translucent.
         bool hasExplicitAlpha = false;
-        if (!tintTranslucent && ft.RenderMaterialId != Guid.Empty && _assetService != null)
+        if (pbr != null)
         {
-            var pbrMat = await _assetService.GetMaterialAsync(ft.RenderMaterialId).ConfigureAwait(false);
-            if (pbrMat != null)
+            hasExplicitAlpha = true;
+            switch (pbr.AlphaMode)
             {
-                hasExplicitAlpha = true;
-                switch (pbrMat.AlphaMode)
-                {
-                    case SLNG.Assets.PbrAlphaMode.Blend:
-                        kind = PrimShaderFamily.Kind.Blend;
-                        break;
-                    case SLNG.Assets.PbrAlphaMode.Mask:
-                        // alpha-to-coverage is baked into the scissor variant's render_mode
-                        // rather than set per material -- it was on every scissor face here and
-                        // on no other, which is exactly the condition for folding it in.
-                        kind = PrimShaderFamily.Kind.Scissor;
-                        scissorThreshold = pbrMat.AlphaCutoff;
-                        break;
-                    default:
-                        kind = PrimShaderFamily.Kind.Opaque;
-                        break;
-                }
+                case SLNG.Assets.PbrAlphaMode.Blend:
+                    kind = PrimShaderFamily.Kind.Blend;
+                    break;
+                case SLNG.Assets.PbrAlphaMode.Mask:
+                    // alpha-to-coverage is baked into the scissor variant's render_mode
+                    // rather than set per material -- it was on every scissor face here and
+                    // on no other, which is exactly the condition for folding it in.
+                    kind = PrimShaderFamily.Kind.Scissor;
+                    scissorThreshold = pbr.AlphaCutoff;
+                    break;
+                default:
+                    kind = PrimShaderFamily.Kind.Opaque;
+                    break;
             }
+            // doubleSided needs nothing here: Avatar and Hud surfaces are cull_disabled already.
         }
+
+        // BUG-RENDER-49: the material's other maps, fetched alongside the base colour below and set
+        // once both are in (one thread writes the material). A HUD is unshaded: they would show nothing.
+        var mapsTask = pbr != null && surface != PrimShaderFamily.Surface.Hud
+            ? LoadPbrMapsAsync(pbr, avatarVisual)
+            : System.Threading.Tasks.Task.FromResult<PbrMaps>(default);
 
         // Bakes-on-Mesh: a face carrying one of the IMG_USE_BAKED_* magic ids wants the AVATAR's
         // server-baked texture for that channel, not the magic id itself (which is just a red UV
         // placeholder asset). Viewer: LLViewerObject::getBakedTextureForMagicId. If the bake
         // hasn't arrived yet, leave the face untextured — the bake-arrival hook in UpdateVisual
         // re-runs ApplyFaceMaterialsAsync for registered BoM meshes.
-        Guid texId = ft.TextureId;
+        //
+        // BUG-RENDER-49: a PBR face samples its material's base colour instead of its legacy texture,
+        // and a magic id there resolves to the bake the same way (llviewerobject.cpp:5452-5461).
+        Guid texId = pbr != null ? pbr.BaseColorTextureId : ft.TextureId;
         bool wasBom = false; int bomIndex = -1;
         if (avatarVisual != null && SLNG.Assets.BakedTextureIds.TryGetBakeIndex(texId, out int bakeIdx))
         {
@@ -4078,7 +4110,10 @@ public partial class AvatarRenderer : Node3D
                 (wasBom ? $" (Bakes-on-Mesh channel {bomIndex} not resolved yet)" : " (face carries no texture id)"));
             LogHudFace(surface, meshId, faceIndex, ft, tint,
                 wasBom ? $"NO TEXTURE (BoM channel {bomIndex} unresolved)" : "NO TEXTURE (face carries no texture id)");
-            return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+            ApplyPbrMaps(material, await mapsTask.ConfigureAwait(false));
+            // texId is the base colour a PBR face asked for even without an asset service to load it
+            // (the selftest); the merge key and its roles read it from the facts.
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
         }
 
         // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
@@ -4127,6 +4162,7 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.RecordIfMainThread("avatar.material.texture",
             System.Diagnostics.Stopwatch.GetElapsedTime(texStart).TotalMilliseconds);
         var built = await builtTask.ConfigureAwait(false);
+        ApplyPbrMaps(material, await mapsTask.ConfigureAwait(false));
         if (avatarVisual != null && texId != Guid.Empty)
         {
             // The await above resumes on a pool thread, and PinnedTextureIds / UsedTextureIds are plain
@@ -4164,10 +4200,10 @@ public partial class AvatarRenderer : Node3D
             {
                 material.SetShaderParameter(PrimShaderFamily.AlbedoColor, new Godot.Color(1f, 1f, 1f, 0f));
                 material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, false);
-                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface, texId, failed: true);
+                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface, texId, failed: true, bakeChannel: bomIndex);
             }
 
-            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId);
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
         }
 
         LogHudFace(surface, meshId, faceIndex, ft, tint, $"textured {built.GetWidth()}x{built.GetHeight()}");
@@ -4218,7 +4254,100 @@ public partial class AvatarRenderer : Node3D
         if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
             scissorThreshold = BomAlphaScissorThreshold;
 
-        return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId);
+        return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
+    }
+
+    /// <summary>A face that draws nothing: <see cref="PrimShaderFamily.Hidden"/>, recorded as such for the
+    /// outfit merge and for <see cref="UpdateWornMeshVisibility"/>.</summary>
+    private static ShaderMaterial HiddenFaceMaterial()
+    {
+        var hidden = new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+        RecordFaceMaterialFacts(hidden, new FaceMaterialFacts(PrimShaderFamily.Kind.Opaque, 0f, Guid.Empty, Failed: false, Hidden: true));
+        return hidden;
+    }
+
+    /// <summary>SelfTest only (BUG-RENDER-49): glTF materials served without an asset service, which
+    /// the headless smoke test does not have. Never set in the client.</summary>
+    internal System.Collections.Generic.Dictionary<Guid, SLNG.Assets.PbrMaterialData>? PbrMaterialsForSelfTest { get; set; }
+
+    private System.Threading.Tasks.Task<SLNG.Assets.PbrMaterialData?> GetPbrMaterialAsync(Guid materialId)
+    {
+        if (PbrMaterialsForSelfTest != null && PbrMaterialsForSelfTest.TryGetValue(materialId, out var seeded))
+            return System.Threading.Tasks.Task.FromResult<SLNG.Assets.PbrMaterialData?>(seeded);
+        return _assetService != null
+            ? _assetService.GetMaterialAsync(materialId)
+            : System.Threading.Tasks.Task.FromResult<SLNG.Assets.PbrMaterialData?>(null);
+    }
+
+    /// <summary>A PBR face's maps other than its base colour, as loaded (null where the material has
+    /// none or it did not load).</summary>
+    private readonly record struct PbrMaps(ImageTexture? Normal, ImageTexture? MetallicRoughness, ImageTexture? Emissive);
+
+    /// <summary>BUG-RENDER-49: loads a PBR face's normal, metallic-roughness and emissive maps the way
+    /// <see cref="BuildFaceMaterialAsync"/> loads its base colour: pinned, and recorded against the
+    /// wearer so they are released with it. A Bakes-on-Mesh magic id in one of these slots is skipped --
+    /// a bake is a colour image, and the magic id itself is only a placeholder asset.</summary>
+    private async System.Threading.Tasks.Task<PbrMaps> LoadPbrMapsAsync(SLNG.Assets.PbrMaterialData pbr, AvatarVisual? avatarVisual)
+    {
+        var normal = LoadPbrMapAsync(pbr.NormalTextureId, avatarVisual, compress: false);
+        var metallicRoughness = LoadPbrMapAsync(pbr.MetallicRoughnessTextureId, avatarVisual, compress: true);
+        var emissive = LoadPbrMapAsync(pbr.EmissiveTextureId, avatarVisual, compress: true);
+        return new PbrMaps(
+            await normal.ConfigureAwait(false),
+            await metallicRoughness.ConfigureAwait(false),
+            await emissive.ConfigureAwait(false));
+    }
+
+    private async System.Threading.Tasks.Task<ImageTexture?> LoadPbrMapAsync(Guid textureId, AvatarVisual? avatarVisual, bool compress)
+    {
+        if (textureId == Guid.Empty || _assetService == null || _gpuCache == null
+            || SLNG.Assets.BakedTextureIds.TryGetBakeIndex(textureId, out _))
+            return null;
+
+        bool isSelf = avatarVisual != null && avatarVisual.IsSelf;
+        // BUG-PERF-13: only READ ScreenPixelArea here, as the base colour does.
+        float screenPixelArea = isSelf ? 0f : (avatarVisual != null ? avatarVisual.ScreenPixelArea : 0f);
+        ImageTexture? texture;
+        try
+        {
+            texture = await _gpuCache.GetOrUploadTextureAsync(
+                textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
+                screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf, compress: compress).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A map that cannot be had must never cost the face its base colour.
+            if (SLNG.Core.Diag.Verbose) GD.PrintErr($"[FaceTex] PBR map {textureId} failed: {ex.Message}");
+            return null;
+        }
+        if (avatarVisual != null)
+        {
+            var visualForRefs = avatarVisual;
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                () => RecordAvatarTexture(visualForRefs, textureId), label: "avatar.material.refs");
+        }
+        return texture;
+    }
+
+    /// <summary>Sets the maps <see cref="LoadPbrMapsAsync"/> brought; each sampler with its flag (see
+    /// <see cref="PrimShaderFamily"/> on why they come in pairs).</summary>
+    private static void ApplyPbrMaps(ShaderMaterial material, PbrMaps maps)
+    {
+        if (maps.Normal != null)
+        {
+            material.SetShaderParameter(PrimShaderFamily.NormalTexture, maps.Normal);
+            material.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
+        }
+        if (maps.MetallicRoughness != null)
+        {
+            material.SetShaderParameter(PrimShaderFamily.OrmTexture, maps.MetallicRoughness);
+            material.SetShaderParameter(PrimShaderFamily.HasOrmTexture, true);
+        }
+        if (maps.Emissive != null)
+        {
+            material.SetShaderParameter(PrimShaderFamily.EmissionTexture, maps.Emissive);
+            material.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
+        }
     }
 
     /// <summary>One line per worn-HUD face, unconditional (not behind --diag) and deduplicated.
@@ -4281,11 +4410,13 @@ public partial class AvatarRenderer : Node3D
     /// no error anywhere.</summary>
     /// <param name="texture">The texture the face samples (the bake, for BoM), empty for none.</param>
     /// <param name="failed">The texture did not load: the face is the alpha-0 Blend card.</param>
+    /// <param name="bakeChannel">The Bakes-on-Mesh channel <paramref name="texture"/> came from, or -1.</param>
     private static ShaderMaterial FinishFaceMaterial(ShaderMaterial material, PrimShaderFamily.Kind kind,
-        float scissorThreshold, PrimShaderFamily.Surface surface, Guid texture = default, bool failed = false)
+        float scissorThreshold, PrimShaderFamily.Surface surface, Guid texture = default, bool failed = false,
+        int bakeChannel = -1)
     {
         // FEAT-PERF-23: what this material is, for the outfit merge's material key and its roles.
-        RecordFaceMaterialFacts(material, new FaceMaterialFacts(kind, scissorThreshold, texture, failed, Hidden: false));
+        RecordFaceMaterialFacts(material, new FaceMaterialFacts(kind, scissorThreshold, texture, failed, Hidden: false, bakeChannel));
         material.Shader = PrimShaderFamily.Select(kind, surface);
         if (kind == PrimShaderFamily.Kind.Scissor)
             material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, scissorThreshold);

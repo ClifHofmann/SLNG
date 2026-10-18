@@ -250,6 +250,8 @@ public static partial class SelfTest
         results.Add(CheckRemovalHidesAtOnce(tree)); // BUG-NET-34
         results.Add(CheckTextureAnimInShader(tree)); // FEAT-PERF-16
         results.Add(CheckPbrOverrideApply(tree)); // FEAT-RENDER-26
+        results.Add(CheckPbrRenderMaterialWorld(tree)); // BUG-RENDER-49
+        results.Add(CheckPbrRenderMaterialWorn(tree)); // BUG-RENDER-49
         results.Add(CheckTargetOmega(tree)); // FEAT-RENDER-27
         results.Add(CheckTargetOmegaSitter(tree)); // FEAT-RENDER-27
         results.Add(CheckMeshAssetCollisionAndRemovals(tree)); // BUG-PERF-11
