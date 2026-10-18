@@ -106,16 +106,15 @@ public readonly record struct FaceTexture(
     public static readonly Guid TransparentTextureId = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
 
     /// <summary>True when this face's TextureEntry says it draws nothing: the transparent texture, or a
-    /// colour alpha &lt;= 0.001. What a LEGACY face draws; see <see cref="IsInvisible"/> for a face
-    /// that also carries a glTF material.</summary>
-    public bool IsLegacyInvisible =>
+    /// colour alpha &lt;= 0.001.
+    ///
+    /// <para>BUG-RENDER-49: that is the whole answer only for a face drawn from its TextureEntry. A face
+    /// whose glTF render material is LOADED takes its colour and alpha from the material instead
+    /// (llface.cpp:1395-1400, llvovolume.cpp:5972-5979; hidden only as a BLEND material at base-colour
+    /// alpha 0, :6017-6022) -- which only the renderer, holding the material, can decide. While the
+    /// material is not to be had the face is drawn as its legacy self, and then this is exactly right:
+    /// v0.27.83 made it false for every face naming a material, and with the material fetch failing,
+    /// hair layers a HUD had switched off by TE alpha came back.</para></summary>
+    public bool IsInvisible =>
         TextureId == TransparentTextureId || (Color != default && Color.W <= 0.001f);
-
-    /// <summary>True when this face will draw nothing. Only ever true for a face WITHOUT a glTF render
-    /// material (BUG-RENDER-49): the viewer takes a PBR face's colour and alpha from the material, never
-    /// from the TextureEntry (llface.cpp:1395-1400, llvovolume.cpp:5972-5979), so a PBR face whose legacy
-    /// fallback is the transparent texture or a zero alpha still draws. Whether a PBR face is invisible is
-    /// the material's to say (BLEND with base-colour alpha 0, llvovolume.cpp:6017-6022), which only the
-    /// renderer knows once it has the material.</summary>
-    public bool IsInvisible => RenderMaterialId == Guid.Empty && IsLegacyInvisible;
 }

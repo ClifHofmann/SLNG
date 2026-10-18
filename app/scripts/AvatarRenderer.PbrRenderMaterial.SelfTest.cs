@@ -14,7 +14,8 @@ public partial class AvatarRenderer
     /// -- and still: the geometry is kept, the material samples the PBR base colour with its factors and
     /// MASK cutoff, the outfit merge's facts carry that texture, and two faces that differ only in their
     /// material get different merge keys. A BLEND material at base alpha 0 hides the face, as the viewer
-    /// does; a face whose material never came is its legacy self (here: hidden). No asset service: the
+    /// does; a face whose material is not to be had is exactly its legacy self -- geometry and material --
+    /// so a TE alpha 0 hides it (the v0.27.83 hair regression). No asset service: the
     /// materials come from <see cref="PbrMaterialsForSelfTest"/>.
     /// </summary>
     internal (bool Passed, string Detail) SelfTestPbrRenderMaterial()
@@ -44,11 +45,17 @@ public partial class AvatarRenderer
                 new System.Numerics.Vector4(1f, 1f, 1f, 0f), 4f, 4f, 0f, 0f, 0f, Fullbright: true);
             var opaqueFace = pbrFace with { RenderMaterialId = opaqueId };
 
-            // The worn rigged mesh keeps both faces' triangles.
-            var mesh = TestMesh(new[] { "mPelvis" }, new[] { System.Numerics.Matrix4x4.Identity }, faces: 2, x: 0f);
-            var prepared = PrepareRiggedMesh(mesh, new[] { 0 }, new[] { pbrFace, opaqueFace }, default);
+            // The worn rigged mesh keeps both faces' triangles: their materials are loaded and draw,
+            // whatever the transparent TE says. A face whose material is NOT to be had (the v0.27.83
+            // regression: every fetch failed) is its legacy self -- TE alpha 0, no triangles -- and so
+            // is one whose loaded material is BLEND at base alpha 0.
+            var unavailable = pbrFace with { RenderMaterialId = Guid.NewGuid() };
+            var switchedOff = pbrFace with { RenderMaterialId = hiddenId };
+            var mesh = TestMesh(new[] { "mPelvis" }, new[] { System.Numerics.Matrix4x4.Identity }, faces: 4, x: 0f);
+            var prepared = PrepareRiggedMesh(mesh, new[] { 0 }, new[] { pbrFace, opaqueFace, unavailable, switchedOff }, default,
+                drawsNothing: FaceDrawsNothing);
             Expect(string.Join(',', prepared.Geometry.FaceIndices()) == "0,1",
-                $"both PBR faces keep their geometry (got faces {string.Join(',', prepared.Geometry.FaceIndices())})");
+                $"geometry for the two drawing PBR faces only (got faces {string.Join(',', prepared.Geometry.FaceIndices())})");
 
             var meshId = Guid.NewGuid();
             var material = BuildFaceMaterialAsync(pbrFace, null, meshId, 0).GetAwaiter().GetResult();
@@ -76,8 +83,13 @@ public partial class AvatarRenderer
             var hidden = BuildFaceMaterialAsync(pbrFace with { RenderMaterialId = hiddenId }, null, meshId, 0).GetAwaiter().GetResult();
             Expect(FactsOf(hidden).Hidden, "a BLEND material at base alpha 0 is not drawn (llvovolume.cpp:6017-6022)");
 
-            var missing = BuildFaceMaterialAsync(pbrFace with { RenderMaterialId = Guid.NewGuid() }, null, meshId, 0).GetAwaiter().GetResult();
-            Expect(FactsOf(missing).Hidden, "a face whose material never came is its legacy self: transparent, hidden");
+            var missing = BuildFaceMaterialAsync(unavailable, null, meshId, 2).GetAwaiter().GetResult();
+            Expect(FactsOf(missing).Hidden, "PBR face, material unavailable, TE alpha 0: hidden, as before BUG-RENDER-49");
+
+            var unavailableVisible = unavailable with { TextureId = Guid.NewGuid(), Color = System.Numerics.Vector4.One };
+            var legacyFallback = BuildFaceMaterialAsync(unavailableVisible, null, meshId, 2).GetAwaiter().GetResult();
+            Expect(!FactsOf(legacyFallback).Hidden && FactsOf(legacyFallback).Texture == unavailableVisible.TextureId,
+                "PBR face, material unavailable, TE visible: its legacy texture");
         }
         finally
         {
@@ -85,7 +97,7 @@ public partial class AvatarRenderer
         }
 
         return problems.Count == 0
-            ? (true, "geometry kept over a transparent legacy face; base colour, factors, MASK cutoff, KHR placement; merge facts and keys per material; BLEND alpha 0 hidden")
+            ? (true, "geometry by the loaded material, by the TE when unavailable; base colour, factors, MASK cutoff, KHR placement; merge facts and keys per material; BLEND alpha 0 and unavailable+TE alpha 0 hidden")
             : (false, string.Join("; ", problems));
     }
 }

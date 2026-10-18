@@ -2806,12 +2806,17 @@ public partial class AvatarRenderer : Node3D
         if (_assetService == null) return;
 
         var lod = PickAttachmentDetailLevel(avatarVisual);
+        // BUG-RENDER-49: the faces' glTF materials are fetched alongside the mesh -- a rigged mesh's
+        // geometry depends on them (FaceDrawsNothing), and its materials need them anyway.
+        var materials = PrefetchPbrMaterialsAsync(faces, defaultFace);
         var meshData = await _assetService.GetMeshAsync(meshId, lod).ConfigureAwait(false);
         if (meshData == null)
         {
             Logger.Warn($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
             return;
         }
+        if (meshData.Skin != null && !materials.IsCompleted)
+            await System.Threading.Tasks.Task.WhenAny(materials, System.Threading.Tasks.Task.Delay(PbrPrefetchWait)).ConfigureAwait(false);
         Logger.Debug($"[Attachment] mesh {meshId}: {meshData.Submeshes.Count} submeshes, rigged={meshData.Skin != null}");
         ApplyAttachmentMeshDataAsync(meshData, attachParent, avatarVisual, meshId,
             faces, defaultFace, slScale, slPos, slRot, entityId);
@@ -3562,7 +3567,7 @@ public partial class AvatarRenderer : Node3D
             // would point at the wrong binds -- the geometry is built again, here.
             GD.PushWarning($"[RiggedMesh] mesh {req.MeshId:N}: joint slots differ between worker and skeleton -- rebuilt on the main thread");
             prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace, req.WantPick,
-                                         keepTangents: prepared.Tangents != null);
+                                         keepTangents: prepared.Tangents != null, drawsNothing: FaceDrawsNothing);
         }
 
         MeshInstance3D? built = null;
@@ -3955,7 +3960,8 @@ public partial class AvatarRenderer : Node3D
         FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
         PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
     {
-        if (ft.IsInvisible) return HiddenFaceMaterial();
+        // A face without a glTF material is hidden by its TextureEntry, at once, as always.
+        if (ft.RenderMaterialId == Guid.Empty && ft.IsInvisible) return HiddenFaceMaterial();
 
         // BUG-RENDER-49: the face's glTF material (with its FEAT-RENDER-26 override merged in) comes
         // first, because it replaces the legacy texture, colour, alpha and fullbright outright -- "all
@@ -3969,13 +3975,10 @@ public partial class AvatarRenderer : Node3D
             if (baseMaterial != null) pbr = SLNG.Assets.PbrOverrideMerge.Apply(baseMaterial, ft.PbrOverride);
         }
 
-        // A PBR face is hidden by its material, never by its TextureEntry: the viewer does not draw a
-        // BLEND material whose base-colour alpha is 0 (llvovolume.cpp:6017-6022) -- the way a mesh body
-        // switches a PBR layer off through its override. A face whose material did not come falls back
-        // to its legacy self, legacy invisibility included.
-        if (pbr != null
-                ? pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Blend && pbr.BaseColorFactor.W <= 0f
-                : ft.IsLegacyInvisible)
+        // A PBR face is hidden by its material, never by its TextureEntry (PbrDrawsNothing) -- the way
+        // a HUD switches a PBR style variant off through its override. A face whose material did not
+        // come is its legacy self, TE invisibility included: exactly what it was before BUG-RENDER-49.
+        if (pbr != null ? PbrDrawsNothing(pbr) : ft.IsInvisible)
             return HiddenFaceMaterial();
 
         // The TextureEntry colour does not tint a PBR face (llface.cpp:1395-1400); its base colour is
@@ -4255,6 +4258,63 @@ public partial class AvatarRenderer : Node3D
             scissorThreshold = BomAlphaScissorThreshold;
 
         return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
+    }
+
+    /// <summary>BUG-RENDER-49: whether a face with this (override-merged) glTF material draws nothing at
+    /// all. The viewer drops a BLEND material whose base-colour alpha is 0 (llvovolume.cpp:6017-6022);
+    /// a MASK material whose base-colour alpha is under its cutoff discards every fragment whatever its
+    /// texture holds, so it draws nothing either. An OPAQUE material always draws: glTF ignores its
+    /// alpha.</summary>
+    internal static bool PbrDrawsNothing(SLNG.Assets.PbrMaterialData material) => material.AlphaMode switch
+    {
+        SLNG.Assets.PbrAlphaMode.Blend => material.BaseColorFactor.W <= 0f,
+        SLNG.Assets.PbrAlphaMode.Mask => material.BaseColorFactor.W < material.AlphaCutoff,
+        _ => false,
+    };
+
+    /// <summary>The glTF material of <paramref name="materialId"/> if it is in memory right now -- never a
+    /// fetch, so safe on a rig worker.</summary>
+    private bool TryGetLoadedPbrMaterial(Guid materialId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SLNG.Assets.PbrMaterialData? material)
+    {
+        if (PbrMaterialsForSelfTest != null && PbrMaterialsForSelfTest.TryGetValue(materialId, out material)) return true;
+        material = null;
+        return _assetService != null && _assetService.TryGetLoadedMaterial(materialId, out material);
+    }
+
+    /// <summary>BUG-RENDER-49: whether a rigged mesh leaves a face out of its GEOMETRY
+    /// (<see cref="RiggedMeshBuilder"/>). A face whose glTF material is loaded: what the material says
+    /// (<see cref="PbrDrawsNothing"/>), whatever its TextureEntry says. Any other face -- no material, or
+    /// one not (yet) to be had -- exactly the legacy rule, <see cref="FaceTexture.IsInvisible"/>: TE alpha
+    /// 0 or the transparent texture. Called on rig workers.</summary>
+    private bool FaceDrawsNothing(FaceTexture face)
+    {
+        if (face.RenderMaterialId == Guid.Empty || !TryGetLoadedPbrMaterial(face.RenderMaterialId, out var material))
+            return face.IsInvisible;
+        return PbrDrawsNothing(SLNG.Assets.PbrOverrideMerge.Apply(material, face.PbrOverride));
+    }
+
+    /// <summary>How long a worn rigged mesh waits for its faces' glTF materials before its geometry is
+    /// built without them (BUG-RENDER-49): the material decides which faces have triangles at all.
+    /// Fetched alongside the mesh, so normally already there.</summary>
+    private static readonly TimeSpan PbrPrefetchWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>Starts the fetch of every glTF material the faces name; completes when all have
+    /// answered (a failure is an answer).</summary>
+    private System.Threading.Tasks.Task PrefetchPbrMaterialsAsync(FaceTexture[]? faces, FaceTexture defaultFace)
+    {
+        System.Collections.Generic.HashSet<Guid>? ids = null;
+        if (faces != null)
+        {
+            foreach (var f in faces)
+            {
+                if (f.RenderMaterialId != Guid.Empty) (ids ??= new()).Add(f.RenderMaterialId);
+            }
+        }
+        if (defaultFace.RenderMaterialId != Guid.Empty) (ids ??= new()).Add(defaultFace.RenderMaterialId);
+        if (ids == null) return System.Threading.Tasks.Task.CompletedTask;
+        var fetches = new System.Collections.Generic.List<System.Threading.Tasks.Task>(ids.Count);
+        foreach (var id in ids) fetches.Add(GetPbrMaterialAsync(id));
+        return System.Threading.Tasks.Task.WhenAll(fetches);
     }
 
     /// <summary>A face that draws nothing: <see cref="PrimShaderFamily.Hidden"/>, recorded as such for the
@@ -5933,7 +5993,7 @@ public partial class AvatarRenderer : Node3D
         faceIndices = System.Array.Empty<int>();
         var skin = BindRiggedSkin(meshData.Skin!, skeleton, visual, out var slotForJoint);
         if (skin == null) return null;
-        var prepared = PrepareRiggedMesh(meshData, slotForJoint, faces, defaultFace);
+        var prepared = PrepareRiggedMesh(meshData, slotForJoint, faces, defaultFace, drawsNothing: FaceDrawsNothing);
         MainThreadWorkQueue.RecordExternal("avatar.rig.verts", prepared.VertsMs);
         MainThreadWorkQueue.RecordExternal("avatar.rig.tangents", prepared.TangentsMs);
         return CommitRiggedMeshInstance(prepared, skin, slotForJoint, skeleton, meshId, visual, out faceIndices, extentSink);

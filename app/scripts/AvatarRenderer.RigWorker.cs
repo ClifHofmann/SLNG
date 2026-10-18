@@ -110,7 +110,7 @@ public partial class AvatarRenderer
             {
                 try
                 {
-                    var ready = await PrepareOnWorkerAsync(request).ConfigureAwait(false);
+                    var ready = await PrepareOnWorkerAsync(request, FaceDrawsNothing).ConfigureAwait(false);
                     if (ready != null)
                     {
                         _preparedRigs[entityId] = ready;
@@ -211,7 +211,7 @@ public partial class AvatarRenderer
         return false;
     }
 
-    private static async Task<PreparedRig?> PrepareOnWorkerAsync(PendingRig request)
+    private static async Task<PreparedRig?> PrepareOnWorkerAsync(PendingRig request, Func<FaceTexture, bool> drawsNothing)
     {
         await _rigPrepGate.WaitAsync().ConfigureAwait(false);
         try
@@ -229,7 +229,7 @@ public partial class AvatarRenderer
                 var slots = RiggedMeshBuilder.SlotsForJoints(request.MeshData.Skin!.JointNames, isBone);
                 // FEAT-PERF-23: the outfit merge keeps the tangents of remote avatars' items.
                 bool keepTangents = RenderConfig.OutfitMerge && !request.Visual.IsSelf && !request.Visual.IsControlAvatar;
-                var mesh = PrepareRiggedMesh(request.MeshData, slots, request.Faces, request.DefaultFace, request.WantPick, keepTangents);
+                var mesh = PrepareRiggedMesh(request.MeshData, slots, request.Faces, request.DefaultFace, request.WantPick, keepTangents, drawsNothing);
                 return new PreparedRig(request, mesh, clock.Elapsed.TotalMilliseconds);
             }
             finally
@@ -352,7 +352,7 @@ public partial class AvatarRenderer
     /// synchronously.</summary>
     internal static PreparedRiggedMesh PrepareRiggedMesh(
         MeshData meshData, int[] slotForJoint, FaceTexture[]? faces, FaceTexture defaultFace, bool wantPickChunks = false,
-        bool keepTangents = false)
+        bool keepTangents = false, Func<FaceTexture, bool>? drawsNothing = null)
     {
         Interlocked.Increment(ref _rigsPreparedCount);
         bool hasNormal = false;
@@ -378,12 +378,12 @@ public partial class AvatarRenderer
             if (sub.Indices.Length == 0 || sub.Weights == null) continue;
             Interlocked.Increment(ref _submeshesTotalCount);
             var subFace = ResolveFaceTexture(faces, defaultFace, sub.FaceIndex);
-            if (subFace.IsInvisible)
+            if (drawsNothing != null ? drawsNothing(subFace) : subFace.IsInvisible)
                 Interlocked.Increment(ref _submeshesHiddenCount);
         }
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        var geometry = RiggedMeshBuilder.Build(meshData, slotForJoint, fi => ResolveFaceTexture(faces, defaultFace, fi));
+        var geometry = RiggedMeshBuilder.Build(meshData, slotForJoint, fi => ResolveFaceTexture(faces, defaultFace, fi), drawsNothing);
         double vertsMs = clock.Elapsed.TotalMilliseconds;
 
         clock.Restart();
