@@ -25,6 +25,7 @@ public static class PbrOverrideMerge
             AlphaMode = o.AlphaMode is { } am ? Map(am) : baseMaterial.AlphaMode,
             AlphaCutoff = o.AlphaCutoff is { } ac ? Math.Clamp(ac, 0f, 1f) : baseMaterial.AlphaCutoff,
             DoubleSided = o.DoubleSided ?? baseMaterial.DoubleSided,
+            BaseColorTransform = o.BaseColorTransform ?? baseMaterial.BaseColorTransform,
         };
     }
 

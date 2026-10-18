@@ -4257,9 +4257,9 @@ public partial class ObjectRenderer : Node3D
         // ("sculpts can break assumptions about texel area") -- a sculpt's UV layout is generated
         // from its map, not authored per face, so its repeats are not a reliable tiling signal.
         // A PBR face is placed by its material's transform, never the TextureEntry repeats (see
-        // ApplyPbrUniforms) -- identity when no override sets one.
+        // ApplyPbrUniforms).
         var (scaleU, scaleV) = ft.PbrOverride?.BaseColorTransform is { } t ? (t.Scale.X, t.Scale.Y)
-            : pbr != null ? (1f, 1f)
+            : pbr != null ? (pbr.BaseColorTransform?.Scale.X ?? 1f, pbr.BaseColorTransform?.Scale.Y ?? 1f)
             : (ft.RepeatU, ft.RepeatV);
         float texelArea = new Godot.Vector2(scaleU * 0.5f, scaleV * 0.5f).LengthSquared() * Mathf.Pi;
         if (texelArea <= 0f) texelArea = 1f; // probably animated -- viewer uses the same default
@@ -4683,9 +4683,8 @@ public partial class ObjectRenderer : Node3D
     /// <para>The colour is the material's base colour alone -- the viewer does not use the
     /// TextureEntry colour on a PBR face (llface.cpp:1395-1400). The placement is the material's KHR
     /// texture transform, never the TextureEntry repeats: "For GLTF, transforms will be applied later"
-    /// (llface.cpp:1474), i.e. from the render material in the shader. The base material asset's own
-    /// transform is not parsed (PbrMaterialData has none), so a face without an override transform is
-    /// placed with the identity.</para></summary>
+    /// (llface.cpp:1474), i.e. from the render material in the shader: the override's transform, else
+    /// the material asset's own, else the identity.</para></summary>
     internal static void ApplyPbrUniforms(
         ShaderMaterial material,
         SLNG.Assets.PbrMaterialData pbr,
@@ -4704,7 +4703,7 @@ public partial class ObjectRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.EmissionColor,
             new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z));
 
-        var t = o?.BaseColorTransform ?? SLNG.Core.GltfTextureTransform.Identity;
+        var t = o?.BaseColorTransform ?? pbr.BaseColorTransform ?? SLNG.Core.GltfTextureTransform.Identity;
         material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(t.Scale.X, t.Scale.Y, t.Offset.X, t.Offset.Y));
         material.SetShaderParameter(PrimShaderFamily.PbrUvB, new Godot.Vector4(t.Rotation, 1f, 0f, 0f));
     }

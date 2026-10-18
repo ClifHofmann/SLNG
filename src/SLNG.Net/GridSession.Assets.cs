@@ -641,15 +641,66 @@ public sealed partial class GridSession
         return null;
     }
 
+    private static readonly System.Threading.SemaphoreSlim _materialFetchSemaphore = new System.Threading.SemaphoreSlim(6, 6);
+
+    // Material ids neither transport delivered, once per id.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _materialFailureLogged = new();
+
+    /// <summary>How long the legacy transfer gets for one material before the face falls back to its
+    /// legacy texture. A material is a few kB; LibreMetaverse's own request has no deadline of its own.</summary>
+    internal static readonly TimeSpan MaterialUdpTimeout = TimeSpan.FromSeconds(20);
+
     /// <summary>
-    /// Fetches a GLTF PBR Material asset from the simulator. Returns null if the fetch fails.
+    /// BUG-RENDER-49: the raw bytes of a glTF material asset (asset type 57), over the region's
+    /// <c>ViewerAsset</c> capability -- <c>{cap}/?material_id={id}</c>, the URL the reference viewer
+    /// builds for every asset type (<c>LLViewerAssetStorage::getAssetURL</c>,
+    /// llviewerassetstorage.cpp:640-645, type name "material" from llassettype.cpp:100). Decoding is
+    /// <c>SLNG.Assets.GltfMaterialAsset</c>'s, so no LibreMetaverse type leaves this layer.
+    ///
+    /// <para>Until v0.27.84 this went through LibreMetaverse's <c>RequestAssetAsync</c>, whose
+    /// <c>AssetMaterial.Decode</c> reads the bytes as bare glTF JSON, while the asset is an LLSD envelope
+    /// around it: every PBR material on Second Life came back null (109 failures, 40 ids, zero
+    /// materials in the v0.27.83 test).</para>
+    ///
+    /// <para>Refusals as for animations (BUG-ASSET-02): 403/404/410 is a decision, remembered by
+    /// <see cref="AssetRefusals"/>, no legacy retry. Any other failure -- no capability yet (OpenSim
+    /// without ViewerAsset), a timeout, a 5xx -- tries the legacy transfer once, for at most
+    /// <see cref="MaterialUdpTimeout"/>: a face waits for this before it falls back, and must not wait
+    /// for ever.</para>
     /// </summary>
-    public async Task<LibreMetaverse.Assets.AssetMaterial?> FetchMaterialDataAsync(Guid materialId)
+    public async Task<byte[]?> FetchMaterialAssetAsync(Guid materialId)
     {
-        var asset = await _client.Assets
-            .RequestAssetAsync(new UUID(materialId), AssetType.Material, true, CancellationToken.None)
-            .ConfigureAwait(false);
-        return asset as LibreMetaverse.Assets.AssetMaterial;
+        ulong region = CurrentRegionHandle;
+        if (_assetRefusals.IsRefused(region, materialId)) return null;
+
+        var viaHttp = await FetchAssetViaViewerAssetAsync(materialId, "material", _materialFetchSemaphore).ConfigureAwait(false);
+        if (viaHttp.Bytes is { Length: > 0 }) return viaHttp.Bytes;
+
+        if (viaHttp.Status is { } status && AssetRefusals.IsRefusal(status))
+        {
+            if (_assetRefusals.Remember(region, materialId))
+                Console.Error.WriteLine($"[MaterialFetch] {materialId}: the region refused it (HTTP {(int)status}); " +
+                                        $"asked again after {_assetRefusals.FirstLifetime.TotalSeconds:0} s, then with growing pauses up to {_assetRefusals.Lifetime.TotalMinutes:0} minutes");
+            return null;
+        }
+
+        byte[]? data = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(MaterialUdpTimeout);
+            var asset = await _client.Assets
+                .RequestAssetAsync(new UUID(materialId), AssetType.Material, true, timeout.Token)
+                .ConfigureAwait(false);
+            data = asset?.AssetData;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or HttpRequestException)
+        {
+            data = null;
+        }
+        if (data is not { Length: > 0 } && _materialFailureLogged.TryAdd(materialId, 0))
+            Console.Error.WriteLine($"[MaterialFetch] {materialId}: neither the ViewerAsset capability " +
+                                    $"(HTTP {(viaHttp.Status is { } s ? ((int)s).ToString() : "no answer")}) nor the legacy transfer delivered it");
+        return data is { Length: > 0 } ? data : null;
     }
 
     // Animation ids the HTTP path and the UDP path both gave up on, once per id -- a failing one is
