@@ -23,7 +23,8 @@ namespace SLNG.Net;
 public sealed partial class GridSession
 {
     /// <summary>Reads each object's raw ExtraParams bytes -- the Light (0x20), Reflection Probe
-    /// (0x90) and Extended Mesh (0x70) blocks -- independent of LibreMetaverse's own parsing: see
+    /// (0x90), Extended Mesh (0x70) and Render Material (0x80) blocks -- independent of
+    /// LibreMetaverse's own parsing: see
     /// <see cref="ExtraParamsScan"/> for why none of them can be read back from the high-level
     /// Primitive object. Runs for every ObjectUpdate; <see cref="OnObjectUpdateCompressedRaw"/> does
     /// the same for the compressed form.</summary>
@@ -77,12 +78,13 @@ public sealed partial class GridSession
     private bool LatchExtraParams(ulong regionHandle, uint localId, in ExtraParamsScan scan)
     {
         // Each kind is updated only when the scan KNOWS its answer: found, or the whole buffer was
-        // read and it is not there. All three are evaluated (no short-circuit): one object can
+        // read and it is not there. All four are evaluated (no short-circuit): one object can
         // change in several ways at once, and every latch has to see the update.
         bool light = scan.LightKnown && LatchLight(regionHandle, localId, scan.Light);
         bool probe = scan.ProbeKnown && LatchReflectionProbe(regionHandle, localId, scan.Probe);
         bool mesh = scan.AnimatedMeshKnown && LatchAnimatedMesh(regionHandle, localId, scan.AnimatedMesh);
-        return light || probe || mesh;
+        bool materials = scan.RenderMaterialsKnown && LatchRenderMaterials(regionHandle, localId, scan.RenderMaterials);
+        return light || probe || mesh || materials;
     }
 
     /// <summary>Raises the update for each listed object once, from the Primitive LibreMetaverse
@@ -130,7 +132,7 @@ public sealed partial class GridSession
         => ExtraParamsScan.Read(data).Probe;
 
     /// <summary>
-    /// The three ExtraParams blocks of an <c>ObjectUpdateCompressed</c> object, where the ExtraParams
+    /// The ExtraParams blocks of an <c>ObjectUpdateCompressed</c> object, where the ExtraParams
     /// are not a field of their own but a section in the middle of one blob. The offset comes from
     /// <see cref="CompressedParticleRepair.TryFindExtraParams"/>, which shares its walk with the
     /// particle repair. Null means the layout could not be established (too short, cut off inside
@@ -155,7 +157,7 @@ public sealed partial class GridSession
     /// </summary>
     internal static bool? CompressedAnimatedMesh(byte[]? block) => CompressedExtraParams(block)?.AnimatedMesh;
 
-    // --- The latches. Three, one shape: keyed by (region, LocalId) -- LocalIds are handed out per
+    // --- The latches. Four, one shape: keyed by (region, LocalId) -- LocalIds are handed out per
     // region and a neighbour (MultipleSims) reuses the same numbers --, holding only the objects
     // that ever showed the block, answering "did the stored answer CHANGE" so the callback can
     // re-raise once, and pruned with the object (kill) and with the region (disconnect).
@@ -230,6 +232,39 @@ public sealed partial class GridSession
     internal SLNG.Core.ReflectionProbeParams? ReflectionProbeLatched(ulong regionHandle, uint localId) =>
         _reflectionProbes.TryGetValue((regionHandle, localId), out var probe) ? probe : null;
 
+    /// <summary>BUG-RENDER-49: records an object's Render Material (0x80) block -- null when its
+    /// ExtraParams carry none -- and says whether that CHANGED. Only objects that have one are held.
+    /// "Changed" is the viewer's own test (<c>LLRenderMaterialParams::operator==</c>): a block that
+    /// gives every face the same id as before is not a change, whatever its entry order.</summary>
+    internal bool LatchRenderMaterials(ulong regionHandle, uint localId, RenderMaterialParams? materials)
+    {
+        var key = (regionHandle, localId);
+        if (materials is null)
+        {
+            return _renderMaterials.TryRemove(key, out _);
+        }
+
+        while (true)
+        {
+            if (_renderMaterials.TryAdd(key, materials)) return true;
+            if (!_renderMaterials.TryGetValue(key, out var old)) continue; // removed in between: add again
+            if (old.Equals(materials)) return false;
+            if (_renderMaterials.TryUpdate(key, materials, old)) return true;
+        }
+    }
+
+    internal RenderMaterialParams? RenderMaterialsLatched(ulong regionHandle, uint localId) =>
+        _renderMaterials.TryGetValue((regionHandle, localId), out var materials) ? materials : null;
+
+    /// <summary>BUG-RENDER-49: the glTF material a face renders with. The Render Material block's
+    /// entry for that face when the block names it -- a listed face with a null id is a firm "none" --
+    /// otherwise what the TextureEntry carried (LibreMetaverse's <c>RenderMaterialID</c>, filled only
+    /// from optional TextureEntry bytes; always empty on Second Life). The viewer reads the block alone
+    /// (<c>LLViewerObject::getRenderMaterialID</c>, llviewerobject.cpp:7661-7670); the TextureEntry
+    /// value is kept as the fallback so a grid that does put it there loses nothing.</summary>
+    internal static Guid ResolveRenderMaterial(RenderMaterialParams? latched, int face, Guid textureEntryValue) =>
+        latched is not null && latched.TryGet(face, out var id) ? id : textureEntryValue;
+
     /// <summary>Drops one object's animesh state without raising anything: it is gone, and its
     /// LocalID may be handed to a different object that must start clean.</summary>
     internal void ForgetAnimatedMesh(ulong regionHandle, uint localId) =>
@@ -250,6 +285,7 @@ public sealed partial class GridSession
     {
         _lightObjects.TryRemove((regionHandle, localId), out _);
         _reflectionProbes.TryRemove((regionHandle, localId), out _);
+        _renderMaterials.TryRemove((regionHandle, localId), out _);
         ForgetAnimatedMesh(regionHandle, localId);
     }
 
@@ -263,6 +299,10 @@ public sealed partial class GridSession
         foreach (var key in _reflectionProbes.Keys)
         {
             if (key.Region == regionHandle) _reflectionProbes.TryRemove(key, out _);
+        }
+        foreach (var key in _renderMaterials.Keys)
+        {
+            if (key.Region == regionHandle) _renderMaterials.TryRemove(key, out _);
         }
         ForgetAnimatedMeshRegion(regionHandle);
     }
@@ -434,9 +474,10 @@ public sealed partial class GridSession
                 continue;
             }
 
-            // BUG-NET-25 / FEAT-ANIMESH-01: LibreMetaverse does not parse the Reflection Probe
-            // block at all, and its Light and Extended Mesh fields are never cleared when a block
-            // goes away -- so, as for a full update, the ExtraParams are read here. A compressed
+            // BUG-NET-25 / FEAT-ANIMESH-01 / BUG-RENDER-49: LibreMetaverse does not parse the
+            // Reflection Probe or Render Material block at all, and its Light and Extended Mesh
+            // fields are never cleared when a block goes away -- so, as for a full update, the
+            // ExtraParams are read here. A compressed
             // object carries them in the middle of its one blob; this runs for the cache replay as
             // well, which feeds this same handler. A layout that cannot be established leaves
             // every latch as it was.
@@ -731,11 +772,19 @@ public sealed partial class GridSession
         Guid legacyMaterialId = Guid.Empty;
         System.Numerics.Vector4 colorTint = new System.Numerics.Vector4(1, 1, 1, 1);
 
+        // BUG-RENDER-49: the per-face glTF material ids live in the ExtraParams Render Material block
+        // (0x80), not in the TextureEntry -- see RenderMaterialParams. Read once here, like the other
+        // latches; a change re-raises this event (OnRawObjectUpdatePacket), so a read that races the
+        // callback writing it is corrected one event later.
+        var renderMaterials = RenderMaterialsLatched(simulator.Handle, prim.LocalID);
+
         var defaultFace = prim.Textures?.DefaultTexture;
         if (defaultFace != null)
         {
             textureId = defaultFace.TextureID.Guid;
-            renderMaterialId = defaultFace.RenderMaterialID.Guid;
+            // The viewer has no "default" render material; face 0's stands in for the paths that
+            // build a whole object from the default face (no per-surface face list).
+            renderMaterialId = ResolveRenderMaterial(renderMaterials, 0, defaultFace.RenderMaterialID.Guid);
             legacyMaterialId = defaultFace.MaterialID.Guid;
             colorTint = new System.Numerics.Vector4(defaultFace.RGBA.R, defaultFace.RGBA.G, defaultFace.RGBA.B, defaultFace.RGBA.A);
         }
@@ -762,7 +811,7 @@ public sealed partial class GridSession
                 if (f.MediaFlags) anyFaceHasMedia = true;
                 faces[i] = new FaceTexture(
                     f.TextureID.Guid,
-                    f.RenderMaterialID.Guid,
+                    ResolveRenderMaterial(renderMaterials, i, f.RenderMaterialID.Guid),
                     f.MaterialID.Guid,
                     new System.Numerics.Vector4(f.RGBA.R, f.RGBA.G, f.RGBA.B, f.RGBA.A),
                     f.RepeatU,
