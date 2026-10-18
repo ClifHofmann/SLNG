@@ -788,6 +788,25 @@ namespace SLNG.App
             }
         }
 
+        /// <summary>
+        /// Raycasts from a screen position into the world to find a placement/rez point on a surface (FEAT-INV-15).
+        /// Returns true if terrain or an object was hit, and sets worldPos to the surface hit point lifted
+        /// along its normal.
+        /// </summary>
+        public bool TryGetWorldRezPoint(Vector2 screenPos, out Vector3 worldPos)
+        {
+            worldPos = Vector3.Zero;
+            if (_camera == null) return false;
+
+            var hit = RaycastFromMouse(screenPos);
+            if (hit.Count > 0 && hit.ContainsKey("position"))
+            {
+                worldPos = RezPointFrom(hit);
+                return true;
+            }
+            return false;
+        }
+
         /// <summary>Where a prim rezzed from a right-click should sit: the point that was hit,
         /// lifted clear of the surface along its normal.</summary>
         /// <remarks>

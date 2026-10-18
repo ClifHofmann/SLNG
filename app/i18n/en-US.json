@@ -1420,6 +1420,14 @@
         "dev_wireframe": "Wireframe on / off",
         "dev_create_test_skin": "Create test skin"
       }
+    },
+    "rez": {
+      "success": "Rezzing '{0}'...",
+      "no_permission": "No permission to build on this parcel.",
+      "not_an_object": "Item is not an in-world object.",
+      "item_not_found": "Inventory item not found.",
+      "not_connected": "Not connected to the simulator.",
+      "no_surface": "No placement surface found."
     }
   }
 }

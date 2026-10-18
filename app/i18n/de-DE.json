@@ -1420,6 +1420,14 @@
         "dev_wireframe": "Drahtmodell an / aus",
         "dev_create_test_skin": "Testhaut erzeugen"
       }
+    },
+    "rez": {
+      "success": "Objekt '{0}' wird platziert...",
+      "no_permission": "Keine Baurechte auf dieser Parzelle.",
+      "not_an_object": "Das Objekt kann nicht in der Welt platziert werden.",
+      "item_not_found": "Inventargegenstand nicht gefunden.",
+      "not_connected": "Nicht mit dem Simulator verbunden.",
+      "no_surface": "Keine Oberfläche zum Platzieren gefunden."
     }
   }
 }
