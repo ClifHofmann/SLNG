@@ -576,6 +576,20 @@ separate, V-Sync off), 3 x 30 s per state once loading has settled:
    (the outline appears with the item back on its own instance), and that no `[RiggedSort]` or `MeshSurfaceCache`
    miss warning comes from a merged avatar.
 
+**In-world A/B, first run** (2026-10-18, a crowded Second Life region, avatar cap 16, v0.27.80-alpha, `--diag
+--outfit-merge=on`, one run switched at runtime; `slng-perf.log` 08:56-08:59, same camera view for both windows):
+
+| State | Window | fps | `renderCpuMs` | draws | `drawnSkinnedMeshes` |
+|---|---|---|---|---|---|
+| Merge off | 08:57:55-08:58:08 | 31-40 | 10.6-12.6 | ~12.5k | 2,893 |
+| Merge on | 08:58:15-08:58:50 | 44-46 | ~7.9-8.9 | ~10.0k | ~700 |
+
+- The runtime switch took ~5 s in each direction, with no reload.
+- Earlier in the same session, merge on before the switch read fps 29-31, but from a different camera view, so it
+  is not part of the comparison.
+- Conclusion: the gate held in-world, about +25 % fps from the merge (draws -20 %, skinned meshes drawn -75 %,
+  `renderCpuMs` ~-28 %). The Sirens Beach A/B above (3 x 30 s per state) is still open.
+
 ## Risks
 
 1. **Materials dedupe less than hoped.** Each garment has its own textures, so draws barely drop.
