@@ -417,13 +417,52 @@ public sealed partial class GridSession
     // fallback to the generic cap.
     //
     // v0.20.40 also skipped the UDP fallback for these, on the reasoning that "no transport will
-    // get the bytes". That reasoning was wrong, and the user disproved it: Firestorm displays the
-    // very texture SLNG gives up on (dda710d4, a remote avatar's hair, confirmed 2026-09-03). The
-    // asset EXISTS and is servable -- the CDN just will not serve it over the generic cap. So an
-    // HTTP 403 now costs exactly ONE UDP attempt through LibreMetaverse's legacy image transfer,
-    // the same transport the reference viewer falls back to; only if that also comes back empty is
-    // the id recorded as genuinely gone.
+    // get the bytes". The user disproved the conclusion: Firestorm displays the very texture SLNG
+    // gives up on (dda710d4, a remote avatar's hair, confirmed 2026-09-03). So an HTTP 403 now costs
+    // exactly ONE UDP attempt through LibreMetaverse's legacy image transfer; only if that also comes
+    // back empty is the id recorded as genuinely gone.
+    //
+    // That UDP attempt is SLNG's own fallback, NOT the reference viewer's: LLTextureFetch has no UDP
+    // state at all any more (its states run cache -> WAIT_HTTP_RESOURCE -> SEND_HTTP_REQ ->
+    // WAIT_HTTP_REQ, lltexturefetch.cpp:431-444; with no capability URL it waits, :1336-1348 -- the
+    // "UDP as fallback" in the file's header comment is stale). So when Firestorm shows a texture SLNG
+    // was refused, the difference is in the HTTP request itself (URL, headers, which region's cap),
+    // not in a transport the viewer has and SLNG lacks. Under --diag the refusal's body and its
+    // Server/X-Cache headers are logged once per id to tell those apart.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _httpDeniedTextures = new();
+
+    /// <summary>Ids whose 403/401 body was logged under --diag (once each).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _deniedBodyLogged = new();
+
+    /// <summary>The start of a refused texture response, for the --diag line: at most
+    /// <paramref name="maxBytes"/> of the body (as text, one line) and the Server and X-Cache headers,
+    /// which say whether the refusal came from the CDN or from the asset service behind it. Never
+    /// throws.</summary>
+    private static async Task<string> DescribeRefusalAsync(HttpResponseMessage response, int maxBytes = 200)
+    {
+        static string Header(HttpResponseMessage r, string name) =>
+            r.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : "-";
+
+        string body;
+        try
+        {
+            using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            var buffer = new byte[maxBytes];
+            int read = 0;
+            while (read < maxBytes)
+            {
+                int n = await stream.ReadAsync(buffer.AsMemory(read, maxBytes - read)).ConfigureAwait(false);
+                if (n == 0) break;
+                read += n;
+            }
+            body = System.Text.Encoding.UTF8.GetString(buffer, 0, read).Replace('\r', ' ').Replace('\n', ' ');
+        }
+        catch (Exception ex)
+        {
+            body = $"(unreadable: {ex.Message})";
+        }
+        return $"Server={Header(response, "Server")} X-Cache={Header(response, "X-Cache")} body=\"{body}\"";
+    }
 
     /// <summary>Ids that 403'd on HTTP **and** produced nothing over UDP. Session-permanent, and
     /// the only set that makes <see cref="TextureFetchResult.Gone"/> true -- an id in
@@ -491,10 +530,13 @@ public sealed partial class GridSession
                             // caller skips the UDP fallback (see _permanentlyDeniedTextures). The
                             // bake path (fetchUrl != null) is excluded: it 403s by design and then
                             // legitimately falls back to the generic cap (BUG-AVATAR-02).
-                            if (fetchUrl == null &&
-                                (response.StatusCode == System.Net.HttpStatusCode.Forbidden
-                                 || response.StatusCode == System.Net.HttpStatusCode.Unauthorized))
+                            bool denied = response.StatusCode == System.Net.HttpStatusCode.Forbidden
+                                          || response.StatusCode == System.Net.HttpStatusCode.Unauthorized;
+                            if (fetchUrl == null && denied)
                                 _httpDeniedTextures.TryAdd(textureId, 0);
+                            if (denied && SLNG.Core.Diag.Verbose && _deniedBodyLogged.TryAdd(textureId, 0))
+                                Console.Error.WriteLine($"[TextureFetch] {textureId} HTTP {(int)response.StatusCode} from " +
+                                    $"{url.Host}{url.AbsolutePath}: {await DescribeRefusalAsync(response).ConfigureAwait(false)}");
                             // Host in the message: a 403 could be the wrong URL class (see
                             // BUG-AVATAR-02 -- bakes needed bake-texture.glb..., not the generic
                             // asset CDN) or a genuine permission denial / non-persisted local
