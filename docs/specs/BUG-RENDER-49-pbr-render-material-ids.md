@@ -74,15 +74,55 @@ Evidence: the Sirens object cache holds 136 objects with a 0x80 block; local 823
   `app/scripts/SelfTest.PbrRenderMaterial.cs` with `ObjectRenderer.PbrRenderMaterial.SelfTest.cs` and
   `AvatarRenderer.PbrRenderMaterial.SelfTest.cs`
 
+## Follow-up after the v0.27.83 in-world test (v0.27.84 .. v0.27.86)
+
+The 0x80 ids arrived, but every material fetch failed (109 failures over 40 ids, zero
+`[PbrMaterial]` lines), and hair showed layers a HUD had switched off.
+
+### The material asset (asset type 57, "material")
+
+- **Fetch:** `{ViewerAsset cap}/?material_id={id}` (`LLViewerAssetStorage::getAssetURL`,
+  llviewerassetstorage.cpp:640-645; type name from llassettype.cpp:100). 403/404/410 is a refusal
+  (`AssetRefusals`, no legacy retry); no capability / timeout / 5xx tries the legacy transfer once
+  for at most 20 s. `GridSession.FetchMaterialAssetAsync` returns bytes; no LibreMetaverse type
+  crosses the boundary any more.
+- **Envelope:** LLSD, written BINARY by the viewer (llmaterialeditor.cpp:1305-1315):
+  `<? LLSD/Binary ?>\n` then a map `{ version: "1.1", type: "GLTF 2.0", data: "<glTF JSON>" }`.
+  Accepted versions "1.0"/"1.1" (llgltfmaterial.cpp:38-40). The viewer also accepts XML and notation
+  (llsdserialize.cpp:150-240); so does `SLNG.Assets.GltfMaterialAsset`. Binary LLSD (all big-endian):
+  `{` U32 n, n x (`k` U32 len key, value), `}`; `[` U32 n ... `]`; `s`/`l` U32 len UTF-8; `i` S32;
+  `r` F64; `u` 16 bytes; `1`/`0`/`!` -- `SLNG.Core.LlsdBinary`.
+- **glTF:** material 0, as `LLGLTFMaterial::setFromModel` (llgltfmaterial.cpp:220-265): a slot's
+  texture id is `images[textures[index].source].uri`; optional `KHR_texture_transform`
+  (offset, scale, rotation); glTF defaults when absent; metallic, roughness, cutoff clamped 0..1.
+- **Why it failed:** LibreMetaverse 3.1.6 `AssetMaterial.Decode` parses the bytes as bare glTF JSON.
+
+### Visibility without the material
+
+A face with a render material id whose material is NOT loaded is exactly its legacy self: geometry
+(TE alpha 0 / transparent texture drops a rigged submesh) and material. Only a LOADED material
+decides by itself (BLEND at base alpha 0, or MASK below its cutoff, draws nothing). Worn meshes fetch
+their faces' materials alongside the mesh and wait up to 5 s before rigging.
+
+### A material that arrives later
+
+`AssetService.MaterialLoaded` -> a renderer that built a face WITHOUT that material rebuilds:
+world prims retire the stale shared materials (unique retired key, holders re-keyed) and re-apply;
+avatars rebuild every worn item and animesh part naming it (geometry, materials and outfit-merge
+facts/keys together).
+
 ## Known limits
 
-- The base material asset's own KHR texture transform is not parsed (`PbrMaterialData` has none);
-  a face without an override transform is placed with the identity transform.
 - A PBR base colour that is a Bakes-on-Mesh id is resolved when the face is built, but such a mesh
   is not registered for the bake-arrival refresh (the viewer itself carries a TODO there).
+- No real material asset was available offline (none in either asset cache); the decoder is tested
+  against envelopes built to the viewer's layout.
 
 ## Sub-tasks / Progress
 
 - [x] Net: parse, latch, per-face resolution, tests
 - [x] Render: avatar PBR path, world TE-colour/UV parity, merge facts, selftest
+- [x] Material fetch over ViewerAsset + LLSD envelope decode (v0.27.84)
+- [x] Legacy fallback when the material is unavailable, hair regression (v0.27.85)
+- [x] Late material re-applies world prims and rebuilds worn items (v0.27.86)
 - [ ] In-world check at the crowded region: the pet and a PBR bikini; `[FaceParams]` shows `pbr=`
