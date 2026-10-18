@@ -99,6 +99,22 @@ public sealed class PrimMaterialCache
     /// <summary>Removes an entry directly (e.g. if an in-flight build fails).</summary>
     public bool Remove(in PrimMaterialKey key) => _entries.Remove(key);
 
+    /// <summary>The keys of every entry, retired ones included (a snapshot).</summary>
+    public List<PrimMaterialKey> Keys => new(_entries.Keys);
+
+    /// <summary>BUG-RENDER-49: moves a FINISHED entry from <paramref name="key"/> to
+    /// <paramref name="retiredKey"/>, so no new face is handed its material while the faces that hold
+    /// it keep a key their release still finds. The caller rewrites those faces' stored keys. False
+    /// for a key with no entry, or one still being built.</summary>
+    public bool Retire(in PrimMaterialKey key, in PrimMaterialKey retiredKey)
+    {
+        if (!_entries.TryGetValue(key, out var entry) || entry.InFlightTask != null || entry.Material == null) return false;
+        if (_entries.ContainsKey(retiredKey)) return false;
+        _entries.Remove(key);
+        _entries[retiredKey] = entry;
+        return true;
+    }
+
     /// <summary>Clears the entire cache.</summary>
     public void Clear() => _entries.Clear();
 }

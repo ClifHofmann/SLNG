@@ -90,6 +90,35 @@ public partial class AvatarRenderer
             var legacyFallback = BuildFaceMaterialAsync(unavailableVisible, null, meshId, 2).GetAwaiter().GetResult();
             Expect(!FactsOf(legacyFallback).Hidden && FactsOf(legacyFallback).Texture == unavailableVisible.TextureId,
                 "PBR face, material unavailable, TE visible: its legacy texture");
+            Expect(IsPbrBuiltWithout(unavailable.RenderMaterialId), "a face decided without its material is remembered");
+
+            // The material turns up later: the worn item naming it is found and built again.
+            var priorWorld = _world;
+            var world = new SLNG.Core.ECS.World();
+            _world = world;
+            Guid wornId = Guid.Empty;
+            try
+            {
+                var wornEntity = world.GetOrCreateEntity(1UL, 4242);
+                var wornPrim = new SLNG.Core.Components.PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0)
+                {
+                    Faces = new[] { opaqueFace, unavailable },
+                };
+                wornEntity.SetComponent(wornPrim);
+                wornId = wornEntity.Id;
+                _attachmentToAvatar[wornId] = Guid.NewGuid();
+
+                Expect(WornItemsNaming(unavailable.RenderMaterialId).Contains(wornId), "the worn item naming the late material is found");
+                Expect(WornItemsNaming(Guid.NewGuid()).Count == 0, "... and no other");
+                Expect(RebuildForPbrMaterial(unavailable.RenderMaterialId) == 1, "... and asked to build again");
+                OnPbrMaterialLoaded(unavailable.RenderMaterialId);
+                Expect(!IsPbrBuiltWithout(unavailable.RenderMaterialId), "the arrival is consumed once");
+            }
+            finally
+            {
+                _attachmentToAvatar.Remove(wornId);
+                _world = priorWorld;
+            }
         }
         finally
         {
@@ -97,7 +126,7 @@ public partial class AvatarRenderer
         }
 
         return problems.Count == 0
-            ? (true, "geometry by the loaded material, by the TE when unavailable; base colour, factors, MASK cutoff, KHR placement; merge facts and keys per material; BLEND alpha 0 and unavailable+TE alpha 0 hidden")
+            ? (true, "geometry by the loaded material, by the TE when unavailable; base colour, factors, MASK cutoff, KHR placement; merge facts and keys per material; BLEND alpha 0 and unavailable+TE alpha 0 hidden; a late material rebuilds the item")
             : (false, string.Join("; ", problems));
     }
 }

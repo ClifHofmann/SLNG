@@ -69,6 +69,44 @@ public partial class ObjectRenderer
             // FEAT-PERF-20: two faces that differ only in their render material never share a material.
             Expect(!PrimMaterialKey.Create(face, System.Numerics.Vector3.One).Equals(PrimMaterialKey.Create(legacyFace, System.Numerics.Vector3.One)),
                 "different render materials give different shared-material keys");
+
+            // A material that arrives AFTER its face was built (and shared) without it: the stale shared
+            // material is retired, the face holding it can still release it, and the next build of the
+            // same face is the PBR one.
+            bool priorShare = RenderConfig.ShareMaterials;
+            RenderConfig.ShareMaterials = true;
+            MeshInstance3D? holderMesh = null;
+            try
+            {
+                var lateId = Guid.NewGuid();
+                var lateFace = face with { RenderMaterialId = lateId };
+                var scale = System.Numerics.Vector3.One;
+                var (fallback, fallbackUsed) = BuildFaceMaterialAsync(lateFace, scale, 1000f, 1f).GetAwaiter().GetResult();
+                var key = PrimMaterialKey.Create(lateFace, scale);
+                Expect(IsPbrBuiltWithout(lateId), "a face built without its material is remembered");
+                Expect(fallbackUsed.Contains(legacyTexture), "... and was built as its legacy self");
+
+                holderMesh = new MeshInstance3D();
+                var holder = new VisualState { EntityId = Guid.NewGuid(), MeshInstance = holderMesh, SurfaceMaterialKeys = new[] { key }, SurfaceDetached = new byte[1] };
+                _visuals[holder.EntityId] = holder;
+                PbrMaterialsForSelfTest[lateId] = PbrMaterialsForSelfTest[materialId];
+
+                Expect(RetireSharedPbrMaterials(lateId) == 1 && !_materialCache.TryGet(key, out _), "the stale shared material is retired");
+                var heldKey = holder.SurfaceMaterialKeys[0];
+                Expect(!heldKey.Equals(key) && _materialCache.TryGet(heldKey, out var retiredEntry) && ReferenceEquals(retiredEntry.Material, fallback),
+                    "the face holding it keeps a key its release still finds");
+
+                var (fresh, freshUsed) = BuildFaceMaterialAsync(lateFace, scale, 1000f, 1f).GetAwaiter().GetResult();
+                Expect(!ReferenceEquals(fresh, fallback) && freshUsed.Contains(baseColorTexture), "the next build of the same face is the PBR material");
+                Expect(_materialCache.Release(heldKey), "releasing the retired key frees the stale material");
+                _materialCache.Release(key);
+                _visuals.Remove(holder.EntityId);
+            }
+            finally
+            {
+                RenderConfig.ShareMaterials = priorShare;
+                holderMesh?.Free();
+            }
         }
         finally
         {
@@ -76,7 +114,7 @@ public partial class ObjectRenderer
         }
 
         return problems.Count == 0
-            ? (true, "base colour texture, factors, MASK cutoff, KHR placement; TE colour/alpha/fullbright/Shiny ignored; legacy fallback unchanged")
+            ? (true, "base colour texture, factors, MASK cutoff, KHR placement; TE colour/alpha/fullbright/Shiny ignored; legacy fallback unchanged; a late material retires the stale shared one")
             : (false, string.Join("; ", problems));
     }
 }

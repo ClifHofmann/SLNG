@@ -645,6 +645,8 @@ public partial class ObjectRenderer : Node3D
         _world = world;
         _assetService = assetService;
         _gpuCache = gpuCache;
+        // BUG-RENDER-49: a glTF material that arrives after a face was built without it.
+        if (_assetService != null) _assetService.MaterialLoaded += OnPbrMaterialLoaded;
         _instanceGroups = new ObjectInstanceGroups(
             this,
             id => _visuals.TryGetValue(id, out var vs) && IsInstanceValid(vs.MeshInstance) ? vs.MeshInstance : null);
@@ -4235,6 +4237,8 @@ public partial class ObjectRenderer : Node3D
             using (MainThreadWorkQueue.Part("mat.pbr.get"))
                 pbrRequest = GetPbrMaterialAsync(ft.RenderMaterialId);
             pbr = await pbrRequest;
+            // Remembered, so the face is built again if the material turns up later (ObjectRenderer.PbrArrival).
+            if (pbr == null) NotePbrBuiltWithout(ft.RenderMaterialId);
         }
         var colorTint = pbr != null
             ? new Godot.Color(1f, 1f, 1f, 1f)
@@ -6689,6 +6693,7 @@ public partial class ObjectRenderer : Node3D
     public override void _ExitTree()
     {
         MaterialLab.ViewerSunSpecularChanged -= ReapplyViewerSpecularVariants;
+        if (_assetService != null) _assetService.MaterialLoaded -= OnPbrMaterialLoaded;
         if (_world != null)
         {
             _world.EntityAdded -= OnEntityAdded;

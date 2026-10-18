@@ -521,6 +521,8 @@ public partial class AvatarRenderer : Node3D
         _assetService = assetService;
         _session = session;
         _gpuCache = gpuCache;
+        // BUG-RENDER-49: a glTF material that arrives after a face was built without it.
+        if (_assetService != null) _assetService.MaterialLoaded += OnPbrMaterialLoaded;
 
         _nameTagLayer = new Godot.CanvasLayer { Layer = 1, Name = "AvatarNameTags" };
         AddChild(_nameTagLayer);
@@ -3973,6 +3975,8 @@ public partial class AvatarRenderer : Node3D
         {
             var baseMaterial = await GetPbrMaterialAsync(ft.RenderMaterialId).ConfigureAwait(false);
             if (baseMaterial != null) pbr = SLNG.Assets.PbrOverrideMerge.Apply(baseMaterial, ft.PbrOverride);
+            // Remembered, so the item is built again if the material turns up later (AvatarRenderer.PbrArrival).
+            else NotePbrBuiltWithout(ft.RenderMaterialId);
         }
 
         // A PBR face is hidden by its material, never by its TextureEntry (PbrDrawsNothing) -- the way
@@ -4288,8 +4292,18 @@ public partial class AvatarRenderer : Node3D
     /// 0 or the transparent texture. Called on rig workers.</summary>
     private bool FaceDrawsNothing(FaceTexture face)
     {
-        if (face.RenderMaterialId == Guid.Empty || !TryGetLoadedPbrMaterial(face.RenderMaterialId, out var material))
+        if (face.RenderMaterialId == Guid.Empty) return face.IsInvisible;
+        if (!TryGetLoadedPbrMaterial(face.RenderMaterialId, out var material))
+        {
+            // Left out by its TE without its material: the material, when it comes, may say otherwise.
+            // Asked for here, because a face with no triangles never builds a material that would.
+            if (face.IsInvisible)
+            {
+                NotePbrBuiltWithout(face.RenderMaterialId);
+                _ = GetPbrMaterialAsync(face.RenderMaterialId);
+            }
             return face.IsInvisible;
+        }
         return PbrDrawsNothing(SLNG.Assets.PbrOverrideMerge.Apply(material, face.PbrOverride));
     }
 
@@ -6662,6 +6676,7 @@ public partial class AvatarRenderer : Node3D
     public override void _ExitTree()
     {
         if (_activeInstance == this) _activeInstance = null;
+        if (_assetService != null) _assetService.MaterialLoaded -= OnPbrMaterialLoaded;
         SLNG.App.UI.UiScale.Changed -= OnHudUiScaleChanged;
         if (_hudMainViewport != null && IsInstanceValid(_hudMainViewport)) _hudMainViewport.SizeChanged -= SyncHudContainer;
         if (_world != null)
