@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-49`
 - **Track:** `net` + `render`
-- **Status:** `🚧 In Progress`
+- **Status:** `🧪 Review`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -44,20 +44,20 @@ Evidence: the Sirens object cache holds 136 objects with a 0x80 block; local 823
 
 ## Acceptance Criteria
 
-- [ ] `ExtraParamsScan` parses 0x80 into per-face (te index -> UUID) entries; a truncated payload
+- [x] `ExtraParamsScan` parses 0x80 into per-face (te index -> UUID) entries; a truncated payload
       keeps the whole entries it holds and never throws.
-- [ ] A fourth latch in `GridSession` (region, LocalId) holds the entries, set and cleared on every
+- [x] A fourth latch in `GridSession` (region, LocalId) holds the entries, set and cleared on every
       full, compressed and cache-replayed update, pruned on kill and region disconnect, and the
       object update is raised again when it changes.
-- [ ] Each face's `RenderMaterialId` is the latch entry for its index, falling back to the
+- [x] Each face's `RenderMaterialId` is the latch entry for its index, falling back to the
       TextureEntry value.
-- [ ] World prims build a PBR material for such a face (the existing ObjectRenderer path; shared
+- [x] World prims build a PBR material for such a face (the existing ObjectRenderer path; shared
       material keys already include the id and the override).
-- [ ] Worn rigged meshes, worn animesh and static attachments sample the material's base-colour
+- [x] Worn rigged meshes, worn animesh and static attachments sample the material's base-colour
       texture (BoM magic ids resolved), take its factors, alpha mode/cutoff, normal, ORM and
       emissive maps; the outfit merge's material facts carry the effective texture.
-- [ ] xUnit: 0x80 parse from the real cached bytes, empty, truncated, clear-on-absent, compressed.
-- [ ] Selftest: a face with a render material id builds a PBR material on a world prim and on a
+- [x] xUnit: 0x80 parse from the real cached bytes, empty, truncated, clear-on-absent, compressed.
+- [x] Selftest: a face with a render material id builds a PBR material on a world prim and on a
       worn rigged mesh.
 
 ## Technical Specs & Affected Files
@@ -67,8 +67,12 @@ Evidence: the Sirens object cache holds 136 objects with a 0x80 block; local 823
 - `src/SLNG.Core/FaceTexture.cs` (`IsInvisible` is legacy-only)
 - `app/scripts/ObjectRenderer.cs`, `app/scripts/AvatarRenderer.cs`,
   `app/scripts/AvatarRenderer.OutfitMerge.cs`
-- Tests: `tests/SLNG.Net.Tests/RenderMaterialExtraParamsTests.cs`, selftest
-  `app/scripts/SelfTest.PbrRenderMaterial.cs`
+- `src/SLNG.Net/GridSession.Assets.cs` (under `--diag`: a texture refusal's body and Server/X-Cache
+  headers, once per id; the reference viewer has no UDP texture fallback, lltexturefetch.cpp:431-444)
+- Tests: `tests/SLNG.Net.Tests/RenderMaterialExtraParamsTests.cs` (20, incl. the real Agni bytes and
+  an end-to-end compressed update), `tests/SLNG.Assets.Tests/RiggedMeshBuilderTests.cs`; selftests
+  `app/scripts/SelfTest.PbrRenderMaterial.cs` with `ObjectRenderer.PbrRenderMaterial.SelfTest.cs` and
+  `AvatarRenderer.PbrRenderMaterial.SelfTest.cs`
 
 ## Known limits
 
@@ -79,6 +83,6 @@ Evidence: the Sirens object cache holds 136 objects with a 0x80 block; local 823
 
 ## Sub-tasks / Progress
 
-- [ ] Net: parse, latch, per-face resolution, tests
-- [ ] Render: avatar PBR path, world TE-colour/UV parity, merge facts, selftest
+- [x] Net: parse, latch, per-face resolution, tests
+- [x] Render: avatar PBR path, world TE-colour/UV parity, merge facts, selftest
 - [ ] In-world check at the crowded region: the pet and a PBR bikini; `[FaceParams]` shows `pbr=`
