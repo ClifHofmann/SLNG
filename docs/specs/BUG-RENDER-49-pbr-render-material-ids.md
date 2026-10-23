@@ -111,6 +111,24 @@ world prims retire the stale shared materials (unique retired key, holders re-ke
 avatars rebuild every worn item and animesh part naming it (geometry, materials and outfit-merge
 facts/keys together).
 
+## Follow-ups after the v0.27.86 test (v0.27.89-91)
+
+- **Colour space (v0.27.89).** glTF base-colour and emissive factors are linear; `albedo_color` and
+  `emission_color` are `source_color` uniforms that Godot decodes from sRGB, so `ApplyPbrUniforms` wrote a
+  linear factor that was linearised a second time -- every PBR tint darker and more saturated. The viewer
+  multiplies the linearised texel by the linear base colour (pbropaqueF.glsl:73-75, llface.cpp:1392-1400).
+  Factors are now handed over sRGB-encoded (`ObjectRenderer.PbrLinearFactor`), alpha untouched.
+- **Dielectric specular (v0.27.90).** prim_common zeroes specular for every face (SL's Shiny gate); a glTF
+  dielectric reflects 4 % in the viewer (deferredUtil.glsl:565-571). A `pbr_material` flag gives PBR faces
+  Godot's 0.5 (= F0 0.04); legacy faces unchanged.
+- **`[PbrFace]` diagnostic (v0.27.91).** For a wearer's PBR hair that renders hard-edged and untinted (soft and
+  rose in Firestorm): one line per (material, override, kind) with the base asset's mode/cutoff/colour, the
+  face's override fields, the effective mode and the shader kind; avatar lines carry the item's LocalId to
+  match `[GltfOverride] local=`. No loss path was proven: overrides are stamped on every object update and a
+  late one re-rigs the item. Noted divergence, not acted on: `WorldSimulation.OnEntityRemoved` drops an
+  object's overrides on every kill, while the viewer drops them only with a valid VO-cache entry
+  (llviewerregion.cpp:1115-1165), i.e. keeps them for attachments across a kill.
+
 ## Known limits
 
 - A PBR base colour that is a Bakes-on-Mesh id is resolved when the face is built, but such a mesh
@@ -125,4 +143,6 @@ facts/keys together).
 - [x] Material fetch over ViewerAsset + LLSD envelope decode (v0.27.84)
 - [x] Legacy fallback when the material is unavailable, hair regression (v0.27.85)
 - [x] Late material re-applies world prims and rebuilds worn items (v0.27.86)
+- [x] PBR factors linear into the shader, dielectric specular, `[PbrFace]` diagnostic (v0.27.89-91)
 - [ ] In-world check at the crowded region: the pet and a PBR bikini; `[FaceParams]` shows `pbr=`
+- [ ] In-world: the PBR hair's `[PbrFace]` lines -- override present and BLEND, or not
