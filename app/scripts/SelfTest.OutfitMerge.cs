@@ -20,6 +20,11 @@ public static partial class SelfTest
     private static Check CheckOutfitMergeToggle(SceneTree tree) =>
         RunOnRenderer(tree, "outfit merge switch off/on/off", r => r.SelfTestOutfitMergeToggle());
 
+    /// <summary>BUG-RENDER-50: worn rigged alpha in the viewer's order, with its depth pass, staged and merged
+    /// (<c>AvatarRenderer.SelfTestWornAlphaOrder</c>).</summary>
+    private static Check CheckWornAlphaOrder(SceneTree tree) =>
+        RunOnRenderer(tree, "worn alpha: viewer order and depth pass", r => r.SelfTestWornAlphaOrder());
+
     private static Check RunOnRenderer(SceneTree tree, string name, Func<AvatarRenderer, (bool Passed, string Detail)> test)
     {
         var renderer = new AvatarRenderer();

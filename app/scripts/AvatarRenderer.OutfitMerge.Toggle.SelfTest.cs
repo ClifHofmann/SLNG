@@ -98,6 +98,7 @@ public partial class AvatarRenderer
             foreach (var (id, (data, faces)) in meshes)
                 CommitSelfTestRig(visuals.First(v => worn[v].Contains(id)), id, data, faces, keepTangents: true);
             DrainQueue();
+            TickWornAlphaOrder(); // BUG-RENDER-50: what _Process does every frame
 
             // Today's reference: each item's own instance before any merge.
             var reference = new Dictionary<Guid, (Transform3D[] Palette, Material?[] Materials, float[] Offsets, int Splits)>();
@@ -262,6 +263,7 @@ public partial class AvatarRenderer
             TickOutfitMerge();
             eachRound?.Invoke();
             DrainQueue();
+            TickWornAlphaOrder();
             bool idle = _mergeJobsRunning == 0 && _pendingRigs.IsEmpty && _activeRigWorkers == 0
                         && _mergeItems.Values.All(i => !i.Retaining);
             bool settled = _visuals.Values.All(v => v.OutfitMerge == null || v.OutfitMerge.Buckets.Values.All(b => !b.IsDirty));

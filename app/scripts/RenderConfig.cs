@@ -203,6 +203,27 @@ public static class RenderConfig
     /// more of the fringe is left to the sort. Override with <c>--foliage-core-alpha=N</c>.</summary>
     public static float FoliageCoreAlpha = 0.33f;
 
+    /// <summary>BUG-RENDER-50: alpha at or above which a worn rigged mesh's blended face writes depth, in
+    /// its own pass drawn after the item and before the next one (<see cref="PrimShaderFamily.DepthCoreAvatar"/>,
+    /// SLNG.Core.WornAlphaOrder). 0 turns the pass off (order only). Override with
+    /// <c>--worn-alpha-depth=N</c>.
+    ///
+    /// <para>The viewer writes depth for every rigged-alpha fragment above its minimum alpha, 0.004
+    /// (lldrawpoolalpha.cpp:63, :240). That number was tried for SLNG's avatars as BUG-RENDER-12 (v0.21.19,
+    /// a depth write on the colour pass) and reverted in-world: a hair card's faint halo claimed depth and
+    /// rejected every strand behind it, so a hair stack rendered as one translucent layer. Two things make
+    /// a near-zero threshold worse here than in the viewer: the avatar variants are cull_disabled (the
+    /// viewer back-face culls rigged alpha), so twice the fragments claim depth; and the halo of a
+    /// minified card is a large area of very low alpha. This pass already avoids the BUG-RENDER-12 case
+    /// itself -- it runs after ALL of its own item's surfaces, so one item never occludes its own layers
+    /// -- but between items the halo argument still holds: an earlier hair item's 1 % halo would cut the
+    /// strands of a later one behind it. 0.33 is the viewer's own answer to "alpha opaque enough to count
+    /// as a surface in a depth-only pass" (lldrawpoolalpha.cpp:212-227) and the BUG-RENDER-16 core's
+    /// default: soft edges stay out of the depth buffer and keep blending, while fabric does not -- the
+    /// bikini texture of the case this was found on has a minimum alpha of 0.353, so all of it occludes,
+    /// exactly as at the viewer's 0.004.</para></summary>
+    public static float WornAlphaDepth = 0.33f;
+
     /// <summary>BUG-RENDER-16 (v0.22.26): give every sorted-transparent surface of a multi-surface
     /// object its own <c>MeshInstance3D</c>, so Godot sorts it by its OWN bounds instead of tying
     /// it with its siblings at the parent's depth.

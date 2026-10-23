@@ -451,7 +451,6 @@ public partial class AvatarRenderer
             box = box.Merge(measured.Grow(margin));
         }
         mi.CustomAabb = box;
-        mi.SortingOffset = RiggedAlphaSortTieBreak(primId, faces, defaultFace, faceIndices);
         mi.Visible = visible;
 
         // Replace, never add: a LOD change (or an edited face) arrives as a second rig for the
@@ -464,6 +463,9 @@ public partial class AvatarRenderer
         // The skeleton path must be set after the node is in the tree so Godot can resolve it.
         mi.Skeleton = mi.GetPathTo(skeleton);
         visual.RiggedAttachments.Add((mi, meshData, meshId));
+        // BUG-RENDER-50: an animated object's rigged alpha is drawn in the viewer's rigged pass too; its parts
+        // are ranked like worn items (no attachment point, so by linkset and local id).
+        RegisterWornAlphaItem(visual, primId, mi, WearsBake(faces, defaultFace, faceIndices));
 
         ca.Parts[primId] = new ControlAvatarPart
         {
@@ -542,6 +544,7 @@ public partial class AvatarRenderer
         if (mi != null)
         {
             ca.Visual.RiggedAttachments.RemoveAll(r => r.Mi == mi);
+            ForgetWornAlphaItem(ca.Visual, part.PrimEntityId);
             if (IsInstanceValid(mi))
             {
                 // RemoveChild first: QueueFree only schedules the deletion, and the replacement

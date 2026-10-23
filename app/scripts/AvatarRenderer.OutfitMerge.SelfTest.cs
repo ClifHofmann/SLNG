@@ -126,6 +126,7 @@ public partial class AvatarRenderer
             };
             foreach (var id in new[] { a, b, c }) CommitTestItem(id, meshes[id].Data, meshes[id].Faces);
             DrainQueue();
+            TickWornAlphaOrder(); // BUG-RENDER-50: what _Process does every frame
 
             // --- today's reference: the staging instances ------------------------------------------
             var palettes = new Dictionary<Guid, Transform3D[]>();
@@ -238,8 +239,11 @@ public partial class AvatarRenderer
                 problems.Add("switching the merge off did not restore B within 10 s");
             if (!_riggedAttachments.TryGetValue(b, out var restored) || !restored.Visible || restored.Skeleton.IsEmpty)
                 problems.Add("B is not drawn on its own instance after the switch");
-            else if (restored.GetNodeOrNull<MeshInstance3D>(SortedSurfaceName(1))?.SortingOffset != offsets[(b, 1)])
-                problems.Add("B's restored split surface does not sit at today's offset");
+            // BUG-RENDER-50: A and C were taken off since, so B moved up the alpha order: its restored split
+            // surface sits where its CURRENT rank puts it, exactly where a fresh rig would.
+            else if (restored.GetNodeOrNull<MeshInstance3D>(SortedSurfaceName(1))?.SortingOffset
+                     != WornAlphaOrder.SurfaceOffset(WornAlphaBaseOf(visual, b, float.NaN), 1))
+                problems.Add("B's restored split surface does not sit at its rank's offset");
             if (skeleton.GetChildren().OfType<MeshInstance3D>().Any(n => n.Name.ToString().StartsWith(OutfitBucketName, StringComparison.Ordinal)
                                                                          || n.Name.ToString().StartsWith(OutfitSortedName, StringComparison.Ordinal)))
                 problems.Add("merged instances are left in the tree after the switch");
@@ -467,6 +471,7 @@ public partial class AvatarRenderer
                     if (bucket.IsDirty) bucket.Immediate = true;
             TickOutfitMerge();
             DrainQueue();
+            TickWornAlphaOrder();
             bool idle = visual.OutfitMerge is not { JobInFlight: true } && _pendingRigs.IsEmpty && _activeRigWorkers == 0;
             if (idle && done() && (visual.OutfitMerge == null || visual.OutfitMerge.Buckets.Values.All(bk => !bk.IsDirty))) return true;
             Thread.Sleep(5);

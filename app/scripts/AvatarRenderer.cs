@@ -225,6 +225,9 @@ public partial class AvatarRenderer : Node3D
         // which are vertex-morphed AND re-skinned every shape update via RebuildBodyMorphs — a worn
         // mesh's own vertices never change with shape, so nothing else would ever revisit its Skin.
         public List<(MeshInstance3D Mi, MeshData MeshData, Guid MeshId)> RiggedAttachments { get; } = new();
+        // BUG-RENDER-50: every worn rigged item (or animated-object part) of this avatar and its place in
+        // the alpha draw order (AvatarRenderer.WornAlphaOrder.cs), by entity.
+        public Dictionary<Guid, WornAlphaEntry> WornAlpha { get; } = new();
         // FEAT-PERF-24: this avatar's rigged skins by content (BindRiggedSkin). Godot shares a
         // skeleton's per-re-pose bind writes only between meshes holding the same Skin object, so
         // identical skins (the pieces of one mesh body or head) are handed out once. Per avatar,
@@ -931,6 +934,8 @@ public partial class AvatarRenderer : Node3D
             if (_visuals.TryGetValue(avEntityId, out var avVis))
             {
                 avVis.WornAttachmentEntities.Remove(entityId);
+                // BUG-RENDER-50: the items after it in the alpha order close up.
+                ForgetWornAlphaItem(avVis, entityId);
             }
         }
         if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
@@ -2445,6 +2450,8 @@ public partial class AvatarRenderer : Node3D
 
         avatarVisual.WornAttachmentEntities.Add(entityId);
         _attachmentToAvatar[entityId] = attachment.AvatarEntityId;
+        // BUG-RENDER-50: moved to another point, it moves in the alpha order.
+        NoteWornAlphaPoint(avatarVisual, entityId, attachment.AttachmentPoint);
 
         if (avatarVisual.IsReduced)
         {
@@ -3583,13 +3590,15 @@ public partial class AvatarRenderer : Node3D
 
         // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
         mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
-        mi.SortingOffset = RiggedAlphaSortTieBreak(entityId, req.Faces, req.DefaultFace, faceIndices);
-        // BUG-RENDER-38: the tie-break orders INSTANCES. Surfaces of one instance still tie
-        // with each other, so this names every surface's texture -- a hair that still blinks
-        // and shows more than one here is that case.
+        // BUG-RENDER-50: its place in the wearer's alpha order (attachment point, then linkset), which
+        // also places it -- see AvatarRenderer.WornAlphaOrder.cs.
+        RegisterWornAlphaItem(req.Visual, entityId, mi, WearsBake(req.Faces, req.DefaultFace, faceIndices));
+        // BUG-RENDER-38: the order is per INSTANCE; each blended surface gets an instance of its own
+        // (SplitSortedSurfaces), so this names every surface's texture.
         if (Diagnostics.Enabled)
             GD.Print($"[RiggedSort] {(req.Visual.IsSelf ? "self" : "other")} attachment={entityId.ToString("N")[..8]} " +
-                     $"mesh={req.MeshId.ToString("N")[..8]} offset={mi.SortingOffset:0.0000} " +
+                     $"mesh={req.MeshId.ToString("N")[..8]} point={(req.Visual.WornAlpha.TryGetValue(entityId, out var ranked) ? ranked.Point : 0)} " +
+                     $"base={WornAlphaBaseOf(req.Visual, entityId, float.NaN):0.0000} " +
                      $"{faceIndices.Length} surface(s): " +
                      string.Join(", ", faceIndices.Select(fi =>
                          $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
@@ -3625,42 +3634,12 @@ public partial class AvatarRenderer : Node3D
     /// <see cref="FaceTexture"/> is a <c>readonly record struct</c>, so equality here is full
     /// value equality over every field the material is built from -- texture id, both material
     /// ids, tint, repeats, offsets, rotation, texgen and fullbright. Two faces that compare equal
-    /// cannot produce different materials, which is what makes merging them invisible.</summary>
-    /// <summary>BUG-RENDER-38: a fixed draw order for one avatar's worn rigged meshes, so Godot's
-    /// transparent sort stops re-deciding it every frame.</summary>
-    /// <remarks>
-    /// Every rigged attachment is a child of the skeleton at the identity transform with the same
-    /// <c>CustomAabb</c>, so all of them sort at EXACTLY the same depth — Godot keys the
-    /// transparent sort on the instance's AABB centre alone, and its introsort is unstable, so a
-    /// tie is re-decided from whatever else is in the render list that frame (BUG-RENDER-16's
-    /// mechanism). Reported 2026-09-30 as hair strands fading in and out while zooming: a hair
-    /// drawn before the head lets the head's colour pass paint over every strand that is not
-    /// solid enough for the depth prepass.
+    /// cannot produce different materials, which is what makes merging them invisible.
     ///
-    /// <para>The reference viewer never re-sorts rigged alpha at all — it keeps the original draw
-    /// order (llvovolume.cpp:6332-6335) — so any FIXED order is parity; this one also puts the
-    /// innermost layer first. A mesh that wears a bake (skin: body, head) draws before the rest,
-    /// and the rest are ordered by the sim LocalId, stable for the attachment's lifetime. Steps
-    /// of 0.1 mm over 256 values, so two pieces of one outfit rarely land on the same step (a
-    /// modulus of 16 left one pair in sixteen tied), up to 5.6 cm in all: far below any distance
-    /// at which two avatars' order is visible, and still well above float precision at 100 m.</para>
-    /// </remarks>
-    private float RiggedAlphaSortTieBreak(Guid entityId, FaceTexture[]? faces, FaceTexture defaultFace, int[] faceIndices)
-    {
-        bool wearsBake = false;
-        foreach (int faceIndex in faceIndices)
-        {
-            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(ResolveFaceTexture(faces, defaultFace, faceIndex).TextureId, out _))
-            {
-                wearsBake = true;
-                break;
-            }
-        }
-
-        uint localId = _world?.GetEntity(entityId)?.LocalId ?? 0;
-        return (wearsBake ? 0f : 0.03f) + (localId % 256) * 0.0001f;
-    }
-
+    /// <para>BUG-RENDER-38's fixed draw order for an avatar's worn rigged meshes (bake wearers first, then
+    /// LocalId % 256) lived next to this; BUG-RENDER-50 replaced it with the viewer's order
+    /// (AvatarRenderer.WornAlphaOrder.cs). Its claim that "any FIXED order is parity" held only while
+    /// nothing wrote depth: the viewer's rigged alpha does, and its order is by attachment point.</para></summary>
     private static FaceTexture ResolveFaceTexture(FaceTexture[]? faces, FaceTexture defaultFace, int faceIndex) =>
         (faces != null && faceIndex >= 0 && faceIndex < faces.Length) ? faces[faceIndex] : defaultFace;
 
@@ -3720,7 +3699,12 @@ public partial class AvatarRenderer : Node3D
                 // BUG-RENDER-38: a surface already moved onto its own instance takes its new
                 // material there -- on the parent it would be drawn a second time.
                 if (mi.GetNodeOrNull<MeshInstance3D>(SortedSurfaceName(s)) is { } split)
+                {
                     split.SetSurfaceOverrideMaterial(0, material);
+                    // BUG-RENDER-50: the parent's copy of the surface is its depth pass (nothing when the
+                    // face is no longer blended).
+                    mi.SetSurfaceOverrideMaterial(s, SplitParentMaterial(mi, material));
+                }
                 else
                     mi.SetSurfaceOverrideMaterial(s, material);
             }, label: "avatar.face_material");
@@ -3854,23 +3838,31 @@ public partial class AvatarRenderer : Node3D
     /// the SAME texture whose records still differ -- three surfaces, one depth, strands blinking
     /// in and out and inner cards painting hard dark patches over the outer ones.
     ///
-    /// <para>The children draw in face order, one 10 µm step apart on top of the parent's own
-    /// tie-break (<see cref="RiggedAlphaSortTieBreak"/>, steps of 0.1 mm, so the two scales never
-    /// collide for SL's eight faces): the order the merge would have produced, and the reference
-    /// viewer's "original draw order" for rigged alpha (llvovolume.cpp:6332-6335). Same mechanism
-    /// as ObjectRenderer.SplitSortedSurfaces for world prims (BUG-RENDER-16).</para>
+    /// <para>The children draw in face order, one 10 µm step apart inside the item's slot of the
+    /// wearer's alpha order (<see cref="WornAlphaOrder.SurfaceOffset"/>, BUG-RENDER-50): the order the
+    /// merge would have produced, and the reference viewer's "original draw order" for rigged alpha
+    /// (llvovolume.cpp:6332-6335). Same mechanism as ObjectRenderer.SplitSortedSurfaces for world prims
+    /// (BUG-RENDER-16).</para>
     ///
-    /// <para>The parent keeps its full mesh and draws the moved surfaces with
-    /// <see cref="PrimShaderFamily.Hidden"/>, so the pick body, the selection outline and the
-    /// surface-indexed material updates all keep working unchanged. The price: the moved surfaces
-    /// are skinned twice (parent and child), and each is read back once to be copied -- paid only
-    /// by meshes with two or more blended surfaces, once per rig.</para>
+    /// <para>The parent keeps its full mesh, so the pick body, the selection outline and the
+    /// surface-indexed material updates all keep working unchanged. On a rigged mesh it draws each moved
+    /// surface as that surface's alpha DEPTH pass (<see cref="PrimShaderFamily.DepthCoreAvatar"/>) at the
+    /// slot's end (BUG-RENDER-50), which is why a rigged mesh moves even a single blended surface; on a
+    /// rigid attachment, and with <c>--worn-alpha-depth=0</c>, it draws them with
+    /// <see cref="PrimShaderFamily.Hidden"/> and only moves two or more. The price: the moved surfaces
+    /// are skinned twice (parent and child), and each is read back once to be copied, once per rig.</para>
     /// </remarks>
     private void SplitSortedSurfaces(MeshInstance3D mi, Guid meshId)
     {
         if (!IsInstanceValid(mi) || !mi.IsInsideTree() || mi.Mesh is not ArrayMesh mesh) return;
         int count = mesh.GetSurfaceCount();
-        if (count < 2) return;
+        // BUG-RENDER-50: a rigged mesh moves EVERY blended surface, also a single one: the copy left on the
+        // parent becomes that surface's depth pass, drawn at the parent's slot after all of them. A rigid
+        // attachment is depth-sorted with the scene, as in the viewer, and keeps the old rule.
+        bool depthPass = mi.Skin != null && RenderConfig.WornAlphaDepth > 0f;
+        int minimum = depthPass ? 1 : 2;
+        if (count < minimum) return;
+        float? wornBase = WornAlphaBaseOf(mi);
 
         var blend = PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar);
         int alreadySplit = 0;
@@ -3885,7 +3877,7 @@ public partial class AvatarRenderer : Node3D
             if (mi.GetSurfaceOverrideMaterial(s) is ShaderMaterial sm && ReferenceEquals(sm.Shader, blend))
                 (pending ??= new List<int>()).Add(s);
         }
-        if (pending == null || alreadySplit + pending.Count < 2) return;
+        if (pending == null || alreadySplit + pending.Count < minimum) return;
 
         var skeleton = mi.Skin != null ? mi.GetNodeOrNull<Skeleton3D>(mi.Skeleton) : null;
         foreach (int s in pending)
@@ -3909,15 +3901,17 @@ public partial class AvatarRenderer : Node3D
                 // A blended surface casts no shadow anyway (no depth write).
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
                 Layers = mi.Layers,
-                SortingOffset = mi.SortingOffset + (s + 1) * 0.00001f,
+                SortingOffset = wornBase is { } b ? WornAlphaOrder.SurfaceOffset(b, s) : mi.SortingOffset + (s + 1) * 0.00001f,
             };
+            child.SetMeta(SortedSurfaceMeta, s);
             // A rigged mesh's generous box, so the child sorts at the parent's depth and is not
             // culled on a bind pose parked somewhere else. An unset one stays unset.
             if (mi.CustomAabb.Size != Godot.Vector3.Zero) child.CustomAabb = mi.CustomAabb;
-            child.SetSurfaceOverrideMaterial(0, mi.GetSurfaceOverrideMaterial(s));
+            var color = mi.GetSurfaceOverrideMaterial(s);
+            child.SetSurfaceOverrideMaterial(0, color);
             mi.AddChild(child);
             if (skeleton != null) child.Skeleton = child.GetPathTo(skeleton);
-            mi.SetSurfaceOverrideMaterial(s, HiddenSurfaceMaterial);
+            mi.SetSurfaceOverrideMaterial(s, depthPass ? SplitParentMaterial(mi, color) : HiddenSurfaceMaterial);
         }
 
         if (Diagnostics.Enabled)
@@ -7626,6 +7620,8 @@ void fragment() {
         }
         // FEAT-PERF-23: after the removals, so a linkset taken off this frame frees its bucket at once.
         TickOutfitMerge();
+        // BUG-RENDER-50: worn alpha re-ranked after attaches, detaches and point changes.
+        TickWornAlphaOrder();
 
         float dt = (float)delta;
         ReportAvatarCost(delta);

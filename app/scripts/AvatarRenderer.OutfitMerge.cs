@@ -283,7 +283,9 @@ public partial class AvatarRenderer
         item.Faces = req.Faces;
         item.DefaultFace = req.DefaultFace;
         item.MeshId = req.MeshId;
-        item.SortingOffset = mi.SortingOffset;
+        // BUG-RENDER-50: the start of its slot in the wearer's alpha order (the instance itself sits at the
+        // slot's depth pass).
+        item.SortingOffset = WornAlphaBaseOf(req.Visual, entityId, mi.SortingOffset);
         item.Rig = wanted ? RetainRig(prepared, slotForJoint, faceIndices, req) : null;
         long oldLinkset = item.Linkset;
         SetLinksetOrder(item);
@@ -870,8 +872,6 @@ public partial class AvatarRenderer
     private static OutfitItemInput<OutfitMaterialKey> ToMergerInput(MergeItem item, MergeInput input)
     {
         var rig = input.Rig;
-        int blends = 0;
-        foreach (var f in input.Facts) if (f.Kind == PrimShaderFamily.Kind.Blend) blends++;
         var surfaces = new OutfitSurfaceInput<OutfitMaterialKey>[rig.Surfaces.Length];
         for (int s = 0; s < surfaces.Length; s++)
         {
@@ -886,9 +886,9 @@ public partial class AvatarRenderer
             {
                 MaterialKey = new OutfitMaterialKey(face, facts.Texture, facts.Kind, threshold),
                 Role = role,
-                // Exactly today's (SplitSortedSurfaces): the item's tie-break alone for one blended
-                // surface, plus (s+1)·1e-5 when two or more of them were split onto their own instances.
-                SortingOffset = blends >= 2 ? input.SortingOffset + (s + 1) * 0.00001f : input.SortingOffset,
+                // Exactly the split child's (SplitSortedSurfaces): the surface's slot within the item's
+                // (BUG-RENDER-50). The swap places it again from the wearer's current ranks.
+                SortingOffset = WornAlphaOrder.SurfaceOffset(input.SortingOffset, s),
                 Arrays = rig.Surfaces[s],
             };
         }
@@ -1221,11 +1221,16 @@ public partial class AvatarRenderer
                     CustomAabb = box,
                     // A blended surface casts no shadow (no depth write), as on today's split children.
                     CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                    SortingOffset = sorted.SortingOffset,
                 };
-                mi.SetSurfaceOverrideMaterial(0, MaterialFor(inputs, sorted.ItemId, sorted.SurfaceIndex));
+                var material = MaterialFor(inputs, sorted.ItemId, sorted.SurfaceIndex);
+                mi.SetSurfaceOverrideMaterial(0, material);
+                // BUG-RENDER-50: placed by the wearer's ranks as they are NOW (an attach or detach may have
+                // moved them since the job read its inputs), with the item's depth pass after it.
+                PlaceSortedInstance(mi, WornAlphaBaseOf(job.Visual, sorted.ItemId,
+                    sorted.SortingOffset - WornAlphaOrder.SurfaceOffset(0f, sorted.SurfaceIndex)), sorted.SurfaceIndex);
                 skeleton.AddChild(mi);
                 mi.Skeleton = mi.GetPathTo(skeleton);
+                SetSortedDepthPass(mi, material);
                 bucket.Sorted.Add(mi);
                 bucket.DrawnAt[(sorted.ItemId, sorted.SurfaceIndex)] = (mi, 0);
             }
@@ -1313,10 +1318,12 @@ public partial class AvatarRenderer
             Mesh = mesh,
             Skin = skin,
             CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8)),
-            SortingOffset = input.SortingOffset,
         };
         for (int s = 0; s < input.Materials.Length && s < mesh.GetSurfaceCount(); s++)
             mi.SetSurfaceOverrideMaterial(s, input.Materials[s]);
+        // BUG-RENDER-50: back in its wearer's alpha order on an instance of its own (placed before the split
+        // below, which reads the slot from it).
+        RegisterWornAlphaItem(visual, item.EntityId, mi, WearsBake(input.Faces, input.DefaultFace, rig.FaceIndices));
         skeleton.AddChild(mi);
         mi.Skeleton = mi.GetPathTo(skeleton);
 
@@ -1333,7 +1340,7 @@ public partial class AvatarRenderer
         item.Staging = mi;
         item.StagingSettled = true;
         item.Held = false;
-        item.SortingOffset = input.SortingOffset;
+        item.SortingOffset = WornAlphaBaseOf(visual, item.EntityId, input.SortingOffset);
         RestoreWornHighlight(item.EntityId);
     }
 
@@ -1394,6 +1401,9 @@ public partial class AvatarRenderer
             // Out of the tree now, not at the end of the frame: its skin binding goes at once and a new
             // instance of the same name keeps its name.
             node.Skeleton = new NodePath();
+            // BUG-RENDER-50: a sorted instance's depth pass shares the outfit skin too.
+            foreach (var child in node.GetChildren())
+                if (child is MeshInstance3D depth) depth.Skeleton = new NodePath();
             node.GetParent()?.RemoveChild(node);
             node.QueueFree();
         }
@@ -1476,7 +1486,11 @@ public partial class AvatarRenderer
             bool isSkip = now.Failed || now.Hidden;
             if (wasSorted != isSorted || wasSkip != isSkip) roleChanged = true;
             else if (bucket != null && bucket.DrawnAt.TryGetValue((item.EntityId, s), out var at) && IsInstanceValid(at.Node))
+            {
                 at.Node.SetSurfaceOverrideMaterial(at.Surface, material);
+                // BUG-RENDER-50: a sorted instance's depth pass samples the new bake too.
+                if (bucket.Sorted.Contains(at.Node)) SetSortedDepthPass(at.Node, material);
+            }
             materials[s] = material;
             facts[s] = now;
         }
@@ -1637,7 +1651,7 @@ public partial class AvatarRenderer
         item.Faces = meshInfo.Faces;
         item.DefaultFace = meshInfo.DefaultFace;
         item.MeshId = found.Value.MeshId;
-        item.SortingOffset = mi.SortingOffset;
+        item.SortingOffset = WornAlphaBaseOf(visual, entityId, mi.SortingOffset);
         item.Staging = mi;
         SetLinksetOrder(item);
         item.Generation++;
