@@ -210,16 +210,38 @@ public partial class AvatarRenderer
         var facts = FactsOf(sm);
         if (facts.Failed || facts.Hidden) return null;
         if (_wornDepthMaterials.TryGetValue(sm, out var made)) return made;
-        // Duplicate, not a list of uniforms (ObjectRenderer.AttachDepthCore's reasoning): every placement
-        // input the pass must agree with comes across, including any added later.
-        var depth = (ShaderMaterial)sm.Duplicate();
-        depth.NextPass = null;
-        depth.Shader = PrimShaderFamily.DepthCoreAvatar;
-        depth.RenderPriority = sm.RenderPriority;
+        // NOT Duplicate(): duplicating a ShaderMaterial walks its property list, and that asks the
+        // RenderingServer for the shader's uniform list and every parameter's default -- a full sync with the
+        // separate render thread, per call. v0.27.87-91 did that once per blended worn face and logged thousands
+        // of "get_shader_parameter_list / shader_get_parameter_default causing RenderingServer synchronizations"
+        // warnings in a crowded region. GetShaderParameter reads the material's own values and never syncs, so
+        // the uniforms the pass reads (prim_depth_core_avatar.gdshader: the alpha and the placement in
+        // slng_transform_uv) are copied by name; one the colour material never set stays at the same default.
+        var depth = new ShaderMaterial
+        {
+            Shader = PrimShaderFamily.DepthCoreAvatar,
+            RenderPriority = sm.RenderPriority,
+        };
+        foreach (var name in DepthPassUniforms)
+        {
+            var value = sm.GetShaderParameter(name);
+            if (value.VariantType != Variant.Type.Nil) depth.SetShaderParameter(name, value);
+        }
         depth.SetShaderParameter(PrimShaderFamily.CoreAlphaThreshold, RenderConfig.WornAlphaDepth);
         _wornDepthMaterials.AddOrUpdate(sm, depth);
         return depth;
     }
+
+    /// <summary>What <c>prim_depth_core_avatar.gdshader</c> reads of the colour material: the alpha (colour,
+    /// texture) and the diffuse placement <c>slng_transform_uv</c> computes (TE repeats/offset/rotation, planar
+    /// texgen, the glTF transform, a texture animation).</summary>
+    private static readonly StringName[] DepthPassUniforms =
+    {
+        PrimShaderFamily.AlbedoColor, PrimShaderFamily.AlbedoTexture, PrimShaderFamily.HasAlbedoTexture,
+        PrimShaderFamily.UvScale, PrimShaderFamily.UvOffset, PrimShaderFamily.UvRotation,
+        PrimShaderFamily.UvTexGen, PrimShaderFamily.PrimScale,
+        PrimShaderFamily.PbrUvA, PrimShaderFamily.PbrUvB, PrimShaderFamily.TexAnimA, PrimShaderFamily.TexAnimB,
+    };
 
     /// <summary>What the parent instance draws for a surface moved onto its own child: the face's depth pass
     /// on a rigged mesh, nothing otherwise.</summary>

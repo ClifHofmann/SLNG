@@ -86,14 +86,20 @@ public partial class AvatarRenderer
             var body = Worn(bodyId, 1, 10);
             var addonRoot = Worn(addonRootId, 1, 28);
             var addonChild = Worn(addonRootId + 18, addonRootId, 28);
+            var veil = Worn(addonRootId + 40, 1, 28); // every face hidden: draws nothing at all
             var lowerBake = new Guid("24daea5f-0539-cfcf-047f-fbc40b2786ba"); // IMG_USE_BAKED_LOWER
 
             CommitSelfTestRig(vis, bikini, Mesh(2, 0f), new[] { Face(Guid.NewGuid(), 0.5f), Face(Guid.NewGuid(), 0.6f) }, keepTangents: true);
             CommitSelfTestRig(vis, body, Mesh(1, -0.2f), new[] { Face(lowerBake, 1f) }, keepTangents: true);
             CommitSelfTestRig(vis, addonRoot, Mesh(2, 0.1f), new[] { Face(Guid.NewGuid(), 1f), Face(Guid.NewGuid(), 0.5f) }, keepTangents: true);
             CommitSelfTestRig(vis, addonChild, Mesh(2, 0.15f), new[] { Face(Guid.NewGuid(), 0.5f), Face(Guid.NewGuid(), 0.5f) }, keepTangents: true);
+            CommitSelfTestRig(vis, veil, Mesh(2, 0.2f), new[] { Face(Guid.NewGuid(), 0f), Face(Guid.NewGuid(), 0f) }, keepTangents: true);
             DrainQueue();
             TickWornAlphaOrder();
+            // v0.27.92: every surface this builds (1, 2 and all-hidden blended faces) is indexed triangles.
+            CheckIndexedSurfaces(vis, problems, "staged");
+            if (_riggedAttachments.TryGetValue(veil, out var veilMi) && IsInstanceValid(veilMi) && veilMi.Visible)
+                problems.Add("the all-hidden item is drawn");
 
             // --- 1. ranks ------------------------------------------------------------------------------
             float Base(Guid id) => WornAlphaBaseOf(vis, id, float.NaN);
@@ -149,6 +155,7 @@ public partial class AvatarRenderer
             if (!WaitMerged(vis, () => mergedIds.All(id => _mergeItems.TryGetValue(id, out var it) && it.InBucket)))
                 problems.Add("the outfit did not merge within 10 s");
             var sortedNodes = CheckMergedOrder(vis, mergedIds, problems, "merged");
+            CheckIndexedSurfaces(vis, problems, "merged");
             float addonMergedLast = sortedNodes.Where(n => n.Item != bikini).Select(n => n.Depth).DefaultIfEmpty(float.NaN).Max();
             float bikiniMergedFirst = sortedNodes.Where(n => n.Item == bikini).Select(n => n.Color).DefaultIfEmpty(float.NaN).Min();
             if (!(addonMergedLast < bikiniMergedFirst))
@@ -216,6 +223,38 @@ public partial class AvatarRenderer
                     if (!Equals(depth.GetShaderParameter(name).Obj, c.GetShaderParameter(name).Obj))
                         problems.Add($"{what}: depth pass {name} differs from the colour pass");
                 if (depth.RenderPriority != c.RenderPriority) problems.Add($"{what}: depth pass render priority differs from the colour pass");
+            }
+        }
+    }
+
+    /// <summary>v0.27.92: every mesh drawn under the wearer's skeleton -- own instances, split children, depth
+    /// passes, buckets and sorted instances -- has surfaces of indexed TRIANGLES: a non-empty index array whose
+    /// length is a multiple of 3 over a non-empty vertex array. A surface with vertices and no indices is drawn
+    /// non-indexed, and Godot refuses any whose vertex count is not a multiple of 3 ("Vertex amount (N) must be a
+    /// multiple of ... (3)", rendering_device.cpp). Read from the ArrayMesh resource, so it works headless.</summary>
+    private static void CheckIndexedSurfaces(AvatarVisual visual, List<string> problems, string when)
+    {
+        if (visual.Skeleton == null) return;
+        int surfaces = 0;
+        Walk(visual.Skeleton);
+        if (surfaces == 0) problems.Add($"{when}: no surface to check");
+
+        void Walk(Node node)
+        {
+            foreach (var child in node.GetChildren())
+            {
+                if (child is MeshInstance3D mi && mi.Mesh is ArrayMesh mesh && !mi.IsQueuedForDeletion())
+                {
+                    for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+                    {
+                        surfaces++;
+                        int vertices = mesh.SurfaceGetArrayLen(s);
+                        int indices = mesh.SurfaceGetArrayIndexLen(s);
+                        if (mesh.SurfaceGetPrimitiveType(s) != Mesh.PrimitiveType.Triangles || vertices <= 0 || indices <= 0 || indices % 3 != 0)
+                            problems.Add($"{when}: {mi.Name} surface {s} is {vertices} vertices / {indices} indices ({mesh.SurfaceGetPrimitiveType(s)})");
+                    }
+                }
+                Walk(child);
             }
         }
     }
