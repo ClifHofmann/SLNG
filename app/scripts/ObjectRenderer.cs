@@ -4709,6 +4709,9 @@ public partial class ObjectRenderer : Node3D
         material.SetShaderParameter(PrimShaderFamily.EmissionEnabled, pbr.EmissiveFactor != System.Numerics.Vector3.Zero);
         material.SetShaderParameter(PrimShaderFamily.EmissionColor,
             PbrLinearFactor(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z, 1f));
+        // BUG-RENDER-49 follow-up: a glTF dielectric reflects 4 % (deferredUtil.glsl:565-571, f0 = 0.04, used by
+        // softenLightF.glsl:185 and pbralphaF.glsl:193); prim_common zeroes the legacy specular for every face.
+        material.SetShaderParameter(PrimShaderFamily.PbrMaterial, true);
 
         var t = o?.BaseColorTransform ?? pbr.BaseColorTransform ?? SLNG.Core.GltfTextureTransform.Identity;
         material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(t.Scale.X, t.Scale.Y, t.Offset.X, t.Offset.Y));

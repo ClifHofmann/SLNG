@@ -140,7 +140,8 @@ public partial class SelfTest
 
             // 7. BUG-RENDER-49 follow-up: a linear factor reaches the shader's math as the same linear value. The
             // uniform is source_color (decoded from sRGB), so what is stored must be the sRGB encoding of it, not
-            // the factor itself -- that was the double linearisation. Alpha is never converted.
+            // the factor itself -- that was the double linearisation. Alpha is never converted. A glTF face also
+            // gets the dielectric specular flag.
             var tinted = pbr with
             {
                 BaseColorFactor = new SysVector4(1f, 0.6f, 0.7f, 0.5f),
@@ -155,8 +156,14 @@ public partial class SelfTest
                 || MathF.Abs(stored.A - 0.5f) > Tol || MathF.Abs(stored.G - 0.6f) < 0.1f
                 || MathF.Abs(seenEmission.R - 0.25f) > Tol || MathF.Abs(seenEmission.G - 0.5f) > Tol)
                 return new Check(Name, false, $"linear factor test failed: stored {stored}, the shader sees {seen}, emission {seenEmission}");
+            if (!(bool)matTinted.GetShaderParameter(PrimShaderFamily.PbrMaterial))
+                return new Check(Name, false, "a glTF face is not flagged for the dielectric specular");
+            var legacy = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
+            if (legacy.GetShaderParameter(PrimShaderFamily.PbrMaterial).VariantType == Variant.Type.Bool
+                && (bool)legacy.GetShaderParameter(PrimShaderFamily.PbrMaterial))
+                return new Check(Name, false, "a legacy face is flagged as glTF");
 
-            return new Check(Name, true, "factors (linear into the shader, alpha untouched), alpha, 2-sided, transform, and fingerprints match spec");
+            return new Check(Name, true, "factors (linear into the shader, alpha untouched), alpha, 2-sided, transform, dielectric flag and fingerprints match spec");
         }
         catch (Exception ex)
         {

@@ -447,6 +447,10 @@ public static class PrimShaderFamily
     public static readonly StringName PbrUvA = "pbr_uv_a";
     public static readonly StringName PbrUvB = "pbr_uv_b";
 
+    /// <summary>BUG-RENDER-49 follow-up: the face draws a glTF material, so it gets glTF's dielectric 4 %
+    /// specular instead of the legacy path's 0 (prim_common.gdshaderinc).</summary>
+    public static readonly StringName PbrMaterial = "pbr_material";
+
     /// <summary>SL TexGen, NORMALISED for the shader: 0 = default, 1 = planar. The wire value
     /// for planar is 2 (see FaceTexture.TexGen); it is collapsed to a 0/1 flag here so the
     /// shader branch stays a plain comparison and spherical/cylindrical fall back to default.
