@@ -4051,6 +4051,7 @@ public partial class AvatarRenderer : Node3D
         // to that heuristic unchanged.
         // A PBR face's tint is white (above), so it never reaches this as translucent.
         bool hasExplicitAlpha = false;
+        bool legacyAlphaResolved = false;
         if (pbr != null)
         {
             hasExplicitAlpha = true;
@@ -4071,6 +4072,34 @@ public partial class AvatarRenderer : Node3D
                     break;
             }
             // doubleSided needs nothing here: Avatar and Hud surfaces are cull_disabled already.
+        }
+        else if (ft.LegacyMaterialId != Guid.Empty
+                 && await GetLegacyMaterialAsync(ft.LegacyMaterialId).ConfigureAwait(false) is { } legacy)
+        {
+            // BUG-RENDER-50: a legacy material's diffuse alpha mode is just as authoritative, and it applies
+            // to worn faces exactly as to prims (pipeline.cpp:1781-1820, llvovolume.cpp:6766-6790): NONE and
+            // EMISSIVE ignore the texture's alpha, MASK cuts at the material's cutoff, BLEND blends -- a
+            // translucent face colour still blends. Without this a worn face with an alpha channel it was
+            // told to ignore was sorted and blended (and, being blended, drawn over by what lies behind it).
+            // DEFAULT leaves it to ClassifyAlpha below, as before. Only without a glTF material: that one
+            // replaces the legacy material outright (above).
+            var (route, cutoff) = LegacyMaterialAlpha.Route(legacy.DiffuseAlphaMode, legacy.AlphaMaskCutoff, tintTranslucent);
+            if (route != LegacyAlphaRoute.Pixels)
+            {
+                hasExplicitAlpha = true;
+                legacyAlphaResolved = true;
+                kind = route switch
+                {
+                    LegacyAlphaRoute.Blend => PrimShaderFamily.Kind.Blend,
+                    LegacyAlphaRoute.Mask => PrimShaderFamily.Kind.Scissor,
+                    _ => PrimShaderFamily.Kind.Opaque,
+                };
+                if (route == LegacyAlphaRoute.Mask) scissorThreshold = cutoff;
+            }
+            if (Diagnostics.Enabled)
+                GD.Print($"[AvatarAlpha] mesh={meshId.ToString("N")[..8]} face={faceIndex} legacyMat={legacy.Id.ToString("N")[..8]} " +
+                         $"mode={legacy.DiffuseAlphaMode} cutoff={legacy.AlphaMaskCutoff} tintA={tint.A:0.###} -> " +
+                         (route == LegacyAlphaRoute.Pixels ? "texture decides" : $"{kind}"));
         }
 
         // BUG-RENDER-49: the material's other maps, fetched alongside the base colour below and set
@@ -4252,7 +4281,8 @@ public partial class AvatarRenderer : Node3D
         // ragged contour where the mask is already ~96% transparent -- nothing left there to look
         // torn -- while keeping the depth write, the shader, and the sort behaviour exactly as
         // they are. alpha_to_coverage (prim_scissor_avatar) still antialiases the remaining edge.
-        if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
+        // Not over a legacy material's own MASK cutoff (BUG-RENDER-50): the creator stated that one.
+        if (wasBom && kind == PrimShaderFamily.Kind.Scissor && !legacyAlphaResolved)
             scissorThreshold = BomAlphaScissorThreshold;
 
         return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
@@ -4337,6 +4367,19 @@ public partial class AvatarRenderer : Node3D
     /// <summary>SelfTest only (BUG-RENDER-49): glTF materials served without an asset service, which
     /// the headless smoke test does not have. Never set in the client.</summary>
     internal System.Collections.Generic.Dictionary<Guid, SLNG.Assets.PbrMaterialData>? PbrMaterialsForSelfTest { get; set; }
+
+    /// <summary>SelfTest only (BUG-RENDER-50): legacy materials served without an asset service. Never set in
+    /// the client.</summary>
+    internal System.Collections.Generic.Dictionary<Guid, LegacyMaterialData>? LegacyMaterialsForSelfTest { get; set; }
+
+    private System.Threading.Tasks.Task<LegacyMaterialData?> GetLegacyMaterialAsync(Guid materialId)
+    {
+        if (LegacyMaterialsForSelfTest != null && LegacyMaterialsForSelfTest.TryGetValue(materialId, out var seeded))
+            return System.Threading.Tasks.Task.FromResult<LegacyMaterialData?>(seeded);
+        return _assetService != null
+            ? _assetService.GetLegacyMaterialAsync(materialId)
+            : System.Threading.Tasks.Task.FromResult<LegacyMaterialData?>(null);
+    }
 
     private System.Threading.Tasks.Task<SLNG.Assets.PbrMaterialData?> GetPbrMaterialAsync(Guid materialId)
     {

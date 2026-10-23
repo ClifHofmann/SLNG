@@ -29,7 +29,8 @@ public partial class AvatarRenderer
     /// <item>Merged (FEAT-PERF-23): each sorted instance sits at the same offset with a depth pass that
     /// shares its mesh and skin at the item's depth slot.</item>
     /// <item>Taking an add-on prim off re-ranks: the bikini moves up, staged and merged nodes with it.</item>
-    /// <item>With the pass off the parent's copies draw nothing.</item>
+    /// <item>A legacy material's alpha mode decides a worn face: NONE opaque, MASK at its cutoff, BLEND
+    /// blended, a translucent face colour blends; with the pass off the parent's copies draw nothing.</item>
     /// </list>
     /// No pixels: the headless smoke test has no rasterizer, so occlusion itself is asserted through the
     /// order and the depth state that produce it.
@@ -46,6 +47,7 @@ public partial class AvatarRenderer
         bool priorSetting = RenderConfig.OutfitMerge;
         bool priorApplied = _outfitMergeApplied;
         float priorDepth = RenderConfig.WornAlphaDepth;
+        var priorLegacy = LegacyMaterialsForSelfTest;
         var world = new World();
         _world = world;
         _gpuCache = new GpuCache(64L << 20);
@@ -161,7 +163,8 @@ public partial class AvatarRenderer
             if (!(Base(bikini) < bikiniBefore)) problems.Add($"the bikini did not move up after an add-on prim left ({bikiniBefore:0.0000} -> {Base(bikini):0.0000})");
             CheckMergedOrder(vis, new[] { bikini, addonRoot }, problems, "after the detach");
 
-            // --- 6. the switch --------------------------------------------------------------------------------
+            // --- 6. legacy alpha modes and the switch ---------------------------------------------------------
+            CheckLegacyAlphaModes(problems);
             RenderConfig.WornAlphaDepth = 0f;
             var anyBlend = new ShaderMaterial { Shader = PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar) };
             if (WornDepthMaterialFor(anyBlend) != null) problems.Add("--worn-alpha-depth=0 still makes a depth pass");
@@ -187,13 +190,15 @@ public partial class AvatarRenderer
             RenderConfig.OutfitMerge = priorSetting;
             _outfitMergeApplied = priorApplied;
             RenderConfig.WornAlphaDepth = priorDepth;
+            LegacyMaterialsForSelfTest = priorLegacy;
             _world = priorWorld;
             _gpuCache = priorCache;
         }
 
         return problems.Count == 0
             ? (true, "bake wearer first, point 28 before point 23 (staged and merged), every blended surface on its own instance, " +
-                     "a cull_disabled depth_draw_always pass per item between its surfaces and the next item, re-ranked on detach")
+                     "a cull_disabled depth_draw_always pass per item between its surfaces and the next item, re-ranked on detach; " +
+                     "legacy NONE/MASK/BLEND honoured on worn faces")
             : (false, string.Join("; ", problems.Distinct()));
 
         void CheckDepthPass(Material? pass, Material? color, string what)
@@ -252,5 +257,37 @@ public partial class AvatarRenderer
         foreach (var item in items)
             if (!found.Any(f => f.Item1 == item)) problems.Add($"{when}: {MergeShort(item)} has no sorted instance");
         return found;
+    }
+
+    /// <summary>A legacy material's diffuse alpha mode on a worn face (no asset service: the materials are
+    /// served from <see cref="LegacyMaterialsForSelfTest"/>).</summary>
+    private void CheckLegacyAlphaModes(List<string> problems)
+    {
+        LegacyMaterialData Legacy(LegacyDiffuseAlphaMode mode, byte cutoff) => new(Guid.NewGuid(), Guid.Empty,
+            System.Numerics.Vector2.Zero, System.Numerics.Vector2.One, 0f, Guid.Empty, System.Numerics.Vector2.Zero,
+            System.Numerics.Vector2.One, 0f, System.Numerics.Vector4.One, 51, 0, cutoff, mode);
+        var none = Legacy(LegacyDiffuseAlphaMode.None, 0);
+        var mask = Legacy(LegacyDiffuseAlphaMode.Mask, 128);
+        var blend = Legacy(LegacyDiffuseAlphaMode.Blend, 0);
+        var fallback = Legacy(LegacyDiffuseAlphaMode.Default, 0);
+        LegacyMaterialsForSelfTest = new Dictionary<Guid, LegacyMaterialData>
+        {
+            [none.Id] = none, [mask.Id] = mask, [blend.Id] = blend, [fallback.Id] = fallback,
+        };
+        FaceTexture Face(Guid legacy, float alpha) =>
+            new(Guid.NewGuid(), Guid.Empty, legacy, new System.Numerics.Vector4(1f, 1f, 1f, alpha), 1f, 1f, 0f, 0f, 0f);
+        (PrimShaderFamily.Kind Kind, float Threshold) Built(FaceTexture face)
+        {
+            var material = BuildFaceMaterialAsync(face, null, Guid.NewGuid(), 0).GetAwaiter().GetResult();
+            var facts = FactsOf(material);
+            return (facts.Kind, facts.Threshold);
+        }
+        if (Built(Face(none.Id, 1f)).Kind != PrimShaderFamily.Kind.Opaque) problems.Add("legacy NONE is not opaque");
+        var masked = Built(Face(mask.Id, 1f));
+        if (masked.Kind != PrimShaderFamily.Kind.Scissor || MathF.Abs(masked.Threshold - 128f / 255f) > 1e-5f)
+            problems.Add($"legacy MASK 128 is {masked.Kind} @ {masked.Threshold}, expected Scissor @ {128f / 255f}");
+        if (Built(Face(blend.Id, 1f)).Kind != PrimShaderFamily.Kind.Blend) problems.Add("legacy BLEND is not blended");
+        if (Built(Face(none.Id, 0.5f)).Kind != PrimShaderFamily.Kind.Blend) problems.Add("legacy NONE with a translucent face colour is not blended");
+        if (Built(Face(fallback.Id, 1f)).Kind != PrimShaderFamily.Kind.Opaque) problems.Add("legacy DEFAULT (no texture) is not left as before");
     }
 }
