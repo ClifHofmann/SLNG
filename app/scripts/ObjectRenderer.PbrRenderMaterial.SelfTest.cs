@@ -44,7 +44,8 @@ public partial class ObjectRenderer
             var (pbrMaterial, pbrUsed) = DoBuildFaceMaterialAsync(face, System.Numerics.Vector3.One, 1000f, 1f).GetAwaiter().GetResult();
             Expect(pbrUsed.Contains(baseColorTexture), "the PBR face samples its material's base colour");
             Expect(!pbrUsed.Contains(legacyTexture), "the PBR face does not sample its legacy texture");
-            var albedo = (Color)pbrMaterial.GetShaderParameter(PrimShaderFamily.AlbedoColor);
+            // The shader's view of the factor: the uniform is source_color, decoded from sRGB (BUG-RENDER-49 follow-up).
+            var albedo = ((Color)pbrMaterial.GetShaderParameter(PrimShaderFamily.AlbedoColor)).SrgbToLinear();
             Expect(Near(albedo.R, 0.8f) && Near(albedo.G, 0.6f) && Near(albedo.B, 0.4f) && Near(albedo.A, 1f),
                 $"albedo is the base colour factor, not tinted by the TextureEntry (got {albedo})");
             Expect(pbrMaterial.Shader == PrimShaderFamily.Scissor, "MASK selects the scissor variant (the TE alpha 0.5 does not select blend)");

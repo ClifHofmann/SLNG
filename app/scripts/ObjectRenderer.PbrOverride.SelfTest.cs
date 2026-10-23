@@ -35,7 +35,9 @@ public partial class SelfTest
             var matNoOverride = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
             ObjectRenderer.ApplyPbrFactors(matNoOverride, pbr, null);
 
-            Godot.Color noOvAlbedo = (Godot.Color)matNoOverride.GetShaderParameter(PrimShaderFamily.AlbedoColor);
+            // BUG-RENDER-49 follow-up: colour factors are handed over sRGB-encoded (source_color uniforms) and
+            // read here the way the shader sees them, decoded back to the linear factor.
+            Godot.Color noOvAlbedo = ((Godot.Color)matNoOverride.GetShaderParameter(PrimShaderFamily.AlbedoColor)).SrgbToLinear();
             float noOvMetallic = (float)matNoOverride.GetShaderParameter(PrimShaderFamily.MetallicFactor);
             float noOvRoughness = (float)matNoOverride.GetShaderParameter(PrimShaderFamily.RoughnessFactor);
             bool noOvEmission = (bool)matNoOverride.GetShaderParameter(PrimShaderFamily.EmissionEnabled);
@@ -60,11 +62,11 @@ public partial class SelfTest
             var matFactors = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
             ObjectRenderer.ApplyPbrFactors(matFactors, effFactors, ovFactors);
 
-            Godot.Color fAlbedo = (Godot.Color)matFactors.GetShaderParameter(PrimShaderFamily.AlbedoColor);
+            Godot.Color fAlbedo = ((Godot.Color)matFactors.GetShaderParameter(PrimShaderFamily.AlbedoColor)).SrgbToLinear();
             float fRoughness = (float)matFactors.GetShaderParameter(PrimShaderFamily.RoughnessFactor);
             float fMetallic = (float)matFactors.GetShaderParameter(PrimShaderFamily.MetallicFactor);
             bool fEmission = (bool)matFactors.GetShaderParameter(PrimShaderFamily.EmissionEnabled);
-            Godot.Color fEmissionColor = (Godot.Color)matFactors.GetShaderParameter(PrimShaderFamily.EmissionColor);
+            Godot.Color fEmissionColor = ((Godot.Color)matFactors.GetShaderParameter(PrimShaderFamily.EmissionColor)).SrgbToLinear();
 
             if (MathF.Abs(fAlbedo.R - 0.8f) > Tol || MathF.Abs(fAlbedo.G - 0.1f) > Tol || MathF.Abs(fAlbedo.B - 0.1f) > Tol ||
                 MathF.Abs(fRoughness - 0.35f) > Tol || MathF.Abs(fMetallic - 0f) > Tol || !fEmission ||
@@ -136,7 +138,25 @@ public partial class SelfTest
             if (fp1 == fpDiff)
                 return new Check(Name, false, "materials with different roughness produced identical fingerprints");
 
-            return new Check(Name, true, "factors, alpha, 2-sided, transform, and fingerprints match spec");
+            // 7. BUG-RENDER-49 follow-up: a linear factor reaches the shader's math as the same linear value. The
+            // uniform is source_color (decoded from sRGB), so what is stored must be the sRGB encoding of it, not
+            // the factor itself -- that was the double linearisation. Alpha is never converted.
+            var tinted = pbr with
+            {
+                BaseColorFactor = new SysVector4(1f, 0.6f, 0.7f, 0.5f),
+                EmissiveFactor = new SysVector3(0.25f, 0.5f, 0f),
+            };
+            var matTinted = new ShaderMaterial { Shader = PrimShaderFamily.Opaque };
+            ObjectRenderer.ApplyPbrFactors(matTinted, tinted, null);
+            var stored = (Godot.Color)matTinted.GetShaderParameter(PrimShaderFamily.AlbedoColor);
+            var seen = stored.SrgbToLinear();
+            var seenEmission = ((Godot.Color)matTinted.GetShaderParameter(PrimShaderFamily.EmissionColor)).SrgbToLinear();
+            if (MathF.Abs(seen.R - 1f) > Tol || MathF.Abs(seen.G - 0.6f) > Tol || MathF.Abs(seen.B - 0.7f) > Tol
+                || MathF.Abs(stored.A - 0.5f) > Tol || MathF.Abs(stored.G - 0.6f) < 0.1f
+                || MathF.Abs(seenEmission.R - 0.25f) > Tol || MathF.Abs(seenEmission.G - 0.5f) > Tol)
+                return new Check(Name, false, $"linear factor test failed: stored {stored}, the shader sees {seen}, emission {seenEmission}");
+
+            return new Check(Name, true, "factors (linear into the shader, alpha untouched), alpha, 2-sided, transform, and fingerprints match spec");
         }
         catch (Exception ex)
         {

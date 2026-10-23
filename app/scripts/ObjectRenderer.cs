@@ -4694,22 +4694,33 @@ public partial class ObjectRenderer : Node3D
         SLNG.Assets.PbrMaterialData pbr,
         SLNG.Core.GltfMaterialOverride? o)
     {
-        var baseColor = new Godot.Color(
-            pbr.BaseColorFactor.X,
-            pbr.BaseColorFactor.Y,
-            pbr.BaseColorFactor.Z,
-            pbr.BaseColorFactor.W);
+        // BUG-RENDER-49 follow-up: glTF's base colour and emissive FACTORS are LINEAR, but albedo_color and
+        // emission_color are `source_color` uniforms (prim_common.gdshaderinc), which Godot decodes from sRGB
+        // before the shader sees them -- so a linear factor written as is was linearised twice and every PBR
+        // tint rendered darker and more saturated (a rosé hair went near red). The viewer multiplies the
+        // linearised base-colour texel by the material's linear base colour (pbropaqueF.glsl:73-75; the
+        // vertex colour IS mBaseColor, llface.cpp:1392-1400). So the factor is handed over sRGB-encoded,
+        // which the uniform's decode turns back into exactly the factor; alpha is never converted.
+        var baseColor = PbrLinearFactor(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W);
         material.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
         material.SetShaderParameter(PrimShaderFamily.MetallicFactor, pbr.MetallicFactor);
         material.SetShaderParameter(PrimShaderFamily.RoughnessFactor, pbr.RoughnessFactor);
 
         material.SetShaderParameter(PrimShaderFamily.EmissionEnabled, pbr.EmissiveFactor != System.Numerics.Vector3.Zero);
         material.SetShaderParameter(PrimShaderFamily.EmissionColor,
-            new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z));
+            PbrLinearFactor(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z, 1f));
 
         var t = o?.BaseColorTransform ?? pbr.BaseColorTransform ?? SLNG.Core.GltfTextureTransform.Identity;
         material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(t.Scale.X, t.Scale.Y, t.Offset.X, t.Offset.Y));
         material.SetShaderParameter(PrimShaderFamily.PbrUvB, new Godot.Vector4(t.Rotation, 1f, 0f, 0f));
+    }
+
+    /// <summary>A linear glTF colour factor as a <c>source_color</c> uniform value: sRGB-encoded RGB, so the
+    /// uniform's sRGB decode yields the factor itself; alpha as is.</summary>
+    internal static Godot.Color PbrLinearFactor(float r, float g, float b, float a)
+    {
+        var encoded = new Godot.Color(r, g, b).LinearToSrgb();
+        return new Godot.Color(encoded.R, encoded.G, encoded.B, a);
     }
 
     /// <summary>SelfTest only (BUG-RENDER-49): glTF materials served without an asset service, which

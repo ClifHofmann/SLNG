@@ -64,7 +64,8 @@ public partial class AvatarRenderer
             Expect(material.Shader == PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.Avatar),
                 "MASK selects the avatar scissor variant");
             Expect(Near((float)material.GetShaderParameter(PrimShaderFamily.AlphaScissorThreshold), 0.35f), "the material's alpha cutoff");
-            var albedo = (Color)material.GetShaderParameter(PrimShaderFamily.AlbedoColor);
+            // The shader's view of the factor: the uniform is source_color, decoded from sRGB (BUG-RENDER-49 follow-up).
+            var albedo = ((Color)material.GetShaderParameter(PrimShaderFamily.AlbedoColor)).SrgbToLinear();
             Expect(Near(albedo.R, 0.8f) && Near(albedo.G, 0.6f) && Near(albedo.B, 0.4f) && Near(albedo.A, 1f),
                 $"albedo is the base colour factor, not the TE colour (got {albedo})");
             Expect(!(bool)material.GetShaderParameter(PrimShaderFamily.Fullbright), "TE fullbright is ignored");
