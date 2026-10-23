@@ -3656,6 +3656,11 @@ public partial class AvatarRenderer : Node3D
     {
         if (mi.Mesh is not ArrayMesh am) return;
         int surfaceCount = am.GetSurfaceCount();
+        // BUG-RENDER-49 follow-up: the worn item for [PbrFace], read here because this part runs on the main thread
+        // (the world is not thread-safe) and the face builds below do not.
+        string? pbrLogItem = Diagnostics.Enabled && entityId != Guid.Empty
+            ? $"item={entityId.ToString("N")[..8]} local={_world?.GetEntity(entityId)?.LocalId ?? 0}"
+            : null;
 
         // Prefetch every distinct material this mesh's faces reference, up front, in ONE go.
         // BuildFaceMaterialAsync awaits GetLegacyMaterialAsync / GetMaterialAsync per face, and
@@ -3691,7 +3696,7 @@ public partial class AvatarRenderer : Node3D
             FaceTexture ft = (faces != null && faceIndex >= 0 && faceIndex < faces.Length)
                 ? faces[faceIndex] : defaultFace;
 
-            var material = await BuildFaceMaterialAsync(ft, avatarVisual, meshId, faceIndex).ConfigureAwait(false);
+            var material = await BuildFaceMaterialAsync(ft, avatarVisual, meshId, faceIndex, pbrLogItem: pbrLogItem).ConfigureAwait(false);
             int s = surf;
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
@@ -3954,7 +3959,7 @@ public partial class AvatarRenderer : Node3D
     /// </summary>
     private async System.Threading.Tasks.Task<ShaderMaterial> BuildFaceMaterialAsync(
         FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
-        PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
+        PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar, string? pbrLogItem = null)
     {
         // A face without a glTF material is hidden by its TextureEntry, at once, as always.
         if (ft.RenderMaterialId == Guid.Empty && ft.IsInvisible) return HiddenFaceMaterial();
@@ -3965,12 +3970,18 @@ public partial class AvatarRenderer : Node3D
         // v0.27.82 only its alpha mode was read here and the face kept sampling its legacy texture: a
         // PBR pet rendered plain white (its legacy texture is IMG_WHITE) and a PBR bikini see-through.
         SLNG.Assets.PbrMaterialData? pbr = null;
+        SLNG.Assets.PbrMaterialData? pbrBase = null;
         if (ft.RenderMaterialId != Guid.Empty)
         {
             var baseMaterial = await GetPbrMaterialAsync(ft.RenderMaterialId).ConfigureAwait(false);
+            pbrBase = baseMaterial;
             if (baseMaterial != null) pbr = SLNG.Assets.PbrOverrideMerge.Apply(baseMaterial, ft.PbrOverride);
-            // Remembered, so the item is built again if the material turns up later (AvatarRenderer.PbrArrival).
-            else NotePbrBuiltWithout(ft.RenderMaterialId);
+            else
+            {
+                // Remembered, so the item is built again if the material turns up later (AvatarRenderer.PbrArrival).
+                NotePbrBuiltWithout(ft.RenderMaterialId);
+                if (Diagnostics.Enabled) PbrFaceLog.Unavailable(PbrFaceWho(avatarVisual, pbrLogItem, meshId, faceIndex), ft.RenderMaterialId, ft.PbrOverride);
+            }
         }
 
         // A PBR face is hidden by its material, never by its TextureEntry (PbrDrawsNothing) -- the way
@@ -4072,6 +4083,10 @@ public partial class AvatarRenderer : Node3D
                     break;
             }
             // doubleSided needs nothing here: Avatar and Hud surfaces are cull_disabled already.
+            // BUG-RENDER-49 follow-up: what the asset says, what the face's override changes, what it is drawn as.
+            if (Diagnostics.Enabled && pbrBase != null)
+                PbrFaceLog.Face(PbrFaceWho(avatarVisual, pbrLogItem, meshId, faceIndex), ft.RenderMaterialId, pbrBase,
+                    ft.PbrOverride, pbr, kind.ToString());
         }
         else if (ft.LegacyMaterialId != Guid.Empty
                  && await GetLegacyMaterialAsync(ft.LegacyMaterialId).ConfigureAwait(false) is { } legacy)
@@ -4287,6 +4302,13 @@ public partial class AvatarRenderer : Node3D
 
         return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
     }
+
+    /// <summary>BUG-RENDER-49 follow-up: who a <c>[PbrFace]</c> line is about -- the wearer, the worn item (when the
+    /// caller knows it: "item=&lt;entity&gt; local=&lt;LocalId&gt;", which matches the [GltfOverride] lines), the mesh and
+    /// the face.</summary>
+    private static string PbrFaceWho(AvatarVisual? wearer, string? item, Guid meshId, int faceIndex) =>
+        $"wearer={(wearer != null ? wearer.AgentId.ToString("N")[..8] : "-")} {item ?? "item=-"} " +
+        $"mesh={(meshId == Guid.Empty ? "-" : meshId.ToString("N")[..8])} face={faceIndex}";
 
     /// <summary>BUG-RENDER-49: whether a face with this (override-merged) glTF material draws nothing at
     /// all. The viewer drops a BLEND material whose base-colour alpha is 0 (llvovolume.cpp:6017-6022);

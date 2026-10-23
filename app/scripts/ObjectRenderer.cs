@@ -4536,6 +4536,11 @@ public partial class ObjectRenderer : Node3D
                 if (ft.PbrOverride != null)
                     LogPbrOverride(ft.RenderMaterialId, ft.PbrOverride);
 
+                // BUG-RENDER-49 follow-up: the same [PbrFace] line the avatar faces print.
+                if (Diagnostics.Enabled)
+                    PbrFaceLog.Face($"prim tex={(ft.TextureId == Guid.Empty ? "-" : ft.TextureId.ToString("N")[..8])}",
+                        ft.RenderMaterialId, pbr, ft.PbrOverride, eff, PrimShaderKindName(material.Shader));
+
                 // FEAT-RENDER-22: remember which glTF materials are mirror-grade, so the hero probe
                 // can find the one surface in the scene worth spending a real-time capture on.
                 // Threshold is the reference viewer's own: tapHeroProbe blends in over
