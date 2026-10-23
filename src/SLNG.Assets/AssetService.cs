@@ -1344,6 +1344,11 @@ public class AssetService
     /// to build it again; everyone else ignores it.</summary>
     public event Action<Guid>? MaterialLoaded;
 
+    /// <summary>The decoded texture (or bake) if it is in the memory cache right now -- no fetch, never
+    /// blocks. For diagnostics that measure what a face samples (BUG-RENDER-50 [BomAlpha]).</summary>
+    public bool TryGetCachedTexture(Guid textureId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TextureData? data) =>
+        _memCache.TryGetValue(textureId, out data) && data != null;
+
     /// <summary>The glTF material if it is in memory right now -- no fetch, never blocks. What a
     /// worker deciding a rigged mesh's geometry may ask (BUG-RENDER-49).</summary>
     public bool TryGetLoadedMaterial(Guid materialId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PbrMaterialData? material)

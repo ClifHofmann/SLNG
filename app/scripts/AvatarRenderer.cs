@@ -3602,6 +3602,8 @@ public partial class AvatarRenderer : Node3D
                      $"{faceIndices.Length} surface(s): " +
                      string.Join(", ", faceIndices.Select(fi =>
                          $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
+        // BUG-RENDER-50 follow-up: every face record, the hidden ones too (--diag).
+        LogWornFaces(req.Visual, entityId, req.MeshId, req.Faces, req.DefaultFace, faceIndices);
 
         req.Skeleton.AddChild(mi);
         _riggedAttachments[entityId] = mi;
@@ -3712,6 +3714,8 @@ public partial class AvatarRenderer : Node3D
                 }
                 else
                     mi.SetSurfaceOverrideMaterial(s, material);
+                // BUG-RENDER-50 follow-up: how much of a Bakes-on-Mesh face its bake cuts away (--diag).
+                if (Diagnostics.Enabled) LogBomAlpha(mi, s, material, avatarVisual, meshId, faceIndex);
             }, label: "avatar.face_material");
         }
 

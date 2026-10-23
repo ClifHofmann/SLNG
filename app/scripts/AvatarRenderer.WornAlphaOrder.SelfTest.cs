@@ -323,10 +323,27 @@ public partial class AvatarRenderer
         }
         if (Built(Face(none.Id, 1f)).Kind != PrimShaderFamily.Kind.Opaque) problems.Add("legacy NONE is not opaque");
         var masked = Built(Face(mask.Id, 1f));
-        if (masked.Kind != PrimShaderFamily.Kind.Scissor || MathF.Abs(masked.Threshold - 128f / 255f) > 1e-5f)
-            problems.Add($"legacy MASK 128 is {masked.Kind} @ {masked.Threshold}, expected Scissor @ {128f / 255f}");
+        if (masked.Kind != PrimShaderFamily.Kind.Scissor || MathF.Abs(masked.Threshold - LegacyMaterialAlpha.MaskThreshold(128)) > 1e-6f)
+            problems.Add($"legacy MASK 128 is {masked.Kind} @ {masked.Threshold}, expected Scissor @ {LegacyMaterialAlpha.MaskThreshold(128)}");
         if (Built(Face(blend.Id, 1f)).Kind != PrimShaderFamily.Kind.Blend) problems.Add("legacy BLEND is not blended");
         if (Built(Face(none.Id, 0.5f)).Kind != PrimShaderFamily.Kind.Blend) problems.Add("legacy NONE with a translucent face colour is not blended");
         if (Built(Face(fallback.Id, 1f)).Kind != PrimShaderFamily.Kind.Opaque) problems.Add("legacy DEFAULT (no texture) is not left as before");
+
+        // A Bakes-on-Mesh face with a legacy MASK (the wearer's add-on skin: lower bake, cutoff 10): the
+        // material's own cutoff out of 255 -- not the raw byte, not the BoM default -- and it still samples
+        // the bake (its facts carry the channel, which is what re-applies it when a new bake arrives).
+        var bom = Legacy(LegacyDiffuseAlphaMode.Mask, 10);
+        LegacyMaterialsForSelfTest[bom.Id] = bom;
+        var wearer = new AvatarVisual { AgentId = Guid.NewGuid(), EntityId = Guid.NewGuid() };
+        var lowerBake = Guid.NewGuid();
+        wearer.LoadedTextures[10] = lowerBake;
+        var bomFace = new FaceTexture(new Guid("24daea5f-0539-cfcf-047f-fbc40b2786ba"), Guid.Empty, bom.Id,
+            System.Numerics.Vector4.One, 1f, 1f, 0f, 0f, 0f);
+        var bomMaterial = BuildFaceMaterialAsync(bomFace, wearer, Guid.NewGuid(), 2).GetAwaiter().GetResult();
+        var bomFacts = FactsOf(bomMaterial);
+        if (bomFacts.Kind != PrimShaderFamily.Kind.Scissor || MathF.Abs(bomFacts.Threshold - LegacyMaterialAlpha.MaskThreshold(10)) > 1e-6f
+            || bomFacts.BakeChannel != 10 || bomFacts.Texture != lowerBake)
+            problems.Add($"BoM face with legacy MASK 10 is {bomFacts.Kind} @ {bomFacts.Threshold} on {bomFacts.Texture} ch {bomFacts.BakeChannel}, " +
+                         $"expected Scissor @ {LegacyMaterialAlpha.MaskThreshold(10)} (10/255 less half a step) on the lower bake, channel 10");
     }
 }

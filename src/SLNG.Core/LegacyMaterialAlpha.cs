@@ -1,3 +1,5 @@
+using System;
+
 namespace SLNG.Core;
 
 /// <summary>
@@ -11,7 +13,9 @@ namespace SLNG.Core;
 /// <item>NONE (0) and EMISSIVE (3) never go to the alpha pool on account of the texture -- "alpha mode set
 /// to none, never go to alpha pool" -- only a translucent face colour sends them there.</item>
 /// <item>MASK (2) is drawn in the opaque material pass with the material's cutoff (out of 255), again
-/// unless the face colour is translucent, which makes the face BLEND.</item>
+/// unless the face colour is translucent, which makes the face BLEND. The shader discards below the cutoff
+/// minus half an 8-bit step, "comparing floats cast from 8-bit values, produces acne right at the 8-bit
+/// transition points" (class3/deferred/materialF.glsl:253-261): a texel exactly AT the cutoff is kept.</item>
 /// <item>DEFAULT is not a mode a material is sent with; the texture decides, as before.</item>
 /// </list>
 /// </summary>
@@ -28,7 +32,14 @@ public static class LegacyMaterialAlpha
             LegacyDiffuseAlphaMode.None or LegacyDiffuseAlphaMode.Emissive =>
                 (tintTranslucent ? LegacyAlphaRoute.Blend : LegacyAlphaRoute.Opaque, 0f),
             LegacyDiffuseAlphaMode.Mask =>
-                tintTranslucent ? (LegacyAlphaRoute.Blend, 0f) : (LegacyAlphaRoute.Mask, alphaMaskCutoff / 255f),
+                tintTranslucent ? (LegacyAlphaRoute.Blend, 0f) : (LegacyAlphaRoute.Mask, MaskThreshold(alphaMaskCutoff)),
             _ => (LegacyAlphaRoute.Pixels, 0f),
         };
+
+    /// <summary>Half an 8-bit step, the viewer's bias below the cutoff (materialF.glsl:257).</summary>
+    public const float HalfStep = 1f / 512f;
+
+    /// <summary>The alpha below which a MASK face is discarded: the cutoff out of 255, less
+    /// <see cref="HalfStep"/>, never negative (cutoff 0 discards nothing).</summary>
+    public static float MaskThreshold(byte alphaMaskCutoff) => Math.Max(0f, alphaMaskCutoff / 255f - HalfStep);
 }
