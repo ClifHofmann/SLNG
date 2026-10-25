@@ -3603,7 +3603,7 @@ public partial class AvatarRenderer : Node3D
                      string.Join(", ", faceIndices.Select(fi =>
                          $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
         // BUG-RENDER-50 follow-up: every face record, the hidden ones too (--diag).
-        LogWornFaces(req.Visual, entityId, req.MeshId, req.Faces, req.DefaultFace, faceIndices);
+        LogWornFaces(req.Visual, entityId, req.MeshId, req.MeshData, req.Faces, req.DefaultFace);
 
         req.Skeleton.AddChild(mi);
         _riggedAttachments[entityId] = mi;
@@ -4103,6 +4103,7 @@ public partial class AvatarRenderer : Node3D
             // DEFAULT leaves it to ClassifyAlpha below, as before. Only without a glTF material: that one
             // replaces the legacy material outright (above).
             var (route, cutoff) = LegacyMaterialAlpha.Route(legacy.DiffuseAlphaMode, legacy.AlphaMaskCutoff, tintTranslucent);
+            LogLegacyMaterial(legacy);
             if (route != LegacyAlphaRoute.Pixels)
             {
                 hasExplicitAlpha = true;

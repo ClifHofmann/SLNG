@@ -53,6 +53,27 @@ public class BomAlphaProbeTests
     }
 
     [Fact]
+    public void A_downsampled_alpha_map_keeps_the_hole_and_measures_the_same()
+    {
+        // 64x64, left half clear: the 16x16 map is the block mean, so the hole survives, and a face
+        // inside it measures fully cut on the map as on the full texture.
+        var rgba = new byte[64 * 64 * 4];
+        for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 64; x++)
+                rgba[(y * 64 + x) * 4 + 3] = x < 32 ? (byte)0 : (byte)255;
+        var (alpha, w, h) = BomAlphaProbe.DownsampleAlpha(rgba, 64, 64, 16);
+        Assert.Equal((16, 16), (w, h));
+        Assert.Equal(0, alpha[0]);
+        Assert.Equal(255, alpha[15]);
+
+        var uvs = new[] { new Vector2(0.05f, 0.1f), new Vector2(0.4f, 0.1f), new Vector2(0.2f, 0.9f) };
+        var full = BomAlphaProbe.Measure(rgba, 64, 64, uvs, new[] { 0, 1, 2 }, Vector2.One, Vector2.Zero, Mask10);
+        var small = BomAlphaProbe.MeasureAlpha(alpha, w, h, uvs, new[] { 0, 1, 2 }, Vector2.One, Vector2.Zero, Mask10);
+        Assert.Equal(full.CutFraction, small.CutFraction);
+        Assert.Equal(1f, small.CutFraction);
+    }
+
+    [Fact]
     public void Nothing_to_measure_is_reported_as_nothing()
     {
         Assert.Equal(0, BomAlphaProbe.Measure(Array.Empty<byte>(), 4, 2, new[] { Vector2.Zero }, Array.Empty<int>(),
