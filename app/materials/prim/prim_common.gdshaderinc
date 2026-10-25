@@ -64,6 +64,10 @@ uniform float uv_rotation = 0.0;
 uniform vec4 pbr_uv_a = vec4(1.0, 1.0, 0.0, 0.0);
 uniform vec4 pbr_uv_b = vec4(0.0);
 
+// BUG-RENDER-49 follow-up: the face draws a glTF material (ObjectRenderer.ApplyPbrUniforms). Its dielectric
+// reflects 4 % like the viewer's (deferredUtil.glsl:565-571); the legacy path's specular stays 0 (see slng_shade).
+uniform bool pbr_material = false;
+
 // FEAT-PERF-16: llSetTextureAnim, evaluated here instead of by ObjectRenderer every frame.
 // a = (mode bits, SizeX, SizeY, Start), b = (Length, Rate, start time, 1 = animated).
 // Packed by SLNG.Core.TextureAnimShader.Pack; mirrored by TextureAnimShader.Evaluate (tests).
@@ -739,6 +743,15 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
         vec4 orm = texture(orm_texture, uv);
         out_roughness = roughness_factor * orm.g;
         out_metallic = metallic_factor * orm.b;
+    }
+
+    // BUG-RENDER-49 follow-up: a glTF face is lit by the glTF model, whose dielectric F0 is 0.04 --
+    // `f0 = vec3(0.04); specularColor = mix(f0, baseColor, metallic)` (deferredUtil.glsl:565-571, used by
+    // softenLightF.glsl:185 and pbralphaF.glsl:193). Godot's 0.5 is that 4 % (F0 = 0.16 * spec^2), and its
+    // metallic blend toward the albedo is the same mix. The legacy 0 above is about SL's Shiny gate, which a
+    // PBR face never goes through.
+    if (pbr_material) {
+        out_specular = 0.5;
     }
 
     // SL's Environment Intensity -- the slider that makes a prim a MIRROR. Reported live as a

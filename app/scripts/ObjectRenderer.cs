@@ -645,6 +645,8 @@ public partial class ObjectRenderer : Node3D
         _world = world;
         _assetService = assetService;
         _gpuCache = gpuCache;
+        // BUG-RENDER-49: a glTF material that arrives after a face was built without it.
+        if (_assetService != null) _assetService.MaterialLoaded += OnPbrMaterialLoaded;
         _instanceGroups = new ObjectInstanceGroups(
             this,
             id => _visuals.TryGetValue(id, out var vs) && IsInstanceValid(vs.MeshInstance) ? vs.MeshInstance : null);
@@ -4221,9 +4223,26 @@ public partial class ObjectRenderer : Node3D
     private async System.Threading.Tasks.Task<(ShaderMaterial Material, List<Guid> Used)> DoBuildFaceMaterialAsync(FaceTexture ft, System.Numerics.Vector3 primScale, float screenPixelArea, float priority, bool isSculpted = false)
     {
         var used = new List<Guid>();
-        var colorTint = new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
-        if (ft.RenderMaterialId != Guid.Empty && ft.PbrOverride?.BaseColor != null)
-            colorTint = new Godot.Color(1f, 1f, 1f, 1f);
+
+        // BUG-RENDER-49: the glTF material first, because whether the face has one decides its colour.
+        // The viewer colours a PBR face with the material's base colour alone and takes its alpha from
+        // the material too: the TextureEntry colour is not used at all (llface.cpp:1395-1400,
+        // llvovolume.cpp:5972-5979). Multiplying it in -- what this did until v0.27.82 -- darkened or
+        // hid a PBR face whose legacy colour was anything but white. A material that cannot be fetched
+        // leaves the face on its legacy texture AND its legacy colour, the way a pre-PBR viewer shows it.
+        PbrMaterialData? pbr = null;
+        if (ft.RenderMaterialId != Guid.Empty)
+        {
+            System.Threading.Tasks.Task<PbrMaterialData?> pbrRequest;
+            using (MainThreadWorkQueue.Part("mat.pbr.get"))
+                pbrRequest = GetPbrMaterialAsync(ft.RenderMaterialId);
+            pbr = await pbrRequest;
+            // Remembered, so the face is built again if the material turns up later (ObjectRenderer.PbrArrival).
+            if (pbr == null) NotePbrBuiltWithout(ft.RenderMaterialId);
+        }
+        var colorTint = pbr != null
+            ? new Godot.Color(1f, 1f, 1f, 1f)
+            : new Godot.Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
 
         // Scale the object's on-screen pixel area down to what ONE TILE of this face's texture
         // actually covers, before it decides a discard level. Ported from LLFace::
@@ -4241,7 +4260,11 @@ public partial class ObjectRenderer : Node3D
         // Sculpts are deliberately exempt when texel_area > 1, exactly as the viewer notes
         // ("sculpts can break assumptions about texel area") -- a sculpt's UV layout is generated
         // from its map, not authored per face, so its repeats are not a reliable tiling signal.
-        var (scaleU, scaleV) = ft.PbrOverride?.BaseColorTransform is { } t ? (t.Scale.X, t.Scale.Y) : (ft.RepeatU, ft.RepeatV);
+        // A PBR face is placed by its material's transform, never the TextureEntry repeats (see
+        // ApplyPbrUniforms).
+        var (scaleU, scaleV) = ft.PbrOverride?.BaseColorTransform is { } t ? (t.Scale.X, t.Scale.Y)
+            : pbr != null ? (pbr.BaseColorTransform?.Scale.X ?? 1f, pbr.BaseColorTransform?.Scale.Y ?? 1f)
+            : (ft.RepeatU, ft.RepeatV);
         float texelArea = new Godot.Vector2(scaleU * 0.5f, scaleV * 0.5f).LengthSquared() * Mathf.Pi;
         if (texelArea <= 0f) texelArea = 1f; // probably animated -- viewer uses the same default
         if (!(isSculpted && texelArea > 1f))
@@ -4308,7 +4331,9 @@ public partial class ObjectRenderer : Node3D
 
         // FEAT-RENDER-06: SL's per-face fullbright flag. The shader routes albedo through
         // emission when set, so the face reads at full colour regardless of scene lighting.
-        material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
+        // BUG-RENDER-49: not on a PBR face -- "all other parameters ignored if gltf material is
+        // present" (llvovolume.cpp:6649-6650); its glow comes from the material's emissive.
+        material.SetShaderParameter(PrimShaderFamily.Fullbright, pbr == null && ft.Fullbright);
 
         // FEAT-RENDER-19: the build tool's legacy Shiny. Set unconditionally -- the shader gives a
         // specular MAP precedence (BUG-RENDER-23 put this back after BUG-RENDER-21 moved it to the
@@ -4317,7 +4342,8 @@ public partial class ObjectRenderer : Node3D
         // Shiny level to the shader as BOTH the glossiness and the environment intensity unless a
         // map is present. Zero here means genuinely matte, and the viewer skips its entire
         // specular branch for such a face.
-        material.SetShaderParameter(PrimShaderFamily.LegacyShininess, ft.ShinyGlossiness);
+        // BUG-RENDER-49: a PBR face ignores Shiny like every other legacy parameter.
+        material.SetShaderParameter(PrimShaderFamily.LegacyShininess, pbr == null ? ft.ShinyGlossiness : 0f);
 
         material.SetShaderParameter(PrimShaderFamily.PrimScale,
             new Godot.Vector3(primScale.X, primScale.Y, primScale.Z));
@@ -4360,7 +4386,10 @@ public partial class ObjectRenderer : Node3D
         // path and capability fetch below it would sit there untested against a real region, and
         // "it compiles" is not evidence that a capability request works. One line per distinct
         // material, not per face: a build shares one material across dozens of faces.
-        if (ft.LegacyMaterialId != Guid.Empty && _assetService != null)
+        // BUG-RENDER-49: a glTF material REPLACES the legacy one -- the viewer draws a face that has
+        // both in its PBR pool and never looks at the Blinn-Phong params (llvovolume.cpp:6005-6029) --
+        // so the legacy material is resolved only for a face that has no glTF material in hand.
+        if (ft.LegacyMaterialId != Guid.Empty && _assetService != null && pbr == null)
         {
             System.Threading.Tasks.Task<LegacyMaterialData?> legacyRequest;
             using (MainThreadWorkQueue.Part("mat.legacy.get"))
@@ -4490,13 +4519,8 @@ public partial class ObjectRenderer : Node3D
             }
         }
 
-        PbrMaterialData? pbr = null;
-        if (ft.RenderMaterialId != Guid.Empty && _assetService != null)
+        if (ft.RenderMaterialId != Guid.Empty)
         {
-            System.Threading.Tasks.Task<PbrMaterialData?> pbrRequest;
-            using (MainThreadWorkQueue.Part("mat.pbr.get"))
-                pbrRequest = _assetService.GetMaterialAsync(ft.RenderMaterialId);
-            pbr = await pbrRequest;
             if (pbr != null)
             {
                 var eff = SLNG.Assets.PbrOverrideMerge.Apply(pbr, ft.PbrOverride);
@@ -4507,10 +4531,15 @@ public partial class ObjectRenderer : Node3D
                              $"alphaMode={eff.AlphaMode} doubleSided={eff.DoubleSided}");
                 }
 
-                ApplyPbrFactors(material, eff, ft.PbrOverride, colorTint);
+                ApplyPbrFactors(material, eff, ft.PbrOverride);
 
                 if (ft.PbrOverride != null)
                     LogPbrOverride(ft.RenderMaterialId, ft.PbrOverride);
+
+                // BUG-RENDER-49 follow-up: the same [PbrFace] line the avatar faces print.
+                if (Diagnostics.Enabled)
+                    PbrFaceLog.Face($"prim tex={(ft.TextureId == Guid.Empty ? "-" : ft.TextureId.ToString("N")[..8])}",
+                        ft.RenderMaterialId, pbr, ft.PbrOverride, eff, PrimShaderKindName(material.Shader));
 
                 // FEAT-RENDER-22: remember which glTF materials are mirror-grade, so the hero probe
                 // can find the one surface in the scene worth spending a real-time capture on.
@@ -4602,7 +4631,7 @@ public partial class ObjectRenderer : Node3D
                 }
                 // No await Task.WhenAll(tasks) here! Let the textures populate asynchronously so the mesh renders immediately.
             }
-            else
+            else if (_assetService != null)
             {
                 // FEAT-PERF-02 sibling gap: a PBR material fetch failure used to leave the face
                 // with zero texture and zero diagnostic (the pbr==null branch simply did nothing,
@@ -4656,34 +4685,80 @@ public partial class ObjectRenderer : Node3D
         return (material, used);
     }
 
-    internal static void ApplyPbrFactors(
+    /// <summary>The material-independent half of a PBR face: base colour, metallic/roughness and
+    /// emissive factors, and the texture placement. Shared by world prims and avatar faces
+    /// (BUG-RENDER-49); it never touches the shader, which each caller chooses for its own surface.
+    ///
+    /// <para>The colour is the material's base colour alone -- the viewer does not use the
+    /// TextureEntry colour on a PBR face (llface.cpp:1395-1400). The placement is the material's KHR
+    /// texture transform, never the TextureEntry repeats: "For GLTF, transforms will be applied later"
+    /// (llface.cpp:1474), i.e. from the render material in the shader: the override's transform, else
+    /// the material asset's own, else the identity.</para></summary>
+    internal static void ApplyPbrUniforms(
         ShaderMaterial material,
         SLNG.Assets.PbrMaterialData pbr,
-        SLNG.Core.GltfMaterialOverride? o,
-        Godot.Color colorTint)
+        SLNG.Core.GltfMaterialOverride? o)
     {
-        var baseColor = new Godot.Color(
-            pbr.BaseColorFactor.X,
-            pbr.BaseColorFactor.Y,
-            pbr.BaseColorFactor.Z,
-            pbr.BaseColorFactor.W) * colorTint;
+        // BUG-RENDER-49 follow-up: glTF's base colour and emissive FACTORS are LINEAR, but albedo_color and
+        // emission_color are `source_color` uniforms (prim_common.gdshaderinc), which Godot decodes from sRGB
+        // before the shader sees them -- so a linear factor written as is was linearised twice and every PBR
+        // tint rendered darker and more saturated (a rosé hair went near red). The viewer multiplies the
+        // linearised base-colour texel by the material's linear base colour (pbropaqueF.glsl:73-75; the
+        // vertex colour IS mBaseColor, llface.cpp:1392-1400). So the factor is handed over sRGB-encoded,
+        // which the uniform's decode turns back into exactly the factor; alpha is never converted.
+        var baseColor = PbrLinearFactor(pbr.BaseColorFactor.X, pbr.BaseColorFactor.Y, pbr.BaseColorFactor.Z, pbr.BaseColorFactor.W);
         material.SetShaderParameter(PrimShaderFamily.AlbedoColor, baseColor);
         material.SetShaderParameter(PrimShaderFamily.MetallicFactor, pbr.MetallicFactor);
         material.SetShaderParameter(PrimShaderFamily.RoughnessFactor, pbr.RoughnessFactor);
 
         material.SetShaderParameter(PrimShaderFamily.EmissionEnabled, pbr.EmissiveFactor != System.Numerics.Vector3.Zero);
         material.SetShaderParameter(PrimShaderFamily.EmissionColor,
-            new Godot.Color(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z));
+            PbrLinearFactor(pbr.EmissiveFactor.X, pbr.EmissiveFactor.Y, pbr.EmissiveFactor.Z, 1f));
+        // BUG-RENDER-49 follow-up: a glTF dielectric reflects 4 % (deferredUtil.glsl:565-571, f0 = 0.04, used by
+        // softenLightF.glsl:185 and pbralphaF.glsl:193); prim_common zeroes the legacy specular for every face.
+        material.SetShaderParameter(PrimShaderFamily.PbrMaterial, true);
+
+        var t = o?.BaseColorTransform ?? pbr.BaseColorTransform ?? SLNG.Core.GltfTextureTransform.Identity;
+        material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(t.Scale.X, t.Scale.Y, t.Offset.X, t.Offset.Y));
+        material.SetShaderParameter(PrimShaderFamily.PbrUvB, new Godot.Vector4(t.Rotation, 1f, 0f, 0f));
+    }
+
+    /// <summary>A linear glTF colour factor as a <c>source_color</c> uniform value: sRGB-encoded RGB, so the
+    /// uniform's sRGB decode yields the factor itself; alpha as is.</summary>
+    internal static Godot.Color PbrLinearFactor(float r, float g, float b, float a)
+    {
+        var encoded = new Godot.Color(r, g, b).LinearToSrgb();
+        return new Godot.Color(encoded.R, encoded.G, encoded.B, a);
+    }
+
+    /// <summary>SelfTest only (BUG-RENDER-49): glTF materials served without an asset service, which
+    /// the headless smoke test does not have. Never set in the client.</summary>
+    internal System.Collections.Generic.Dictionary<Guid, PbrMaterialData>? PbrMaterialsForSelfTest { get; set; }
+
+    private System.Threading.Tasks.Task<PbrMaterialData?> GetPbrMaterialAsync(Guid materialId)
+    {
+        if (PbrMaterialsForSelfTest != null && PbrMaterialsForSelfTest.TryGetValue(materialId, out var seeded))
+            return System.Threading.Tasks.Task.FromResult<PbrMaterialData?>(seeded);
+        return _assetService != null
+            ? _assetService.GetMaterialAsync(materialId)
+            : System.Threading.Tasks.Task.FromResult<PbrMaterialData?>(null);
+    }
+
+    internal static void ApplyPbrFactors(
+        ShaderMaterial material,
+        SLNG.Assets.PbrMaterialData pbr,
+        SLNG.Core.GltfMaterialOverride? o)
+    {
+        ApplyPbrUniforms(material, pbr, o);
 
         // glTF's own alphaMode is authoritative here — a real, creator-declared signal,
         // never a pixel-content guess (see AvatarRenderer.BuildFaceMaterialAsync's
         // identical use of this field, added alongside PbrMaterialData.AlphaMode this
         // session — this branch previously never set Transparency at all for PBR-
         // materialed faces, so a BLEND/MASK-authored glTF material rendered fully opaque
-        // regardless of its own alpha content). PbrAlphaMode.Opaque intentionally leaves
-        // Transparency untouched: colorTint may have already forced Alpha above for a
-        // translucent per-face tint, which is a separate SL signal from the material's
-        // own declared transparency and must not be downgraded back to opaque.
+        // regardless of its own alpha content). PbrAlphaMode.Opaque leaves the shader as the
+        // caller chose it -- the opaque variant for a world PBR face since BUG-RENDER-49, whose
+        // TextureEntry colour (and so its alpha) no longer takes part.
         if (pbr.AlphaMode == SLNG.Assets.PbrAlphaMode.Blend)
         {
             material.Shader = PrimShaderFamily.Blend;
@@ -4702,17 +4777,6 @@ public partial class ObjectRenderer : Node3D
         if (pbr.DoubleSided)
         {
             material.Shader = DoubleSidedTwin(material.Shader);
-        }
-
-        if (o?.BaseColorTransform is { } t)
-        {
-            material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(t.Scale.X, t.Scale.Y, t.Offset.X, t.Offset.Y));
-            material.SetShaderParameter(PrimShaderFamily.PbrUvB, new Godot.Vector4(t.Rotation, 1f, 0f, 0f));
-        }
-        else
-        {
-            material.SetShaderParameter(PrimShaderFamily.PbrUvA, new Godot.Vector4(1f, 1f, 0f, 0f));
-            material.SetShaderParameter(PrimShaderFamily.PbrUvB, Godot.Vector4.Zero);
         }
     }
 
@@ -6648,6 +6712,7 @@ public partial class ObjectRenderer : Node3D
     public override void _ExitTree()
     {
         MaterialLab.ViewerSunSpecularChanged -= ReapplyViewerSpecularVariants;
+        if (_assetService != null) _assetService.MaterialLoaded -= OnPbrMaterialLoaded;
         if (_world != null)
         {
             _world.EntityAdded -= OnEntityAdded;

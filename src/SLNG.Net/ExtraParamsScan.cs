@@ -4,14 +4,15 @@ using SLNG.Core;
 namespace SLNG.Net;
 
 /// <summary>
-/// What one ExtraParams buffer says about the three blocks LibreMetaverse cannot be trusted with:
-/// Light (0x20), Reflection Probe (0x90) and Extended Mesh (0x70). One validated walk over the
-/// entries, shared by every caller, so the three scans cannot drift apart again.
+/// What one ExtraParams buffer says about the four blocks LibreMetaverse cannot be trusted with:
+/// Light (0x20), Reflection Probe (0x90), Extended Mesh (0x70) and Render Material (0x80,
+/// BUG-RENDER-49). One validated walk over the entries, shared by every caller, so the scans cannot
+/// drift apart again.
 ///
 /// <para><b>Why the raw bytes.</b> <c>Primitive.Light</c> and <c>ExtendedMeshFlags</c> are written
 /// by <c>SetExtraParamsFromBytes</c> and never cleared, and OpenSim signals "switched off" by
 /// OMITTING the block -- so the library keeps reporting the last-enabled state forever. It does not
-/// parse the Reflection Probe at all. The only way to know a block is absent is to read the bytes
+/// parse the Reflection Probe or the Render Material block at all. The only way to know a block is absent is to read the bytes
 /// of the update that omitted it.</para>
 ///
 /// <para><b>Wire layout</b> (lldatapacker.cpp:292-334): <c>U8 count</c>, then per entry <c>U16
@@ -57,9 +58,15 @@ internal readonly struct ExtraParamsScan
     /// <summary>An Extended Mesh (0x70) block with the animated-mesh bit set is present.</summary>
     public bool AnimatedMesh { get; private init; }
 
+    /// <summary>BUG-RENDER-49: the Render Material (0x80) block -- the per-face glTF PBR material ids
+    /// -- or null if there is none. A block with no entries is not null: it is a firm "no material on
+    /// any face", exactly like an absent one, but it was there.</summary>
+    public RenderMaterialParams? RenderMaterials { get; private init; }
+
     public bool LightKnown => Light || Complete;
     public bool ProbeKnown => Probe is not null || Complete;
     public bool AnimatedMeshKnown => AnimatedMesh || Complete;
+    public bool RenderMaterialsKnown => RenderMaterials is not null || Complete;
 
     /// <summary>Reads one ExtraParams buffer. An empty buffer is a firm "no blocks" -- an
     /// ObjectUpdate with no ExtraParams field at all is how a prim with none arrives.</summary>
@@ -75,6 +82,7 @@ internal readonly struct ExtraParamsScan
         bool light = false;
         bool animatedMesh = false;
         ReflectionProbeParams? probe = null;
+        RenderMaterialParams? renderMaterials = null;
         bool probeSeen = false;
         bool meshSeen = false;
 
@@ -82,7 +90,7 @@ internal readonly struct ExtraParamsScan
         {
             if (data.Length - i < EntryHeaderSize)
             {
-                return Partial(light, probe, animatedMesh);
+                return Partial(light, probe, animatedMesh, renderMaterials);
             }
 
             ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(i, 2));
@@ -94,7 +102,7 @@ internal readonly struct ExtraParamsScan
             // can be trusted either.
             if (size < 0 || size > data.Length - i)
             {
-                return Partial(light, probe, animatedMesh);
+                return Partial(light, probe, animatedMesh, renderMaterials);
             }
 
             var payload = data.Slice(i, size);
@@ -128,14 +136,36 @@ internal readonly struct ExtraParamsScan
                         animatedMesh = (flags & ExtendedMeshParams.FlagAnimatedMesh) != 0;
                     }
                     break;
+
+                // BUG-RENDER-49. First block wins, like the others; the payload parse keeps only the
+                // whole entries it holds (see RenderMaterialParams).
+                case RenderMaterialParams.ParamType when renderMaterials is null:
+                    renderMaterials = RenderMaterialParams.Read(payload);
+                    break;
             }
 
             i += size;
         }
 
-        return new ExtraParamsScan { Complete = true, Length = i, Light = light, Probe = probe, AnimatedMesh = animatedMesh };
+        return new ExtraParamsScan
+        {
+            Complete = true,
+            Length = i,
+            Light = light,
+            Probe = probe,
+            AnimatedMesh = animatedMesh,
+            RenderMaterials = renderMaterials,
+        };
     }
 
-    private static ExtraParamsScan Partial(bool light, ReflectionProbeParams? probe, bool animatedMesh)
-        => new() { Complete = false, Light = light, Probe = probe, AnimatedMesh = animatedMesh };
+    private static ExtraParamsScan Partial(bool light, ReflectionProbeParams? probe, bool animatedMesh,
+        RenderMaterialParams? renderMaterials)
+        => new()
+        {
+            Complete = false,
+            Light = light,
+            Probe = probe,
+            AnimatedMesh = animatedMesh,
+            RenderMaterials = renderMaterials,
+        };
 }

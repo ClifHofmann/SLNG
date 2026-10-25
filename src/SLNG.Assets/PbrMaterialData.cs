@@ -35,5 +35,10 @@ public sealed record PbrMaterialData(
     // face by default and lifts it ONLY for a material that sets this explicitly -- a face's
     // renderer must route through the engine's cull-disabled shader variant when this is true,
     // never as a blanket default (see PrimShaderFamily.Select's doubleSided parameter).
-    bool DoubleSided = false
+    bool DoubleSided = false,
+    // BUG-RENDER-49: the material asset's own KHR_texture_transform on its base colour texture
+    // (LLGLTFMaterial::setFromTexture, llgltfmaterial_templates.h:65-82), null when it has none. An
+    // override's transform replaces it (PbrOverrideMerge); the renderer places the face by the
+    // result, never by the TextureEntry repeats.
+    SLNG.Core.GltfTextureTransform? BaseColorTransform = null
 );

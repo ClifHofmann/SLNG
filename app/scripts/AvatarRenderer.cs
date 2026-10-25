@@ -125,7 +125,9 @@ public partial class AvatarRenderer : Node3D
         // any worn mesh consumes — used to hide the matching system body parts — and the worn
         // meshes whose face materials must be re-resolved when a new server bake arrives.
         public HashSet<int> AttachmentBakeChannels { get; } = new();
-        public List<(MeshInstance3D Mi, int[] FaceIndices, FaceTexture[]? Faces, FaceTexture DefaultFace)> BomAttachments { get; } = new();
+        // FEAT-PERF-23: keyed by the worn ENTITY, not by its instance. A merged item has no instance of
+        // its own (Mi is null then) and must still hide the system parts its bake covers.
+        public Dictionary<Guid, BomEntry> BomAttachments { get; } = new();
         public Dictionary<Guid, (FaceTexture[]? Faces, FaceTexture DefaultFace)> WornAttachmentFaces { get; } = new();
         // Per-bone OWN scale (base + shape distortion), keyed by bone name — deliberately NOT
         // multiplied by any ancestor's scale. Verified against LLXformMatrix::update()/
@@ -223,6 +225,9 @@ public partial class AvatarRenderer : Node3D
         // which are vertex-morphed AND re-skinned every shape update via RebuildBodyMorphs — a worn
         // mesh's own vertices never change with shape, so nothing else would ever revisit its Skin.
         public List<(MeshInstance3D Mi, MeshData MeshData, Guid MeshId)> RiggedAttachments { get; } = new();
+        // BUG-RENDER-50: every worn rigged item (or animated-object part) of this avatar and its place in
+        // the alpha draw order (AvatarRenderer.WornAlphaOrder.cs), by entity.
+        public Dictionary<Guid, WornAlphaEntry> WornAlpha { get; } = new();
         // FEAT-PERF-24: this avatar's rigged skins by content (BindRiggedSkin). Godot shares a
         // skeleton's per-re-pose bind writes only between meshes holding the same Skin object, so
         // identical skins (the pieces of one mesh body or head) are handed out once. Per avatar,
@@ -232,6 +237,8 @@ public partial class AvatarRenderer : Node3D
         public Dictionary<SLNG.Core.Avatars.SkinBindKey, Skin> SharedSkins { get; } = new();
         // FEAT-PERF-24: skeleton updates (Skeleton3D.skeleton_updated) since the last [AvatarCost].
         public int SkeletonUpdates { get; set; }
+        // FEAT-PERF-23: this avatar's outfit merge (outfit skin, buckets, items), null when none.
+        public OutfitMergeAvatar? OutfitMerge { get; set; }
         public Godot.Control? NameTag { get; set; }
         /// <summary>Tracks the previous frame's SittingOnLocalId to detect sit→stand transitions.
         /// When transitioning from sitting to standing, the animation player must be forcefully
@@ -256,6 +263,10 @@ public partial class AvatarRenderer : Node3D
             }
         }
     }
+
+    /// <summary>A worn mesh's Bakes-on-Mesh registration: its instance (null while a merged item has
+    /// none), the face each surface was built for, and its face records.</summary>
+    private readonly record struct BomEntry(MeshInstance3D? Mi, int[] FaceIndices, FaceTexture[]? Faces, FaceTexture DefaultFace);
 
     private World? _world;
     private AssetService? _assetService;
@@ -511,8 +522,17 @@ public partial class AvatarRenderer : Node3D
         _activeInstance = this;
         _world = world;
         _assetService = assetService;
+        // BUG-RENDER-50 [BomAlpha] (--diag): every bake the asset service hands out, by any path, leaves a small
+        // in-memory alpha map behind (BakeAlphaMaps). Static handler, so a second Initialize cannot double it.
+        if (Diagnostics.Enabled && assetService != null)
+        {
+            assetService.BakeMaterialised -= BakeAlphaMaps.Capture;
+            assetService.BakeMaterialised += BakeAlphaMaps.Capture;
+        }
         _session = session;
         _gpuCache = gpuCache;
+        // BUG-RENDER-49: a glTF material that arrives after a face was built without it.
+        if (_assetService != null) _assetService.MaterialLoaded += OnPbrMaterialLoaded;
 
         _nameTagLayer = new Godot.CanvasLayer { Layer = 1, Name = "AvatarNameTags" };
         AddChild(_nameTagLayer);
@@ -544,6 +564,7 @@ public partial class AvatarRenderer : Node3D
         if (!_visuals.ContainsKey(id)
             && !_attachmentNodes.ContainsKey(id)
             && !_riggedAttachments.ContainsKey(id)
+            && !_mergeItems.ContainsKey(id)            // FEAT-PERF-23: a merged item has no instance of its own
             && !_attachmentMeshIds.ContainsKey(id)
             && !_pendingRigs.ContainsKey(id)
             && !_attachNewest.ContainsKey(id)
@@ -843,6 +864,7 @@ public partial class AvatarRenderer : Node3D
             {
                 UnloadAvatarOutfit(visual);
             }
+            UnloadOutfitMerge(visual); // FEAT-PERF-23: buckets, outfit skin, retained arrays
 
             foreach (var attId in visual.WornAttachmentEntities)
             {
@@ -898,6 +920,8 @@ public partial class AvatarRenderer : Node3D
         _attachNewest.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
         ReleaseEditPause(entityId);
+        // FEAT-PERF-23: a merged item leaves its bucket (freed when its whole linkset is gone).
+        ForgetMergeItem(entityId);
         if (_riggedAttachments.TryGetValue(entityId, out var riggedMesh))
         {
             removedRigged = riggedMesh;
@@ -917,6 +941,8 @@ public partial class AvatarRenderer : Node3D
             if (_visuals.TryGetValue(avEntityId, out var avVis))
             {
                 avVis.WornAttachmentEntities.Remove(entityId);
+                // BUG-RENDER-50: the items after it in the alpha order close up.
+                ForgetWornAlphaItem(avVis, entityId);
             }
         }
         if (_attachmentMeshIds.TryGetValue(entityId, out var removedMeshInfo)
@@ -952,9 +978,9 @@ public partial class AvatarRenderer : Node3D
                 ownerVisual.WornAttachmentFaces.Remove(entityId);
             }
             // M4-7: a detached BoM mesh body/head must un-hide the system part it was covering.
-            // QueueFree above is deferred, so drop the entry by reference here — RecomputeMesh-
-            // Visibility's IsInstanceValid sweep would still see it live this frame.
-            if (removedRigged != null) ownerVisual.BomAttachments.RemoveAll(e => e.Mi == removedRigged);
+            // QueueFree above is deferred, so drop the entry here -- by entity (FEAT-PERF-23), which
+            // also covers a merged item with no instance of its own.
+            ownerVisual.BomAttachments.Remove(entityId);
             RecomputeMeshVisibility(ownerVisual);
             // BUG-AVATAR-10: and the joint overrides and pelvis fixup it put on the avatar go with it
             // (viewer parity: removeAttachmentOverridesForObject). The same deferral applies -- the
@@ -1783,9 +1809,14 @@ public partial class AvatarRenderer : Node3D
             // bakes to attachment faces).
             if (anyBakeChanged && visual.BomAttachments.Count > 0)
             {
-                foreach (var e in visual.BomAttachments)
-                    if (IsInstanceValid(e.Mi))
-                        _ = ApplyFaceMaterialsAsync(e.Mi, e.FaceIndices, e.Faces, e.DefaultFace, visual);
+                foreach (var (wornId, e) in visual.BomAttachments.ToArray())
+                {
+                    if (e.Mi != null && IsInstanceValid(e.Mi))
+                        _ = ApplyFaceMaterialsAsync(e.Mi, e.FaceIndices, e.Faces, e.DefaultFace, visual, entityId: wornId);
+                    // FEAT-PERF-23: a merged item's BoM surfaces take the new bake in place.
+                    if (_mergeItems.TryGetValue(wornId, out var merged) && merged.InBucket)
+                        _ = RefreshMergedBomMaterialsAsync(merged);
+                }
             }
         }
 
@@ -2094,6 +2125,13 @@ public partial class AvatarRenderer : Node3D
     {
         visual.BoneOwnScale.Clear();
 
+        // BUG-ANIM-07: the factor each bone's offset is multiplied by (its PARENT's own scale, the
+        // `slPos *= parentScale` below), by bone index. An animation's position key on a joint is that
+        // joint's absolute local position and gets the same factor, so the player is handed the table
+        // once the loop is done -- which is every time a shape or joint override changes it.
+        var parentScales = new System.Numerics.Vector3[skeleton.GetBoneCount()];
+        System.Array.Fill(parentScales, System.Numerics.Vector3.One);
+
         // Bone index order matches AvatarSkeleton.Bones order (SkeletonBuilder.Build adds bones
         // in that exact sequence), which is guaranteed parent-before-child (XML depth-first parse,
         // a bone element is added before its children are parsed) — so by the time we process a
@@ -2153,6 +2191,7 @@ public partial class AvatarRenderer : Node3D
             if (bone.ParentName != null && visual.BoneOwnScale.TryGetValue(bone.ParentName, out var parentScale))
             {
                 slPos *= parentScale;
+                parentScales[idx] = parentScale;
             }
 
             visual.BoneOwnScale[name] = slScale;
@@ -2185,6 +2224,8 @@ public partial class AvatarRenderer : Node3D
 
             skeleton.SetBoneRest(idx, rest);
         }
+
+        visual.AnimPlayer.SetParentScales(parentScales);
     }
 
     private bool _boneRestNaNLogged;
@@ -2426,6 +2467,8 @@ public partial class AvatarRenderer : Node3D
 
         avatarVisual.WornAttachmentEntities.Add(entityId);
         _attachmentToAvatar[entityId] = attachment.AvatarEntityId;
+        // BUG-RENDER-50: moved to another point, it moves in the alpha order.
+        NoteWornAlphaPoint(avatarVisual, entityId, attachment.AttachmentPoint);
 
         if (avatarVisual.IsReduced)
         {
@@ -2443,6 +2486,10 @@ public partial class AvatarRenderer : Node3D
         // BUG-AVATAR-10: tell a worn animated object's control avatar about the update, pass a flag
         // flip on to the rest of the linkset, and notice a mesh that is on the wrong side of the flag.
         bool routeChanged = SyncWornAnimesh(entityId, entity, prim);
+
+        // FEAT-PERF-23: a texture animation that starts (or stops) moves a merged item out of (or back
+        // into) its bucket; the update is otherwise a duplicate and returns below.
+        NoteMergeItemUpdate(entityId, prim);
 
         var defaultFace = isMeshAttachment
             ? new FaceTexture(prim!.TextureId, prim.RenderMaterialId, prim.LegacyMaterialId, prim.ColorTint, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, Fullbright: prim.Fullbright)
@@ -2600,12 +2647,22 @@ public partial class AvatarRenderer : Node3D
         {
             if (prim.IsMesh && prim.MeshId != Guid.Empty)
             {
+                // FEAT-PERF-23: a face or mesh change counts towards the merge's volatile rule; a
+                // pure LOD raise does not.
+                var wantedLod = PickAttachmentDetailLevel(avatarVisual);
+                if (_mergeItems.Count > 0 && _attachmentMeshIds.TryGetValue(entityId, out var before))
+                {
+                    bool sameFaces = before.DefaultFace == defaultFace
+                        && (before.Faces == prim.Faces || (before.Faces != null && prim.Faces != null && before.Faces.AsSpan().SequenceEqual(prim.Faces)));
+                    NoteMergeItemReload(entityId, faceChange: before.MeshId != prim.MeshId || !sameFaces);
+                }
+
                 // Set BEFORE kicking off the async load (not after it completes) so a second
                 // redundant UpdateAttachment arriving while this load is still in flight sees
                 // it immediately and hits the early-return guard above instead of starting an
                 // overlapping duplicate load.
                 _attachmentMeshIds[entityId] = (prim.MeshId, prim.Faces, defaultFace,
-                                                attachment.AvatarEntityId, PickAttachmentDetailLevel(avatarVisual));
+                                                attachment.AvatarEntityId, wantedLod);
                 _attachmentPrimSignatures.TryRemove(entityId, out _);
                 _attachmentLocalPoses[entityId] = (transform != null ? transform.Position : System.Numerics.Vector3.Zero,
                                                    transform != null ? transform.Rotation : System.Numerics.Quaternion.Identity);
@@ -2775,12 +2832,17 @@ public partial class AvatarRenderer : Node3D
         if (_assetService == null) return;
 
         var lod = PickAttachmentDetailLevel(avatarVisual);
+        // BUG-RENDER-49: the faces' glTF materials are fetched alongside the mesh -- a rigged mesh's
+        // geometry depends on them (FaceDrawsNothing), and its materials need them anyway.
+        var materials = PrefetchPbrMaterialsAsync(faces, defaultFace);
         var meshData = await _assetService.GetMeshAsync(meshId, lod).ConfigureAwait(false);
         if (meshData == null)
         {
             Logger.Warn($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
             return;
         }
+        if (meshData.Skin != null && !materials.IsCompleted)
+            await System.Threading.Tasks.Task.WhenAny(materials, System.Threading.Tasks.Task.Delay(PbrPrefetchWait)).ConfigureAwait(false);
         Logger.Debug($"[Attachment] mesh {meshId}: {meshData.Submeshes.Count} submeshes, rigged={meshData.Skin != null}");
         ApplyAttachmentMeshDataAsync(meshData, attachParent, avatarVisual, meshId,
             faces, defaultFace, slScale, slPos, slRot, entityId);
@@ -2884,6 +2946,14 @@ public partial class AvatarRenderer : Node3D
             if (WornLinksetRoot(worn) != rootLocalId) return false;
             isRoot = worn.LocalId == rootLocalId;
             return true;
+        }
+
+        // FEAT-PERF-23: the outline is drawn on an item's own instance, so a selected merged item goes
+        // back to staging (its outline appears with it at the swap) and returns on deselect.
+        if (_mergeItems.Count > 0)
+        {
+            foreach (var wornId in new List<Guid>(_mergeItems.Keys))
+                if (Wanted(wornId, out _)) SetMergeItemSelected(wornId, selected);
         }
 
         foreach (var (wornId, rigged) in _riggedAttachments)
@@ -3231,7 +3301,15 @@ public partial class AvatarRenderer : Node3D
         _riggedAttachments.Remove(entityId);
         ClearRiggedPickBodies(entityId);
         visual.RiggedAttachments.RemoveAll(r => r.Mi == existing);
-        visual.BomAttachments.RemoveAll(r => r.Mi == existing);
+        // FEAT-PERF-23: a merged item's bucket still draws it (and its bake still covers the body), so
+        // its BoM entry stays, without an instance.
+        bool merged = _mergeItems.TryGetValue(entityId, out var item) && item.InBucket;
+        if (visual.BomAttachments.TryGetValue(entityId, out var bom) && bom.Mi == existing)
+        {
+            if (merged) visual.BomAttachments[entityId] = bom with { Mi = null };
+            else visual.BomAttachments.Remove(entityId);
+        }
+        if (item != null && ReferenceEquals(item.Staging, existing)) DropMergeStaging(item);
         if (IsInstanceValid(existing))
         {
             DetachSkeleton(existing);
@@ -3463,7 +3541,11 @@ public partial class AvatarRenderer : Node3D
 
         // BUG-AVATAR-10: an animated object's mesh is skinned to the object's own skeleton, not the
         // wearer's. Before anything below touches the wearer.
-        if (TryRouteWornRigToControlAvatar(entityId, req)) return;
+        if (TryRouteWornRigToControlAvatar(entityId, req))
+        {
+            ForgetMergeItem(entityId); // FEAT-PERF-23: never merged; it leaves its bucket
+            return;
+        }
 
         // Anything already rigged for this entity is replaced, not joined. Without this,
         // several updates arriving before the queue drains each ADD a rigged MeshInstance
@@ -3483,6 +3565,7 @@ public partial class AvatarRenderer : Node3D
             {
                 MainThreadWorkQueue.Measure("avatar.rig.jointpos", () => ApplyWornJointOverrides(entityId, req));
             }
+            ForgetMergeItem(entityId); // FEAT-PERF-23: nothing to draw, so nothing in a bucket either
             RecomputeMeshVisibility(req.Visual);
             return;
         }
@@ -3496,7 +3579,11 @@ public partial class AvatarRenderer : Node3D
         int[] slotForJoint = System.Array.Empty<int>();
         MainThreadWorkQueue.Measure("avatar.rig.bind",
             () => skin = BindRiggedSkin(req.MeshData.Skin!, req.Skeleton, req.Visual, out slotForJoint));
-        if (skin == null) return;
+        if (skin == null)
+        {
+            ForgetMergeItem(entityId);
+            return;
+        }
 
         var prepared = ready.Mesh;
         if (!slotForJoint.AsSpan().SequenceEqual(prepared.SlotForJoint))
@@ -3505,7 +3592,8 @@ public partial class AvatarRenderer : Node3D
             // the node built from it, so the two agree. Should they ever not, the weights
             // would point at the wrong binds -- the geometry is built again, here.
             GD.PushWarning($"[RiggedMesh] mesh {req.MeshId:N}: joint slots differ between worker and skeleton -- rebuilt on the main thread");
-            prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace, req.WantPick);
+            prepared = PrepareRiggedMesh(req.MeshData, slotForJoint, req.Faces, req.DefaultFace, req.WantPick,
+                                         keepTangents: prepared.Tangents != null, drawsNothing: FaceDrawsNothing);
         }
 
         MeshInstance3D? built = null;
@@ -3519,16 +3607,20 @@ public partial class AvatarRenderer : Node3D
 
         // Set a generous CustomAabb to prevent Godot from culling the mesh if the bind pose is far away
         mi.CustomAabb = new Aabb(new Godot.Vector3(-4, -4, -4), new Godot.Vector3(8, 8, 8));
-        mi.SortingOffset = RiggedAlphaSortTieBreak(entityId, req.Faces, req.DefaultFace, faceIndices);
-        // BUG-RENDER-38: the tie-break orders INSTANCES. Surfaces of one instance still tie
-        // with each other, so this names every surface's texture -- a hair that still blinks
-        // and shows more than one here is that case.
+        // BUG-RENDER-50: its place in the wearer's alpha order (attachment point, then linkset), which
+        // also places it -- see AvatarRenderer.WornAlphaOrder.cs.
+        RegisterWornAlphaItem(req.Visual, entityId, mi, WearsBake(req.Faces, req.DefaultFace, faceIndices));
+        // BUG-RENDER-38: the order is per INSTANCE; each blended surface gets an instance of its own
+        // (SplitSortedSurfaces), so this names every surface's texture.
         if (Diagnostics.Enabled)
             GD.Print($"[RiggedSort] {(req.Visual.IsSelf ? "self" : "other")} attachment={entityId.ToString("N")[..8]} " +
-                     $"mesh={req.MeshId.ToString("N")[..8]} offset={mi.SortingOffset:0.0000} " +
+                     $"mesh={req.MeshId.ToString("N")[..8]} point={(req.Visual.WornAlpha.TryGetValue(entityId, out var ranked) ? ranked.Point : 0)} " +
+                     $"base={WornAlphaBaseOf(req.Visual, entityId, float.NaN):0.0000} " +
                      $"{faceIndices.Length} surface(s): " +
                      string.Join(", ", faceIndices.Select(fi =>
                          $"face {fi}={ResolveFaceTexture(req.Faces, req.DefaultFace, fi).TextureId.ToString("N")[..8]}")));
+        // BUG-RENDER-50 follow-up: every face record, the hidden ones too (--diag).
+        LogWornFaces(req.Visual, entityId, req.MeshId, req.MeshData, req.Faces, req.DefaultFace);
 
         req.Skeleton.AddChild(mi);
         _riggedAttachments[entityId] = mi;
@@ -3538,6 +3630,9 @@ public partial class AvatarRenderer : Node3D
         // Skin is already assigned on the instance; the skeleton path must be set after
         // the node is in the tree so Godot can resolve and drive the skinning.
         mi.Skeleton = mi.GetPathTo(req.Skeleton);
+        // FEAT-PERF-23: keep the managed arrays for a merge, and hold the instance hidden while the
+        // item's bucket still draws its previous version.
+        NoteRiggedCommit(entityId, req, prepared, slotForJoint, faceIndices, mi);
         RestoreWornHighlight(entityId);
         MainThreadWorkQueue.RecordExternal("avatar.rig.scene", sceneClock.Elapsed.TotalMilliseconds);
 
@@ -3545,10 +3640,10 @@ public partial class AvatarRenderer : Node3D
         // BUG-PERF-08: and they are built one per queue item (label avatar.rig.pick), after this item.
         QueueRiggedPickBodies(mi, req.Visual, req.Skeleton, entityId, prepared.PickChunks);
         MainThreadWorkQueue.Measure("avatar.rig.bom",
-            () => RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId));
+            () => RegisterBomAndUpdateVisibility(req.Visual, mi, faceIndices, req.Faces, req.DefaultFace, req.MeshId, entityId));
         // Only the part before its first unfinished await runs here.
         MainThreadWorkQueue.Measure("avatar.rig.materials",
-            () => _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId));
+            () => _ = ApplyFaceMaterialsAsync(mi, faceIndices, req.Faces, req.DefaultFace, req.Visual, req.MeshId, entityId));
     }
 
     /// <summary>BUG-RENDER-12: resolves a submesh's SL face record exactly the way
@@ -3558,42 +3653,12 @@ public partial class AvatarRenderer : Node3D
     /// <see cref="FaceTexture"/> is a <c>readonly record struct</c>, so equality here is full
     /// value equality over every field the material is built from -- texture id, both material
     /// ids, tint, repeats, offsets, rotation, texgen and fullbright. Two faces that compare equal
-    /// cannot produce different materials, which is what makes merging them invisible.</summary>
-    /// <summary>BUG-RENDER-38: a fixed draw order for one avatar's worn rigged meshes, so Godot's
-    /// transparent sort stops re-deciding it every frame.</summary>
-    /// <remarks>
-    /// Every rigged attachment is a child of the skeleton at the identity transform with the same
-    /// <c>CustomAabb</c>, so all of them sort at EXACTLY the same depth — Godot keys the
-    /// transparent sort on the instance's AABB centre alone, and its introsort is unstable, so a
-    /// tie is re-decided from whatever else is in the render list that frame (BUG-RENDER-16's
-    /// mechanism). Reported 2026-09-30 as hair strands fading in and out while zooming: a hair
-    /// drawn before the head lets the head's colour pass paint over every strand that is not
-    /// solid enough for the depth prepass.
+    /// cannot produce different materials, which is what makes merging them invisible.
     ///
-    /// <para>The reference viewer never re-sorts rigged alpha at all — it keeps the original draw
-    /// order (llvovolume.cpp:6332-6335) — so any FIXED order is parity; this one also puts the
-    /// innermost layer first. A mesh that wears a bake (skin: body, head) draws before the rest,
-    /// and the rest are ordered by the sim LocalId, stable for the attachment's lifetime. Steps
-    /// of 0.1 mm over 256 values, so two pieces of one outfit rarely land on the same step (a
-    /// modulus of 16 left one pair in sixteen tied), up to 5.6 cm in all: far below any distance
-    /// at which two avatars' order is visible, and still well above float precision at 100 m.</para>
-    /// </remarks>
-    private float RiggedAlphaSortTieBreak(Guid entityId, FaceTexture[]? faces, FaceTexture defaultFace, int[] faceIndices)
-    {
-        bool wearsBake = false;
-        foreach (int faceIndex in faceIndices)
-        {
-            if (SLNG.Assets.BakedTextureIds.TryGetBakeIndex(ResolveFaceTexture(faces, defaultFace, faceIndex).TextureId, out _))
-            {
-                wearsBake = true;
-                break;
-            }
-        }
-
-        uint localId = _world?.GetEntity(entityId)?.LocalId ?? 0;
-        return (wearsBake ? 0f : 0.03f) + (localId % 256) * 0.0001f;
-    }
-
+    /// <para>BUG-RENDER-38's fixed draw order for an avatar's worn rigged meshes (bake wearers first, then
+    /// LocalId % 256) lived next to this; BUG-RENDER-50 replaced it with the viewer's order
+    /// (AvatarRenderer.WornAlphaOrder.cs). Its claim that "any FIXED order is parity" held only while
+    /// nothing wrote depth: the viewer's rigged alpha does, and its order is by attachment point.</para></summary>
     private static FaceTexture ResolveFaceTexture(FaceTexture[]? faces, FaceTexture defaultFace, int faceIndex) =>
         (faces != null && faceIndex >= 0 && faceIndex < faces.Length) ? faces[faceIndex] : defaultFace;
 
@@ -3602,12 +3667,19 @@ public partial class AvatarRenderer : Node3D
     /// texture each face independently — many parts are flat colour tints with no texture.
     /// <paramref name="avatarVisual"/> (when the mesh is worn on an avatar) resolves
     /// Bakes-on-Mesh faces to that avatar's server-baked textures.</summary>
+    /// <param name="entityId">The worn entity of a rigged item, so the outfit merge (FEAT-PERF-23) learns
+    /// when its materials are all in; empty for everything else.</param>
     private async System.Threading.Tasks.Task ApplyFaceMaterialsAsync(
         MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace,
-        AvatarVisual? avatarVisual = null, Guid meshId = default)
+        AvatarVisual? avatarVisual = null, Guid meshId = default, Guid entityId = default)
     {
         if (mi.Mesh is not ArrayMesh am) return;
         int surfaceCount = am.GetSurfaceCount();
+        // BUG-RENDER-49 follow-up: the worn item for [PbrFace], read here because this part runs on the main thread
+        // (the world is not thread-safe) and the face builds below do not.
+        string? pbrLogItem = Diagnostics.Enabled && entityId != Guid.Empty
+            ? $"item={entityId.ToString("N")[..8]} local={_world?.GetEntity(entityId)?.LocalId ?? 0}"
+            : null;
 
         // Prefetch every distinct material this mesh's faces reference, up front, in ONE go.
         // BuildFaceMaterialAsync awaits GetLegacyMaterialAsync / GetMaterialAsync per face, and
@@ -3643,7 +3715,7 @@ public partial class AvatarRenderer : Node3D
             FaceTexture ft = (faces != null && faceIndex >= 0 && faceIndex < faces.Length)
                 ? faces[faceIndex] : defaultFace;
 
-            var material = await BuildFaceMaterialAsync(ft, avatarVisual, meshId, faceIndex).ConfigureAwait(false);
+            var material = await BuildFaceMaterialAsync(ft, avatarVisual, meshId, faceIndex, pbrLogItem: pbrLogItem).ConfigureAwait(false);
             int s = surf;
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
             {
@@ -3651,9 +3723,16 @@ public partial class AvatarRenderer : Node3D
                 // BUG-RENDER-38: a surface already moved onto its own instance takes its new
                 // material there -- on the parent it would be drawn a second time.
                 if (mi.GetNodeOrNull<MeshInstance3D>(SortedSurfaceName(s)) is { } split)
+                {
                     split.SetSurfaceOverrideMaterial(0, material);
+                    // BUG-RENDER-50: the parent's copy of the surface is its depth pass (nothing when the
+                    // face is no longer blended).
+                    mi.SetSurfaceOverrideMaterial(s, SplitParentMaterial(mi, material));
+                }
                 else
                     mi.SetSurfaceOverrideMaterial(s, material);
+                // BUG-RENDER-50 follow-up: how much of a Bakes-on-Mesh face its bake cuts away (--diag).
+                if (Diagnostics.Enabled) LogBomAlpha(mi, s, material, avatarVisual, meshId, faceIndex);
             }, label: "avatar.face_material");
         }
 
@@ -3664,7 +3743,11 @@ public partial class AvatarRenderer : Node3D
             // Reattached first: the split reads the skeleton through mi.Skeleton.
             ReattachSkeleton(mi);
             SplitSortedSurfaces(mi, meshId);
-            UpdateWornMeshVisibility(mi);
+            // FEAT-PERF-23 fix: with the wearer, so a pass that ends after the avatar was parked (textures are
+            // slow on a busy sim) detaches and hides the item again instead of drawing it on the jelly doll.
+            UpdateWornMeshVisibility(mi, avatarVisual);
+            // FEAT-PERF-23: the item's materials are in -- it can join its linkset's bucket.
+            if (entityId != Guid.Empty) NoteStagingSettled(entityId, mi);
         }, label: "avatar.split_sorted");
     }
 
@@ -3696,9 +3779,19 @@ public partial class AvatarRenderer : Node3D
     /// (<see cref="DetachSkeleton"/>); <see cref="ReattachSkeleton"/> restores the path before the
     /// next material pass looks at it.</para>
     /// </remarks>
-    private void UpdateWornMeshVisibility(MeshInstance3D mi)
+    /// <param name="owner">The wearer, when the caller knows it. A reduced (parked) wearer's item stays hidden
+    /// and detached whatever its faces say: its material pass can finish after the park (FEAT-PERF-23 fix).</param>
+    private void UpdateWornMeshVisibility(MeshInstance3D mi, AvatarVisual? owner = null)
     {
         if (!IsInstanceValid(mi) || mi.Skin == null || mi.Mesh is not ArrayMesh mesh) return;
+        // FEAT-PERF-23: held while its bucket still draws the item -- never shown from here. And never on a
+        // parked avatar: the stand-in is the jelly doll alone.
+        if (_mergeHeld.Contains(mi) || owner is { IsReduced: true })
+        {
+            if (mi.Visible) mi.Visible = false;
+            DetachSkeleton(mi);
+            return;
+        }
         bool anyDrawn = false;
         int count = mesh.GetSurfaceCount();
         for (int s = 0; s < count && !anyDrawn; s++)
@@ -3771,23 +3864,31 @@ public partial class AvatarRenderer : Node3D
     /// the SAME texture whose records still differ -- three surfaces, one depth, strands blinking
     /// in and out and inner cards painting hard dark patches over the outer ones.
     ///
-    /// <para>The children draw in face order, one 10 µm step apart on top of the parent's own
-    /// tie-break (<see cref="RiggedAlphaSortTieBreak"/>, steps of 0.1 mm, so the two scales never
-    /// collide for SL's eight faces): the order the merge would have produced, and the reference
-    /// viewer's "original draw order" for rigged alpha (llvovolume.cpp:6332-6335). Same mechanism
-    /// as ObjectRenderer.SplitSortedSurfaces for world prims (BUG-RENDER-16).</para>
+    /// <para>The children draw in face order, one 10 µm step apart inside the item's slot of the
+    /// wearer's alpha order (<see cref="WornAlphaOrder.SurfaceOffset"/>, BUG-RENDER-50): the order the
+    /// merge would have produced, and the reference viewer's "original draw order" for rigged alpha
+    /// (llvovolume.cpp:6332-6335). Same mechanism as ObjectRenderer.SplitSortedSurfaces for world prims
+    /// (BUG-RENDER-16).</para>
     ///
-    /// <para>The parent keeps its full mesh and draws the moved surfaces with
-    /// <see cref="PrimShaderFamily.Hidden"/>, so the pick body, the selection outline and the
-    /// surface-indexed material updates all keep working unchanged. The price: the moved surfaces
-    /// are skinned twice (parent and child), and each is read back once to be copied -- paid only
-    /// by meshes with two or more blended surfaces, once per rig.</para>
+    /// <para>The parent keeps its full mesh, so the pick body, the selection outline and the
+    /// surface-indexed material updates all keep working unchanged. On a rigged mesh it draws each moved
+    /// surface as that surface's alpha DEPTH pass (<see cref="PrimShaderFamily.DepthCoreAvatar"/>) at the
+    /// slot's end (BUG-RENDER-50), which is why a rigged mesh moves even a single blended surface; on a
+    /// rigid attachment, and with <c>--worn-alpha-depth=0</c>, it draws them with
+    /// <see cref="PrimShaderFamily.Hidden"/> and only moves two or more. The price: the moved surfaces
+    /// are skinned twice (parent and child), and each is read back once to be copied, once per rig.</para>
     /// </remarks>
     private void SplitSortedSurfaces(MeshInstance3D mi, Guid meshId)
     {
         if (!IsInstanceValid(mi) || !mi.IsInsideTree() || mi.Mesh is not ArrayMesh mesh) return;
         int count = mesh.GetSurfaceCount();
-        if (count < 2) return;
+        // BUG-RENDER-50: a rigged mesh moves EVERY blended surface, also a single one: the copy left on the
+        // parent becomes that surface's depth pass, drawn at the parent's slot after all of them. A rigid
+        // attachment is depth-sorted with the scene, as in the viewer, and keeps the old rule.
+        bool depthPass = mi.Skin != null && RenderConfig.WornAlphaDepth > 0f;
+        int minimum = depthPass ? 1 : 2;
+        if (count < minimum) return;
+        float? wornBase = WornAlphaBaseOf(mi);
 
         var blend = PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar);
         int alreadySplit = 0;
@@ -3802,7 +3903,7 @@ public partial class AvatarRenderer : Node3D
             if (mi.GetSurfaceOverrideMaterial(s) is ShaderMaterial sm && ReferenceEquals(sm.Shader, blend))
                 (pending ??= new List<int>()).Add(s);
         }
-        if (pending == null || alreadySplit + pending.Count < 2) return;
+        if (pending == null || alreadySplit + pending.Count < minimum) return;
 
         var skeleton = mi.Skin != null ? mi.GetNodeOrNull<Skeleton3D>(mi.Skeleton) : null;
         foreach (int s in pending)
@@ -3826,15 +3927,17 @@ public partial class AvatarRenderer : Node3D
                 // A blended surface casts no shadow anyway (no depth write).
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
                 Layers = mi.Layers,
-                SortingOffset = mi.SortingOffset + (s + 1) * 0.00001f,
+                SortingOffset = wornBase is { } b ? WornAlphaOrder.SurfaceOffset(b, s) : mi.SortingOffset + (s + 1) * 0.00001f,
             };
+            child.SetMeta(SortedSurfaceMeta, s);
             // A rigged mesh's generous box, so the child sorts at the parent's depth and is not
             // culled on a bind pose parked somewhere else. An unset one stays unset.
             if (mi.CustomAabb.Size != Godot.Vector3.Zero) child.CustomAabb = mi.CustomAabb;
-            child.SetSurfaceOverrideMaterial(0, mi.GetSurfaceOverrideMaterial(s));
+            var color = mi.GetSurfaceOverrideMaterial(s);
+            child.SetSurfaceOverrideMaterial(0, color);
             mi.AddChild(child);
             if (skeleton != null) child.Skeleton = child.GetPathTo(skeleton);
-            mi.SetSurfaceOverrideMaterial(s, HiddenSurfaceMaterial);
+            mi.SetSurfaceOverrideMaterial(s, depthPass ? SplitParentMaterial(mi, color) : HiddenSurfaceMaterial);
         }
 
         if (Diagnostics.Enabled)
@@ -3877,14 +3980,40 @@ public partial class AvatarRenderer : Node3D
     /// </summary>
     private async System.Threading.Tasks.Task<ShaderMaterial> BuildFaceMaterialAsync(
         FaceTexture ft, AvatarVisual? avatarVisual = null, Guid meshId = default, int faceIndex = -1,
-        PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar)
+        PrimShaderFamily.Surface surface = PrimShaderFamily.Surface.Avatar, string? pbrLogItem = null)
     {
-        if (ft.IsInvisible)
+        // A face without a glTF material is hidden by its TextureEntry, at once, as always.
+        if (ft.RenderMaterialId == Guid.Empty && ft.IsInvisible) return HiddenFaceMaterial();
+
+        // BUG-RENDER-49: the face's glTF material (with its FEAT-RENDER-26 override merged in) comes
+        // first, because it replaces the legacy texture, colour, alpha and fullbright outright -- "all
+        // other parameters ignored if gltf material is present" (llvovolume.cpp:6649-6650). Until
+        // v0.27.82 only its alpha mode was read here and the face kept sampling its legacy texture: a
+        // PBR pet rendered plain white (its legacy texture is IMG_WHITE) and a PBR bikini see-through.
+        SLNG.Assets.PbrMaterialData? pbr = null;
+        SLNG.Assets.PbrMaterialData? pbrBase = null;
+        if (ft.RenderMaterialId != Guid.Empty)
         {
-            return new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+            var baseMaterial = await GetPbrMaterialAsync(ft.RenderMaterialId).ConfigureAwait(false);
+            pbrBase = baseMaterial;
+            if (baseMaterial != null) pbr = SLNG.Assets.PbrOverrideMerge.Apply(baseMaterial, ft.PbrOverride);
+            else
+            {
+                // Remembered, so the item is built again if the material turns up later (AvatarRenderer.PbrArrival).
+                NotePbrBuiltWithout(ft.RenderMaterialId);
+                if (Diagnostics.Enabled) PbrFaceLog.Unavailable(PbrFaceWho(avatarVisual, pbrLogItem, meshId, faceIndex), ft.RenderMaterialId, ft.PbrOverride);
+            }
         }
 
-        var tint = ft.Color == default
+        // A PBR face is hidden by its material, never by its TextureEntry (PbrDrawsNothing) -- the way
+        // a HUD switches a PBR style variant off through its override. A face whose material did not
+        // come is its legacy self, TE invisibility included: exactly what it was before BUG-RENDER-49.
+        if (pbr != null ? PbrDrawsNothing(pbr) : ft.IsInvisible)
+            return HiddenFaceMaterial();
+
+        // The TextureEntry colour does not tint a PBR face (llface.cpp:1395-1400); its base colour is
+        // set from the material below.
+        var tint = pbr != null || ft.Color == default
             ? new Color(1, 1, 1, 1)
             : new Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
 
@@ -3899,8 +4028,8 @@ public partial class AvatarRenderer : Node3D
 
         // FEAT-RENDER-06: a worn-mesh face can be fullbright too (LLTextureEntry::getFullbright).
         // The HUD surface is already `unshaded`, so this is a no-op there and meaningful only on
-        // world-space attachment faces.
-        material.SetShaderParameter(PrimShaderFamily.Fullbright, ft.Fullbright);
+        // world-space attachment faces. Never on a PBR face (BUG-RENDER-49, see above).
+        material.SetShaderParameter(PrimShaderFamily.Fullbright, pbr == null && ft.Fullbright);
 
         // Per-face UV repeats/offsets, same convention as ObjectRenderer's world-prim materials --
         // HUD buttons in particular are classically ONE texture atlas with per-face repeat/offset
@@ -3925,6 +4054,13 @@ public partial class AvatarRenderer : Node3D
             0.5f - 0.5f * ft.RepeatU + ft.OffsetU,
             0.5f - 0.5f * ft.RepeatV - ft.OffsetV));
 
+        // BUG-RENDER-49: a PBR face's base colour, metallic/roughness and emissive factors, and its
+        // placement -- the material's KHR transform, which the shader then uses INSTEAD of the
+        // TextureEntry repeats set just above. Same values a world prim gets (ObjectRenderer); only
+        // the shader choice differs, and that is made below for this surface.
+        if (pbr != null)
+            ObjectRenderer.ApplyPbrUniforms(material, pbr, ft.PbrOverride);
+
         // SL's per-face colour alpha (LLTextureEntry::getColor()) is a genuine transparency/blend
         // factor, independent of whatever alpha channel the texture image itself carries — many
         // worn items set a face's tint alpha to 0 specifically to hide it while keeping the object
@@ -3945,38 +4081,79 @@ public partial class AvatarRenderer : Node3D
         // entirely below when present — no reason to guess when we were told. Legacy
         // no-material content (this hair applier included) has no such record and falls through
         // to that heuristic unchanged.
+        // A PBR face's tint is white (above), so it never reaches this as translucent.
         bool hasExplicitAlpha = false;
-        if (!tintTranslucent && ft.RenderMaterialId != Guid.Empty && _assetService != null)
+        bool legacyAlphaResolved = false;
+        if (pbr != null)
         {
-            var pbrMat = await _assetService.GetMaterialAsync(ft.RenderMaterialId).ConfigureAwait(false);
-            if (pbrMat != null)
+            hasExplicitAlpha = true;
+            switch (pbr.AlphaMode)
+            {
+                case SLNG.Assets.PbrAlphaMode.Blend:
+                    kind = PrimShaderFamily.Kind.Blend;
+                    break;
+                case SLNG.Assets.PbrAlphaMode.Mask:
+                    // alpha-to-coverage is baked into the scissor variant's render_mode
+                    // rather than set per material -- it was on every scissor face here and
+                    // on no other, which is exactly the condition for folding it in.
+                    kind = PrimShaderFamily.Kind.Scissor;
+                    scissorThreshold = pbr.AlphaCutoff;
+                    break;
+                default:
+                    kind = PrimShaderFamily.Kind.Opaque;
+                    break;
+            }
+            // doubleSided needs nothing here: Avatar and Hud surfaces are cull_disabled already.
+            // BUG-RENDER-49 follow-up: what the asset says, what the face's override changes, what it is drawn as.
+            if (Diagnostics.Enabled && pbrBase != null)
+                PbrFaceLog.Face(PbrFaceWho(avatarVisual, pbrLogItem, meshId, faceIndex), ft.RenderMaterialId, pbrBase,
+                    ft.PbrOverride, pbr, kind.ToString());
+        }
+        else if (ft.LegacyMaterialId != Guid.Empty
+                 && await GetLegacyMaterialAsync(ft.LegacyMaterialId).ConfigureAwait(false) is { } legacy)
+        {
+            // BUG-RENDER-50: a legacy material's diffuse alpha mode is just as authoritative, and it applies
+            // to worn faces exactly as to prims (pipeline.cpp:1781-1820, llvovolume.cpp:6766-6790): NONE and
+            // EMISSIVE ignore the texture's alpha, MASK cuts at the material's cutoff, BLEND blends -- a
+            // translucent face colour still blends. Without this a worn face with an alpha channel it was
+            // told to ignore was sorted and blended (and, being blended, drawn over by what lies behind it).
+            // DEFAULT leaves it to ClassifyAlpha below, as before. Only without a glTF material: that one
+            // replaces the legacy material outright (above).
+            var (route, cutoff) = LegacyMaterialAlpha.Route(legacy.DiffuseAlphaMode, legacy.AlphaMaskCutoff, tintTranslucent);
+            LogLegacyMaterial(legacy);
+            if (route != LegacyAlphaRoute.Pixels)
             {
                 hasExplicitAlpha = true;
-                switch (pbrMat.AlphaMode)
+                legacyAlphaResolved = true;
+                kind = route switch
                 {
-                    case SLNG.Assets.PbrAlphaMode.Blend:
-                        kind = PrimShaderFamily.Kind.Blend;
-                        break;
-                    case SLNG.Assets.PbrAlphaMode.Mask:
-                        // alpha-to-coverage is baked into the scissor variant's render_mode
-                        // rather than set per material -- it was on every scissor face here and
-                        // on no other, which is exactly the condition for folding it in.
-                        kind = PrimShaderFamily.Kind.Scissor;
-                        scissorThreshold = pbrMat.AlphaCutoff;
-                        break;
-                    default:
-                        kind = PrimShaderFamily.Kind.Opaque;
-                        break;
-                }
+                    LegacyAlphaRoute.Blend => PrimShaderFamily.Kind.Blend,
+                    LegacyAlphaRoute.Mask => PrimShaderFamily.Kind.Scissor,
+                    _ => PrimShaderFamily.Kind.Opaque,
+                };
+                if (route == LegacyAlphaRoute.Mask) scissorThreshold = cutoff;
             }
+            if (Diagnostics.Enabled)
+                GD.Print($"[AvatarAlpha] mesh={meshId.ToString("N")[..8]} face={faceIndex} legacyMat={legacy.Id.ToString("N")[..8]} " +
+                         $"mode={legacy.DiffuseAlphaMode} cutoff={legacy.AlphaMaskCutoff} tintA={tint.A:0.###} -> " +
+                         (route == LegacyAlphaRoute.Pixels ? "texture decides" : $"{kind}"));
         }
+
+        // BUG-RENDER-49: the material's other maps, fetched alongside the base colour below and set
+        // once both are in (one thread writes the material). A HUD is unshaded: they would show nothing.
+        var mapsTask = pbr != null && surface != PrimShaderFamily.Surface.Hud
+            ? LoadPbrMapsAsync(pbr, avatarVisual)
+            : System.Threading.Tasks.Task.FromResult<PbrMaps>(default);
 
         // Bakes-on-Mesh: a face carrying one of the IMG_USE_BAKED_* magic ids wants the AVATAR's
         // server-baked texture for that channel, not the magic id itself (which is just a red UV
         // placeholder asset). Viewer: LLViewerObject::getBakedTextureForMagicId. If the bake
         // hasn't arrived yet, leave the face untextured — the bake-arrival hook in UpdateVisual
         // re-runs ApplyFaceMaterialsAsync for registered BoM meshes.
-        Guid texId = ft.TextureId;
+        //
+        // BUG-RENDER-49: a PBR face samples its material's base colour instead of its legacy texture,
+        // and a magic id there resolves to the bake the same way (llviewerobject.cpp:5452-5461).
+        Guid texId = pbr != null ? pbr.BaseColorTextureId : ft.TextureId;
         bool wasBom = false; int bomIndex = -1;
         if (avatarVisual != null && SLNG.Assets.BakedTextureIds.TryGetBakeIndex(texId, out int bakeIdx))
         {
@@ -4000,7 +4177,10 @@ public partial class AvatarRenderer : Node3D
                 (wasBom ? $" (Bakes-on-Mesh channel {bomIndex} not resolved yet)" : " (face carries no texture id)"));
             LogHudFace(surface, meshId, faceIndex, ft, tint,
                 wasBom ? $"NO TEXTURE (BoM channel {bomIndex} unresolved)" : "NO TEXTURE (face carries no texture id)");
-            return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+            ApplyPbrMaps(material, await mapsTask.ConfigureAwait(false));
+            // texId is the base colour a PBR face asked for even without an asset service to load it
+            // (the selftest); the merge key and its roles read it from the facts.
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
         }
 
         // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
@@ -4049,6 +4229,7 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.RecordIfMainThread("avatar.material.texture",
             System.Diagnostics.Stopwatch.GetElapsedTime(texStart).TotalMilliseconds);
         var built = await builtTask.ConfigureAwait(false);
+        ApplyPbrMaps(material, await mapsTask.ConfigureAwait(false));
         if (avatarVisual != null && texId != Guid.Empty)
         {
             // The await above resumes on a pool thread, and PinnedTextureIds / UsedTextureIds are plain
@@ -4086,10 +4267,10 @@ public partial class AvatarRenderer : Node3D
             {
                 material.SetShaderParameter(PrimShaderFamily.AlbedoColor, new Godot.Color(1f, 1f, 1f, 0f));
                 material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, false);
-                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface);
+                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface, texId, failed: true, bakeChannel: bomIndex);
             }
 
-            return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
         }
 
         LogHudFace(surface, meshId, faceIndex, ft, tint, $"textured {built.GetWidth()}x{built.GetHeight()}");
@@ -4137,10 +4318,191 @@ public partial class AvatarRenderer : Node3D
         // ragged contour where the mask is already ~96% transparent -- nothing left there to look
         // torn -- while keeping the depth write, the shader, and the sort behaviour exactly as
         // they are. alpha_to_coverage (prim_scissor_avatar) still antialiases the remaining edge.
-        if (wasBom && kind == PrimShaderFamily.Kind.Scissor)
+        // Not over a legacy material's own MASK cutoff (BUG-RENDER-50): the creator stated that one.
+        if (wasBom && kind == PrimShaderFamily.Kind.Scissor && !legacyAlphaResolved)
             scissorThreshold = BomAlphaScissorThreshold;
 
-        return FinishFaceMaterial(material, kind, scissorThreshold, surface);
+        return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
+    }
+
+    /// <summary>BUG-RENDER-49 follow-up: who a <c>[PbrFace]</c> line is about -- the wearer, the worn item (when the
+    /// caller knows it: "item=&lt;entity&gt; local=&lt;LocalId&gt;", which matches the [GltfOverride] lines), the mesh and
+    /// the face.</summary>
+    private static string PbrFaceWho(AvatarVisual? wearer, string? item, Guid meshId, int faceIndex) =>
+        $"wearer={(wearer != null ? wearer.AgentId.ToString("N")[..8] : "-")} {item ?? "item=-"} " +
+        $"mesh={(meshId == Guid.Empty ? "-" : meshId.ToString("N")[..8])} face={faceIndex}";
+
+    /// <summary>BUG-RENDER-49: whether a face with this (override-merged) glTF material draws nothing at
+    /// all. The viewer drops a BLEND material whose base-colour alpha is 0 (llvovolume.cpp:6017-6022);
+    /// a MASK material whose base-colour alpha is under its cutoff discards every fragment whatever its
+    /// texture holds, so it draws nothing either. An OPAQUE material always draws: glTF ignores its
+    /// alpha.</summary>
+    internal static bool PbrDrawsNothing(SLNG.Assets.PbrMaterialData material) => material.AlphaMode switch
+    {
+        SLNG.Assets.PbrAlphaMode.Blend => material.BaseColorFactor.W <= 0f,
+        SLNG.Assets.PbrAlphaMode.Mask => material.BaseColorFactor.W < material.AlphaCutoff,
+        _ => false,
+    };
+
+    /// <summary>The glTF material of <paramref name="materialId"/> if it is in memory right now -- never a
+    /// fetch, so safe on a rig worker.</summary>
+    private bool TryGetLoadedPbrMaterial(Guid materialId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SLNG.Assets.PbrMaterialData? material)
+    {
+        if (PbrMaterialsForSelfTest != null && PbrMaterialsForSelfTest.TryGetValue(materialId, out material)) return true;
+        material = null;
+        return _assetService != null && _assetService.TryGetLoadedMaterial(materialId, out material);
+    }
+
+    /// <summary>BUG-RENDER-49: whether a rigged mesh leaves a face out of its GEOMETRY
+    /// (<see cref="RiggedMeshBuilder"/>). A face whose glTF material is loaded: what the material says
+    /// (<see cref="PbrDrawsNothing"/>), whatever its TextureEntry says. Any other face -- no material, or
+    /// one not (yet) to be had -- exactly the legacy rule, <see cref="FaceTexture.IsInvisible"/>: TE alpha
+    /// 0 or the transparent texture. Called on rig workers.</summary>
+    private bool FaceDrawsNothing(FaceTexture face)
+    {
+        if (face.RenderMaterialId == Guid.Empty) return face.IsInvisible;
+        if (!TryGetLoadedPbrMaterial(face.RenderMaterialId, out var material))
+        {
+            // Left out by its TE without its material: the material, when it comes, may say otherwise.
+            // Asked for here, because a face with no triangles never builds a material that would.
+            if (face.IsInvisible)
+            {
+                NotePbrBuiltWithout(face.RenderMaterialId);
+                _ = GetPbrMaterialAsync(face.RenderMaterialId);
+            }
+            return face.IsInvisible;
+        }
+        return PbrDrawsNothing(SLNG.Assets.PbrOverrideMerge.Apply(material, face.PbrOverride));
+    }
+
+    /// <summary>How long a worn rigged mesh waits for its faces' glTF materials before its geometry is
+    /// built without them (BUG-RENDER-49): the material decides which faces have triangles at all.
+    /// Fetched alongside the mesh, so normally already there.</summary>
+    private static readonly TimeSpan PbrPrefetchWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>Starts the fetch of every glTF material the faces name; completes when all have
+    /// answered (a failure is an answer).</summary>
+    private System.Threading.Tasks.Task PrefetchPbrMaterialsAsync(FaceTexture[]? faces, FaceTexture defaultFace)
+    {
+        System.Collections.Generic.HashSet<Guid>? ids = null;
+        if (faces != null)
+        {
+            foreach (var f in faces)
+            {
+                if (f.RenderMaterialId != Guid.Empty) (ids ??= new()).Add(f.RenderMaterialId);
+            }
+        }
+        if (defaultFace.RenderMaterialId != Guid.Empty) (ids ??= new()).Add(defaultFace.RenderMaterialId);
+        if (ids == null) return System.Threading.Tasks.Task.CompletedTask;
+        var fetches = new System.Collections.Generic.List<System.Threading.Tasks.Task>(ids.Count);
+        foreach (var id in ids) fetches.Add(GetPbrMaterialAsync(id));
+        return System.Threading.Tasks.Task.WhenAll(fetches);
+    }
+
+    /// <summary>A face that draws nothing: <see cref="PrimShaderFamily.Hidden"/>, recorded as such for the
+    /// outfit merge and for <see cref="UpdateWornMeshVisibility"/>.</summary>
+    private static ShaderMaterial HiddenFaceMaterial()
+    {
+        var hidden = new ShaderMaterial { Shader = PrimShaderFamily.Hidden };
+        RecordFaceMaterialFacts(hidden, new FaceMaterialFacts(PrimShaderFamily.Kind.Opaque, 0f, Guid.Empty, Failed: false, Hidden: true));
+        return hidden;
+    }
+
+    /// <summary>SelfTest only (BUG-RENDER-49): glTF materials served without an asset service, which
+    /// the headless smoke test does not have. Never set in the client.</summary>
+    internal System.Collections.Generic.Dictionary<Guid, SLNG.Assets.PbrMaterialData>? PbrMaterialsForSelfTest { get; set; }
+
+    /// <summary>SelfTest only (BUG-RENDER-50): legacy materials served without an asset service. Never set in
+    /// the client.</summary>
+    internal System.Collections.Generic.Dictionary<Guid, LegacyMaterialData>? LegacyMaterialsForSelfTest { get; set; }
+
+    private System.Threading.Tasks.Task<LegacyMaterialData?> GetLegacyMaterialAsync(Guid materialId)
+    {
+        if (LegacyMaterialsForSelfTest != null && LegacyMaterialsForSelfTest.TryGetValue(materialId, out var seeded))
+            return System.Threading.Tasks.Task.FromResult<LegacyMaterialData?>(seeded);
+        return _assetService != null
+            ? _assetService.GetLegacyMaterialAsync(materialId)
+            : System.Threading.Tasks.Task.FromResult<LegacyMaterialData?>(null);
+    }
+
+    private System.Threading.Tasks.Task<SLNG.Assets.PbrMaterialData?> GetPbrMaterialAsync(Guid materialId)
+    {
+        if (PbrMaterialsForSelfTest != null && PbrMaterialsForSelfTest.TryGetValue(materialId, out var seeded))
+            return System.Threading.Tasks.Task.FromResult<SLNG.Assets.PbrMaterialData?>(seeded);
+        return _assetService != null
+            ? _assetService.GetMaterialAsync(materialId)
+            : System.Threading.Tasks.Task.FromResult<SLNG.Assets.PbrMaterialData?>(null);
+    }
+
+    /// <summary>A PBR face's maps other than its base colour, as loaded (null where the material has
+    /// none or it did not load).</summary>
+    private readonly record struct PbrMaps(ImageTexture? Normal, ImageTexture? MetallicRoughness, ImageTexture? Emissive);
+
+    /// <summary>BUG-RENDER-49: loads a PBR face's normal, metallic-roughness and emissive maps the way
+    /// <see cref="BuildFaceMaterialAsync"/> loads its base colour: pinned, and recorded against the
+    /// wearer so they are released with it. A Bakes-on-Mesh magic id in one of these slots is skipped --
+    /// a bake is a colour image, and the magic id itself is only a placeholder asset.</summary>
+    private async System.Threading.Tasks.Task<PbrMaps> LoadPbrMapsAsync(SLNG.Assets.PbrMaterialData pbr, AvatarVisual? avatarVisual)
+    {
+        var normal = LoadPbrMapAsync(pbr.NormalTextureId, avatarVisual, compress: false);
+        var metallicRoughness = LoadPbrMapAsync(pbr.MetallicRoughnessTextureId, avatarVisual, compress: true);
+        var emissive = LoadPbrMapAsync(pbr.EmissiveTextureId, avatarVisual, compress: true);
+        return new PbrMaps(
+            await normal.ConfigureAwait(false),
+            await metallicRoughness.ConfigureAwait(false),
+            await emissive.ConfigureAwait(false));
+    }
+
+    private async System.Threading.Tasks.Task<ImageTexture?> LoadPbrMapAsync(Guid textureId, AvatarVisual? avatarVisual, bool compress)
+    {
+        if (textureId == Guid.Empty || _assetService == null || _gpuCache == null
+            || SLNG.Assets.BakedTextureIds.TryGetBakeIndex(textureId, out _))
+            return null;
+
+        bool isSelf = avatarVisual != null && avatarVisual.IsSelf;
+        // BUG-PERF-13: only READ ScreenPixelArea here, as the base colour does.
+        float screenPixelArea = isSelf ? 0f : (avatarVisual != null ? avatarVisual.ScreenPixelArea : 0f);
+        ImageTexture? texture;
+        try
+        {
+            texture = await _gpuCache.GetOrUploadTextureAsync(
+                textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
+                screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf, compress: compress).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A map that cannot be had must never cost the face its base colour.
+            if (SLNG.Core.Diag.Verbose) GD.PrintErr($"[FaceTex] PBR map {textureId} failed: {ex.Message}");
+            return null;
+        }
+        if (avatarVisual != null)
+        {
+            var visualForRefs = avatarVisual;
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual,
+                () => RecordAvatarTexture(visualForRefs, textureId), label: "avatar.material.refs");
+        }
+        return texture;
+    }
+
+    /// <summary>Sets the maps <see cref="LoadPbrMapsAsync"/> brought; each sampler with its flag (see
+    /// <see cref="PrimShaderFamily"/> on why they come in pairs).</summary>
+    private static void ApplyPbrMaps(ShaderMaterial material, PbrMaps maps)
+    {
+        if (maps.Normal != null)
+        {
+            material.SetShaderParameter(PrimShaderFamily.NormalTexture, maps.Normal);
+            material.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
+        }
+        if (maps.MetallicRoughness != null)
+        {
+            material.SetShaderParameter(PrimShaderFamily.OrmTexture, maps.MetallicRoughness);
+            material.SetShaderParameter(PrimShaderFamily.HasOrmTexture, true);
+        }
+        if (maps.Emissive != null)
+        {
+            material.SetShaderParameter(PrimShaderFamily.EmissionTexture, maps.Emissive);
+            material.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
+        }
     }
 
     /// <summary>One line per worn-HUD face, unconditional (not behind --diag) and deduplicated.
@@ -4201,9 +4563,15 @@ public partial class AvatarRenderer : Node3D
     /// <see cref="BuildFaceMaterialAsync"/> must all go through it -- an early return that skipped
     /// it would leave a translucent face on the opaque shader, which renders it fully solid with
     /// no error anywhere.</summary>
+    /// <param name="texture">The texture the face samples (the bake, for BoM), empty for none.</param>
+    /// <param name="failed">The texture did not load: the face is the alpha-0 Blend card.</param>
+    /// <param name="bakeChannel">The Bakes-on-Mesh channel <paramref name="texture"/> came from, or -1.</param>
     private static ShaderMaterial FinishFaceMaterial(ShaderMaterial material, PrimShaderFamily.Kind kind,
-        float scissorThreshold, PrimShaderFamily.Surface surface)
+        float scissorThreshold, PrimShaderFamily.Surface surface, Guid texture = default, bool failed = false,
+        int bakeChannel = -1)
     {
+        // FEAT-PERF-23: what this material is, for the outfit merge's material key and its roles.
+        RecordFaceMaterialFacts(material, new FaceMaterialFacts(kind, scissorThreshold, texture, failed, Hidden: false, bakeChannel));
         material.Shader = PrimShaderFamily.Select(kind, surface);
         if (kind == PrimShaderFamily.Kind.Scissor)
             material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, scissorThreshold);
@@ -4394,7 +4762,8 @@ public partial class AvatarRenderer : Node3D
     /// system body parts stay hidden — the viewer's LLVOAvatar::updateMeshVisibility.
     /// Main thread only (mutates node visibility).</summary>
     private void RegisterBomAndUpdateVisibility(
-        AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace, Guid meshId = default)
+        AvatarVisual avatarVisual, MeshInstance3D mi, int[] faceIndices, FaceTexture[]? faces, FaceTexture defaultFace,
+        Guid meshId, Guid entityId)
     {
         bool usesBom = false;
         var channels = new System.Collections.Generic.SortedSet<int>();
@@ -4409,8 +4778,11 @@ public partial class AvatarRenderer : Node3D
         if (faces != null) foreach (var f in faces) Scan(f);
         Scan(defaultFace);
 
+        // Keyed by entity (FEAT-PERF-23): the newest instance replaces the old one's entry.
         if (usesBom)
-            avatarVisual.BomAttachments.Add((mi, faceIndices, faces, defaultFace));
+            avatarVisual.BomAttachments[entityId] = new BomEntry(mi, faceIndices, faces, defaultFace);
+        else
+            avatarVisual.BomAttachments.Remove(entityId);
 
         // FEAT-AVATAR-01: says whether a worn mesh takes part in Bakes-on-Mesh at all. A mesh head
         // that registers NO channels renders from its own textures (or grey, if it has none) and no
@@ -4470,11 +4842,15 @@ public partial class AvatarRenderer : Node3D
             return;
         }
 
-        avatarVisual.BomAttachments.RemoveAll(e => !IsInstanceValid(e.Mi));
+        // An instance that was freed takes its entry along; a merged item has none and keeps it.
+        List<Guid>? gone = null;
+        foreach (var (wornId, e) in avatarVisual.BomAttachments)
+            if (e.Mi != null && !IsInstanceValid(e.Mi)) (gone ??= new()).Add(wornId);
+        if (gone != null) foreach (var wornId in gone) avatarVisual.BomAttachments.Remove(wornId);
 
         var ch = avatarVisual.AttachmentBakeChannels;
         ch.Clear();
-        foreach (var e in avatarVisual.BomAttachments)
+        foreach (var e in avatarVisual.BomAttachments.Values)
         {
             void Scan(FaceTexture f)
             {
@@ -4713,6 +5089,7 @@ public partial class AvatarRenderer : Node3D
         _preparedRigs.TryRemove(entityId, out _);
         _rigsPreparing.TryRemove(entityId, out _);
         ClearRiggedPickBodies(entityId);
+        ForgetMergeItem(entityId); // FEAT-PERF-23: off the body, out of its bucket
         if (_riggedAttachments.TryGetValue(entityId, out var staleRigged))
         {
             hudMovedRigged = staleRigged;
@@ -4726,7 +5103,7 @@ public partial class AvatarRenderer : Node3D
         {
             hudOwnerVisual.WornAttachmentFaces.Remove(entityId);
             // M4-7: same as detach — a mesh moved onto a HUD point no longer hides the body.
-            if (hudMovedRigged != null) hudOwnerVisual.BomAttachments.RemoveAll(e => e.Mi == hudMovedRigged);
+            hudOwnerVisual.BomAttachments.Remove(entityId);
             RecomputeMeshVisibility(hudOwnerVisual);
             // BUG-AVATAR-10: nor does it keep shaping the skeleton it left (overrides, locks, fixup).
             if (hudMovedRigged != null) hudOwnerVisual.RiggedAttachments.RemoveAll(r => r.Mi == hudMovedRigged);
@@ -5711,7 +6088,7 @@ public partial class AvatarRenderer : Node3D
         faceIndices = System.Array.Empty<int>();
         var skin = BindRiggedSkin(meshData.Skin!, skeleton, visual, out var slotForJoint);
         if (skin == null) return null;
-        var prepared = PrepareRiggedMesh(meshData, slotForJoint, faces, defaultFace);
+        var prepared = PrepareRiggedMesh(meshData, slotForJoint, faces, defaultFace, drawsNothing: FaceDrawsNothing);
         MainThreadWorkQueue.RecordExternal("avatar.rig.verts", prepared.VertsMs);
         MainThreadWorkQueue.RecordExternal("avatar.rig.tangents", prepared.TangentsMs);
         return CommitRiggedMeshInstance(prepared, skin, slotForJoint, skeleton, meshId, visual, out faceIndices, extentSink);
@@ -5769,46 +6146,52 @@ public partial class AvatarRenderer : Node3D
             int bone = jointBone[j];
             if (bone < 0) { slotForJoint[j] = -1; continue; }
 
-            var ibm = skinData.InverseBindMatrices[j];
-            // Bind_godot = C⁻¹ · InverseBind_SL · C   (verified change-of-basis). bind-shape is
-            // applied to the vertices below, NOT folded in here — matching the SL viewer
-            // (LLSkinningUtil: palette = invBind·jointWorld; bind-shape pre-applied to verts).
-            // AffineInverse (not Inverse): Inverse() assumes an orthonormal basis and only
-            // transposes it, which is wrong once non-uniform scale is baked in (bone.Scale from
-            // the XML, or shape distortion) — AffineInverse does a real matrix invert.
-            Transform3D bind = ibm == System.Numerics.Matrix4x4.Identity
-                ? ComputeGlobalRestTransform(skeleton, bone).AffineInverse()
-                : RowMatrixToTransform(SlToGodotInv * ibm * SlToGodot);
-
-            // ApplyShape keeps every Rest a pure rotation (no scale — see its doc comment), so
-            // Godot's own live pose (used internally every frame for skinning: pose * bind) never
-            // carries any bone's own scale either. Inject it into the BIND instead — algebraically
-            // equivalent and pose-independent: for W = livePose (no scale) and W' = W with this
-            // bone's own scale injected into its basis, W.AffineInverse()*W' reduces to a pure
-            // Diag(ownScale) transform (the rotation/position cancel out), so pre-multiplying it
-            // once here reproduces exactly SL's invBind·jointWorld(with own scale) every frame
-            // without needing to recompute anything per-pose.
-            if (visual.BoneOwnScale.TryGetValue(skeleton.GetBoneName(bone), out var ownScale))
-                bind = InjectOwnScale(bind, ownScale);
-
-            // A NaN/Inf bind — a degenerate inverse-bind matrix in the mesh asset, or a singular
-            // rest — poisons every vertex weighted to this joint and Godot then warns "Vector3
-            // cannot be normalized, the elements must be finite". Fall back to the computed rest
-            // (scale-clamped in ApplyShape, so finite) rather than feed the skin palette garbage.
-            if (!IsFiniteTransform(bind))
-            {
-                GD.PushWarning($"[Avatar] non-finite skin bind for bone '{skeleton.GetBoneName(bone)}' — using computed rest");
-                bind = ComputeGlobalRestTransform(skeleton, bone).AffineInverse();
-                if (!IsFiniteTransform(bind)) bind = Transform3D.Identity;
-            }
-
             slotForJoint[j] = slotBones.Count;
             slotBones.Add(bone);
-            slotBinds.Add(bind);
+            slotBinds.Add(ComputeRiggedBind(skeleton, visual, bone, skinData.InverseBindMatrices[j]));
         }
         if (slotBones.Count == 0) return null;
 
         return SharedOrNewSkin(visual, skeleton, slotBones, slotBinds);
+    }
+
+    /// <summary>One joint's bind: the asset's inverse-bind matrix in Godot axes (or the bone's live
+    /// inverse rest for an identity matrix), with the avatar's own scale for the bone injected. The one
+    /// place this is computed, so a per-item skin and the outfit skin (FEAT-PERF-23) are bit-identical.</summary>
+    private static Transform3D ComputeRiggedBind(Skeleton3D skeleton, AvatarVisual visual, int bone, System.Numerics.Matrix4x4 ibm)
+    {
+        // Bind_godot = C⁻¹ · InverseBind_SL · C   (verified change-of-basis). bind-shape is
+        // applied to the vertices below, NOT folded in here — matching the SL viewer
+        // (LLSkinningUtil: palette = invBind·jointWorld; bind-shape pre-applied to verts).
+        // AffineInverse (not Inverse): Inverse() assumes an orthonormal basis and only
+        // transposes it, which is wrong once non-uniform scale is baked in (bone.Scale from
+        // the XML, or shape distortion) — AffineInverse does a real matrix invert.
+        Transform3D bind = ibm == System.Numerics.Matrix4x4.Identity
+            ? ComputeGlobalRestTransform(skeleton, bone).AffineInverse()
+            : RowMatrixToTransform(SlToGodotInv * ibm * SlToGodot);
+
+        // ApplyShape keeps every Rest a pure rotation (no scale — see its doc comment), so
+        // Godot's own live pose (used internally every frame for skinning: pose * bind) never
+        // carries any bone's own scale either. Inject it into the BIND instead — algebraically
+        // equivalent and pose-independent: for W = livePose (no scale) and W' = W with this
+        // bone's own scale injected into its basis, W.AffineInverse()*W' reduces to a pure
+        // Diag(ownScale) transform (the rotation/position cancel out), so pre-multiplying it
+        // once here reproduces exactly SL's invBind·jointWorld(with own scale) every frame
+        // without needing to recompute anything per-pose.
+        if (visual.BoneOwnScale.TryGetValue(skeleton.GetBoneName(bone), out var ownScale))
+            bind = InjectOwnScale(bind, ownScale);
+
+        // A NaN/Inf bind — a degenerate inverse-bind matrix in the mesh asset, or a singular
+        // rest — poisons every vertex weighted to this joint and Godot then warns "Vector3
+        // cannot be normalized, the elements must be finite". Fall back to the computed rest
+        // (scale-clamped in ApplyShape, so finite) rather than feed the skin palette garbage.
+        if (!IsFiniteTransform(bind))
+        {
+            GD.PushWarning($"[Avatar] non-finite skin bind for bone '{skeleton.GetBoneName(bone)}' — using computed rest");
+            bind = ComputeGlobalRestTransform(skeleton, bone).AffineInverse();
+            if (!IsFiniteTransform(bind)) bind = Transform3D.Identity;
+        }
+        return bind;
     }
 
     /// <summary>Upper bound on <see cref="AvatarVisual.SharedSkins"/>; past it the cache starts
@@ -5941,6 +6324,8 @@ public partial class AvatarRenderer : Node3D
                  (geo.OrphanedVertices > 0 ? $" [PINNED TO SKIN SLOT 0 = bone \"{skeleton.GetBoneName(skin.GetBindBone(0))}\"]" : ""));
 
         faceIndices = geo.FaceIndices();
+        // FEAT-PERF-23 Phase 0: the probe keys surfaces by the face they were built for.
+        RememberRigSurfaceFaces(arrayMesh, faceIndices);
         return new MeshInstance3D
         {
             Mesh = arrayMesh,
@@ -6269,6 +6654,8 @@ public partial class AvatarRenderer : Node3D
                 if (child is MeshInstance3D split && split.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
                     split.Skin = skin;
         }
+        // FEAT-PERF-23: the outfit skin is re-bound in place -- one pass over its slots.
+        RebindOutfitSkin(visual);
     }
 
     /// <summary>
@@ -6370,6 +6757,7 @@ public partial class AvatarRenderer : Node3D
     public override void _ExitTree()
     {
         if (_activeInstance == this) _activeInstance = null;
+        if (_assetService != null) _assetService.MaterialLoaded -= OnPbrMaterialLoaded;
         SLNG.App.UI.UiScale.Changed -= OnHudUiScaleChanged;
         if (_hudMainViewport != null && IsInstanceValid(_hudMainViewport)) _hudMainViewport.SizeChanged -= SyncHudContainer;
         if (_world != null)
@@ -6858,7 +7246,7 @@ void fragment() {
         // hidden/disabled so Godot performs zero skin-bind updates or draw calls.
         bool hasOutfit = visual.HasLoadedOutfit
             || visual.RiggedAttachments.Count > 0
-            || visual.WornAttachmentEntities.Any(id => _attachmentNodes.ContainsKey(id) || _riggedAttachments.ContainsKey(id));
+            || visual.WornAttachmentEntities.Any(id => _attachmentNodes.ContainsKey(id) || IsRiggedOnWearer(id));
 
         if (hasOutfit)
         {
@@ -6873,6 +7261,8 @@ void fragment() {
                     rMi.Visible = false;
                 }
             }
+            // FEAT-PERF-23: the merged outfit parks as a few instances on one skin.
+            ParkOutfitMerge(visual);
 
             foreach (var attId in visual.WornAttachmentEntities)
             {
@@ -6895,6 +7285,11 @@ void fragment() {
 
         ApplyJellyDoll(visual);
         RecomputeMeshVisibility(visual);
+
+        // FEAT-PERF-23: parked while an un-merge (the setting just went off) was still in flight. No job runs
+        // for a parked avatar, so its buckets would stay until promotion: the outfit goes instead, as it
+        // does for an avatar that stays out of view (promotion loads it again).
+        if (!RenderConfig.OutfitMerge && visual.OutfitMerge != null) UnloadAvatarOutfit(visual);
     }
 
     private void SetAvatarFull(AvatarVisual visual)
@@ -6925,9 +7320,12 @@ void fragment() {
                 {
                     ReattachSkeleton(rMi);
                     rMi.Visible = true;
-                    UpdateWornMeshVisibility(rMi);
+                    UpdateWornMeshVisibility(rMi, visual); // keeps a held one (FEAT-PERF-23) hidden
                 }
             }
+            UnparkOutfitMerge(visual);
+            // FEAT-PERF-23: items staged while it was parked (or before the setting went on) merge now.
+            if (_outfitMergeApplied) AdoptStagedItemsOf(visual);
 
             foreach (var attId in visual.WornAttachmentEntities)
             {
@@ -6946,7 +7344,7 @@ void fragment() {
             // Catch any attachments that arrived while parked and were never loaded
             foreach (var attId in visual.WornAttachmentEntities)
             {
-                if (!_riggedAttachments.ContainsKey(attId) && !_attachmentNodes.ContainsKey(attId))
+                if (!IsRiggedOnWearer(attId) && !_attachmentNodes.ContainsKey(attId))
                 {
                     CallDeferred(nameof(UpdateAttachment), attId.ToString());
                 }
@@ -6995,7 +7393,7 @@ void fragment() {
             _rigsPreparing.TryRemove(attId, out _);
             _attachNewest.TryRemove(attId, out _);
 
-            if (_riggedAttachments.TryGetValue(attId, out _))
+            if (IsRiggedOnWearer(attId)) // FEAT-PERF-23: a merged item has overrides to give back too
             {
                 DiscardRiggedAttachment(attId, visual);
                 ReleaseWornJointOverrides(visual, attId);
@@ -7048,6 +7446,7 @@ void fragment() {
         }
         visual.RiggedAttachments.Clear();
         visual.BomAttachments.Clear();
+        UnloadOutfitMerge(visual);
         RecomputeMeshVisibility(visual);
     }
 
@@ -7263,7 +7662,9 @@ void fragment() {
             // and bind writes (RenderingServer commands) per frame, and rigged skins shared/bound.
             $"skinWrites={skinWrites} skelUpdatesPerFrame={(double)skeletonUpdates / frames:F1} " +
             $"skinWritesPerFrame={writesInWindow / frames} sharedSkins={_skinsShared}/{_skinsBound} " +
-            $"shareSkins={(RenderConfig.ShareSkins ? "on" : "off")}");
+            $"shareSkins={(RenderConfig.ShareSkins ? "on" : "off")} " +
+            // FEAT-PERF-23: the outfit merge.
+            DescribeOutfitMergeCost());
         _skinsShared = _skinsBound = 0;
 
         // Surfaces are counted on the instance that owns the face: a split child counts its one
@@ -7278,12 +7679,13 @@ void fragment() {
             if (mi.Visible) drawn++;
             binds += n;
             if (isShown) shownBinds += n;
-            // Still registered with the skeleton, i.e. updated on every re-pose. A split child shares
-            // its parent's Skin and binding, so it is counted with the parent only.
-            if (!mi.Skeleton.IsEmpty && !mi.Name.ToString().StartsWith("SortedSurface", StringComparison.Ordinal))
+            // Still registered with the skeleton, i.e. updated on every re-pose. Godot keeps one binding
+            // per Skin, so each distinct Skin counts once: a split child shares its parent's, and every
+            // bucket and sorted instance of a merged outfit shares the outfit skin (FEAT-PERF-23).
+            if (!mi.Skeleton.IsEmpty && distinctSkins.Add(mi.Skin.GetInstanceId()))
             {
                 boundBinds += n;
-                if (distinctSkins.Add(mi.Skin.GetInstanceId())) writes += n;
+                writes += n;
             }
             if (mi.Mesh is not ArrayMesh mesh) return;
             for (int s = 0; s < mesh.GetSurfaceCount(); s++)
@@ -7303,6 +7705,10 @@ void fragment() {
         {
             RemoveVisual(removeId);
         }
+        // FEAT-PERF-23: after the removals, so a linkset taken off this frame frees its bucket at once.
+        TickOutfitMerge();
+        // BUG-RENDER-50: worn alpha re-ranked after attaches, detaches and point changes.
+        TickWornAlphaOrder();
 
         float dt = (float)delta;
         ReportAvatarCost(delta);
@@ -7731,9 +8137,15 @@ void fragment() {
                     // is invisible; alone it is the whole avatar. Distinguishing "we dropped the
                     // wrong one" from "the one we kept is nearly empty" needs the joint count.
                     if (Diagnostics.Enabled)
+                    {
+                        // BUG-ANIM-07: joints this animation POSITIONS (not just turns) -- an add-on HUD's
+                        // shape pose is made of these alone, and they now reach the skeleton.
+                        int positioned = 0;
+                        foreach (var j in data.Joints) if (j.PositionKeys.Length > 0) positioned++;
                         GD.Print($"[AnimPlayer] loaded {animId.ToString()[..8]}: {data.Joints.Length} joint(s), " +
                                  $"priority {data.Priority}, {data.Length:0.##}s, loop={data.Loop}, " +
-                                 $"body={isBodyPose} ({bodyJoints} body joint(s))");
+                                 $"body={isBodyPose} ({bodyJoints} body joint(s)), positioned={positioned}");
+                    }
                 }
                 else if (SelfLocomotion.All.Contains(animId))
                 {

@@ -34,5 +34,8 @@ public sealed class AnimationJointData
 /// <summary>Rotation keyframe — fully expanded quaternion (W is precomputed).</summary>
 public readonly record struct RotationKeyframe(float Time, Quaternion Rotation);
 
-/// <summary>Position keyframe — XYZ offset in neutral coordinates.</summary>
+/// <summary>Position keyframe -- XYZ in Second Life metres. For every joint this is the joint's ABSOLUTE
+/// position relative to its parent (the viewer hands the key straight to the joint,
+/// llkeyframemotion.cpp:414-417); only mPelvis' is measured from the skeleton root. Not an offset
+/// on the rest position -- see BUG-ANIM-07.</summary>
 public readonly record struct PositionKeyframe(float Time, Vector3 Position);

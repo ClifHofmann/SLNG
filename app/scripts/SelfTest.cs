@@ -224,6 +224,7 @@ public static partial class SelfTest
         results.Add(CheckAvatarSkeleton());
         results.Add(CheckControlAvatar(tree));
         results.Add(CheckWornJointOverrides(tree));
+        results.Add(CheckAnimationPositionKeys(tree));
         results.Add(CheckWornAnimesh(tree));
         results.Add(CheckAvatarPick(tree));
         results.Add(CheckAnimeshHandOver(tree));
@@ -250,6 +251,8 @@ public static partial class SelfTest
         results.Add(CheckRemovalHidesAtOnce(tree)); // BUG-NET-34
         results.Add(CheckTextureAnimInShader(tree)); // FEAT-PERF-16
         results.Add(CheckPbrOverrideApply(tree)); // FEAT-RENDER-26
+        results.Add(CheckPbrRenderMaterialWorld(tree)); // BUG-RENDER-49
+        results.Add(CheckPbrRenderMaterialWorn(tree)); // BUG-RENDER-49
         results.Add(CheckTargetOmega(tree)); // FEAT-RENDER-27
         results.Add(CheckTargetOmegaSitter(tree)); // FEAT-RENDER-27
         results.Add(CheckMeshAssetCollisionAndRemovals(tree)); // BUG-PERF-11
@@ -267,6 +270,12 @@ public static partial class SelfTest
         results.Add(CheckRenderThread()); // FEAT-PERF-13
         results.Add(CheckRenderMarkersBeforeSync()); // FEAT-PERF-24 P0-a
         results.Add(CheckSharedRiggedSkins(tree)); // FEAT-PERF-24
+        results.Add(CheckOutfitProbe(tree)); // FEAT-PERF-23 Phase 0
+        results.Add(CheckOutfitMerge(tree)); // FEAT-PERF-23 Phase 1
+        results.Add(CheckParkedOutfitHidden(tree)); // FEAT-PERF-23 fix: merge off, parked avatars
+        results.Add(CheckOutfitMergeToggle(tree)); // FEAT-PERF-23 fix: runtime switch
+        results.Add(CheckWornAlphaOrder(tree)); // BUG-RENDER-50
+        results.Add(CheckOutfitMergeUploadBench()); // FEAT-PERF-23 Phase 0, probe 2
         results.Add(CheckSeatedPelvisOnSeat(tree)); // BUG-AVATAR-12
         results.Add(CheckMeshSurfaceCache()); // BUG-PERF-15
         results.Add(CheckDxgiVideoMemory()); // FEAT-PERF-17
@@ -1947,6 +1956,30 @@ public static partial class SelfTest
         {
             tree.Root.AddChild(renderer);
             var (passed, detail) = renderer.SelfTestWornJointOverrides();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// BUG-ANIM-07: an animation's position key drives any joint (scaled by its parent), beats a worn
+    /// mesh's joint-position override while it plays, and the pelvis is unchanged.
+    /// </summary>
+    private static Check CheckAnimationPositionKeys(SceneTree tree)
+    {
+        const string Name = "animation position keys";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestAnimationPositionKeys();
             return new Check(Name, passed, detail);
         }
         catch (System.Exception ex)

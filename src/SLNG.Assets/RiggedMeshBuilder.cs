@@ -42,8 +42,12 @@ public static class RiggedMeshBuilder
 
     /// <summary>Builds the surfaces of a rigged mesh. Submeshes without indices or weights are
     /// skipped, as before. <paramref name="faceFor"/> resolves a submesh's SL face record; two
-    /// consecutive submeshes whose records compare equal share one surface.</summary>
-    public static RiggedMeshGeometry Build(MeshData mesh, int[] slotForJoint, Func<int, FaceTexture> faceFor)
+    /// consecutive submeshes whose records compare equal share one surface.
+    /// <paramref name="drawsNothing"/> says which faces are left out altogether -- by default
+    /// <see cref="FaceTexture.IsInvisible"/>, the TextureEntry's answer. BUG-RENDER-49: the renderer
+    /// passes its own, which asks a face's glTF material when that material is loaded.</summary>
+    public static RiggedMeshGeometry Build(MeshData mesh, int[] slotForJoint, Func<int, FaceTexture> faceFor,
+        Func<FaceTexture, bool>? drawsNothing = null)
     {
         int slotCount = SlotCount(slotForJoint);
         var geo = new RiggedMeshGeometry
@@ -120,7 +124,7 @@ public static class RiggedMeshBuilder
             if (sub.Indices.Length == 0 || sub.Weights == null) continue;
 
             var subFace = faceFor(sub.FaceIndex);
-            if (subFace.IsInvisible)
+            if (drawsNothing != null ? drawsNothing(subFace) : subFace.IsInvisible)
             {
                 FlushRun();
                 continue;

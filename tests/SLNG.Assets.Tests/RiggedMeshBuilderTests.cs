@@ -243,6 +243,27 @@ public sealed class RiggedMeshBuilderTests
         Assert.Equal(Vector3.Zero, geo.BindPoseMax);
     }
 
+    [Fact]
+    public void A_pbr_face_is_left_out_by_its_texture_entry_unless_the_renderer_says_its_material_draws()
+    {
+        // BUG-RENDER-49. With no material in hand a face is its legacy self: a TE alpha of 0 or the
+        // transparent texture drops it, as it always did -- v0.27.83 kept such faces and, with every
+        // material fetch failing, brought back hair layers a HUD had switched off. When the renderer
+        // holds the material it decides instead (llface.cpp:1395-1400): a PBR garment over a
+        // transparent legacy texture keeps its triangles.
+        var material = Guid.Parse("e69dde89-50f8-b85f-9a26-da60314acba6");
+        var pbrOverTransparent = default(FaceTexture) with { TextureId = FaceTexture.TransparentTextureId, RenderMaterialId = material };
+        var pbrOverZeroAlpha = default(FaceTexture) with { TextureId = Guid.NewGuid(), Color = new Vector4(1f, 1f, 1f, 0f), RenderMaterialId = material };
+        Assert.True(pbrOverTransparent.IsInvisible);
+        Assert.True(pbrOverZeroAlpha.IsInvisible);
+
+        var mesh = new MeshData(new[] { Triangle(0), Triangle(1) }, Skin(1));
+        FaceTexture Faces(int fi) => fi == 0 ? pbrOverTransparent : pbrOverZeroAlpha;
+
+        Assert.Empty(RiggedMeshBuilder.Build(mesh, new[] { 0 }, Faces).FaceIndices());
+        Assert.Equal(new[] { 0, 1 }, RiggedMeshBuilder.Build(mesh, new[] { 0 }, Faces, drawsNothing: _ => false).FaceIndices());
+    }
+
     private static void AssertNear(float expected, float actual) => Assert.InRange(actual, expected - 1e-5f, expected + 1e-5f);
 
     private static void AssertNear(Vector3 expected, Vector3 actual)

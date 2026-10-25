@@ -70,6 +70,10 @@ public sealed class GraphicsSettings
     /// default; off means the options below apply exactly as set, whatever the card.</summary>
     public bool LowVramCaps { get; private set; } = true;
 
+    /// <summary>FEAT-PERF-23: merge other avatars' worn meshes (<see cref="RenderConfig.OutfitMerge"/>). Off by
+    /// default until the in-world A/B. Not part of the presets.</summary>
+    public bool OutfitMerge { get; private set; }
+
     /// <summary>FEAT-PERF-25: the <see cref="LowVramPolicy"/> tier Boot chose from the OS budget. Not
     /// saved: it is a property of the card and the session, not a preference.</summary>
     public int VramTier { get; set; }
@@ -183,6 +187,7 @@ public sealed class GraphicsSettings
         TextureMemoryAuto = (bool)cfg.GetValue(Section, "texture_memory_auto", TextureMemoryAuto);
         CompressTextures = (bool)cfg.GetValue(Section, "compress_textures", CompressTextures);
         LowVramCaps = (bool)cfg.GetValue(Section, "low_vram_caps", LowVramCaps);
+        OutfitMerge = (bool)cfg.GetValue(Section, "outfit_merge", OutfitMerge);
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
@@ -216,6 +221,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "texture_memory_auto", TextureMemoryAuto);
         cfg.SetValue(Section, "compress_textures", CompressTextures);
         cfg.SetValue(Section, "low_vram_caps", LowVramCaps);
+        cfg.SetValue(Section, "outfit_merge", OutfitMerge);
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
@@ -245,6 +251,7 @@ public sealed class GraphicsSettings
     public void SetTextureMemoryAuto(bool auto) { TextureMemoryAuto = auto; Save(); }
     public void SetCompressTextures(bool value) { CompressTextures = value; Save(); }
     public void SetLowVramCaps(bool on) { LowVramCaps = on; Save(); }
+    public void SetOutfitMerge(bool on) { OutfitMerge = on; Save(); }
     public void SetPostFxSsao(bool on) { PostFxSsao = on; Save(); }
     public void SetPostFxSsil(bool on) { PostFxSsil = on; Save(); }
     public void SetPostFxGlow(bool on) { PostFxGlow = on; Save(); }
@@ -475,6 +482,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "texture_memory_auto", TextureMemoryAuto);
         cfg.SetValue(section, "compress_textures", CompressTextures);
         cfg.SetValue(section, "low_vram_caps", LowVramCaps);
+        cfg.SetValue(section, "outfit_merge", OutfitMerge);
         cfg.SetValue(section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(section, "post_fx_glow", PostFxGlow);
@@ -519,6 +527,7 @@ public sealed class GraphicsSettings
         TextureMemoryAuto = (bool)cfg.GetValue(section, "texture_memory_auto", TextureMemoryAuto);
         CompressTextures = (bool)cfg.GetValue(section, "compress_textures", CompressTextures);
         LowVramCaps = (bool)cfg.GetValue(section, "low_vram_caps", LowVramCaps);
+        OutfitMerge = (bool)cfg.GetValue(section, "outfit_merge", OutfitMerge);
         PostFxSsao = (bool)cfg.GetValue(section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(section, "post_fx_glow", PostFxGlow);
@@ -635,6 +644,8 @@ public sealed class GraphicsSettings
         // next quarter second, not inside one frame.
         RenderConfig.SmallObjectCullPixels = RenderConfig.SmallObjectCullArg ?? SmallObjectCullPixels;
         RenderConfig.MaxFullyRenderedAvatars = MaxFullyRenderedAvatars;
+        // FEAT-PERF-23: the avatar renderer notices the switch on its next frame and merges or un-merges.
+        RenderConfig.OutfitMerge = RenderConfig.OutfitMergeArg ?? OutfitMerge;
         AvatarRenderer.NotifySettingsChanged();
 
         // FEAT-PERF-25: the options as set, then the low-VRAM caps on top (when allowed).

@@ -417,13 +417,52 @@ public sealed partial class GridSession
     // fallback to the generic cap.
     //
     // v0.20.40 also skipped the UDP fallback for these, on the reasoning that "no transport will
-    // get the bytes". That reasoning was wrong, and the user disproved it: Firestorm displays the
-    // very texture SLNG gives up on (dda710d4, a remote avatar's hair, confirmed 2026-09-03). The
-    // asset EXISTS and is servable -- the CDN just will not serve it over the generic cap. So an
-    // HTTP 403 now costs exactly ONE UDP attempt through LibreMetaverse's legacy image transfer,
-    // the same transport the reference viewer falls back to; only if that also comes back empty is
-    // the id recorded as genuinely gone.
+    // get the bytes". The user disproved the conclusion: Firestorm displays the very texture SLNG
+    // gives up on (dda710d4, a remote avatar's hair, confirmed 2026-09-03). So an HTTP 403 now costs
+    // exactly ONE UDP attempt through LibreMetaverse's legacy image transfer; only if that also comes
+    // back empty is the id recorded as genuinely gone.
+    //
+    // That UDP attempt is SLNG's own fallback, NOT the reference viewer's: LLTextureFetch has no UDP
+    // state at all any more (its states run cache -> WAIT_HTTP_RESOURCE -> SEND_HTTP_REQ ->
+    // WAIT_HTTP_REQ, lltexturefetch.cpp:431-444; with no capability URL it waits, :1336-1348 -- the
+    // "UDP as fallback" in the file's header comment is stale). So when Firestorm shows a texture SLNG
+    // was refused, the difference is in the HTTP request itself (URL, headers, which region's cap),
+    // not in a transport the viewer has and SLNG lacks. Under --diag the refusal's body and its
+    // Server/X-Cache headers are logged once per id to tell those apart.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _httpDeniedTextures = new();
+
+    /// <summary>Ids whose 403/401 body was logged under --diag (once each).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _deniedBodyLogged = new();
+
+    /// <summary>The start of a refused texture response, for the --diag line: at most
+    /// <paramref name="maxBytes"/> of the body (as text, one line) and the Server and X-Cache headers,
+    /// which say whether the refusal came from the CDN or from the asset service behind it. Never
+    /// throws.</summary>
+    private static async Task<string> DescribeRefusalAsync(HttpResponseMessage response, int maxBytes = 200)
+    {
+        static string Header(HttpResponseMessage r, string name) =>
+            r.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : "-";
+
+        string body;
+        try
+        {
+            using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            var buffer = new byte[maxBytes];
+            int read = 0;
+            while (read < maxBytes)
+            {
+                int n = await stream.ReadAsync(buffer.AsMemory(read, maxBytes - read)).ConfigureAwait(false);
+                if (n == 0) break;
+                read += n;
+            }
+            body = System.Text.Encoding.UTF8.GetString(buffer, 0, read).Replace('\r', ' ').Replace('\n', ' ');
+        }
+        catch (Exception ex)
+        {
+            body = $"(unreadable: {ex.Message})";
+        }
+        return $"Server={Header(response, "Server")} X-Cache={Header(response, "X-Cache")} body=\"{body}\"";
+    }
 
     /// <summary>Ids that 403'd on HTTP **and** produced nothing over UDP. Session-permanent, and
     /// the only set that makes <see cref="TextureFetchResult.Gone"/> true -- an id in
@@ -491,10 +530,13 @@ public sealed partial class GridSession
                             // caller skips the UDP fallback (see _permanentlyDeniedTextures). The
                             // bake path (fetchUrl != null) is excluded: it 403s by design and then
                             // legitimately falls back to the generic cap (BUG-AVATAR-02).
-                            if (fetchUrl == null &&
-                                (response.StatusCode == System.Net.HttpStatusCode.Forbidden
-                                 || response.StatusCode == System.Net.HttpStatusCode.Unauthorized))
+                            bool denied = response.StatusCode == System.Net.HttpStatusCode.Forbidden
+                                          || response.StatusCode == System.Net.HttpStatusCode.Unauthorized;
+                            if (fetchUrl == null && denied)
                                 _httpDeniedTextures.TryAdd(textureId, 0);
+                            if (denied && SLNG.Core.Diag.Verbose && _deniedBodyLogged.TryAdd(textureId, 0))
+                                Console.Error.WriteLine($"[TextureFetch] {textureId} HTTP {(int)response.StatusCode} from " +
+                                    $"{url.Host}{url.AbsolutePath}: {await DescribeRefusalAsync(response).ConfigureAwait(false)}");
                             // Host in the message: a 403 could be the wrong URL class (see
                             // BUG-AVATAR-02 -- bakes needed bake-texture.glb..., not the generic
                             // asset CDN) or a genuine permission denial / non-persisted local
@@ -599,15 +641,66 @@ public sealed partial class GridSession
         return null;
     }
 
+    private static readonly System.Threading.SemaphoreSlim _materialFetchSemaphore = new System.Threading.SemaphoreSlim(6, 6);
+
+    // Material ids neither transport delivered, once per id.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _materialFailureLogged = new();
+
+    /// <summary>How long the legacy transfer gets for one material before the face falls back to its
+    /// legacy texture. A material is a few kB; LibreMetaverse's own request has no deadline of its own.</summary>
+    internal static readonly TimeSpan MaterialUdpTimeout = TimeSpan.FromSeconds(20);
+
     /// <summary>
-    /// Fetches a GLTF PBR Material asset from the simulator. Returns null if the fetch fails.
+    /// BUG-RENDER-49: the raw bytes of a glTF material asset (asset type 57), over the region's
+    /// <c>ViewerAsset</c> capability -- <c>{cap}/?material_id={id}</c>, the URL the reference viewer
+    /// builds for every asset type (<c>LLViewerAssetStorage::getAssetURL</c>,
+    /// llviewerassetstorage.cpp:640-645, type name "material" from llassettype.cpp:100). Decoding is
+    /// <c>SLNG.Assets.GltfMaterialAsset</c>'s, so no LibreMetaverse type leaves this layer.
+    ///
+    /// <para>Until v0.27.84 this went through LibreMetaverse's <c>RequestAssetAsync</c>, whose
+    /// <c>AssetMaterial.Decode</c> reads the bytes as bare glTF JSON, while the asset is an LLSD envelope
+    /// around it: every PBR material on Second Life came back null (109 failures, 40 ids, zero
+    /// materials in the v0.27.83 test).</para>
+    ///
+    /// <para>Refusals as for animations (BUG-ASSET-02): 403/404/410 is a decision, remembered by
+    /// <see cref="AssetRefusals"/>, no legacy retry. Any other failure -- no capability yet (OpenSim
+    /// without ViewerAsset), a timeout, a 5xx -- tries the legacy transfer once, for at most
+    /// <see cref="MaterialUdpTimeout"/>: a face waits for this before it falls back, and must not wait
+    /// for ever.</para>
     /// </summary>
-    public async Task<LibreMetaverse.Assets.AssetMaterial?> FetchMaterialDataAsync(Guid materialId)
+    public async Task<byte[]?> FetchMaterialAssetAsync(Guid materialId)
     {
-        var asset = await _client.Assets
-            .RequestAssetAsync(new UUID(materialId), AssetType.Material, true, CancellationToken.None)
-            .ConfigureAwait(false);
-        return asset as LibreMetaverse.Assets.AssetMaterial;
+        ulong region = CurrentRegionHandle;
+        if (_assetRefusals.IsRefused(region, materialId)) return null;
+
+        var viaHttp = await FetchAssetViaViewerAssetAsync(materialId, "material", _materialFetchSemaphore).ConfigureAwait(false);
+        if (viaHttp.Bytes is { Length: > 0 }) return viaHttp.Bytes;
+
+        if (viaHttp.Status is { } status && AssetRefusals.IsRefusal(status))
+        {
+            if (_assetRefusals.Remember(region, materialId))
+                Console.Error.WriteLine($"[MaterialFetch] {materialId}: the region refused it (HTTP {(int)status}); " +
+                                        $"asked again after {_assetRefusals.FirstLifetime.TotalSeconds:0} s, then with growing pauses up to {_assetRefusals.Lifetime.TotalMinutes:0} minutes");
+            return null;
+        }
+
+        byte[]? data = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(MaterialUdpTimeout);
+            var asset = await _client.Assets
+                .RequestAssetAsync(new UUID(materialId), AssetType.Material, true, timeout.Token)
+                .ConfigureAwait(false);
+            data = asset?.AssetData;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or HttpRequestException)
+        {
+            data = null;
+        }
+        if (data is not { Length: > 0 } && _materialFailureLogged.TryAdd(materialId, 0))
+            Console.Error.WriteLine($"[MaterialFetch] {materialId}: neither the ViewerAsset capability " +
+                                    $"(HTTP {(viaHttp.Status is { } s ? ((int)s).ToString() : "no answer")}) nor the legacy transfer delivered it");
+        return data is { Length: > 0 } ? data : null;
     }
 
     // Animation ids the HTTP path and the UDP path both gave up on, once per id -- a failing one is

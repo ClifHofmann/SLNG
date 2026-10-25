@@ -183,7 +183,7 @@ public class AssetService
     /// <summary>Persistent disk cache of decoded textures (FEAT-PERF-11).</summary>
     public DecodedTextureCache DecodedCache { get; }
 
-    public AssetService(GridSession session, string cacheDirectory, long decodedCacheSizeMb = 4096)
+    public AssetService(GridSession session, string cacheDirectory, long decodedCacheSizeMb = 16384)
     {
         _session = session;
         _cacheDir = cacheDirectory;
@@ -804,6 +804,19 @@ public class AssetService
     /// <see cref="GridSession.FetchBakeTextureDataAsync"/>).</summary>
     public async Task<TextureData?> GetBakeTextureAsync(Guid textureId, int bakeChannel, float priority = 0f, Guid bakeAgentId = default)
     {
+        var data = await GetBakeTextureCoreAsync(textureId, bakeChannel, priority, bakeAgentId).ConfigureAwait(false);
+        if (data != null) BakeMaterialised?.Invoke(textureId, data);
+        return data;
+    }
+
+    /// <summary>Raised on the calling (worker) thread every time a bake's decoded pixels are handed out --
+    /// fresh from the bake host, from the memory cache, or from the generic texture path -- before they are
+    /// uploaded. For diagnostics that keep a measurement of a bake (BUG-RENDER-50 [BomAlpha]); a handler must
+    /// be cheap and must not keep the pixels.</summary>
+    public event Action<Guid, TextureData>? BakeMaterialised;
+
+    private async Task<TextureData?> GetBakeTextureCoreAsync(Guid textureId, int bakeChannel, float priority, Guid bakeAgentId)
+    {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
             return cached;
@@ -1329,26 +1342,71 @@ public class AssetService
         }
     }
 
+    /// <summary>The memory-cache key of a glTF material: its own key space, so a material id can never
+    /// collide with the texture stored under the same UUID (one region named the transparent texture's
+    /// id as a material).</summary>
+    private static (string, Guid) PbrMaterialKey(Guid id) => ("pbr", id);
+
+    // BUG-RENDER-49: material assets that were delivered and could not be decoded. An asset never
+    // changes, so neither does that answer: asking again would fetch the same bytes for every face
+    // that names it.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _undecodableMaterials = new();
+
+    /// <summary>BUG-RENDER-49: raised (on a worker thread) every time a glTF material has been fetched
+    /// and decoded. A renderer that built a face while the material was not to be had listens for this
+    /// to build it again; everyone else ignores it.</summary>
+    public event Action<Guid>? MaterialLoaded;
+
+    /// <summary>The decoded texture (or bake) if it is in the memory cache right now -- no fetch, never
+    /// blocks. For diagnostics that measure what a face samples (BUG-RENDER-50 [BomAlpha]).</summary>
+    public bool TryGetCachedTexture(Guid textureId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TextureData? data) =>
+        _memCache.TryGetValue(textureId, out data) && data != null;
+
+    /// <summary>The glTF material if it is in memory right now -- no fetch, never blocks. What a
+    /// worker deciding a rigged mesh's geometry may ask (BUG-RENDER-49).</summary>
+    public bool TryGetLoadedMaterial(Guid materialId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PbrMaterialData? material)
+    {
+        if (_memCache.TryGetValue(PbrMaterialKey(materialId), out PbrMaterialData? cached) && cached != null)
+        {
+            material = cached;
+            return true;
+        }
+        material = null;
+        return false;
+    }
+
     /// <summary>
     /// Fetches a GLTF PBR material by UUID and returns its mapped parameters and texture UUIDs.
     /// </summary>
     public Task<PbrMaterialData?> GetMaterialAsync(Guid materialId)
     {
-        if (_memCache.TryGetValue(materialId, out PbrMaterialData? cached))
+        if (_memCache.TryGetValue(PbrMaterialKey(materialId), out PbrMaterialData? cached))
         {
             return Task.FromResult(cached);
         }
+        if (_undecodableMaterials.ContainsKey(materialId)) return Task.FromResult<PbrMaterialData?>(null);
         return InFlight.GetOrStart(_inflightMaterials, materialId, async id =>
         {
             var result = await FetchMaterialAsync(id).ConfigureAwait(false);
             if (result != null)
             {
-                _memCache.Set(id, result, new MemoryCacheEntryOptions { Size = 1024, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                _memCache.Set(PbrMaterialKey(id), result, new MemoryCacheEntryOptions { Size = 1024, SlidingExpiration = TimeSpan.FromMinutes(10) });
+                try
+                {
+                    MaterialLoaded?.Invoke(id);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[AssetService] a MaterialLoaded subscriber failed for {id}: {ex.Message}");
+                }
             }
             return result;
         });
     }
 
+    /// <summary>BUG-RENDER-49: the material asset's bytes from the grid (see
+    /// <see cref="GridSession.FetchMaterialAssetAsync"/>), decoded by <see cref="GltfMaterialAsset"/>.
+    /// Null when it could not be had or read; one log line per failing id and reason, not per face.</summary>
     private async Task<PbrMaterialData?> FetchMaterialAsync(Guid materialId)
     {
         if (!_session.IsConnected)
@@ -1356,79 +1414,30 @@ public class AssetService
             return null;
         }
 
+        byte[]? bytes;
         try
         {
-            var asset = await _session.FetchMaterialDataAsync(materialId).ConfigureAwait(false);
-            if (asset == null)
-            {
-                Console.WriteLine($"[AssetService] material {materialId} fetch returned null (RenderMaterials cap gave no data)");
-                return null;
-            }
-
-            Guid baseColorTex = Guid.Empty;
-            Guid normalTex = Guid.Empty;
-            Guid ormTex = Guid.Empty;
-            Guid emissiveTex = Guid.Empty;
-
-            if (asset.TextureIds != null)
-            {
-                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR)
-                    baseColorTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_BASE_COLOR].Guid;
-
-                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL)
-                    normalTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_NORMAL].Guid;
-
-                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS)
-                    ormTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_METALLIC_ROUGHNESS].Guid;
-
-                if (asset.TextureIds.Length > LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE)
-                    emissiveTex = asset.TextureIds[LibreMetaverse.Assets.AssetMaterial.TEXTURE_EMISSIVE].Guid;
-            }
-
-            var baseColor = new System.Numerics.Vector4(
-                asset.BaseColorFactor.R,
-                asset.BaseColorFactor.G,
-                asset.BaseColorFactor.B,
-                asset.BaseColorFactor.A);
-
-            var emissive = new System.Numerics.Vector3(
-                asset.EmissiveFactor.X,
-                asset.EmissiveFactor.Y,
-                asset.EmissiveFactor.Z);
-
-            // LibreMetaverse.Assets.AssetMaterial.AlphaMode mirrors glTF's own alphaMode 1:1
-            // (verified via metadata reflection against LibreMetaverse.dll 3.0.0: enum
-            // GltfAlphaMode { Opaque, Blend, Mask }) — an authoritative, creator-declared signal,
-            // never a pixel-content guess. Map by name rather than casting the underlying int:
-            // GltfAlphaMode's declaration order (Opaque=0, Blend=1, Mask=2) does NOT match our
-            // PbrAlphaMode's (Opaque=0, Mask=1, Blend=2), so a raw enum cast would silently swap
-            // Mask and Blend.
-            var alphaMode = asset.AlphaMode switch
-            {
-                LibreMetaverse.Assets.GltfAlphaMode.Blend => PbrAlphaMode.Blend,
-                LibreMetaverse.Assets.GltfAlphaMode.Mask => PbrAlphaMode.Mask,
-                _ => PbrAlphaMode.Opaque,
-            };
-
-            return new PbrMaterialData(
-                baseColorTex,
-                normalTex,
-                ormTex,
-                emissiveTex,
-                baseColor,
-                asset.MetallicFactor,
-                asset.RoughnessFactor,
-                emissive,
-                alphaMode,
-                asset.AlphaCutoff,
-                asset.DoubleSided
-            );
+            bytes = await _session.FetchMaterialAssetAsync(materialId).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[AssetService] Failed to fetch material {materialId}: {ex.Message}");
             return null;
         }
+        if (bytes == null)
+        {
+            // The transport logged why, once (refusal or no delivery).
+            return null;
+        }
+
+        var material = GltfMaterialAsset.Decode(bytes, out string error);
+        if (material == null)
+        {
+            if (_undecodableMaterials.TryAdd(materialId, 0))
+                Console.Error.WriteLine($"[AssetService] material {materialId} ({bytes.Length} bytes) could not be decoded: {error}");
+            return null;
+        }
+        return material;
     }
 
     /// <summary>

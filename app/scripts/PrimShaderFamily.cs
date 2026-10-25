@@ -71,6 +71,10 @@ public static class PrimShaderFamily
     // depth for fragments at or above core_alpha_threshold, nothing to colour. The reference
     // viewer's own alpha depth pass (lldrawpoolalpha.cpp:212-227). --foliage-alpha=blendcore.
     private const string DepthCorePath = "res://materials/prim/prim_depth_core.gdshader";
+    // BUG-RENDER-50: the same depth-only pass for a worn rigged mesh, cull_disabled like the avatar colour
+    // variants. Not a next_pass: AvatarRenderer draws it on an instance of its own, ordered by
+    // WornAlphaOrder, so it lands after its own item and before the next one.
+    private const string DepthCoreAvatarPath = "res://materials/prim/prim_depth_core_avatar.gdshader";
     // BUG-RENDER-32: the planar mirror. Standalone rather than a member of the Kind/Surface
     // matrix -- it answers one surface in the scene and shares none of the material pipeline,
     // only the uniform NAMES, so a ShaderMaterial keeps its albedo and Shiny level across the
@@ -124,6 +128,7 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _blendDepth = MakeLazy(BlendDepthPath);
     private static readonly Lazy<Shader> _mirror = MakeLazy(MirrorPath);
     private static readonly Lazy<Shader> _depthCore = MakeLazy(DepthCorePath);
+    private static readonly Lazy<Shader> _depthCoreAvatar = MakeLazy(DepthCoreAvatarPath);
     private static readonly Lazy<Shader> _hidden = MakeLazy(HiddenPath);
 
     private static readonly Lazy<Shader> _opaqueDoubleSided = MakeLazy(OpaqueDoubleSidedPath);
@@ -237,6 +242,14 @@ public static class PrimShaderFamily
     /// draw order, which is what makes the coarse per-instance sort stop mattering. See the shader
     /// header for the viewer citations. WorldPrim only; attached by ObjectRenderer.</summary>
     public static Shader DepthCore => _depthCore.Value;
+
+    /// <summary>BUG-RENDER-50: the alpha DEPTH pass of a worn rigged mesh's blended surfaces -- the
+    /// reference viewer's depth write for rigged alpha (lldrawpoolalpha.cpp:203-205, :240). Writes depth
+    /// where alpha reaches <see cref="CoreAlphaThreshold"/>, no colour; cull_disabled like the avatar
+    /// colour variants. Unlike <see cref="DepthCore"/> it keeps the default render priority: the
+    /// avatar renderer orders it by sorting offset (SLNG.Core.WornAlphaOrder.DepthOffset), after its own
+    /// item's surfaces and before the next item's.</summary>
+    public static Shader DepthCoreAvatar => _depthCoreAvatar.Value;
 
     /// <summary>BUG-RENDER-16: render priority of a <see cref="DepthCore"/> pass. Godot's alpha
     /// comparator orders by priority BEFORE depth (render_forward_clustered.h:722-726), so this
@@ -353,6 +366,7 @@ public static class PrimShaderFamily
         _ = _scissorEdge.Value;
         _ = _blendDepth.Value;
         _ = _depthCore.Value;
+        _ = _depthCoreAvatar.Value;
         _ = _hidden.Value;
         _ = _opaqueAvatar.Value;
         _ = _scissorAvatar.Value;
@@ -432,6 +446,10 @@ public static class PrimShaderFamily
     public static readonly StringName TexAnimB = "tex_anim_b";
     public static readonly StringName PbrUvA = "pbr_uv_a";
     public static readonly StringName PbrUvB = "pbr_uv_b";
+
+    /// <summary>BUG-RENDER-49 follow-up: the face draws a glTF material, so it gets glTF's dielectric 4 %
+    /// specular instead of the legacy path's 0 (prim_common.gdshaderinc).</summary>
+    public static readonly StringName PbrMaterial = "pbr_material";
 
     /// <summary>SL TexGen, NORMALISED for the shader: 0 = default, 1 = planar. The wire value
     /// for planar is 2 (see FaceTexture.TexGen); it is collapsed to a 0/1 flag here so the

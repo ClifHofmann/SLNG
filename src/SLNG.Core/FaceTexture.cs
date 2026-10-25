@@ -105,7 +105,16 @@ public readonly record struct FaceTexture(
     /// <summary>The well-known Second Life transparent texture UUID.</summary>
     public static readonly Guid TransparentTextureId = new("8dcd4a48-2d37-4909-9f78-f7a9eb4ef903");
 
-    /// <summary>True when this face will draw nothing (transparent texture or color alpha &lt;= 0.001).</summary>
+    /// <summary>True when this face's TextureEntry says it draws nothing: the transparent texture, or a
+    /// colour alpha &lt;= 0.001.
+    ///
+    /// <para>BUG-RENDER-49: that is the whole answer only for a face drawn from its TextureEntry. A face
+    /// whose glTF render material is LOADED takes its colour and alpha from the material instead
+    /// (llface.cpp:1395-1400, llvovolume.cpp:5972-5979; hidden only as a BLEND material at base-colour
+    /// alpha 0, :6017-6022) -- which only the renderer, holding the material, can decide. While the
+    /// material is not to be had the face is drawn as its legacy self, and then this is exactly right:
+    /// v0.27.83 made it false for every face naming a material, and with the material fetch failing,
+    /// hair layers a HUD had switched off by TE alpha came back.</para></summary>
     public bool IsInvisible =>
         TextureId == TransparentTextureId || (Color != default && Color.W <= 0.001f);
 }

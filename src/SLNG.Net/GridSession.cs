@@ -80,7 +80,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     // both instead of duplicating the plumbing per name kind.
     private readonly ConcurrentDictionary<Guid, string> _nameCache = new();
 
-    // The three ExtraParams latches (BUG-NET-25, FEAT-ANIMESH-01). Each exists because
+    // The four ExtraParams latches (BUG-NET-25, FEAT-ANIMESH-01, BUG-RENDER-49). Each exists because
     // LibreMetaverse cannot say what an object's CURRENT ExtraParams contain, and OpenSim signals
     // "switched off" by OMITTING a block rather than sending an off marker, so the only way to
     // know a block is gone is to read the bytes of the update that left it out. Fed by the raw
@@ -88,7 +88,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     // ObjectUpdateCompressed), registered alongside ObjectManager's own handlers, since the
     // high-level Primitive/PrimEventArgs API exposes no such signal. See ExtraParamsScan.
     //
-    // All three are keyed by region AS WELL AS LocalID -- LocalIDs are handed out per region and a
+    // All four are keyed by region AS WELL AS LocalID -- LocalIDs are handed out per region and a
     // neighbour (MultipleSims) routinely reuses the same number --, hold only the objects that
     // matter (never one entry per prim in the region), and are pruned on kill and on region
     // disconnect, so no entry outlives its object.
@@ -110,6 +110,13 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     // bit set (FEAT-ANIMESH-01). LibreMetaverse 3.1.6 does decode it (Primitive.ExtendedMeshFlags),
     // but into a field that is never cleared when the block goes away, so the same latch applies.
     private readonly ConcurrentDictionary<(ulong Region, uint LocalId), bool> _animatedMeshObjects = new();
+
+    // BUG-RENDER-49: the Render Material (0x80) block of the latest ExtraParams -- the per-face glTF
+    // PBR material ids -- for the objects that have one. LibreMetaverse steps over the block, and its
+    // TextureEntryFace.RenderMaterialID is only filled from TextureEntry bytes Second Life never sends,
+    // so without this every PBR face rendered its legacy texture. Cleared when a full update omits the
+    // block: the viewer then clears every face's id (llviewerobject.cpp:1590-1598, :6846-6850).
+    private readonly ConcurrentDictionary<(ulong Region, uint LocalId), RenderMaterialParams> _renderMaterials = new();
 
     /// <summary>MVP3-3 Phase 1: the last <c>x-mv:</c> media-version string a fetch was already
     /// queued for, per LocalID. LibreMetaverse raises no event when a prim's MOAP media changes

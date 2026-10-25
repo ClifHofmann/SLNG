@@ -91,6 +91,13 @@ param(
     # in [Perf] and skinWrites in [AvatarCost]. Passes --no-share-skins.
     [switch]$NoShareSkins,
 
+    # FEAT-PERF-23 Phase 1: merge other avatars' worn rigged meshes per worn linkset and material onto
+    # one skin per avatar. Overrides the Graphics preference for this run. The A/B: the same spot with
+    # -OutfitMerge and with -NoOutfitMerge; compare draws / renderCpuMs / postFlushMs / fps in [Perf]
+    # and buckets / mergedItems / stagedItems in [AvatarCost]. Pass --outfit-merge=on / =off.
+    [switch]$OutfitMerge,
+    [switch]$NoOutfitMerge,
+
     # BUG-AVATAR-07: stop AvatarController's ground clamp from pulling the local agent DOWN to its
     # own ground reading (pushing UP out of geometry still happens). The reference viewer has no
     # equivalent of that downward pull -- the simulator owns the agent's Z, and
@@ -227,6 +234,16 @@ if ($ShareMaterials) {
 if ($NoShareSkins) {
     Write-Host "      shared skins OFF (--no-share-skins)" -ForegroundColor Yellow
     $userArgs += '--no-share-skins'
+}
+if ($OutfitMerge -and $NoOutfitMerge) {
+    Write-Host "      -OutfitMerge and -NoOutfitMerge together: -OutfitMerge wins" -ForegroundColor Yellow
+}
+if ($OutfitMerge) {
+    Write-Host "      outfit merge ON (--outfit-merge=on)" -ForegroundColor Cyan
+    $userArgs += '--outfit-merge=on'
+} elseif ($NoOutfitMerge) {
+    Write-Host "      outfit merge OFF (--outfit-merge=off)" -ForegroundColor Yellow
+    $userArgs += '--outfit-merge=off'
 }
 if ($NoGroundDrop) {
     Write-Host "      ground clamp will not pull the avatar DOWN (--no-ground-drop)" -ForegroundColor Magenta

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-23`
 - **Track:** `render`
-- **Status:** `⏸️ Pending`
+- **Status:** `🚧 In Progress` (Phase 0 gate passed 2026-10-17; Phase 1 built v0.27.74-alpha, fixes to v0.27.80-alpha, off by default; in-world A/B open)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md), [ADR 0004](../adr/0004-performance-architecture.md)
   pillar P3, [MVP6-1](MVP6-1-performance-program.md)
@@ -330,6 +330,266 @@ For 12 full avatars that is:
 **Decision rule.** Build Phase 1 only if probe 3 cuts avatar draws by ≥ 40 % **and** `renderCpuMs`
 or `postFlushMs` by ≥ 15 %. Otherwise record the numbers here, stop, and move P2/P4 ahead.
 
+### Phase 0 probe: how to measure (built v0.27.73-alpha)
+
+**What changed since this spec was written.** FEAT-PERF-24 already gives the identical skins of one
+avatar one `Skin` object, so the skeleton writes ~12k binds per frame at Sirens instead of ~140k. Bind
+cost is largely solved. What is left is **draws**: at Sirens the separate render thread is draw-bound,
+at ~1.6 µs per draw (inside the viewport timer plus the `end_frame` graph replay, FEAT-PERF-24). The
+probe therefore asks: how many draws (scene and shadow) does merging an avatar's worn rigged meshes per
+material save, and what does that buy in `renderCpuMs`, `rtLagMs` and fps.
+
+**What was built.** Develop menu only, nothing changes while the merge toggle is off.
+
+- `app/scripts/AvatarRenderer.OutfitProbe.cs`: all three probes. `CommitRiggedMeshInstance` now also
+  remembers each surface's face index (a weak table, like `MeshSurfaceCache`), so a surface can be keyed
+  by its face record without reading anything back.
+- Develop > **Outfit probe (log counts)**: probe 1.
+- Develop > **Outfit merge (probe)** and **Outfit merge per linkset (probe)**: probe 3, one bucket per
+  avatar (the upper bound) or one bucket per worn linkset (Phase 1's shape). Clicking the checked entry
+  turns it off; clicking the other one switches.
+- `--selftest`: probe 2 (`outfit merge upload bench`), and `outfit probe counts, merges and restores`,
+  which checks the counts, the bone remap and the restore on a hand-built avatar.
+- Since Phase 1 (v0.27.74-alpha) the two merge toggles and their self test are gone; the real merge replaced
+  them (see *Phase 1: as built*). The count probe and the bench are unchanged; the self test is `outfit probe counts`.
+
+**Probe 1, `[OutfitProbe]`.** One line per full avatar (`self=yes|no`) and a `total others` line over
+the non-self avatars (Phase 1's scope), to `godot.log` and `slng-perf.log`. Items hidden by the merge
+probe still count as drawn.
+
+| Field | Meaning |
+|---|---|
+| `items`, `hiddenItems` | Drawn worn rigged items; items not drawn at all (every face hidden). |
+| `linksets`, `verts` | Worn linksets among the drawn items; vertices of their surfaces. |
+| `now: instances` | Drawn skinned instances: items plus their `SortedSurface` children (BUG-RENDER-38). |
+| `now: surfaces` | Every surface drawn today: `opaque`, `scissor`, `blend`, `hidden` (Hidden shader), `standIn` (the parent's Hidden copy of a split surface, still a draw), `pending` (no material yet). |
+| `keys: perLinkset / perAvatar` | Distinct opaque and scissor material keys (`FaceTexture`, resolved texture, Kind, threshold), summed per linkset, and per avatar. |
+| `keys: texOnly` | Distinct (texture, Kind, threshold): what a texture array or atlas with tint and UV transform in the vertices could reach (risk 1's follow-up lever). |
+| `binds: sum / skinWrites` | Binds over all items; binds of the distinct `Skin` objects, i.e. what the skeleton writes today. |
+| `binds: distinct / distinct1e-5` | Distinct (bone, bind) pairs exactly, and rounded to 1e-5 (a rounding hash, so a slight upper bound). The bind is a function of (bone, IBM) alone, so these are the spec's (bone, IBM) keys. |
+| `perLinkset / perAvatar` | Instances and surfaces after that merge. Blend surfaces stay one instance each; `staged` items (pending material, or arrays not retained) stay as they are. |
+
+Not built: the canonicalisation count. It only matters if exact dedupe leaves too many binds, and
+`skinWrites` already shows binds are no longer the cost.
+
+**Probe 2, upload bench** (headless, dummy renderer, so the CPU part only, which runs on the calling
+thread; a real device adds the GPU buffer creation). Median of 5, about two triangles per vertex,
+four influences:
+
+| Vertices | Pack `Godot.Collections.Array` | `AddSurfaceFromArrays` |
+|---|---|---|
+| 10k | 0.05 ms | 0.31 ms |
+| 50k | 0.63 ms | 1.88 ms |
+| 65k | 0.71 ms | 2.26 ms |
+
+About 35 ns per vertex for the hand-over, plus ~10 ns for packing. A merged surface of ~20k vertices fits
+the 1 ms average in the acceptance criteria; the 4 ms ceiling is not reached below the 65,535-vertex
+16-bit index limit (~3 ms with packing). Probe 3 logs the same thing in-world (`upload: maxMs`), with
+the real renderer.
+
+**Probe 3, `[OutfitMergeProbe]`.** On: for every full non-self avatar, the drawn items whose materials
+are all in and whose arrays are retained are merged on the main thread, in one frame: opaque and scissor
+surfaces concatenated per material key (and per linkset in that mode), every Blend surface on its own
+instance at today's exact `SortingOffset`, all on one new `Skin` with exact (bone, bind) dedupe. The
+originals are hidden and detached. The `on` line says what it did: avatars, items,
+`instances before -> after`, `surfaces before -> after`, `binds -> slots`, what it skipped, the upload
+times and the frame it took. Off: the merged instances are freed and the originals restored the way an
+unpark restores them. The `off` line has `gone` (originals freed while merged: an outfit change or a
+LOD raise) and `reshown` (originals the normal path showed again: a late material). Both mean that item
+was drawn twice for part of the window. An avatar that is reduced or leaves gets its originals back
+first.
+
+While merged, `[AvatarCost]` `skinnedMeshes`, `surfaces` and `boundSkinBinds` include the hidden
+originals and count the shared outfit skin once per instance. Compare `drawnSkinnedMeshes` and
+`skinWrites` instead.
+
+**In-world procedure.**
+
+1. Start with the FEAT-PERF-24 flags: `tools/run-client.ps1 -Diag -ShareMaterials`. `-Diag` is needed
+   for `rtLagMs`, `rtBusyMs` and `drawSplit` on the separate render thread. Check that `[Perf]` says
+   `rt=separate`. V-Sync off.
+2. Go to Sirens Beach on Agni, the MVP6-1 / FEAT-PERF-24 spot. Stand still with the camera on the crowd
+   and do not touch it for the whole run. Note the avatar cap.
+3. Wait until loading is over: `queue` stays in the hundreds (it never reaches 0 at Sirens) and
+   `[AvatarCost] drawnSkinnedMeshes` stops changing.
+4. Develop > **Outfit probe (log counts)** once.
+5. Alternate the states, 30 s each (six `[Perf]` windows), three rounds:
+   off, **Outfit merge per linkset (probe)**, off, **Outfit merge (probe)**, and again twice.
+   Drop the first `[Perf]` window after each switch: it holds the switch's own frame.
+6. After each round, read the `[OutfitMergeProbe] off` line. If `gone` or `reshown` is more than a few
+   items, an avatar changed during the window: repeat that round.
+7. For the denominator "avatar draws": one more 30 s window with the merge off and Preferences >
+   Graphics > General > max. fully rendered avatars at 1, so every other avatar is a jelly doll. Avatar
+   draws ≈ `draws`(cap as before) − `draws`(cap 1). Set the cap back.
+8. Develop > **Outfit probe (log counts)** once more at the end, to confirm the outfit did not change.
+
+Compare the medians per state. `[Perf]`: `fps`, `draws`, `drawsScene`, `drawsShadow`, `renderCpuMs`,
+`drawSplit` post (`end_frame`), `rtLagMs`, `tailMs`, `postFlushMs`, `flushMs`, `processMs`,
+`renderGpuMs`. `[AvatarCost]`: `drawnSkinnedMeshes`, `skinWrites`, `skinWritesPerFrame`. The gate reads
+the per-linkset state; the per-avatar state is the ceiling.
+
+**In-world result** (2026-10-17, Sirens Beach, v0.27.73-alpha, `-Diag -ShareMaterials`, render thread
+separate, V-Sync off; `slng-perf.log` 11:10:30–11:12:50). Two off/on cycles per merge mode instead of
+3 × 30 s, but every switch moved the numbers the same way; 5 s windows right after a switch dropped.
+The cap-1 window was not run: the avatar-draw cut is taken from the probe's surface counts plus the
+measured total-draw drop, which agree.
+
+| Median | Off | Per linkset | Per avatar |
+|---|---|---|---|
+| full non-self avatars / items | 16 / 1,806 | same | same |
+| `[OutfitProbe]` instances now → perLinkset / perAvatar | 1,912 → 511 / 355 | | |
+| `[OutfitProbe]` surfaces now → perLinkset / perAvatar | 2,235 → 748 / ~690 (−67 % / −69 %) | | |
+| `[OutfitProbe]` keys perLinkset / perAvatar / texOnly | 394 / 337 / 312 | | |
+| `[OutfitProbe]` binds sum / skinWrites / distinct | 97,621 / 9,365 / 5,198 | | |
+| fps | 21 | 27 (+28 %) | 27 |
+| draws (scene / shadow) | 30,700 (15,900 / 14,550) | 26,900 (14,480 / 12,180), −3,800 | 26,770 (14,410 / 12,100) |
+| `renderCpuMs` | 28.7–29.7 | 23.2–23.6 (−19 %) | 23.0–23.4 |
+| `postFlushMs` | 27–31 | 17–21 (−30 %) | 19–20 |
+| `[OutfitMergeProbe]` upload maxMs / toggle frame ms | | 1.24 / 144 | 1.36 / 132 |
+
+- Avatar draws: −3,800 total draws ≈ the probe's 2,235 → 748 surfaces in the scene pass plus their
+  shadow casts, so the avatar share fell by about two thirds (gate: ≥ 40 %).
+- `renderCpuMs` −19 % and `postFlushMs` −30 % (gate: ≥ 15 % of either).
+- Per avatar buys almost nothing over per linkset (~130 draws), so Phase 1's per-linkset buckets are the
+  right granularity; per-avatar packing (Phase 2) is low priority.
+- Bind dedupe is already small after FEAT-PERF-24 (`skinWrites` 9,365); draws were the cost, as expected.
+- `gone` 13–26 per off-switch: avatars whose outfit changed while merged (probe is a snapshot).
+
+Decision: **gate passed — build Phase 1.**
+
+## Phase 1: as built (v0.27.74-alpha)
+
+Code: `src/SLNG.Assets/OutfitMerger.cs` (+ `OutfitMergeData.cs`, `OutfitSlotKey.cs`; 11 xUnit tests in
+`tests/SLNG.Assets.Tests/OutfitMergerTests.cs`) and `app/scripts/AvatarRenderer.OutfitMerge.cs` (+ its self test).
+Setting: Preferences > Graphics > **Hardware** > "Merge other avatars' worn meshes (experimental)",
+`--outfit-merge=on|off` (wins over the preference), `tools/run-client.ps1 -OutfitMerge` / `-NoOutfitMerge`. Off by
+default.
+
+**How it runs.**
+
+- **Staging is today's path, unchanged up to the item's last material.** `CommitPreparedRig` hands the rig's
+  managed arrays to the merge (`NoteRiggedCommit`): the builder's own surfaces plus the tangents, which the rig
+  worker now copies out of `CommitToArrays` (`PreparedRiggedMesh.Tangents`, only while the setting is on and only
+  for remote avatars). The self test checks these arrays are bit-identical to what the staging instance got.
+- **Ready** = the `avatar.split_sorted` item ran (`NoteStagingSettled`): the materials are read off the staging
+  instance (or its split children) once, with their Kind, threshold, resolved texture and "texture failed" from a
+  weak table filled where `FinishFaceMaterial` runs. Eligible: setting on, remote, full, not selected, not
+  volatile, no `TextureAnim`, and every BoM face built from the bake `LoadedTextures` holds now.
+- **Buckets** are keyed by `WornLinksetRoot`. A dirty bucket waits 0.3 s quiet / 1.5 s at most; a removal or a
+  selection is immediate. One job per avatar at a time, at most `max(1, cores/4)` over all avatars, claimed near
+  first, hidden last. A job takes whole buckets up to 48 items, so an avatar's first merge is several small swaps
+  rather than one that frees ~150 nodes.
+- **Worker:** `OutfitMerger.Merge` (slot dedupe against the append-only table, remap with the item's slot-0
+  fallback, per-key concatenation cut at **32,768 vertices**, sorted surfaces apart, stable order), then packing
+  into `Godot.Collections.Array`.
+- **Main thread:** `avatar.merge.binds` (new slots onto the outfit skin; the bind is `ComputeRiggedBind`, the one
+  function `BindRiggedSkin` now calls too), `avatar.merge.upload` (batches of at most 24,000 vertices, one larger
+  surface alone, into meshes not in the tree), `avatar.merge.swap` (per bucket, only if no involved item's
+  generation moved: new instances in, old ones and the absorbed staging instances out, released staging instances
+  shown). Worker time is filed as `worker.outfitmerge`, not under `avatar.merge.*`.
+- **A merged item has no instance of its own.** Its staging instance is freed at the swap (GPU memory as today,
+  not doubled); `_riggedAttachments` has no entry for it. Readers: the `OnEntityRemoved` pre-filter,
+  `RemoveVisual` (`ForgetMergeItem`), `HighlightAttachment` (eject on select), `DiscardRiggedAttachment`,
+  `UpdateHudAttachment`, `SetAvatarReduced` / `SetAvatarFull` / `UnloadAvatarOutfit` (`IsRiggedOnWearer`),
+  `SyncWornAnimesh`, and the static attach commit (an item that turns static leaves its bucket). Pick validity is
+  untouched: remote avatars have no rigged colliders.
+- **Face change / LOD raise on a merged item:** the new staging instance is **held** (in the tree, hidden, skin
+  detached; `UpdateWornMeshVisibility` and the unpark loop keep it so) while the bucket draws the old version; the
+  re-merge absorbs it. An item that must leave (selected, volatile, texture animation starts) is
+  **ejected**: re-rigged from its last request when it has no staging instance (a worker prepare, the normal rig
+  path) and released at the next swap once that instance has its materials. Until then the bucket keeps its old
+  geometry, so the item is never both shown nor both missing. (The setting going off does not eject: see the
+  runtime switch.)
+- **BoM:** `BomAttachments` is keyed by entity (an entry without an instance for a merged item). A new bake on a
+  merged item is built per BoM face and put on the drawing surface in place (`avatar.merge.bom`); only a change of
+  role (the Blend line, or a texture failing) re-merges.
+- **Skin:** shape and joint-override changes re-bind the outfit skin in place (`RebindOutfitSkin`, called by
+  `RebuildRiggedAttachmentSkins`). The table is compacted (a new skin over every bucket, in one job) once it has at
+  least 256 slots and more than twice what the buckets still point at.
+- **Park / unpark / unload:** buckets and sorted instances are hidden and detached / shown and re-attached; unload
+  frees them, the skin and the retained arrays. A whole-linkset detach frees its bucket in the same frame, no job.
+- **Runtime switch** (as of v0.27.80, see *Fixes after the first in-world test*): either direction first bumps every
+  item's generation, so a job in flight is discarded and its buckets are snapshot again under the new setting. Off:
+  a parked avatar with merge state lets go of its outfit (`UnloadAvatarOutfit`; promotion loads it again); a full
+  avatar's buckets are due at once and their next job **rebuilds** each item's own instance from what the bucket
+  draws (the retained arrays packed on the worker, uploaded with the bucket's batches, the item's own materials and
+  sorting offset, a skin of its own slots via `ComputeOutfitBind` + `SharedOrNewSkin`, split again by
+  `SplitSortedSurfaces`), in the same swap that frees the bucket; no re-rig, no material pass. A held staging that
+  has not settled yet is waited for. On: every staged item without retained arrays -- also one still tracked, and a
+  parked avatar's on promotion -- is converted from the arrays `MeshSurfaceCache` holds (`BeginRetainFromStaging`);
+  while that runs (`Retaining`) its bucket keeps drawing it instead of releasing it.
+- **`[AvatarCost]`** gains `outfitMerge mergedAvatars buckets sortedInstances stagedItems mergedItems outfitSlots
+  mergeCpuMB mergeJobs mergeDiscarded`; `boundSkinBinds` counts each distinct `Skin` once per avatar.
+- **Phase 0 probe 3 (the main-thread merge toggle) is retired**: the real path is the A/B now. Probe 1
+  (`[OutfitProbe]`; merged items have no instance and are reported apart) and probe 2 (the bench) stay.
+
+**Fixes after the first in-world test** (2026-10-17, Sirens Beach on Agni, ~60 avatars; v0.27.78 logs).
+
+1. **"Reduced avatars draw their full outfits" with the setting off.** Two things were mixed up in the report.
+   (a) The numbers were the cap, not a regression: Preferences > Graphics > max. fully rendered avatars was moved
+   from 16 to 28 during the 14:51 run (`[AvatarLimit] ... cap 15/19/23/28`, `preferences.cfg`
+   `max_fully_rendered_avatars=28`), and `[AvatarCost] reduced` counts the avatars outside the draw distance too
+   (`avatars=63 shown=35 reduced=34` is `[AvatarLimit] shown 29 full, 6 reduced (5 parked) (cap 28)` plus 28 out of
+   view). `drawnSkinnedMeshes` counts full avatars only: 3,583 over 29 un-merged outfits is the same ~125 per avatar
+   as v0.27.73's 2,034 over 17. The cap held. (b) A real, older bug (since BUG-PERF-16's park): the
+   `avatar.split_sorted` item that ends a worn mesh's material pass re-attached the skeleton and showed the
+   instance without asking whether its wearer had been parked in the meantime. With textures taking seconds on a
+   busy sim, an avatar that lost its slot while its outfit was still texturing drew its rigged items (and bound
+   their skins) over the jelly doll. Fixed in **v0.27.79**: `UpdateWornMeshVisibility` takes the wearer and keeps a
+   reduced wearer's item hidden and detached. Self test `parked avatars draw no outfit, cap holds (merge off)`.
+2. **Off -> on never re-merged** (`slng-perf.log` 14:55:02-14:55:58). Off ejected all ~3,600 merged items into a
+   full re-rig; 2,940 rig commits went through in the 13 s before the switch back, but their material passes were
+   still queued, so nothing was released yet (`mergeJobs=0`). Rigged while off, those held stagings had no retained
+   arrays. Switching on then skipped them (still tracked) and their buckets' next jobs, seeing a settled staging that
+   was not mergeable, released them: `stagedItems=3579`, `mergedAvatars 3 -> 1`, and nothing ever adopted them again.
+   Fixed in **v0.27.80** (runtime switch above): off rebuilds instead of re-rigging (the self test's un-merge is one
+   job round, no rig prepared); on (also mid-un-merge) keeps what is still in a bucket and converts every staging
+   without arrays before it may be released. Off also leaves no merged node on a parked avatar. Self test `outfit
+   merge switch off/on/off`.
+3. **Checkbox vs `--outfit-merge`** (v0.27.78): a click clears `RenderConfig.OutfitMergeArg`, the box shows the
+   setting in effect. Unchanged by the above.
+
+**Deviations from the design above, and why.**
+
+- "Graphics > advanced" does not exist; the setting sits on the Hardware sub-tab next to the other performance
+  switches.
+- Faces whose texture failed are left out as designed, but an item whose surfaces all draw nothing stays on its own
+  instance (otherwise it would be in no bucket and have no instance to select).
+- An item that turns static or animated, or moves to a HUD point, leaves its bucket by an immediate re-merge; the
+  new form can appear a few frames before the swap removes the old one (rare: an applier swapping rigged for static,
+  an animesh flag arriving late).
+- Merged surfaces stop at 32,768 vertices (not 65,535) so an upload item stays near 1 ms; probe 2 measured ~35 ns
+  per vertex. It costs a handful of draws per crowd.
+
+**In-world A/B (open).** Same spot and procedure as Phase 0 (Sirens Beach, `-Diag -ShareMaterials`, render thread
+separate, V-Sync off), 3 x 30 s per state once loading has settled:
+
+1. `tools/run-client.ps1 -Diag -ShareMaterials -NoOutfitMerge`, then the same with `-OutfitMerge` -- or one run,
+   switching Preferences > Graphics > Hardware > "Merge other avatars' worn meshes" (drop the first `[Perf]` window
+   after each switch; switching off rebuilds the merged items from their buckets, on re-merges them, both within a
+   few seconds).
+2. Read `[Perf]` (`fps draws drawsScene drawsShadow renderCpuMs postFlushMs rtLagMs`), `[AvatarCost]` (`buckets
+   mergedItems stagedItems sortedInstances skinWrites mergeCpuMB mergeJobs mergeDiscarded`) and `[WorkCost]` for
+   `avatar.merge.*` (max <= 4 ms, avg <= 1 ms) and `worker.outfitmerge`.
+3. Look at: a BoM body with alpha layers, the WINGS-ES1105 hair, an outfit change on a merged avatar (attach, detach,
+   replace), walking up to an avatar (LOD raise), an applier texture change, selecting another avatar's worn item
+   (the outline appears with the item back on its own instance), and that no `[RiggedSort]` or `MeshSurfaceCache`
+   miss warning comes from a merged avatar.
+
+**In-world A/B, first run** (2026-10-18, a crowded Second Life region, avatar cap 16, v0.27.80-alpha, `--diag
+--outfit-merge=on`, one run switched at runtime; `slng-perf.log` 08:56-08:59, same camera view for both windows):
+
+| State | Window | fps | `renderCpuMs` | draws | `drawnSkinnedMeshes` |
+|---|---|---|---|---|---|
+| Merge off | 08:57:55-08:58:08 | 31-40 | 10.6-12.6 | ~12.5k | 2,893 |
+| Merge on | 08:58:15-08:58:50 | 44-46 | ~7.9-8.9 | ~10.0k | ~700 |
+
+- The runtime switch took ~5 s in each direction, with no reload.
+- Earlier in the same session, merge on before the switch read fps 29-31, but from a different camera view, so it
+  is not part of the comparison.
+- Conclusion: the gate held in-world, about +25 % fps from the merge (draws -20 %, skinned meshes drawn -75 %,
+  `renderCpuMs` ~-28 %). The Sirens Beach A/B above (3 x 30 s per state) is still open.
+
 ## Risks
 
 1. **Materials dedupe less than hoped.** Each garment has its own textures, so draws barely drop.
@@ -362,7 +622,7 @@ or `postFlushMs` by ≥ 15 %. Otherwise record the numbers here, stop, and move 
 
 ## Acceptance Criteria
 
-- [ ] Phase 0 numbers and the decision are recorded in this spec.
+- [x] Phase 0 numbers and the decision are recorded in this spec.
 - [ ] Setting off: nothing changes (selftest, and an in-world spot check).
 - [ ] Setting on, remote avatars at the baseline spot, no visual change in A/B screenshots of:
   - mesh bodies with BoM and alpha layers;
@@ -375,12 +635,12 @@ or `postFlushMs` by ≥ 15 %. Otherwise record the numbers here, stop, and move 
 - [ ] No queue item labelled `avatar.merge.*` above 4 ms max; average ≤ 1 ms.
 - [ ] No RS read-back in the merge path. Separate render thread on: no `[RiggedSort]` or
       `MeshSurfaceCache` miss warnings from merged avatars.
-- [ ] Self test `outfit merge skins like separate items`:
+- [x] Self test `outfit merge skins like separate items`:
   - rest-pose CPU-skinned positions are equal within 1e-5 m (merged against per-item skins, through
     `ComputeGlobalRestTransform · bind`);
   - sorted offsets are equal to today's;
   - texture refs are unchanged after merge and detach.
-- [ ] xUnit `OutfitMergerTests`: slot dedupe and remap, slot-0 fallback kept, material grouping,
+- [x] xUnit `OutfitMergerTests`: slot dedupe and remap, slot-0 fallback kept, material grouping,
       stable order, Blend kept apart, per-item ranges, an empty or all-hidden item.
 - [ ] In-world A/B result (draws, `renderCpuMs`, `postFlushMs`, fps) recorded here and in `docs/perf/`.
 
@@ -412,13 +672,14 @@ or `postFlushMs` by ≥ 15 %. Otherwise record the numbers here, stop, and move 
 
 ## Sub-tasks / Progress
 
-- [ ] Phase 0: `[OutfitProbe]` counts
-- [ ] Phase 0: upload microbenchmark in `--selftest`
-- [ ] Phase 0: in-world naive-merge A/B and the decision
-- [ ] Phase 1: `OutfitMerger` + xUnit tests (test-first)
-- [ ] Phase 1: readiness, buckets, merge job, commit and swap, outfit skin
-- [ ] Phase 1: `_riggedAttachments` readers, BoM by entity, bake arrival in place, re-bind
-- [ ] Phase 1: setting, `[AvatarCost]` fields, self test
+- [x] Phase 0: `[OutfitProbe]` counts (v0.27.73-alpha)
+- [x] Phase 0: upload microbenchmark in `--selftest` (v0.27.73-alpha)
+- [x] Phase 0: merge toggle built, per avatar and per linkset (v0.27.73-alpha)
+- [x] Phase 0: in-world naive-merge A/B and the decision (2026-10-17: gate passed, build Phase 1)
+- [x] Phase 1: `OutfitMerger` + xUnit tests (test-first) (v0.27.74-alpha)
+- [x] Phase 1: readiness, buckets, merge job, commit and swap, outfit skin (v0.27.74-alpha)
+- [x] Phase 1: `_riggedAttachments` readers, BoM by entity, bake arrival in place, re-bind (v0.27.74-alpha)
+- [x] Phase 1: setting, `[AvatarCost]` fields, self test (v0.27.74-alpha); Phase 0 probe 3 retired
 - [ ] Phase 1: in-world A/B
 - [ ] Phase 2: self avatar, packed buckets, Blend runs, park cold level
 - [ ] Phase 3: direct merge, canonicalisation, worker packing, P4 cache

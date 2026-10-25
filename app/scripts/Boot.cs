@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.71-alpha";
+    public const string AppVersion = "v0.27.96-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -959,6 +959,15 @@ public partial class Boot : Control
             _renderBaselineSampler ??= new RenderBaselineSampler { Name = "RenderBaselineSampler" };
             if (_renderBaselineSampler.GetParent() == null) AddChild(_renderBaselineSampler);
             _renderBaselineSampler.StartSample(AppVersion);
+        };
+
+        // FEAT-PERF-23 Phase 0: the outfit-merge count probe, to godot.log and slng-perf.log. The merge
+        // itself is the Graphics setting / --outfit-merge since Phase 1.
+        _topMenu.OnOutfitProbe = () =>
+        {
+            if (_avatarRenderer == null) return;
+            int avatars = _avatarRenderer.LogOutfitProbe();
+            ShowToast(SLNG.App.UI.L10n.TrFormat("ui.menu.outfit_probe_logged", avatars), 4f);
         };
 
 

@@ -264,9 +264,9 @@ public class WaterFogTests
     public void OnlyTheBlendedWorldVariantsFogThemselves()
     {
         string dir = Path.Combine(RepoRoot(), "app", "materials", "prim");
-        // The HUD is screen-space (no water to be under); prim_depth_core is a depth-only companion pass;
-        // prim_mirror replaces a surface with a planar reflection and has its own lighting.
-        string[] exempt = { "prim_blend_hud.gdshader", "prim_depth_core.gdshader", "prim_mirror.gdshader" };
+        // The HUD is screen-space (no water to be under); prim_depth_core and its avatar twin (BUG-RENDER-50) are
+        // depth-only passes; prim_mirror replaces a surface with a planar reflection and has its own lighting.
+        string[] exempt = { "prim_blend_hud.gdshader", "prim_depth_core.gdshader", "prim_depth_core_avatar.gdshader", "prim_mirror.gdshader" };
 
         foreach (string path in Directory.GetFiles(dir, "*.gdshader"))
         {

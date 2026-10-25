@@ -108,6 +108,13 @@ public static class Diagnostics
                 System.Globalization.CultureInfo.InvariantCulture, out float ca) && ca >= 0f && ca <= 1f)
             RenderConfig.FoliageCoreAlpha = ca;
 
+        // BUG-RENDER-50: --worn-alpha-depth=N, the depth threshold of worn rigged alpha (0 = no depth pass).
+        string? wornDepthArg = FindValueArg("--worn-alpha-depth=", OS.GetCmdlineArgs())
+                            ?? FindValueArg("--worn-alpha-depth=", OS.GetCmdlineUserArgs());
+        if (wornDepthArg != null && float.TryParse(wornDepthArg, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float wd) && wd >= 0f && wd <= 1f)
+            RenderConfig.WornAlphaDepth = wd;
+
         // BUG-RENDER-16: --alpha-sort-hysteresis [=N]. Bare flag takes the reference viewer's own
         // 0.64 (llspatialpartition.cpp:667); =N overrides it. See RenderConfig.AlphaSortHysteresis
         // for what the number means -- it is a chord on the unit sphere (~37 deg), not radians.
@@ -172,6 +179,17 @@ public static class Diagnostics
         GD.Print($"[Diagnostics] instancing = {(RenderConfig.EnableInstancing ? "on" : "off (--no-instancing)")} (FEAT-PERF-06)");
         GD.Print($"[Diagnostics] share-materials = {(RenderConfig.ShareMaterials ? "on (--share-materials)" : "off")} (FEAT-PERF-20)");
         GD.Print($"[Diagnostics] share-skins = {(RenderConfig.ShareSkins ? "on" : "off (--no-share-skins)")} (FEAT-PERF-24)");
+        GD.Print($"[Diagnostics] worn alpha depth = {(RenderConfig.WornAlphaDepth > 0f ? RenderConfig.WornAlphaDepth.ToString(System.Globalization.CultureInfo.InvariantCulture) : "off")} (--worn-alpha-depth, BUG-RENDER-50)");
+
+        // FEAT-PERF-23: --outfit-merge=on|off overrides the Graphics preference for this run (the A/B).
+        string? mergeArg = FindValueArg("--outfit-merge=", OS.GetCmdlineArgs())
+                        ?? FindValueArg("--outfit-merge=", OS.GetCmdlineUserArgs());
+        if (mergeArg == "on" || mergeArg == "off")
+        {
+            RenderConfig.OutfitMergeArg = mergeArg == "on";
+            RenderConfig.OutfitMerge = mergeArg == "on";
+        }
+        GD.Print($"[Diagnostics] outfit-merge = {(RenderConfig.OutfitMergeArg is { } m ? (m ? "on" : "off") + " (--outfit-merge)" : "from the Graphics preference")} (FEAT-PERF-23)");
 
         // FEAT-PERF-14: --small-cull=N sets the small-object cull threshold (screen radius in pixels)
         // for this run whatever the Graphics preference says; 0 turns the cull off. The A/B switch for

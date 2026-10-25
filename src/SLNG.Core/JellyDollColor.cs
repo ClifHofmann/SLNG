@@ -15,14 +15,14 @@ namespace SLNG.Core;
 /// seven-stop ring red, magenta, blue, cyan, green, yellow, red, linearly interpolated between the
 /// two neighbouring stops, normalised to unit RGB length and toned down by 0.28.</para>
 ///
-/// <para>We port the colourised branch: in a crowd of identical dark grey dolls nobody can be told
-/// apart, and the per-avatar hue costs nothing. <see cref="Colorize"/> switches back to the grey
-/// the shipped viewer uses.</para>
+/// <para>We ship the viewer's grey4, like the reference viewer: the per-avatar hue read as colourful
+/// noise in a crowd (user feedback). The colourised branch stays in <see cref="Hue"/>, and
+/// <see cref="Colorize"/> switches it back on.</para>
 /// </summary>
 public static class JellyDollColor
 {
     /// <summary>The viewer's <c>#ifdef COLORIZE_JELLYDOLLS</c>. False gives grey4 for everyone.</summary>
-    public static readonly bool Colorize = true;
+    public static readonly bool Colorize = false;
 
     /// <summary>The "tone it down" factor of the colourised branch (llvoavatar.cpp:11986).</summary>
     public const float Brightness = 0.28f;
@@ -51,10 +51,12 @@ public static class JellyDollColor
 
     /// <summary>The colour for a UUID whose first byte is <paramref name="firstByte"/>. At most 256
     /// distinct values, which is what lets the renderer share one material per colour.</summary>
-    public static (float R, float G, float B) ForFirstByte(byte firstByte)
-    {
-        if (!Colorize) return (Grey4, Grey4, Grey4);
+    public static (float R, float G, float B) ForFirstByte(byte firstByte) =>
+        Colorize ? Hue(firstByte) : (Grey4, Grey4, Grey4);
 
+    /// <summary>The colourised branch (#ifdef COLORIZE_JELLYDOLLS), kept for when Colorize is switched back on.</summary>
+    public static (float R, float G, float B) Hue(byte firstByte)
+    {
         // llvoavatar.cpp:11974-11987
         float spectrum = firstByte / 256f * (Spectrum.Length - 1);   // between 0 and 6
         int first = (int)MathF.Floor(spectrum);                      // desired colour lies after this stop

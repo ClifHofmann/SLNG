@@ -57,6 +57,11 @@ public partial class AvatarRenderer
         /// for; cut from the same arrays, so no read-back from the RenderingServer is needed.</summary>
         public PickChunk[]? PickChunks { get; init; }
 
+        /// <summary>FEAT-PERF-23: the tangents the engine got (four floats per vertex), as managed
+        /// arrays, one per surface -- with <see cref="Geometry"/>'s own streams, everything the outfit
+        /// merge reads, so it never reads a surface back. Only when asked for.</summary>
+        public float[][]? Tangents { get; init; }
+
         public double VertsMs { get; init; }
         public double TangentsMs { get; init; }
         public double PickMs { get; init; }
@@ -105,7 +110,7 @@ public partial class AvatarRenderer
             {
                 try
                 {
-                    var ready = await PrepareOnWorkerAsync(request).ConfigureAwait(false);
+                    var ready = await PrepareOnWorkerAsync(request, FaceDrawsNothing).ConfigureAwait(false);
                     if (ready != null)
                     {
                         _preparedRigs[entityId] = ready;
@@ -206,7 +211,7 @@ public partial class AvatarRenderer
         return false;
     }
 
-    private static async Task<PreparedRig?> PrepareOnWorkerAsync(PendingRig request)
+    private static async Task<PreparedRig?> PrepareOnWorkerAsync(PendingRig request, Func<FaceTexture, bool> drawsNothing)
     {
         await _rigPrepGate.WaitAsync().ConfigureAwait(false);
         try
@@ -222,7 +227,9 @@ public partial class AvatarRenderer
                     ? _ => false
                     : name => definition.GetBone(definition.ResolveBoneName(name)) != null;
                 var slots = RiggedMeshBuilder.SlotsForJoints(request.MeshData.Skin!.JointNames, isBone);
-                var mesh = PrepareRiggedMesh(request.MeshData, slots, request.Faces, request.DefaultFace, request.WantPick);
+                // FEAT-PERF-23: the outfit merge keeps the tangents of remote avatars' items.
+                bool keepTangents = RenderConfig.OutfitMerge && !request.Visual.IsSelf && !request.Visual.IsControlAvatar;
+                var mesh = PrepareRiggedMesh(request.MeshData, slots, request.Faces, request.DefaultFace, request.WantPick, keepTangents, drawsNothing);
                 return new PreparedRig(request, mesh, clock.Elapsed.TotalMilliseconds);
             }
             finally
@@ -344,7 +351,8 @@ public partial class AvatarRenderer
     /// worker; also run inline by <see cref="BuildRiggedMeshInstance"/> for the callers that build
     /// synchronously.</summary>
     internal static PreparedRiggedMesh PrepareRiggedMesh(
-        MeshData meshData, int[] slotForJoint, FaceTexture[]? faces, FaceTexture defaultFace, bool wantPickChunks = false)
+        MeshData meshData, int[] slotForJoint, FaceTexture[]? faces, FaceTexture defaultFace, bool wantPickChunks = false,
+        bool keepTangents = false, Func<FaceTexture, bool>? drawsNothing = null)
     {
         Interlocked.Increment(ref _rigsPreparedCount);
         bool hasNormal = false;
@@ -370,18 +378,22 @@ public partial class AvatarRenderer
             if (sub.Indices.Length == 0 || sub.Weights == null) continue;
             Interlocked.Increment(ref _submeshesTotalCount);
             var subFace = ResolveFaceTexture(faces, defaultFace, sub.FaceIndex);
-            if (subFace.IsInvisible)
+            if (drawsNothing != null ? drawsNothing(subFace) : subFace.IsInvisible)
                 Interlocked.Increment(ref _submeshesHiddenCount);
         }
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        var geometry = RiggedMeshBuilder.Build(meshData, slotForJoint, fi => ResolveFaceTexture(faces, defaultFace, fi));
+        var geometry = RiggedMeshBuilder.Build(meshData, slotForJoint, fi => ResolveFaceTexture(faces, defaultFace, fi), drawsNothing);
         double vertsMs = clock.Elapsed.TotalMilliseconds;
 
         clock.Restart();
         var arrays = new Godot.Collections.Array[geometry.Surfaces.Count];
+        float[][]? tangents = keepTangents ? new float[arrays.Length][] : null;
         for (int i = 0; i < arrays.Length; i++)
+        {
             arrays[i] = RiggedSurfaceArrays(geometry.Surfaces[i]);
+            if (tangents != null) tangents[i] = arrays[i][(int)Mesh.ArrayType.Tangent].AsFloat32Array();
+        }
         double tangentsMs = clock.Elapsed.TotalMilliseconds;
 
         clock.Restart();
@@ -403,6 +415,7 @@ public partial class AvatarRenderer
             SurfaceArrays = arrays,
             SlotForJoint = slotForJoint,
             PickChunks = pickChunks,
+            Tangents = tangents,
             VertsMs = vertsMs,
             TangentsMs = tangentsMs,
             PickMs = clock.Elapsed.TotalMilliseconds,
