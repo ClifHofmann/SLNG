@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-49`
 - **Track:** `net` + `render`
-- **Status:** `🧪 Review`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-RENDER-50`
 - **Track:** `render`
-- **Status:** `🚧 In Progress` — built through `v0.27.88-alpha`, **not yet seen in-world**
+- **Status:** `✅ Done` — confirmed in-world in `v0.27.96-alpha`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 - **Branch:** `fix/BUG-RENDER-50-worn-alpha-order` (stacked on `fix/BUG-RENDER-49-pbr-material-ids`)

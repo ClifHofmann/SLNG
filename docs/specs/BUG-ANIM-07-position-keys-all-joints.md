@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-ANIM-07`
 - **Track:** `render`
-- **Status:** `🚧 In Progress`
+- **Status:** `✅ Done`
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
