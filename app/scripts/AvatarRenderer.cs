@@ -2125,6 +2125,13 @@ public partial class AvatarRenderer : Node3D
     {
         visual.BoneOwnScale.Clear();
 
+        // BUG-ANIM-07: the factor each bone's offset is multiplied by (its PARENT's own scale, the
+        // `slPos *= parentScale` below), by bone index. An animation's position key on a joint is that
+        // joint's absolute local position and gets the same factor, so the player is handed the table
+        // once the loop is done -- which is every time a shape or joint override changes it.
+        var parentScales = new System.Numerics.Vector3[skeleton.GetBoneCount()];
+        System.Array.Fill(parentScales, System.Numerics.Vector3.One);
+
         // Bone index order matches AvatarSkeleton.Bones order (SkeletonBuilder.Build adds bones
         // in that exact sequence), which is guaranteed parent-before-child (XML depth-first parse,
         // a bone element is added before its children are parsed) — so by the time we process a
@@ -2184,6 +2191,7 @@ public partial class AvatarRenderer : Node3D
             if (bone.ParentName != null && visual.BoneOwnScale.TryGetValue(bone.ParentName, out var parentScale))
             {
                 slPos *= parentScale;
+                parentScales[idx] = parentScale;
             }
 
             visual.BoneOwnScale[name] = slScale;
@@ -2216,6 +2224,8 @@ public partial class AvatarRenderer : Node3D
 
             skeleton.SetBoneRest(idx, rest);
         }
+
+        visual.AnimPlayer.SetParentScales(parentScales);
     }
 
     private bool _boneRestNaNLogged;
@@ -8127,9 +8137,15 @@ void fragment() {
                     // is invisible; alone it is the whole avatar. Distinguishing "we dropped the
                     // wrong one" from "the one we kept is nearly empty" needs the joint count.
                     if (Diagnostics.Enabled)
+                    {
+                        // BUG-ANIM-07: joints this animation POSITIONS (not just turns) -- an add-on HUD's
+                        // shape pose is made of these alone, and they now reach the skeleton.
+                        int positioned = 0;
+                        foreach (var j in data.Joints) if (j.PositionKeys.Length > 0) positioned++;
                         GD.Print($"[AnimPlayer] loaded {animId.ToString()[..8]}: {data.Joints.Length} joint(s), " +
                                  $"priority {data.Priority}, {data.Length:0.##}s, loop={data.Loop}, " +
-                                 $"body={isBodyPose} ({bodyJoints} body joint(s))");
+                                 $"body={isBodyPose} ({bodyJoints} body joint(s)), positioned={positioned}");
+                    }
                 }
                 else if (SelfLocomotion.All.Contains(animId))
                 {

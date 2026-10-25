@@ -126,15 +126,4 @@ public class JointPriorityTableTests
         Assert.Equal("a", seen[Hip]);
         Assert.Equal("c", seen[Knee]);
     }
-
-    [Theory]
-    [InlineData(true, 6, 2, 3, 6)]    // the locomotion boost beats everything
-    [InlineData(false, 6, 2, 3, 2)]   // the joint's own priority
-    [InlineData(false, 6, 0, 3, 0)]   // 0 is a real joint priority, not "unset"
-    [InlineData(false, 6, -1, 3, 3)]  // unset (negative) falls back to the animation's
-    public void EffectivePriority_FollowsBoostThenJointThenAnimation(
-        bool boosted, int boostPriority, int jointPriority, int animationPriority, int expected)
-    {
-        Assert.Equal(expected, JointPriorityTable<int>.EffectivePriority(boosted, boostPriority, jointPriority, animationPriority));
-    }
 }

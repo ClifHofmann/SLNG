@@ -224,6 +224,7 @@ public static partial class SelfTest
         results.Add(CheckAvatarSkeleton());
         results.Add(CheckControlAvatar(tree));
         results.Add(CheckWornJointOverrides(tree));
+        results.Add(CheckAnimationPositionKeys(tree));
         results.Add(CheckWornAnimesh(tree));
         results.Add(CheckAvatarPick(tree));
         results.Add(CheckAnimeshHandOver(tree));
@@ -1955,6 +1956,30 @@ public static partial class SelfTest
         {
             tree.Root.AddChild(renderer);
             var (passed, detail) = renderer.SelfTestWornJointOverrides();
+            return new Check(Name, passed, detail);
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(renderer)) renderer.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// BUG-ANIM-07: an animation's position key drives any joint (scaled by its parent), beats a worn
+    /// mesh's joint-position override while it plays, and the pelvis is unchanged.
+    /// </summary>
+    private static Check CheckAnimationPositionKeys(SceneTree tree)
+    {
+        const string Name = "animation position keys";
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = renderer.SelfTestAnimationPositionKeys();
             return new Check(Name, passed, detail);
         }
         catch (System.Exception ex)

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using SLNG.Assets;
+using SLNG.Core;
 using SLNG.Core.Avatars;
 
 namespace SLNG.App;
@@ -38,8 +39,12 @@ public sealed class AvatarAnimationPlayer
     }
 
     private readonly List<PlayingAnimation> _active = new();
-    private readonly Dictionary<int, (int priority, Quaternion rotation)> _boneRots = new();
-    private readonly Dictionary<int, (int priority, Vector3 position)> _bonePositions = new();
+    // Per-joint highest-priority-wins tables, one per channel (BUG-ANIM-07: the rule lives in
+    // SLNG.Core so it can be tested). Rotations are held as Godot quaternions; position keys as the
+    // SL-space value the animation gave, because how a key becomes a bone position depends on the
+    // joint (the pelvis adds the rest, every other joint takes it absolutely, scaled by its parent).
+    private readonly JointPriorityTable<Quaternion> _boneRots = new();
+    private readonly JointPriorityTable<System.Numerics.Vector3> _bonePositions = new();
     // FEAT-ANIM-06: local inventory / machinima animation overlay, independent of sim network updates
     private readonly List<PlayingAnimation> _localOverlay = new();
     private Skeleton3D? _skeleton;
@@ -58,6 +63,14 @@ public sealed class AvatarAnimationPlayer
     private AvatarHoldMode _holdMode = AvatarHoldMode.None;
     private int _neckBoneIdx = -1;
     private int _headBoneIdx = -1;
+    private int _pelvisBoneIdx = -1;
+
+    // BUG-ANIM-07: per bone (by index), the OWN scale of its PARENT -- the factor a position key is
+    // multiplied by, exactly what ApplyShape multiplies a joint's override or default offset by
+    // (SL: a child's offset is scaled by its parent's scale, never by the child's or an ancestor's).
+    // Filled by AvatarRenderer.ApplyShape through SetParentScales, so it follows every shape and
+    // joint-override change. Null until the first ApplyShape, when every factor is 1.
+    private System.Numerics.Vector3[]? _parentScales;
 
     /// <summary>FEAT-ANIM-10: Yaw offset (radians) for procedural head/neck gaze tracking camera.</summary>
     public float HeadGazeYaw { get; set; }
@@ -111,6 +124,9 @@ public sealed class AvatarAnimationPlayer
     // own (a skeleton rebuilt around a held pose) can be undone by ReapplyHeldPose.
     private readonly Dictionary<int, Quaternion> _heldRotations = new();
     private readonly Dictionary<int, Vector3> _heldPositions = new();
+    // The same for every joint but the pelvis, kept as the SL-space KEY and converted again on
+    // reapply: the parent's scale may have changed in between (that is why the reset happened).
+    private readonly Dictionary<int, System.Numerics.Vector3> _heldKeys = new();
 
     /// <summary>Writes the held pose back onto the skeleton. For a caller that has just reset the
     /// skeleton's poses for a reason of its own (<c>Skeleton3D.ResetBonePoses</c> after a joint
@@ -123,6 +139,43 @@ public sealed class AvatarAnimationPlayer
 
         foreach (var (boneIdx, rotation) in _heldRotations) _skeleton.SetBonePoseRotation(boneIdx, rotation);
         foreach (var (boneIdx, position) in _heldPositions) _skeleton.SetBonePosePosition(boneIdx, position);
+        foreach (var (boneIdx, key) in _heldKeys) _skeleton.SetBonePosePosition(boneIdx, KeyToPosePosition(boneIdx, key));
+    }
+
+    /// <summary>BUG-ANIM-07: hands the player, for every bone of its skeleton (by index), the OWN scale
+    /// of that bone's parent -- <c>AvatarVisual.BoneOwnScale</c> of the parent, 1 for a bone without
+    /// one. An animation's position key on a joint is its absolute local position, and a child's
+    /// offset is scaled by its parent's scale (<c>ApplyShape</c> does the same to the rest). The
+    /// array is kept, not copied: call this again after every <c>ApplyShape</c>, which is when the
+    /// scales change.</summary>
+    public void SetParentScales(System.Numerics.Vector3[] parentScaleByBone) => _parentScales = parentScaleByBone;
+
+    private System.Numerics.Vector3 ParentScaleOf(int boneIdx)
+        => _parentScales != null && (uint)boneIdx < (uint)_parentScales.Length ? _parentScales[boneIdx] : System.Numerics.Vector3.One;
+
+    /// <summary>BUG-ANIM-07: the pose position a bone takes while an animation's position key
+    /// (SL space, as keyed) drives it. The pelvis keeps what it always had -- <c>rest + key</c>, or the
+    /// bare key for a control avatar (<see cref="AbsolutePelvisPosition"/>) -- every other joint takes
+    /// the key as its absolute local position scaled by its parent (<see cref="AnimatedJointPosition"/>),
+    /// replacing the rest, which is where a worn mesh's joint-position override lives.</summary>
+    private Vector3 KeyToPosePosition(int boneIdx, System.Numerics.Vector3 slKey)
+    {
+        bool isPelvis = boneIdx == _pelvisBoneIdx;
+        var rest = System.Numerics.Vector3.Zero;
+        if (isPelvis && !AbsolutePelvisPosition)
+        {
+            // Godot (x, y, z) is SL (x, z, -y); the pelvis' rest origin back into SL space.
+            var origin = _skeleton!.GetBoneRest(boneIdx).Origin;
+            rest = new System.Numerics.Vector3(origin.X, -origin.Z, origin.Y);
+        }
+
+        var slPosition = AnimatedJointPosition.Resolve(
+            isPelvis,
+            AbsolutePelvisPosition ? AnimatedJointPosition.PelvisMode.Absolute : AnimatedJointPosition.PelvisMode.RestPlusKey,
+            rest, slKey, ParentScaleOf(boneIdx));
+
+        // SL pos(x, y, z) -> Godot pos(x, z, -y)
+        return new Vector3(slPosition.X, slPosition.Z, -slPosition.Y);
     }
 
     /// <summary>FEAT-ANIM-06: Plays an animation as a local overlay.</summary>
@@ -205,8 +258,12 @@ public sealed class AvatarAnimationPlayer
         _skeleton = skeleton;
         _heldRotations.Clear();
         _heldPositions.Clear();
+        _heldKeys.Clear();
         _neckBoneIdx = skeleton.FindBone("mNeck");
         _headBoneIdx = skeleton.FindBone("mHead");
+        _pelvisBoneIdx = skeleton.FindBone(AnimatedJointPosition.PelvisJointName);
+        // Scales made for another skeleton are not this one's.
+        if (_parentScales != null && _parentScales.Length != skeleton.GetBoneCount()) _parentScales = null;
     }
 
     /// <summary>FEAT-ANIM-01: mark <paramref name="animId"/> (a locally-predicted moving gait) to
@@ -284,6 +341,7 @@ public sealed class AvatarAnimationPlayer
         // An explicit stop is the one thing that lets go of a held pose.
         _heldRotations.Clear();
         _heldPositions.Clear();
+        _heldKeys.Clear();
         ResetToRestPose();
     }
 
@@ -517,42 +575,49 @@ public sealed class AvatarAnimationPlayer
             if (_neckBoneIdx >= 0)
             {
                 var neckGaze = Quaternion.FromEuler(new Vector3(HeadGazePitch * 0.3f, HeadGazeYaw * 0.3f, 0));
-                var existing = boneRots.TryGetValue(_neckBoneIdx, out var r) ? r.rotation : Quaternion.Identity;
-                boneRots[_neckBoneIdx] = (99, neckGaze * existing);
+                var existing = boneRots.TryGet(_neckBoneIdx, out var r) ? r : Quaternion.Identity;
+                boneRots.Set(_neckBoneIdx, 99, neckGaze * existing);
             }
             if (_headBoneIdx >= 0)
             {
                 var headGaze = Quaternion.FromEuler(new Vector3(HeadGazePitch * 0.7f, HeadGazeYaw * 0.7f, 0));
-                var existing = boneRots.TryGetValue(_headBoneIdx, out var r) ? r.rotation : Quaternion.Identity;
-                boneRots[_headBoneIdx] = (99, headGaze * existing);
+                var existing = boneRots.TryGet(_headBoneIdx, out var r) ? r : Quaternion.Identity;
+                boneRots.Set(_headBoneIdx, 99, headGaze * existing);
             }
         }
 
         // Apply blended poses to skeleton.
         foreach (var (boneIdx, pose) in boneRots)
         {
-            _skeleton!.SetBonePoseRotation(boneIdx, pose.rotation);
-            if (HoldUndrivenBones) _heldRotations[boneIdx] = pose.rotation;
+            _skeleton!.SetBonePoseRotation(boneIdx, pose.Value);
+            if (HoldUndrivenBones) _heldRotations[boneIdx] = pose.Value;
         }
 
-        // Apply position channels (most commonly mPelvis offset authored into furniture/posestand/cuddle poses).
-        // In Godot's Skeleton3D, SetBonePosePosition overrides the bone's local position (normally initialized
-        // to bone rest). For an avatar whose skeleton root sits at the feet, the key is read as an offset on
-        // the neutral rest position, so adding the bone's rest origin applies it without collapsing the bone.
-        // A control avatar's root is the prim itself and the key is absolute -- see AbsolutePelvisPosition.
+        // Apply position channels. In Godot's Skeleton3D, SetBonePosePosition replaces the bone's local
+        // position (which ResetBonePoses initialises to the bone's rest -- the skeleton default, plus the
+        // shape's distortion, or a worn mesh's joint-position override). Every joint may carry a key, not
+        // only the pelvis: the viewer reads and applies them for all (llkeyframemotion.cpp:414-417,
+        // 1680-1782), as an absolute local position that beats an override while it drives
+        // (llpose.cpp:388, lljoint.h:233) -- BUG-ANIM-07, add-on HUDs shape their add-on this way.
+        // KeyToPosePosition says how each is turned into a position: the pelvis is measured from the
+        // skeleton root (rest + key, or the bare key for a control avatar), every other joint is
+        // absolute and scaled by its parent. A bone no longer driven goes back to its rest on the
+        // next frame's reset, i.e. back to its override / default.
         foreach (var (boneIdx, pose) in bonePositions)
         {
-            var written = AbsolutePelvisPosition
-                ? pose.position
-                : _skeleton!.GetBoneRest(boneIdx).Origin + pose.position;
+            var written = KeyToPosePosition(boneIdx, pose.Value);
             _skeleton!.SetBonePosePosition(boneIdx, written);
-            if (HoldUndrivenBones) _heldPositions[boneIdx] = written;
+            if (HoldUndrivenBones)
+            {
+                if (boneIdx == _pelvisBoneIdx) _heldPositions[boneIdx] = written;
+                else _heldKeys[boneIdx] = pose.Value;
+            }
         }
     }
 
     private void ApplyAnimationToBones(AnimationData data, float time, int animPriority, bool boosted,
-        Dictionary<int, (int priority, Quaternion rotation)> boneRots,
-        Dictionary<int, (int priority, Vector3 position)> bonePositions)
+        JointPriorityTable<Quaternion> boneRots,
+        JointPriorityTable<System.Numerics.Vector3> bonePositions)
     {
         if (_skeleton == null) return;
 
@@ -561,33 +626,26 @@ public sealed class AvatarAnimationPlayer
             int boneIdx = _skeleton.FindBone(joint.JointName);
             if (boneIdx < 0) continue;
 
-            int effectivePriority = boosted ? LocomotionBoostPriority
-                : (joint.Priority >= 0 ? joint.Priority : animPriority);
+            int effectivePriority = JointPriority.Effective(boosted, LocomotionBoostPriority, joint.Priority, animPriority);
 
             // Rotation channel
-            if (joint.RotationKeys.Length > 0)
+            if (joint.RotationKeys.Length > 0 && boneRots.Wins(boneIdx, effectivePriority))
             {
-                if (!boneRots.TryGetValue(boneIdx, out var existingRot) || effectivePriority >= existingRot.priority)
-                {
-                    var rot = EvaluateRotation(joint.RotationKeys, time);
-                    var godotRot = new Quaternion(rot.X, rot.Z, -rot.Y, rot.W);
-                    boneRots[boneIdx] = (effectivePriority, godotRot);
-                }
+                var rot = EvaluateRotation(joint.RotationKeys, time);
+                var godotRot = new Quaternion(rot.X, rot.Z, -rot.Y, rot.W);
+                boneRots.Set(boneIdx, effectivePriority, godotRot);
             }
 
-            // Position channel: Second Life only animates translation for mPelvis
-            // (llbvhloader.cpp:781: "Animating position (via mNumChannels = 6) is only supported for mPelvis").
-            // Other joints (e.g. mFaceTongueBase) may contain unnormalized or dummy position tracks that
-            // must never be applied to bone local transforms.
-            if (joint.JointName == "mPelvis" && joint.PositionKeys.Length > 0)
+            // Position channel: any joint, same per-joint priority rule as rotation (BUG-ANIM-07).
+            // This used to take mPelvis only, on the strength of llbvhloader.cpp:781 ("Animating
+            // position ... is only supported for mPelvis") -- but that line is the BVH IMPORTER's
+            // channel parsing, not .anim playback. The viewer keeps and applies position keys for
+            // every joint (llkeyframemotion.cpp:1680-1782, :414-417). The tongue joints that looked
+            // like "dummy tracks" in BUG-ANIM-01 were an absolute key, equal to the skeleton default,
+            // added to the rest a second time; KeyToPosePosition does not add it.
+            if (joint.PositionKeys.Length > 0 && bonePositions.Wins(boneIdx, effectivePriority))
             {
-                if (!bonePositions.TryGetValue(boneIdx, out var existingPos) || effectivePriority >= existingPos.priority)
-                {
-                    var p = EvaluatePosition(joint.PositionKeys, time);
-                    // SL pos(x, y, z) → Godot pos(x, z, -y)
-                    var godotPos = new Vector3(p.X, p.Z, -p.Y);
-                    bonePositions[boneIdx] = (effectivePriority, godotPos);
-                }
+                bonePositions.Set(boneIdx, effectivePriority, EvaluatePosition(joint.PositionKeys, time));
             }
         }
     }

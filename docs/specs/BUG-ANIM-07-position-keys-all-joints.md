@@ -43,35 +43,38 @@ joint already was, which is what the tongue needs.
 
 ## Acceptance Criteria
 
-- [ ] A position key on any joint is applied, by the same per-joint priority rule as rotation
+- [x] A position key on any joint is applied, by the same per-joint priority rule as rotation
       (highest wins; equal priority: the later animation wins, as today).
-- [ ] `mPelvis` is exactly as before: `rest + key` (or the absolute key for a control avatar,
+- [x] `mPelvis` is exactly as before: `rest + key` (or the absolute key for a control avatar,
       `AbsolutePelvisPosition`).
-- [ ] Every other joint takes the key as its absolute local position, scaled by the **parent's**
+- [x] Every other joint takes the key as its absolute local position, scaled by the **parent's**
       own scale -- `godot = (k.X*ps.X, k.Z*ps.Z, -k.Y*ps.Y)` with `ps = BoneOwnScale[parent]`, the
       conversion `AvatarRenderer.ApplyShape` uses for overrides. The rest origin is never added.
-- [ ] While the animation drives the joint's position, its key beats a worn mesh's joint-position
+- [x] While the animation drives the joint's position, its key beats a worn mesh's joint-position
       override; when nothing drives it any more it returns to the override / default position.
-- [ ] A decoded v1.0 `.anim` with position keys on `mHindLimb1Left`, `mHindLimb2Left`, `mGroin`
+- [x] A decoded v1.0 `.anim` with position keys on `mHindLimb1Left`, `mHindLimb2Left`, `mGroin`
       comes out of `AnimationDecodeService` with those positions (to the format's 1.5e-4 m
       quantisation).
-- [ ] Face / tongue / hand / stand animations look unchanged.
-- [ ] `--selftest`: a position-keyed animation on `mHindLimb2Left` moves that bone to the keyed
-      position (scaled by the parent's scale), a worn override does not win while it runs, the bone
-      goes back when the animation stops; pelvis behaviour unchanged.
+- [ ] Face / tongue / hand / stand animations look unchanged (in-world; the tongue case is in the
+      selftest).
+- [x] `--selftest` ("animation position keys"): a position-keyed animation on `mHindLimb2Left` moves
+      that bone to the keyed position (scaled by the parent's scale), a worn override does not win
+      while it runs, the bone goes back when the animation stops; pelvis behaviour unchanged.
 
 ## Technical Specs & Affected Files
 
 - `src/SLNG.Core/JointPriorityTable.cs` -- the per-joint priority-wins table both channels
-  (rotation, position) use, plus the effective-priority rule (locomotion boost, per-joint
-  priority, animation priority).
+  (rotation, position) use; `src/SLNG.Core/JointPriority.cs` -- the effective-priority rule
+  (locomotion boost, per-joint priority, animation priority).
 - `src/SLNG.Core/AnimatedJointPosition.cs` -- how a joint's position key becomes the position it
   takes: pelvis `rest + key` / absolute, any other joint the absolute key scaled by the parent.
 - `app/scripts/AvatarAnimationPlayer.cs` -- accept position keys on every joint; apply them
   through `AnimatedJointPosition`; keep a parent-scale table (`SetParentScales`).
 - `app/scripts/AvatarRenderer.cs` -- `ApplyShape` hands the player the per-bone parent scale it
   just computed, so it is refreshed after every shape / override change.
-- `tests/SLNG.Assets.Tests`, `tests/SLNG.Core.Tests`, `app/scripts/AvatarRenderer.PositionKeys.SelfTest.cs`.
+- `tests/SLNG.Assets.Tests/AnimationPositionKeyDecodeTests.cs`, `tests/SLNG.Core.Tests/{JointPriorityTable,JointPriority,AnimatedJointPosition}Tests.cs`,
+  `app/scripts/AvatarRenderer.PositionKeys.SelfTest.cs`. `--diag` shows `positioned=N` (joints with
+  position keys) on the `[AnimPlayer] loaded` line.
 
 Interplay checked:
 
@@ -96,9 +99,9 @@ Interplay checked:
 ## Sub-tasks / Progress
 
 - [x] Root cause and viewer citations.
-- [ ] `SLNG.Core` helpers + tests.
-- [ ] `.anim` decode test with position keys on `mHindLimb*` / `mGroin`.
-- [ ] Player + `ApplyShape` parent scales.
-- [ ] Selftest on a real skeleton.
-- [ ] `/slng-verify`.
+- [x] `SLNG.Core` helpers + tests.
+- [x] `.anim` decode test with position keys on `mHindLimb*` / `mGroin`.
+- [x] Player + `ApplyShape` parent scales (`v0.27.96-alpha`).
+- [x] Selftest on a real skeleton.
+- [x] `/slng-verify`.
 - [ ] In-world: add-on shaped by a HUD pose; faces / tongue / hands / stand unchanged.

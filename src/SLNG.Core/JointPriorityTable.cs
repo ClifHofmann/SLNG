@@ -78,10 +78,4 @@ public sealed class JointPriorityTable<T>
 
     /// <summary>Allocation-free <c>foreach (var (joint, entry) in table)</c>.</summary>
     public Dictionary<int, (int Priority, T Value)>.Enumerator GetEnumerator() => _entries.GetEnumerator();
-
-    /// <summary>The priority an animation's key on one joint is offered at: the locomotion boost
-    /// wins over everything while it lasts; otherwise the joint's own priority when the animation
-    /// gives one (<c>&gt;= 0</c>), else the animation's.</summary>
-    public static int EffectivePriority(bool boosted, int boostPriority, int jointPriority, int animationPriority)
-        => boosted ? boostPriority : (jointPriority >= 0 ? jointPriority : animationPriority);
 }
