@@ -522,6 +522,13 @@ public partial class AvatarRenderer : Node3D
         _activeInstance = this;
         _world = world;
         _assetService = assetService;
+        // BUG-RENDER-50 [BomAlpha] (--diag): every bake the asset service hands out, by any path, leaves a small
+        // in-memory alpha map behind (BakeAlphaMaps). Static handler, so a second Initialize cannot double it.
+        if (Diagnostics.Enabled && assetService != null)
+        {
+            assetService.BakeMaterialised -= BakeAlphaMaps.Capture;
+            assetService.BakeMaterialised += BakeAlphaMaps.Capture;
+        }
         _session = session;
         _gpuCache = gpuCache;
         // BUG-RENDER-49: a glTF material that arrives after a face was built without it.

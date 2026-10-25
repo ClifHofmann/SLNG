@@ -1888,10 +1888,6 @@ public class GpuCache
                 // on whatever is left over, because one reduce factor covers two discard levels.
                 : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded, screenPixelArea: screenPixelArea).ConfigureAwait(false);
             if (textureData == null) return null;
-            // BUG-RENDER-50 [BomAlpha] (--diag): a small alpha-only copy of every bake, in memory only, so a
-            // Bakes-on-Mesh face can be measured against what it samples after the decoded bake has left the
-            // asset cache. Never written anywhere (TPV §2.b).
-            if (bakeChannel.HasValue && Diagnostics.Enabled) BakeAlphaMaps.Capture(textureId, textureData);
 
             // Record whether this upload came from a gap-filled decode, so a later rejectDegraded
             // caller knows to re-fetch it (and a clean one is reusable by all). A rejectDegraded

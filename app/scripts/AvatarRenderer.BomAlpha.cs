@@ -64,12 +64,21 @@ public partial class AvatarRenderer
             parts.Add($"{f}:{Short(face.TextureId)} a={face.Color.W.ToString("0.###", CultureInfo.InvariantCulture)}" +
                       (face.LegacyMaterialId != Guid.Empty ? $" mat={Short(face.LegacyMaterialId)}" : "") +
                       (face.RenderMaterialId != Guid.Empty ? $" pbr={Short(face.RenderMaterialId)}" : "") +
+                      Placement(face) +
                       $" {state.GetValueOrDefault(f, "not-in-LOD")}");
         }
         GD.Print($"[WornFaces] wearer={visual.AgentId.ToString("N")[..8]} item={entityId.ToString("N")[..8]} mesh={Short(meshId)} | " +
                  string.Join(" | ", parts));
 
         static string Short(Guid id) => id == Guid.Empty ? "-" : id.ToString("N")[..8];
+        // The TextureEntry placement, only when it is not the identity (the viewer applies it to a BoM face
+        // like to any other, llface.cpp:1704-1790).
+        static string Placement(FaceTexture f)
+        {
+            if (f.RepeatU == 1f && f.RepeatV == 1f && f.OffsetU == 0f && f.OffsetV == 0f && f.Rotation == 0f) return "";
+            string F(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+            return $" rep={F(f.RepeatU)}x{F(f.RepeatV)} off={F(f.OffsetU)},{F(f.OffsetV)} rot={F(f.Rotation)}";
+        }
         static int MaxKey(Dictionary<int, string> d) { int m = 0; foreach (int k in d.Keys) m = Math.Max(m, k); return m; }
     }
 
@@ -91,6 +100,25 @@ public partial class AvatarRenderer
                  $"normal={Short(m.NormalMap)} specular={Short(m.SpecularMap)} specColor=({m.SpecularColor.X.ToString("0.##", CultureInfo.InvariantCulture)}," +
                  $"{m.SpecularColor.Y.ToString("0.##", CultureInfo.InvariantCulture)},{m.SpecularColor.Z.ToString("0.##", CultureInfo.InvariantCulture)}," +
                  $"{m.SpecularColor.W.ToString("0.##", CultureInfo.InvariantCulture)}) SpecExp={m.SpecularExponent} EnvIntensity={m.EnvironmentIntensity}");
+    }
+
+    /// <summary>The bake's alpha map made from the uploaded texture (--diag only, once per bake: the map is kept in
+    /// <see cref="BakeAlphaMaps"/>), or null when the material carries no texture.</summary>
+    private static (byte[] Alpha, int Width, int Height)? ReadBackBakeAlpha(ShaderMaterial material, Guid bakeId)
+    {
+        if (material.GetShaderParameter(PrimShaderFamily.AlbedoTexture).Obj is not Texture2D texture || !IsInstanceValid(texture))
+            return null;
+        using var image = texture.GetImage();
+        if (image == null || image.IsEmpty()) return null;
+        if (image.IsCompressed()) image.Decompress();
+        if (image.GetFormat() != Image.Format.Rgba8) image.Convert(Image.Format.Rgba8);
+        // Mip 0 only: GetData() is the whole chain.
+        int w = image.GetWidth(), h = image.GetHeight();
+        var all = image.GetData();
+        if (all.Length < w * h * 4) return null;
+        var rgba = all.Length == w * h * 4 ? all : all.AsSpan(0, w * h * 4).ToArray();
+        BakeAlphaMaps.Capture(bakeId, rgba, w, h);
+        return BakeAlphaMaps.TryGet(bakeId, out var map) ? map : null;
     }
 
     /// <summary>Measures a Bakes-on-Mesh face against its bake (see the type's summary). Main thread; reads only
@@ -119,11 +147,16 @@ public partial class AvatarRenderer
         {
             (data, width, height, fromMap) = (bake.Rgba, bake.Width, bake.Height, false);
         }
+        else if (ReadBackBakeAlpha(sm, facts.Texture) is { } readBack)
+        {
+            // Last resort, once per bake (the map is kept): the uploaded texture itself, read back from VRAM.
+            // A RenderingServer sync on the main thread -- acceptable under --diag only, never otherwise.
+            (data, width, height, fromMap) = (readBack.Alpha, readBack.Width, readBack.Height, true);
+        }
         else
         {
             GD.Print($"[BomAlpha] mesh={meshId.ToString("N")[..8]} face={faceIndex} bake={facts.Texture.ToString("N")[..8]} " +
-                     $"ch={facts.BakeChannel}: no alpha map of this bake yet -- measured when the face is next built");
-            lock (_bomAlphaLogged) _bomAlphaLogged.Remove(key);
+                     $"ch={facts.BakeChannel}: the bake's pixels could not be had -- not measured");
             return;
         }
         var uvs = System.Runtime.InteropServices.MemoryMarshal.Cast<Godot.Vector2, System.Numerics.Vector2>(
@@ -135,6 +168,16 @@ public partial class AvatarRenderer
         float threshold = facts.Kind == PrimShaderFamily.Kind.Scissor ? facts.Threshold : 0.004f;
         var placeScale = new System.Numerics.Vector2(scale.X, scale.Y);
         var placeOffset = new System.Numerics.Vector2(offset.X, offset.Y);
+        // Where on the bake the face lands (top-origin, after the TE placement), so it can be compared with the
+        // region the body's own BoM faces sample.
+        var lo = new System.Numerics.Vector2(float.MaxValue);
+        var hi = new System.Numerics.Vector2(float.MinValue);
+        foreach (var uv in uvs)
+        {
+            var p = uv * placeScale + placeOffset;
+            lo = System.Numerics.Vector2.Min(lo, p);
+            hi = System.Numerics.Vector2.Max(hi, p);
+        }
         var coverage = fromMap
             ? BomAlphaProbe.MeasureAlpha(data, width, height, uvs, indices, placeScale, placeOffset, threshold)
             : BomAlphaProbe.Measure(data, width, height, uvs, indices, placeScale, placeOffset, threshold);
@@ -145,6 +188,8 @@ public partial class AvatarRenderer
                  $"bake={facts.Texture.ToString("N")[..8]} ch={facts.BakeChannel} {(fromMap ? "alpha map " : "")}{width}x{height} " +
                  $"{facts.Kind}@{threshold.ToString("0.###", CultureInfo.InvariantCulture)}: " +
                  $"{coverage.Samples} samples, {(coverage.CutFraction * 100f).ToString("0.#", CultureInfo.InvariantCulture)}% cut, " +
-                 $"minA={coverage.MinAlpha} meanA={coverage.MeanAlpha.ToString("0.#", CultureInfo.InvariantCulture)}{whole}");
+                 $"minA={coverage.MinAlpha} meanA={coverage.MeanAlpha.ToString("0.#", CultureInfo.InvariantCulture)} " +
+                 $"at u {lo.X.ToString("0.###", CultureInfo.InvariantCulture)}..{hi.X.ToString("0.###", CultureInfo.InvariantCulture)} " +
+                 $"v {lo.Y.ToString("0.###", CultureInfo.InvariantCulture)}..{hi.Y.ToString("0.###", CultureInfo.InvariantCulture)} (top-origin){whole}");
     }
 }

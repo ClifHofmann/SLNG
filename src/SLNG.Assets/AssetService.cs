@@ -804,6 +804,19 @@ public class AssetService
     /// <see cref="GridSession.FetchBakeTextureDataAsync"/>).</summary>
     public async Task<TextureData?> GetBakeTextureAsync(Guid textureId, int bakeChannel, float priority = 0f, Guid bakeAgentId = default)
     {
+        var data = await GetBakeTextureCoreAsync(textureId, bakeChannel, priority, bakeAgentId).ConfigureAwait(false);
+        if (data != null) BakeMaterialised?.Invoke(textureId, data);
+        return data;
+    }
+
+    /// <summary>Raised on the calling (worker) thread every time a bake's decoded pixels are handed out --
+    /// fresh from the bake host, from the memory cache, or from the generic texture path -- before they are
+    /// uploaded. For diagnostics that keep a measurement of a bake (BUG-RENDER-50 [BomAlpha]); a handler must
+    /// be cheap and must not keep the pixels.</summary>
+    public event Action<Guid, TextureData>? BakeMaterialised;
+
+    private async Task<TextureData?> GetBakeTextureCoreAsync(Guid textureId, int bakeChannel, float priority, Guid bakeAgentId)
+    {
         if (_memCache.TryGetValue(textureId, out TextureData? cached))
         {
             return cached;
