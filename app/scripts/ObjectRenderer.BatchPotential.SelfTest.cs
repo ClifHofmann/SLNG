@@ -257,6 +257,14 @@ public partial class ObjectRenderer
             _bpPassStartedAt = double.NegativeInfinity;
             TickBatchPotential(centre, camera, sliceMs: 1e6);
 
+            // A collection that lands inside the measured pass is measured as one slow slice (~15 ms on this heap, three times
+            // the limit below), and WHERE it lands depends on how much anything allocated before this check -- one extra row on
+            // the login screen (FEAT-UI-72) was enough to move it into the pass, on every run. Start from a collected heap so
+            // what is timed is the pass, not the collector.
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
             // The measured pass, at the client's budget.
             _bpPassStartedAt = double.NegativeInfinity;
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();

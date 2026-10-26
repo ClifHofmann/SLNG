@@ -367,3 +367,13 @@ Left:
   camera collision and ground clamp, look-at, unified pickers, attachment-within-0.1 m preference.
 - The hover cursor, depth of field and selection still use the old 0.22 m capsule on `PhysicsLayers.Avatars`.
 - Feel and the pick on a posed avatar in a running session were not verified by eye; only the headless selftest and unit tests.
+
+---
+
+## Implemented in FEAT-UI-73 (v0.27.98-alpha)
+
+From the "Not done" list above: the focus-type minimum distances (object 0.02 m, ground 0.15 m; a person stays at 0.5 m,
+as in the viewer), and the viewer's field-of-view range (5 to 175 degrees, narrowed by the window shape) for View > Zoom
+in / out and the Preferences slider. The near plane now follows the camera in when it is closer than 0.1 m. Still not done
+from that list: the FOV back-off for a prim, proportional key / Alt-drag / pad zoom, glide 0.4 s, terrain focus +0.1 m,
+camera collision and ground clamp, look-at, unified pickers. Details and citations: `FEAT-UI-73-zoom-closer.md`.

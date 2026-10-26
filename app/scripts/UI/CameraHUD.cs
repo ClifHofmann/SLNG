@@ -1,17 +1,32 @@
-using System;
 using Godot;
+using CoreJoystick = SLNG.Core.Camera.CameraJoystick;
 
 namespace SLNG.App.UI;
 
+/// <summary>
+/// The Camera Controls window, laid out like the reference viewer's <c>floater_camera.xml</c> (FEAT-UI-74): the
+/// view presets and a reset in a column, a round orbit trackball, a zoom column (+, slider, -) and a square pan
+/// pad, with the focus-point checkbox below. Every rate is per second, so it is the same at 30 and 144 fps.
+/// </summary>
 public partial class CameraHUD : SLNGWindow
 {
     private AvatarController? _cameraController;
-    private string _activeAction = "";
     private Label _statusLabel = null!;
     private bool _isLinked = false;
     private Font _iconFont = null!;
 
-    private const float MinContentScale = 0.5f;
+    private CameraJoystick _orbitPad = null!;
+    private CameraJoystick _panPad = null!;
+    private VSlider _zoomSlider = null!;
+    private bool _sliderDragging;
+
+    /// <summary>+1 while the "-" (zoom out) button is held, -1 while "+" (zoom in) is, else 0.</summary>
+    private int _zoomHeld;
+    private ulong _zoomHeldSinceMsec;
+
+    /// <summary>The cluster never draws smaller than this. The window opens at 1.0 (see <c>_Ready</c>), and
+    /// SLNGWindow clamps a saved size to <see cref="Control.CustomMinimumSize"/>, which is derived from this.</summary>
+    private const float MinContentScale = 0.8f;
     private const float MaxContentScale = 1.5f;
 
     /// <summary>What SLNGWindow puts around its ContentContainer besides the inset: the 8 px shadow
@@ -20,12 +35,16 @@ public partial class CameraHUD : SLNGWindow
     private const float FrameWidth = 18f;
     private const float FrameAndTitleBarHeight = 56f;
 
-    // Built-in per-frame pad steps at 100% (CameraSettings multiplies these live). OrbitStep was
-    // 0.05 and felt fast even at the default; 0.035 is calmer and the Preferences slider still
-    // reaches 3x. PanStep was 1.0 (~60 m/s held at 60 fps -- the avatar shot off-screen on a tap).
-    private const float OrbitStep = 0.035f;
-    private const float PanStep = 0.1f;
-    private const float ZoomStep = 0.5f;
+    // The viewer's rates at full push (llagentcamera.cpp:1271-1273, 1291-1297), per SECOND; CameraSettings
+    // multiplies them live. They were per frame (0.035 rad, 0.1 m, 0.5 m), which is a different speed at every
+    // frame rate: 120 deg/s, 6 m/s and 30 m/s at 60 fps, and twice that at 120.
+    private const float OrbitDegreesPerSecond = 90f;
+    private const float PanMetresPerSecond = 5f;
+    /// <summary>Zoom buttons cover the current distance to the focus once per second ("distance meters per
+    /// second", llagentcamera.cpp:1291), so a close camera creeps and a far one is not a crawl.</summary>
+    private const float ZoomDistancesPerSecond = 1f;
+
+    private const float TargetHeight = 28f; // every button; the pads are CoreJoystick.ReferenceSize (100)
 
     /// <summary>Speed multipliers and camera preferences from the Preferences "Camera" tab. Null until Boot wires it;
     /// treated as 1.0 (built-in defaults) while unset.</summary>
@@ -62,12 +81,14 @@ public partial class CameraHUD : SLNGWindow
     {
         base._Ready(); // Set up SLNGWindow styling
 
-        PersistId = "camera_hud"; // opt into position/size persistence (SLNGWindow)
+        // Opt into position/size persistence (SLNGWindow). Not the old "camera_hud" key: sizes saved for the
+        // FEAT-UI-74 predecessor are half-scale and would open the new layout at its minimum.
+        PersistId = "camera_controls";
         _iconFont = GD.Load<Font>("res://assets/fonts/MaterialSymbolsOutlined.ttf");
 
         Title = L10n.Tr("ui.camera.title");
         Visible = false;
-        // CustomMinimumSize is set below, once the cluster has been built and measured.
+        // CustomMinimumSize and Size are set below, once the cluster has been built and measured.
         Position = new Vector2(100, 100);
 
         OnCloseRequested = Hide;
@@ -86,120 +107,73 @@ public partial class CameraHUD : SLNGWindow
         margin.AddChild(_scaleHost);
 
         var mainVBox = new VBoxContainer();
-        mainVBox.AddThemeConstantOverride("separation", 12);
+        mainVBox.AddThemeConstantOverride("separation", 8);
         _scaleHost.AddChild(mainVBox);
         _mainVBox = mainVBox;
 
-        _statusLabel = new Label { Text = L10n.Tr("ui.camera.waiting"), HorizontalAlignment = HorizontalAlignment.Center };
-        _statusLabel.AddThemeFontSizeOverride("font_size", 12);
-        _statusLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
-        mainVBox.AddChild(_statusLabel);
+        var row = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        row.AddThemeConstantOverride("separation", 10);
+        mainVBox.AddChild(row);
 
-        var hbox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        hbox.AddThemeConstantOverride("separation", 10);
-        mainVBox.AddChild(hbox);
+        // 1. Presets and reset, one column of buttons. No caption or rule: Front/Side/Rear say what they are,
+        // and Reset is an icon with a tooltip, as in the viewer.
+        var presets = new VBoxContainer();
+        presets.AddThemeConstantOverride("separation", 4);
+        row.AddChild(presets);
 
-        // Pad background style (circle for rotation)
-        var circleStyle = new StyleBoxFlat
-        {
-            BgColor = new Color(0.15f, 0.15f, 0.16f, 0.9f),
-            CornerRadiusTopLeft = 100, CornerRadiusTopRight = 100, CornerRadiusBottomLeft = 100, CornerRadiusBottomRight = 100,
-            ShadowColor = new Color(0, 0, 0, 0.3f), ShadowSize = 4
-        };
-
-        // Pad background style (rounded rect for pan)
-        var squareStyle = new StyleBoxFlat
-        {
-            BgColor = new Color(0.15f, 0.15f, 0.16f, 0.9f),
-            CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
-            ShadowColor = new Color(0, 0, 0, 0.3f), ShadowSize = 4
-        };
-
-        // 1. Rotation Pad. Each group is caption + control in its own column: three unlabelled
-        // pads next to each other were guesswork, and "which one pans again?" is not something a
-        // camera window should make you find out by trying.
-        var rotGroup = CreateGroup(L10n.Tr("ui.camera.orbit"), hbox);
-
-        var rotPanel = new PanelContainer();
-        rotPanel.AddThemeStyleboxOverride("panel", circleStyle);
-        rotGroup.AddChild(rotPanel);
-
-        var rotGrid = new GridContainer { Columns = 3 };
-        rotPanel.AddChild(rotGrid);
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-        rotGrid.AddChild(CreatePadButton("keyboard_arrow_up", "rot_up"));
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-        rotGrid.AddChild(CreatePadButton("keyboard_arrow_left", "rot_left"));
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) }); // Center empty
-        rotGrid.AddChild(CreatePadButton("keyboard_arrow_right", "rot_right"));
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-        rotGrid.AddChild(CreatePadButton("keyboard_arrow_down", "rot_down"));
-        rotGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-
-        // 2. Zoom. Given the same panel backing as the two pads -- it used to be two loose
-        // buttons floating between them, which read as leftovers rather than as a third control.
-        var zoomGroup = CreateGroup(L10n.Tr("ui.camera.zoom"), hbox);
-
-        var zoomPanel = new PanelContainer();
-        zoomPanel.AddThemeStyleboxOverride("panel", squareStyle);
-        zoomGroup.AddChild(zoomPanel);
-
-        var zoomVBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        zoomVBox.AddThemeConstantOverride("separation", 4);
-        zoomPanel.AddChild(zoomVBox);
-        zoomVBox.AddChild(CreatePadButton("add", "zoom_in"));
-        zoomVBox.AddChild(CreatePadButton("remove", "zoom_out"));
-
-        // 3. Pan Pad
-        var panGroup = CreateGroup(L10n.Tr("ui.camera.pan"), hbox);
-
-        var panPanel = new PanelContainer();
-        panPanel.AddThemeStyleboxOverride("panel", squareStyle);
-        panGroup.AddChild(panPanel);
-
-        var panGrid = new GridContainer { Columns = 3 };
-        panPanel.AddChild(panGrid);
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-        panGrid.AddChild(CreatePadButton("keyboard_arrow_up", "pan_up"));
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-        panGrid.AddChild(CreatePadButton("keyboard_arrow_left", "pan_left"));
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) }); // Center empty
-        panGrid.AddChild(CreatePadButton("keyboard_arrow_right", "pan_right"));
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-        panGrid.AddChild(CreatePadButton("keyboard_arrow_down", "pan_down"));
-        panGrid.AddChild(new Control { CustomMinimumSize = new Godot.Vector2(28, 28) });
-
-        // 4. Presets, under their own caption and a hairline rule, because they are a different
-        // kind of thing from the pads above: one-shot jumps, not held movement.
-        var presetCaption = new Label
-        {
-            Text = L10n.Tr("ui.camera.views"),
-            HorizontalAlignment = HorizontalAlignment.Center,
-        };
-        presetCaption.AddThemeFontSizeOverride("font_size", 10);
-        presetCaption.AddThemeColorOverride("font_color", CaptionColor);
-        mainVBox.AddChild(new HSeparator());
-        mainVBox.AddChild(presetCaption);
-
-        var presetsHBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        presetsHBox.AddThemeConstantOverride("separation", 6);
-        mainVBox.AddChild(presetsHBox);
-        
-        // Use sleek text buttons instead of problematic emojis
-        var btnFront = CreateModernButton(L10n.Tr("ui.camera.view_front"), "", new Godot.Vector2(58, 26), 12);
-        btnFront.TooltipText = L10n.Tr("ui.camera.view_front_tooltip");
-        var btnSide = CreateModernButton(L10n.Tr("ui.camera.view_side"), "", new Godot.Vector2(58, 26), 12);
-        btnSide.TooltipText = L10n.Tr("ui.camera.view_side_tooltip");
-        var btnRear = CreateModernButton(L10n.Tr("ui.camera.view_rear"), "", new Godot.Vector2(58, 26), 12);
-        btnRear.TooltipText = L10n.Tr("ui.camera.view_rear_tooltip");
-        
-        presetsHBox.AddChild(btnFront);
-        presetsHBox.AddChild(btnSide);
-        presetsHBox.AddChild(btnRear);
+        var btnFront = CreateTextButton(L10n.Tr("ui.camera.view_front"), L10n.Tr("ui.camera.view_front_tooltip"));
+        var btnSide = CreateTextButton(L10n.Tr("ui.camera.view_side"), L10n.Tr("ui.camera.view_side_tooltip"));
+        var btnRear = CreateTextButton(L10n.Tr("ui.camera.view_rear"), L10n.Tr("ui.camera.view_rear_tooltip"));
+        var btnReset = CreateTextButton("restart_alt", L10n.Tr("ui.camera.reset_tooltip"), useIconFont: true);
+        presets.AddChild(btnFront);
+        presets.AddChild(btnSide);
+        presets.AddChild(btnRear);
+        presets.AddChild(btnReset);
 
         btnFront.Pressed += () => _cameraController?.SetPresetView("Front");
         btnSide.Pressed += () => _cameraController?.SetPresetView("Side");
         btnRear.Pressed += () => _cameraController?.SetPresetView("Rear");
+        btnReset.Pressed += () => _cameraController?.ResetCamera();
+
+        // 2. Orbit trackball. The centre dot is the viewer's resetCameraOrbit.
+        _orbitPad = new CameraJoystick { Round = true, TooltipText = L10n.Tr("ui.camera.orbit_tooltip"), SizeFlagsVertical = SizeFlags.ShrinkCenter };
+        _orbitPad.ResetRequested += () => _cameraController?.ResetCamera();
+        row.AddChild(_orbitPad);
+
+        // 3. Zoom: + on top (closer), the slider (top = closest), - at the bottom. The slider is not stretched
+        // by a container; it takes whatever height the preset column gives the row.
+        var zoom = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        zoom.AddThemeConstantOverride("separation", 4);
+        row.AddChild(zoom);
+
+        var btnZoomIn = CreateIconButton("add", L10n.Tr("ui.camera.zoom_in_tooltip"));
+        var btnZoomOut = CreateIconButton("remove", L10n.Tr("ui.camera.zoom_out_tooltip"));
+        btnZoomIn.ButtonDown += () => BeginZoomHold(-1);
+        btnZoomOut.ButtonDown += () => BeginZoomHold(1);
+        btnZoomIn.ButtonUp += () => EndZoomHold(-1);
+        btnZoomOut.ButtonUp += () => EndZoomHold(1);
+
+        _zoomSlider = new VSlider
+        {
+            MinValue = 0, MaxValue = 1, Step = 0, Value = 0.5,
+            CustomMinimumSize = new Vector2(TargetHeight, 56),
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            FocusMode = FocusModeEnum.None, // arrow keys must keep walking, not nudge the slider
+            TooltipText = L10n.Tr("ui.camera.zoom_slider_tooltip"),
+        };
+        _zoomSlider.DragStarted += () => _sliderDragging = true;
+        _zoomSlider.DragEnded += _ => _sliderDragging = false;
+        // Only the person moves the slider through this signal: following the camera uses SetValueNoSignal.
+        _zoomSlider.ValueChanged += value => { if (_cameraController != null) _cameraController.ZoomFraction = (float)value; };
+        zoom.AddChild(btnZoomIn);
+        zoom.AddChild(_zoomSlider);
+        zoom.AddChild(btnZoomOut);
+
+        // 4. Pan pad. The centre dot is the viewer's resetCameraPan.
+        _panPad = new CameraJoystick { Round = false, TooltipText = L10n.Tr("ui.camera.pan_tooltip"), SizeFlagsVertical = SizeFlags.ShrinkCenter };
+        _panPad.ResetRequested += () => _cameraController?.ResetPan();
+        row.AddChild(_panPad);
 
         var focusRow = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
         mainVBox.AddChild(focusRow);
@@ -210,25 +184,51 @@ public partial class CameraHUD : SLNGWindow
             TooltipText = L10n.Tr("ui.camera.show_focus_marker_tooltip"),
             FocusMode = FocusModeEnum.None,
         };
-        chkMarker.AddThemeFontSizeOverride("font_size", 11);
+        chkMarker.AddThemeFontSizeOverride("font_size", 12);
         chkMarker.Toggled += on => _dofSettings?.SetShowFocusMarker(on);
         _focusMarkerCheck = chkMarker;
         focusRow.AddChild(chkMarker);
         if (_dofSettings != null) chkMarker.SetPressedNoSignal(_dofSettings.ShowFocusMarker);
 
+        // Until the camera controller is found the controls do nothing: say so over a dimmed cluster instead of
+        // reserving a line of the window for it (the old status line shifted the layout when it went away).
+        _statusLabel = new Label
+        {
+            Text = L10n.Tr("ui.camera.waiting"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            MouseFilter = MouseFilterEnum.Ignore,
+            GrowHorizontal = GrowDirection.Both,
+            GrowVertical = GrowDirection.Both,
+        };
+        _statusLabel.AddThemeFontSizeOverride("font_size", 12);
+        _statusLabel.AddThemeColorOverride("font_color", Colors.White);
+        _statusLabel.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.9f));
+        _statusLabel.AddThemeConstantOverride("outline_size", 4);
+        _scaleHost.AddChild(_statusLabel);
+        _statusLabel.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+        _mainVBox.Modulate = new Color(1, 1, 1, 0.4f);
+
         // Natural, unscaled size of the whole button cluster -- the scale ratio in
         // RescaleContent is always relative to this, never to the previous frame's size.
         _referenceSize = mainVBox.GetCombinedMinimumSize();
         mainVBox.Size = _referenceSize;
-        // The window opens at its minimum, where RescaleContent runs the cluster at MinContentScale.
-        // Sizing that minimum to the cluster's own aspect (plus the standard inset and the frame)
-        // is what puts it 14/12 px from the frame at the default size; a minimum of a different
-        // shape left the centred cluster floating 36 px off the frame at the sides. Making the
-        // window bigger still scales the cluster up to fit.
-        CustomMinimumSize = new Vector2(
-            Mathf.Ceil(_referenceSize.X * MinContentScale) + 2 * DefaultContentMarginH + FrameWidth,
-            Mathf.Ceil(_referenceSize.Y * MinContentScale) + 2 * DefaultContentMarginV + FrameAndTitleBarHeight);
+        // The smallest the window may be is the cluster at MinContentScale, in the cluster's own aspect plus the
+        // standard inset and the frame (a minimum of a different shape left the centred cluster floating off the
+        // frame). It OPENS at scale 1.0, which is where the targets are comfortable; a size saved by SLNGWindow
+        // is clamped to the minimum on restore, so it can never bring the cluster back below MinContentScale.
+        CustomMinimumSize = ContentSizeToWindow(_referenceSize * MinContentScale, ceil: true);
+        Size = ContentSizeToWindow(_referenceSize, ceil: false);
         CallDeferred(nameof(RescaleContent));
+    }
+
+    /// <summary>The window size that gives a cluster of <paramref name="content"/> its room: the standard inset
+    /// and the frame around it.</summary>
+    private static Vector2 ContentSizeToWindow(Vector2 content, bool ceil)
+    {
+        if (ceil) content = new Vector2(Mathf.Ceil(content.X), Mathf.Ceil(content.Y));
+        return new Vector2(
+            content.X + 2 * DefaultContentMarginH + FrameWidth,
+            content.Y + 2 * DefaultContentMarginV + FrameAndTitleBarHeight);
     }
 
     public override void _ExitTree()
@@ -253,67 +253,66 @@ public partial class CameraHUD : SLNGWindow
         _mainVBox.Position = ((avail - _referenceSize * scale) / 2f).Round();
     }
 
-    // One muted grey for every caption in this window, so the labels read as annotation and the
-    // controls stay the thing your eye lands on.
-    private static readonly Color CaptionColor = new(0.58f, 0.62f, 0.68f);
-
-    /// <summary>A captioned column: the small grey label on top, the caller's control below,
-    /// centred. Returns the column to add that control to.</summary>
-    private static VBoxContainer CreateGroup(string caption, Control parent)
+    /// <summary>A flat rounded button that does one thing when pressed (a view preset, the reset).</summary>
+    private Button CreateTextButton(string text, string tooltip, bool useIconFont = false)
     {
-        var column = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        column.AddThemeConstantOverride("separation", 4);
-        parent.AddChild(column);
+        var btn = new Button
+        {
+            Text = text,
+            TooltipText = tooltip,
+            CustomMinimumSize = new Vector2(60, TargetHeight),
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            FocusMode = FocusModeEnum.None,
+        };
 
-        var label = new Label { Text = caption, HorizontalAlignment = HorizontalAlignment.Center };
-        label.AddThemeFontSizeOverride("font_size", 10);
-        label.AddThemeColorOverride("font_color", CaptionColor);
-        column.AddChild(label);
-
-        return column;
-    }
-
-    private Button CreatePadButton(string text, string actionName)
-    {
-        var btn = new Button { Text = text, CustomMinimumSize = new Godot.Vector2(28, 28), FocusMode = Control.FocusModeEnum.None };
-        
-        var normalStyle = new StyleBoxEmpty();
-        var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.1f), CornerRadiusTopLeft = 14, CornerRadiusTopRight = 14, CornerRadiusBottomLeft = 14, CornerRadiusBottomRight = 14 };
-        var pressedStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.2f), CornerRadiusTopLeft = 14, CornerRadiusTopRight = 14, CornerRadiusBottomLeft = 14, CornerRadiusBottomRight = 14 };
-
-        btn.AddThemeStyleboxOverride("normal", normalStyle);
-        btn.AddThemeStyleboxOverride("hover", hoverStyle);
-        btn.AddThemeStyleboxOverride("pressed", pressedStyle);
-        btn.AddThemeFontOverride("font", _iconFont);
-        btn.AddThemeFontSizeOverride("font_size", 20);
-        btn.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f));
-
-        btn.ButtonDown += () => _activeAction = actionName;
-        btn.ButtonUp += () => { if (_activeAction == actionName) _activeAction = ""; };
-        return btn;
-    }
-
-    private Button CreateModernButton(string text, string actionName, Godot.Vector2 minSize, int fontSize, bool useIconFont = false)
-    {
-        var btn = new Button { Text = text, CustomMinimumSize = minSize, FocusMode = Control.FocusModeEnum.None };
-
-        var normalStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.05f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 };
-        var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.15f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 };
-        var pressedStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.25f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 };
+        var normalStyle = RoundedFill(new Color(1, 1, 1, 0.05f), 6);
+        var hoverStyle = RoundedFill(new Color(1, 1, 1, 0.15f), 6);
+        var pressedStyle = RoundedFill(new Color(1, 1, 1, 0.25f), 6);
 
         btn.AddThemeStyleboxOverride("normal", normalStyle);
         btn.AddThemeStyleboxOverride("hover", hoverStyle);
         btn.AddThemeStyleboxOverride("pressed", pressedStyle);
         if (useIconFont) btn.AddThemeFontOverride("font", _iconFont);
-        btn.AddThemeFontSizeOverride("font_size", fontSize);
+        btn.AddThemeFontSizeOverride("font_size", useIconFont ? 20 : 12);
         btn.AddThemeColorOverride("font_color", new Color(0.9f, 0.9f, 0.9f));
-
-        if (!string.IsNullOrEmpty(actionName))
-        {
-            btn.ButtonDown += () => _activeAction = actionName;
-            btn.ButtonUp += () => { if (_activeAction == actionName) _activeAction = ""; };
-        }
         return btn;
+    }
+
+    /// <summary>A borderless round icon button for the zoom column; the caller wires the hold.</summary>
+    private Button CreateIconButton(string glyph, string tooltip)
+    {
+        var btn = new Button
+        {
+            Text = glyph,
+            TooltipText = tooltip,
+            CustomMinimumSize = new Vector2(TargetHeight, TargetHeight),
+            FocusMode = FocusModeEnum.None,
+        };
+
+        btn.AddThemeStyleboxOverride("normal", RoundedFill(new Color(1, 1, 1, 0.05f), (int)(TargetHeight / 2)));
+        btn.AddThemeStyleboxOverride("hover", RoundedFill(new Color(1, 1, 1, 0.15f), (int)(TargetHeight / 2)));
+        btn.AddThemeStyleboxOverride("pressed", RoundedFill(new Color(1, 1, 1, 0.25f), (int)(TargetHeight / 2)));
+        btn.AddThemeFontOverride("font", _iconFont);
+        btn.AddThemeFontSizeOverride("font_size", 20);
+        btn.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f));
+        return btn;
+    }
+
+    private static StyleBoxFlat RoundedFill(Color fill, int radius) => new()
+    {
+        BgColor = fill,
+        CornerRadiusTopLeft = radius, CornerRadiusTopRight = radius, CornerRadiusBottomLeft = radius, CornerRadiusBottomRight = radius,
+    };
+
+    private void BeginZoomHold(int direction)
+    {
+        _zoomHeld = direction;
+        _zoomHeldSinceMsec = Time.GetTicksMsec();
+    }
+
+    private void EndZoomHold(int direction)
+    {
+        if (_zoomHeld == direction) _zoomHeld = 0;
     }
 
     /// <summary>Flips visibility -- mirrors InventoryPanel.Toggle() so ButtonBar (and any
@@ -322,46 +321,64 @@ public partial class CameraHUD : SLNGWindow
 
     public override void _Process(double delta)
     {
+        // A hidden window does nothing; a zoom button held when it was hidden must not keep zooming.
+        if (!Visible)
+        {
+            _zoomHeld = 0;
+            return;
+        }
+
         using var _phase = MainThreadPhase.Enter("ui.camera-hud"); // BUG-PERF-05
         if (_cameraController == null)
         {
             _cameraController = GetTree().Root.FindChild("AvatarController", true, false) as AvatarController;
-            if (_cameraController != null)
+            if (_cameraController == null) return;
+
+            if (!_isLinked)
             {
-                if (!_isLinked)
-                {
-                    _isLinked = true;
-                    _statusLabel.Visible = false; // Hide label to save space once connected
-                    CustomMinimumSize = new Vector2(210, 172); // Shrink window to fit tightly once the status line goes
-                    Logger.Debug("[CameraHUD] AvatarController found and linked!");
-                }
+                _isLinked = true;
+                _statusLabel.Visible = false;
+                _mainVBox.Modulate = Colors.White;
+                Logger.Debug("[CameraHUD] AvatarController found and linked!");
             }
         }
-        else
-        {
-            if (!string.IsNullOrEmpty(_activeAction))
-            {
-                float orbit = OrbitStep * (_cameraSettings?.OrbitSpeed ?? 1f);
-                float pan = PanStep * (_cameraSettings?.PanSpeed ?? 1f);
-                float zoom = ZoomStep * (_cameraSettings?.ZoomSpeed ?? 1f);
 
-                switch (_activeAction)
-                {
-                    case "rot_left": _cameraController.RotateCamera(new Godot.Vector2(orbit, 0)); break;
-                    case "rot_right": _cameraController.RotateCamera(new Godot.Vector2(-orbit, 0)); break;
-                    case "rot_up": _cameraController.RotateCamera(new Godot.Vector2(0, orbit)); break;
-                    case "rot_down": _cameraController.RotateCamera(new Godot.Vector2(0, -orbit)); break;
-                    case "zoom_in": _cameraController.ZoomCamera(-zoom); break;
-                    case "zoom_out": _cameraController.ZoomCamera(zoom); break;
-                    // BUG-UI-02: pan left/right were inverted. PanCamera feeds _panOffset, which
-                    // AvatarController applies as `targetPos += Basis.X * _panOffset.X` -- +X moves
-                    // the camera screen-RIGHT, so "pan_left" must be -X. Up/down were already right.
-                    case "pan_left": _cameraController.PanCamera(new Godot.Vector2(-pan, 0)); break;
-                    case "pan_right": _cameraController.PanCamera(new Godot.Vector2(pan, 0)); break;
-                    case "pan_up": _cameraController.PanCamera(new Godot.Vector2(0, pan)); break;
-                    case "pan_down": _cameraController.PanCamera(new Godot.Vector2(0, -pan)); break;
-                }
-            }
+        float dt = (float)delta;
+
+        // Orbit. RotateCamera's X is the opposite of the pad's (pressing LEFT turns +X), Y is the same (up is +).
+        var orbit = _orbitPad.Rate;
+        if (orbit != Vector2.Zero)
+        {
+            float step = Mathf.DegToRad(OrbitDegreesPerSecond) * (_cameraSettings?.OrbitSpeed ?? 1f) * dt;
+            _cameraController.RotateCamera(new Vector2(-orbit.X, orbit.Y) * step);
+        }
+
+        // BUG-UI-02: pan left/right were inverted. PanCamera feeds _panOffset, which AvatarController applies as
+        // `targetPos += Basis.X * _panOffset.X` -- +X moves the camera screen-RIGHT, so a push to the left is -X,
+        // which is the pad's own sign. Up/down likewise (+Y is up).
+        var pan = _panPad.Rate;
+        if (pan != Vector2.Zero)
+        {
+            float step = PanMetresPerSecond * (_cameraSettings?.PanSpeed ?? 1f) * dt;
+            _cameraController.PanCamera(pan * step);
+        }
+
+        // Zoom buttons: the distance changes by a fixed fraction per second, so it is exponential and the same
+        // at any frame rate (a linear distance * dt would go negative on a long frame), ramped like the pads.
+        // Safety net: the button's own ButtonUp is what normally ends it.
+        if (_zoomHeld != 0 && !Input.IsMouseButtonPressed(MouseButton.Left)) _zoomHeld = 0;
+        if (_zoomHeld != 0)
+        {
+            float ramp = CoreJoystick.Ramp((Time.GetTicksMsec() - _zoomHeldSinceMsec) / 1000f);
+            float rate = ramp * ZoomDistancesPerSecond * (_cameraSettings?.ZoomSpeed ?? 1f);
+            _cameraController.ZoomCamera(_cameraController.ZoomDistance * (Mathf.Exp(_zoomHeld * rate * dt) - 1f));
+        }
+
+        // The slider follows the camera (wheel, keys, buttons, presets) except while it is being dragged.
+        if (!_sliderDragging)
+        {
+            float fraction = _cameraController.ZoomFraction;
+            if (!Mathf.IsEqualApprox((float)_zoomSlider.Value, fraction)) _zoomSlider.SetValueNoSignal(fraction);
         }
     }
 }

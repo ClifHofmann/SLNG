@@ -32,7 +32,12 @@ public sealed record LoginCredentials
     /// <summary>Viewer version reported to the grid.</summary>
     public string Version { get; init; } = "0.1.0";
 
-    /// <summary>Starting location (e.g. 'last', 'home', or 'RegionName/128/128/30').</summary>
+    /// <summary>Starting location, in the one form the login service takes: <c>last</c>, <c>home</c> or
+    /// <c>uri:Region Name&amp;x&amp;y&amp;z</c> (raw <c>&amp;</c>, integer coordinates -- LibreMetaverse escapes it on the
+    /// wire). Build it with <c>SLNG.Core.Login.LoginStart.Resolve</c>; free text is NOT accepted here, because
+    /// LibreMetaverse 3.1.6 would run it through its own SLURL parser, which is lossy and unvalidated
+    /// (<c>Ahern%20Park</c> stays escaped, a non-numeric coordinate becomes <c>128/128/0</c>, garbage becomes a region
+    /// named garbage). An empty value is sent as <c>last</c>.</summary>
     public string StartLocation { get; init; } = "last";
 
     /// <summary>Whether the user has been SHOWN the grid's Terms of Service and accepted them for

@@ -300,6 +300,9 @@ public static partial class SelfTest
         results.Add(CheckTeleportOfferWindow(tree));
         results.Add(CheckMfaPromptWindow(tree)); // FEAT-SL-02
         results.Add(CheckMfaHashStore());
+        results.Add(CheckLoginStartStore()); // FEAT-UI-72
+        results.Add(CheckLoginStartPicker(tree)); // FEAT-UI-72
+        results.Add(CheckLoginStartResolver()); // FEAT-UI-72
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckInventoryTrashMenus(tree));
@@ -317,6 +320,8 @@ public static partial class SelfTest
         results.Add(CheckFriendCategoryStore());
         results.Add(CheckPerAvatarDataIsolation());
         results.AddRange(CheckKeyBindings(tree)); // FEAT-UI-43
+        results.Add(CheckCameraFocusKinds()); // FEAT-UI-73
+        results.Add(CheckCameraControls(tree)); // FEAT-UI-74
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 

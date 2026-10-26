@@ -1,4 +1,5 @@
 using Godot;
+using SLNG.Core.Camera;
 
 namespace SLNG.App.UI;
 
@@ -19,6 +20,10 @@ public partial class CameraPreferencesPage : VBoxContainer
     private HSlider _fovSlider = null!;
     private HSlider _distanceSlider = null!;
     private HSlider _heightSlider = null!;
+
+    // True while the field-of-view slider's range is being moved: changing a bound clamps the value and raises
+    // ValueChanged, which must not be written back to the settings as if the person had moved the slider.
+    private bool _syncingFovRange;
 
     public override void _Ready()
     {
@@ -51,9 +56,14 @@ public partial class CameraPreferencesPage : VBoxContainer
 
         AddHeading(L10n.Tr("ui.preferences.camera_view_heading"));
 
+        // FEAT-UI-73: the viewer's range for this window shape (5 degrees up to 175 / aspect), re-read whenever the page is
+        // shown (llfloaterpreference.cpp:502-503, :618-619). The stored value may lie outside it after a resize and is
+        // left alone: the camera applies the clamp itself, every frame.
         _fovSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_fov"),
-            CameraSettings.MinFov, CameraSettings.MaxFov, 1f, _settings.Fov,
-            v => $"{v:0}°", v => _settings.SetFov(v));
+            CameraFovLimits.AbsoluteMinDegrees, CameraFovLimits.AbsoluteMaxDegrees, 1f, _settings.Fov,
+            v => $"{v:0}°", v => { if (!_syncingFovRange) _settings.SetFov(v); });
+        RefreshFovRange();
+        VisibilityChanged += RefreshFovRange;
         _distanceSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_rear_distance"),
             CameraSettings.MinDistance, CameraSettings.MaxDistance, 0.5f, _settings.RearDistance,
             FormatMetres, v => _settings.SetRearDistance(v));
@@ -71,6 +81,25 @@ public partial class CameraPreferencesPage : VBoxContainer
         };
         resetButton.Pressed += ResetToDefaults;
         AddChild(resetButton);
+    }
+
+    /// <summary>Gives the field-of-view slider the range the window's shape allows now, showing the stored value
+    /// (clamped into it, for display only).</summary>
+    private void RefreshFovRange()
+    {
+        if (_fovSlider == null) return;
+        float aspect = CameraSettings.ViewAspect(GetViewport());
+        _syncingFovRange = true;
+        try
+        {
+            _fovSlider.MinValue = CameraFovLimits.MinDegrees(aspect);
+            _fovSlider.MaxValue = CameraFovLimits.MaxDegrees(aspect);
+            _fovSlider.Value = CameraFovLimits.Clamp(_settings.Fov, aspect);
+        }
+        finally
+        {
+            _syncingFovRange = false;
+        }
     }
 
     private void AddHeading(string text)

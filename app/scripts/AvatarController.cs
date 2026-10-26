@@ -52,6 +52,19 @@ public partial class AvatarController : Camera3D
     private float _zoom = 4.0f;
     private Vector3 _panOffset = Vector3.Zero;
 
+    // FEAT-UI-73: what the camera is centred on, which decides how close it may get (CameraZoomLimits). Set when
+    // an Alt+Click or roster focus is made, put back to OwnAvatar by SetPresetView (Esc), the only way out of a
+    // focus. Every distance clamp below reads MinZoom, never a fixed number.
+    private CameraFocusKind _focusKind = CameraFocusKind.OwnAvatar;
+
+    /// <summary>The nearest the camera may sit to its pivot right now: 0.02 m on an object, 0.15 m on the
+    /// ground, 0.5 m on a person or while following one's own avatar (the viewer's own numbers, see
+    /// <see cref="CameraZoomLimits"/>).</summary>
+    private float MinZoom => CameraZoomLimits.MinDistance(_focusKind);
+
+    // FEAT-UI-73: the near plane last given to the camera, so the property is only written when it changes.
+    private float _appliedNear = CameraZoomLimits.DefaultNearPlane;
+
     // BUG-NET-01: bounds for the AgentUpdate interest radius (Camera.Far). Min matches
     // LibreMetaverse's AgentCamera default so un-zoomed play is unchanged; max is the SL cap.
     private const float SlInterestFarMin = 128f;
@@ -87,10 +100,31 @@ public partial class AvatarController : Camera3D
     public void SetCameraSettings(SLNG.App.UI.CameraSettings settings)
     {
         _cameraSettings = settings;
-        Fov = settings.Fov;
+        ApplyFieldOfView();
         _zoom = settings.RearDistance;
         _wheelZoomTarget = null;
         _lastAppliedRearDistance = settings.RearDistance;
+    }
+
+    /// <summary>FEAT-UI-73: gives the camera the persisted field of view, kept inside the range the window's shape
+    /// allows - every frame, as the reference viewer does (<c>setView</c>, llviewercamera.cpp:783-790, called from
+    /// llagentcamera.cpp:1481). The stored setting is not touched, so resizing the window back restores it.
+    /// <c>Fov</c> is the vertical angle (Camera3D's default KeepHeight mode), which is what the limits are in.</summary>
+    private void ApplyFieldOfView()
+    {
+        if (_cameraSettings == null) return;
+        float fov = CameraFovLimits.Clamp(_cameraSettings.Fov, SLNG.App.UI.CameraSettings.ViewAspect(GetViewport()));
+        if (!Mathf.IsEqualApprox(Fov, fov)) Fov = fov;
+    }
+
+    /// <summary>FEAT-UI-73: moves the near plane in with the camera so the point it looks at is never clipped, and
+    /// leaves it at Godot's 0.05 m for every ordinary distance. See <see cref="CameraZoomLimits.NearPlane"/>.</summary>
+    private void ApplyNearPlane()
+    {
+        float near = CameraZoomLimits.NearPlane(_zoom);
+        if (near == _appliedNear) return;
+        _appliedNear = near;
+        Near = near;
     }
 
     // Public API for CameraHUD
@@ -155,8 +189,31 @@ public partial class AvatarController : Camera3D
         _transitioning = false;
         _wheelZoomTarget = null; // a direct zoom (keys, pad) must not be fought by a pending wheel ease
         _zoom += delta;
-        _zoom = Mathf.Clamp(_zoom, CameraZoom.MinZoom, CameraZoom.MaxZoom);
+        _zoom = Mathf.Clamp(_zoom, MinZoom, CameraZoom.MaxZoom);
     }
+
+    /// <summary>FEAT-UI-74: the distance from the camera to the point it orbits, in metres - what the Camera
+    /// Controls zoom buttons scale their speed by.</summary>
+    public float ZoomDistance => _zoom;
+
+    /// <summary>FEAT-UI-74: <see cref="ZoomDistance"/> as the Camera Controls slider shows it, 1 = as close as the
+    /// current focus allows (<see cref="MinZoom"/>), 0 = <see cref="CameraZoom.MaxZoom"/>; logarithmic (see
+    /// <see cref="CameraZoomFraction"/> for why it is not the viewer's linear one). Setting it is a direct zoom like <see cref="ZoomCamera"/>: it ends a glide and a
+    /// pending wheel ease, so the slider is not fought.</summary>
+    public float ZoomFraction
+    {
+        get => CameraZoomFraction.ToFraction(_zoom, MinZoom, CameraZoom.MaxZoom);
+        set
+        {
+            _transitioning = false;
+            _wheelZoomTarget = null;
+            _zoom = CameraZoomFraction.ToDistance(value, MinZoom, CameraZoom.MaxZoom);
+        }
+    }
+
+    /// <summary>FEAT-UI-74: puts the pan-pad framing offset back to zero (the pan pad's centre dot, the viewer's
+    /// <c>resetCameraPan</c>), leaving orbit and zoom as they are. <see cref="ResetCamera"/> clears it too.</summary>
+    public void ResetPan() => _panOffset = Vector3.Zero;
 
     // FEAT-ANIM-07: Sustained hold mode & position/rotation lock for PoseStand
     private AvatarHoldMode _holdMode = AvatarHoldMode.None;
@@ -201,7 +258,7 @@ public partial class AvatarController : Camera3D
     {
         _transitioning = false;
         float oldZoom = _zoom;
-        _zoom = Mathf.Clamp(_zoom + zoomDelta, CameraZoom.MinZoom, CameraZoom.MaxZoom);
+        _zoom = Mathf.Clamp(_zoom + zoomDelta, MinZoom, CameraZoom.MaxZoom);
         if (Mathf.IsEqualApprox(_zoom, oldZoom)) return;
         ShiftPanTowardCursor(mousePos, oldZoom, _zoom);
     }
@@ -285,7 +342,7 @@ public partial class AvatarController : Camera3D
             return;
         }
 
-        float clamped = Mathf.Clamp(_zoom + zoomDelta, CameraZoom.MinZoom, CameraZoom.MaxZoom);
+        float clamped = Mathf.Clamp(_zoom + zoomDelta, MinZoom, CameraZoom.MaxZoom);
         float applied = clamped - _zoom;
         _zoom = clamped;
 
@@ -295,8 +352,8 @@ public partial class AvatarController : Camera3D
             // still eases toward the focus point, it just ends at the new distance. Leaving
             // _transitioning alone (unlike ZoomTowardCursor) is the whole point -- the pivot must
             // still arrive at the clicked object.
-            _transitionStartZoom = Mathf.Clamp(_transitionStartZoom + applied, CameraZoom.MinZoom, CameraZoom.MaxZoom);
-            _transitionEndZoom = Mathf.Clamp(_transitionEndZoom + applied, CameraZoom.MinZoom, CameraZoom.MaxZoom);
+            _transitionStartZoom = Mathf.Clamp(_transitionStartZoom + applied, MinZoom, CameraZoom.MaxZoom);
+            _transitionEndZoom = Mathf.Clamp(_transitionEndZoom + applied, MinZoom, CameraZoom.MaxZoom);
         }
     }
 
@@ -314,12 +371,12 @@ public partial class AvatarController : Camera3D
         if (glidingToFocus || resetGlideWithFocus)
         {
             _wheelZoomTarget = null;
-            ZoomBy(CameraZoom.WheelStep(_zoom, notches) - _zoom, mousePos);
+            ZoomBy(CameraZoom.WheelStep(_zoom, notches, MinZoom) - _zoom, mousePos);
             return;
         }
 
         _transitioning = false; // manual input wins over an in-progress pan
-        _wheelZoomTarget = CameraZoom.WheelStep(_wheelZoomTarget ?? _zoom, notches);
+        _wheelZoomTarget = CameraZoom.WheelStep(_wheelZoomTarget ?? _zoom, notches, MinZoom);
         _wheelZoomCursor = mousePos;
     }
 
@@ -358,6 +415,7 @@ public partial class AvatarController : Camera3D
         if (!approachDir.IsFinite() || approachDir.LengthSquared() < 0.0001f) approachDir = Godot.Vector3.Back;
         approachDir = approachDir.Normalized();
 
+        _focusKind = CameraFocusKind.Avatar; // before AimOrbitAt, which clamps the distance for this kind
         AimOrbitAt(target, target + approachDir * portraitDistance, portraitDistance);
         _focusFollow = FollowAvatar(agentId, target);
     }
@@ -534,11 +592,26 @@ public partial class AvatarController : Camera3D
         return false;
     }
 
+    /// <summary>FEAT-UI-73: which minimum distance applies to the body an Alt+Click landed on. A person, and anything
+    /// worn by one (a node under the wearer's skeleton), count as a person: the viewer replaces a worn item by its
+    /// wearer as the focus (llagentcamera.cpp:2607-2614). The ground is terrain, or no body at all. Everything else
+    /// is an object.</summary>
+    internal static CameraFocusKind ClassifyFocus(CollisionObject3D? body)
+    {
+        if (body == null) return CameraFocusKind.Land;
+        if ((body.CollisionLayer & PhysicsLayers.Terrain) != 0) return CameraFocusKind.Land;
+        if ((body.CollisionLayer & PhysicsLayers.Avatars) != 0) return CameraFocusKind.Avatar;
+        for (Node? node = body.GetParent(); node != null; node = node.GetParent())
+            if (node is Skeleton3D) return CameraFocusKind.Avatar;
+        return CameraFocusKind.Object;
+    }
+
     /// <summary>Alt+Click: aims the camera at what is under <paramref name="screenPos"/> (see
     /// <see cref="PickFocusPoint"/>) and makes the focus ride on it.</summary>
     private void FocusAtCursor(Vector2 screenPos)
     {
         if (!PickFocusPoint(screenPos, out var point, out var body)) return;
+        _focusKind = ClassifyFocus(body); // before FocusOn, which clamps the distance for this kind
         FocusOn(point);
         // FEAT-UI-40: the focus rides on what was clicked (a person: offset from their origin by where on them it landed).
         _focusFollow = FollowForBody(body, point);
@@ -558,7 +631,7 @@ public partial class AvatarController : Camera3D
     /// third-person camera math orbits this point instead of the local avatar.</summary>
     private void AimOrbitAt(Vector3 target, Vector3 fromPos, float zoom)
     {
-        zoom = Mathf.Clamp(zoom, CameraZoom.MinZoom, CameraZoom.MaxZoom);
+        zoom = Mathf.Clamp(zoom, MinZoom, CameraZoom.MaxZoom);
 
         if (fromPos.DistanceSquaredTo(target) <= 0.0001f)
         {
@@ -695,6 +768,7 @@ public partial class AvatarController : Camera3D
         };
 
         _focusFollow = null; // back to following the local avatar: nothing else may move the focus now
+        _focusKind = CameraFocusKind.OwnAvatar;
         float endZoom = _cameraSettings?.RearDistance ?? 4.0f;
         var endTarget = GetLocalAvatarFollowTarget() ?? (Position - Transform.Basis.Z * _zoom);
         // Absolute end yaw = the avatar's own current facing plus the preset's orbit offset;
@@ -1010,8 +1084,7 @@ public partial class AvatarController : Camera3D
         if (_world == null || _session == null) return;
 
         // FEAT-UI-12: keep FOV in sync with the persisted preference so a slider move applies live.
-        if (_cameraSettings != null && !Mathf.IsEqualApprox(Fov, _cameraSettings.Fov))
-            Fov = _cameraSettings.Fov;
+        ApplyFieldOfView();
 
         // FEAT-UI-12: re-snap the resting distance when the "Rear view distance" slider moves.
         // Only fires on an actual change, so wheel/pad zoom (which move _zoom, never RearDistance)
@@ -1535,7 +1608,7 @@ public partial class AvatarController : Camera3D
                 {
                     _transitioning = false;
                     _wheelZoomTarget = null;
-                    _zoom = Mathf.Max(CameraZoom.MinZoom, _zoom - 15.0f * (float)delta);
+                    _zoom = Mathf.Max(MinZoom, _zoom - 15.0f * (float)delta);
                 }
                 if (!hasUiFocus && HeldKeys.IsHeld(KeyActionIds.CameraDollyOut))
                 {
@@ -1582,6 +1655,7 @@ public partial class AvatarController : Camera3D
 
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;
+                ApplyNearPlane();
 
                 // BUG-NET-01: tell the sim where the render camera actually is. Its interest list
                 // is centred on CameraCenter; SLNG never set it, so it defaulted to region centre

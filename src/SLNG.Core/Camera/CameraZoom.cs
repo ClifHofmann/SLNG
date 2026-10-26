@@ -13,8 +13,8 @@ namespace SLNG.Core.Camera;
 /// </summary>
 public static class CameraZoom
 {
-    /// <summary>Nearest the camera may sit to its pivot, in metres.</summary>
-    public const float MinZoom = 0.5f;
+    // The nearest the camera may sit to its pivot is not a single number any more: it depends on what the
+    // camera is looking at, see CameraZoomLimits.MinDistance (FEAT-UI-73).
 
     /// <summary>Farthest the camera may sit from its pivot, in metres.</summary>
     public const float MaxZoom = 200f;
@@ -31,9 +31,10 @@ public static class CameraZoom
     /// <summary>
     /// The target distance after <paramref name="notches"/> wheel notches: positive notches move the
     /// camera away (distance grows), negative ones in (it shrinks), each by a factor of 2^(1/4).
-    /// Clamped to [<paramref name="min"/>, <paramref name="max"/>].
+    /// Clamped to [<paramref name="min"/>, <paramref name="max"/>]; <paramref name="min"/> is
+    /// <see cref="CameraZoomLimits.MinDistance"/> for what the camera is looking at.
     /// </summary>
-    public static float WheelStep(float current, int notches, float min = MinZoom, float max = MaxZoom)
+    public static float WheelStep(float current, int notches, float min, float max = MaxZoom)
         => Math.Clamp(current * MathF.Pow(2f, notches * NotchExponent), min, max);
 
     /// <summary>
@@ -59,7 +60,7 @@ public static class CameraZoom
     /// bites the camera is no longer reproduced exactly (the missing part is along Z, which a pan cannot carry).
     /// </summary>
     public static (float PanX, float PanY, float Zoom) AnchorPan(Vector3 cameraPos, Vector3 point,
-        Vector3 basisX, Vector3 basisY, Vector3 basisZ, float minZoom = MinZoom)
+        Vector3 basisX, Vector3 basisY, Vector3 basisZ, float minZoom)
     {
         var rel = cameraPos - point;
         float zoom = MathF.Max(Vector3.Dot(rel, basisZ), minZoom);

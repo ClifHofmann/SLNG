@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-72`
 - **Track:** `ui` (with `core` and `net` parts; phase 2 writes to the SL inventory)
-- **Status:** `⏸️ Pending`
+- **Status:** `🧪 Review` (phase 1 built, v0.27.99-alpha; phase 2 open)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -389,21 +389,21 @@ Options were: (a) silently drop it, (b) copy it into the SL folder automatically
 ## Acceptance Criteria
 
 ### Phase 1 (commits A, B, C): the login dropdown
-- [ ] The login form shows **Start at** directly under the profile dropdown: My last location (default), My home, Favorites (if any),
+- [x] The login form shows **Start at** directly under the profile dropdown: My last location (default), My home, Favorites (if any),
       Region....
 - [ ] Profile/first/last/grid changes reload the dropdown for that profile's saved choice and favorites; an unsaved or unknown
       account shows only Last / Home / Region....
-- [ ] The choice is sent as `start`: `last`, `home`, or `uri:Region&x&y&z` (unit test + wire test).
+- [x] The choice is sent as `start`: `last`, `home`, or `uri:Region&x&y&z` (unit test + wire test).
 - [ ] The choice is remembered per saved profile; unticking "Save Login" erases it together with the favorites cache.
 - [ ] After a session the profile has a favorites cache built from the SL **Favorites folder** (name, region, x, y, z); unresolved
       entries are omitted; an unconfirmed folder read never changes the cache.
 - [ ] The cache is written from the main thread only; the login screen does no network and no asset access.
-- [ ] A remembered favorite that left the cache falls back to My last location (logged only).
-- [ ] Typed region: valid forms accepted, invalid forms keep `Login` disabled with a visible hint; `Enter` in the field logs in.
+- [x] A remembered favorite that left the cache falls back to My last location (logged only).
+- [x] Typed region: valid forms accepted, invalid forms keep `Login` disabled with a visible hint; `Enter` in the field logs in.
 - [ ] If the grid does not honour a Favorite/Region start: toast + notification naming both places, then exactly one teleport attempt;
       for Last/Home only the notice. Never on a first login, never twice per login.
-- [ ] `--selftest` passes, `CheckUserDataUntouched` too (new checks use in-memory `ConfigFile`s only); both locale files carry every key.
-- [ ] `AppVersion` patch-bumped per user-visible commit; German `BENUTZERHANDBUCH.md` updated; ROADMAP row updated.
+- [x] `--selftest` passes, `CheckUserDataUntouched` too (new checks use in-memory `ConfigFile`s only); both locale files carry every key.
+- [x] `AppVersion` patch-bumped per user-visible commit; German `BENUTZERHANDBUCH.md` updated; ROADMAP row updated.
 
 ### Phase 2 (commit D): the bar is the SL Favorites folder
 - [ ] With a Favorites folder, the bar shows exactly its landmark items in `FavoritesOrder` order; an item added in another viewer
@@ -637,14 +637,52 @@ root's children -> `null`; two type-23 folders -> the first.
 3. **Migration:** offered once with a dialog (copy; old list kept; import later from the bar menu), not automatic and not dropped. Confirm.
 
 ## Sub-tasks / Progress
-- [ ] Claim in ROADMAP (`Owner` `claude`, `🚧`), create the branch
-- [ ] Commit A: `SLNG.Core.Login` model, `FavoritesOrder`, `FavoritesFolderResolver` + xUnit tables
-- [ ] Commit B: `LoginResult` fields, `GridSession.Favorites` (read) / `LandmarkTarget`, `LoginStartStore`, `LoginStartPicker`, `LoginStartFavorites`, Boot wiring, i18n,
+- [x] Claim in ROADMAP (`Owner` `claude`, `🚧`), create the branch
+- [x] Commit A: `SLNG.Core.Login` model, `FavoritesOrder`, `FavoritesFolderResolver` + xUnit tables
+- [x] Commit B: `LoginResult` fields, `GridSession.Favorites` (read) / `LandmarkTarget`, `LoginStartStore`, `LoginStartPicker`, `LoginStartFavorites`, Boot wiring, i18n,
       `AppVersion`, handbook, Net tests, selftest checks
-- [ ] Commit C: typed region, landing notice, one teleport attempt
+- [x] Commit C: typed region, landing notice, one teleport attempt
 - [ ] Commit D (phase 2): bar on the SL Favorites folder, write API, `FavoritesService`, migration, dedupe exclusion
 - [ ] `/slng-verify` green, manual rounds on local OpenSim, user check on Aditi/Agni
 - [ ] ROADMAP -> `🧪 Review` / `✅ Done` after the user's in-world confirmation
 
 ## Status
-Spec written 2026-10-17, revised the same day with the user's three decisions. Nothing implemented. Research only: no code was changed.
+Spec written 2026-10-17, revised the same day with the user's three decisions.
+
+**Phase 1 (commits A, B and C) implemented 2026-10-26** as one uncommitted change on `feature/FEAT-UI-72-login-start-location`
+(AppVersion v0.27.99-alpha). Verified by machine: xUnit (Core `LoginStartTests`, `StartChoiceTests`, `LoginFavoriteBookTests`,
+`FavoritesOrderTests`, `FavoritesFolderResolverTests`; Net `LoginStartLocationTests` incl. the loopback wire test,
+`LoginResultStartLocationTests`), `--selftest` (`login start store`, `login start picker`, `login start favorites resolver`,
+`user data untouched`), and screenshots of the real login screen with an isolated `user://` (a saved profile with a remembered
+favorite; a remembered invalid region with the red line and Login disabled). **Not done:** the manual rounds 1-7 against a local
+OpenSim (the favorites cache written during a real session, the landing notice and the one teleport attempt) and the user's check
+on Aditi/Agni. **Phase 2 (commit D) is not started**; nothing in phase 1 writes to the inventory.
+
+### Phase 1: what differs from the plan above (and why)
+- **Where the Boot code lives.** One new partial, `app/scripts/Boot.StartLocation.cs`, holds the picker wiring, the per-login state, the
+  cache writer and the landing check; `Boot.cs` keeps only the hooks (`SetupStartPicker`, `OnLoginPressed`, the login-success block,
+  `_Process`, `QuitGracefully`, `OnProfileSelected`, `ProfileKey(first, last, grid)`).
+- **`LandmarkInventoryItem` already has seven fields** (`Id, ParentId, AssetId, Name, FolderName, FolderPath, CreationDate`); the plan's
+  four-field description was a simplification. The existing record is used as is.
+- **`FolderUpdated` does not fire for a favorite another viewer copies in.** Checked in the 3.1.6 decompile: it is raised only when a folder's
+  contents are fetched, not by `BulkUpdateInventory`. So there is no event trigger. Instead `LoginStartFavorites` re-reads the folder from the
+  local store every 5 minutes (network only for landmarks nobody has resolved yet) and `GridSession.ReadFavoritesFromStore()` (sync, no
+  network, new) feeds the one last flush before logout.
+- **`GridSession.LookupLandmarkTargetAsync`** (new) returns the target *or the reason* it could not be resolved, for the single
+  `[LoginStart] could not resolve '<name>': <reason>` line; `ResolveLandmarkTargetAsync` is the plan's `StartTarget?` wrapper over it.
+- **`LoginStart.JudgeLanding` + `LandingVerdict`** (new, Core, unit-tested) join `HonoursStart`/`NeedsMove` so the whole "was the start honoured"
+  rule is one tested function; Boot only supplies the facts.
+- **`ILoginStartSource`** is the seam between `LoginStartFavorites` and `GridSession`, so the resolver is exercised by a selftest with a scripted
+  source (`CheckLoginStartResolver`). `LoginStartStore.FavoritesPopulated` (new) tells "never written" from "written, empty".
+- **An account on a grid with no Favorites folder** (OpenSim without one) gets `Confirmed = false` every time, so its profile never gets a
+  `start_favorites` key and the dropdown keeps showing "Favorites appear here after your next login". That follows the rule "an unconfirmed
+  read never touches the cache"; phase 2's `Local` mode is where it is handled properly.
+- **The `Region...` entry is enabled from the start** (commit C was folded in). The picker is read before the Login button is disabled; an
+  invalid typed region keeps Login disabled (tooltip: "Not a valid location") instead of starting a login.
+- **The Login button is no longer left disabled after Disconnect.** It was only re-enabled by a *failed* login, so the form that comes back
+  after Disconnect could not log in again. `_loginInFlight` now tracks it and `QuitGracefully(false)` clears it.
+- **`FitLoginPanel`** hides the logo when the panel would not fit the window (Godot's default window is 648 px high; the panel was 636 px, 685
+  with the new row, ~750 with a typed region and its red line) and brings it back when it does.
+- **`SelfTest` "batch potential cost"** now collects the heap before its measured pass: a GC pause that happened to land inside it made the
+  check fail on every run once the login screen had one more row (worst slice 14.7 ms against a 5 ms limit; with `DOTNET_GCgen0size`
+  raised it passes). Unrelated to this feature's logic, but `--selftest` had to stay green.
