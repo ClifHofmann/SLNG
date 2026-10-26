@@ -49,8 +49,8 @@ public static class UiTheme
     /// </remarks>
     public static readonly Color SecondaryText = new(0.72f, 0.72f, 0.72f);
 
-    // The app's accent, matching the top bar's border and version label.
-    private static readonly Color Accent = new(0.24f, 0.66f, 0.94f);
+    /// <summary>The app's accent, matching the top bar's border and version label.</summary>
+    public static readonly Color Accent = new(0.24f, 0.66f, 0.94f);
     private static readonly Color OffOutline = new(0.62f, 0.67f, 0.74f);
     private static readonly Color OffFill = new(1f, 1f, 1f, 0.06f);
     private static readonly Color Mark = new(0.98f, 0.99f, 1f);

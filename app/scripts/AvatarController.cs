@@ -192,6 +192,29 @@ public partial class AvatarController : Camera3D
         _zoom = Mathf.Clamp(_zoom, MinZoom, CameraZoom.MaxZoom);
     }
 
+    /// <summary>FEAT-UI-74: the distance from the camera to the point it orbits, in metres - what the Camera
+    /// Controls zoom buttons scale their speed by.</summary>
+    public float ZoomDistance => _zoom;
+
+    /// <summary>FEAT-UI-74: <see cref="ZoomDistance"/> as the Camera Controls slider shows it, 1 = as close as the
+    /// current focus allows (<see cref="MinZoom"/>), 0 = <see cref="CameraZoom.MaxZoom"/>; logarithmic (see
+    /// <see cref="CameraZoomFraction"/> for why it is not the viewer's linear one). Setting it is a direct zoom like <see cref="ZoomCamera"/>: it ends a glide and a
+    /// pending wheel ease, so the slider is not fought.</summary>
+    public float ZoomFraction
+    {
+        get => CameraZoomFraction.ToFraction(_zoom, MinZoom, CameraZoom.MaxZoom);
+        set
+        {
+            _transitioning = false;
+            _wheelZoomTarget = null;
+            _zoom = CameraZoomFraction.ToDistance(value, MinZoom, CameraZoom.MaxZoom);
+        }
+    }
+
+    /// <summary>FEAT-UI-74: puts the pan-pad framing offset back to zero (the pan pad's centre dot, the viewer's
+    /// <c>resetCameraPan</c>), leaving orbit and zoom as they are. <see cref="ResetCamera"/> clears it too.</summary>
+    public void ResetPan() => _panOffset = Vector3.Zero;
+
     // FEAT-ANIM-07: Sustained hold mode & position/rotation lock for PoseStand
     private AvatarHoldMode _holdMode = AvatarHoldMode.None;
     private System.Numerics.Vector3? _lockedPosition;

@@ -433,7 +433,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.100-alpha";
+    public const string AppVersion = "v0.27.101-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1940,7 +1940,7 @@ public partial class Boot : Control
                 () => ActivateLauncher(_chatWindow, () => _chatWindow.Visible = !_chatWindow.Visible),
                 () => _chatWindow.Visible,
                 () => _chatWindow?.TotalUnread ?? 0),
-            new("camera", "Camera Controls", "photo_camera",
+            new("camera", "Camera Controls", "visibility",
                 () => ActivateLauncher(cameraHud, cameraHud.Toggle),
                 () => cameraHud.Visible),
             new("inventory", "Inventory", "inventory_2",

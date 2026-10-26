@@ -321,6 +321,7 @@ public static partial class SelfTest
         results.Add(CheckPerAvatarDataIsolation());
         results.AddRange(CheckKeyBindings(tree)); // FEAT-UI-43
         results.Add(CheckCameraFocusKinds()); // FEAT-UI-73
+        results.Add(CheckCameraControls(tree)); // FEAT-UI-74
         // Last, so it sees everything the run did.
         results.Add(CheckUserDataUntouched());
 
