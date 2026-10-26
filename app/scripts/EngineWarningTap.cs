@@ -61,7 +61,7 @@ internal sealed partial class EngineWarningTap : Godot.Logger
             string during = MainThreadWorkQueue.CurrentLabel ?? "no work-queue item";
             string thread = OS.GetThreadCallerId() == _mainThread ? "main thread" : "worker thread";
 
-            string key = $"{kind}: {text} @ {function} ({ShortFile(file)}:{line}) | during: {during} | {thread}{OurFrame(scriptBacktraces)}";
+            string key = $"{kind}: {text} @ {function} ({ShortFile(file)}:{line}) | during: {during} | {thread}{OurFrame(scriptBacktraces)}{KnownEngineIssue(function, text)}";
             _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
             ulong frame = Engine.GetProcessFrames();
             _frames[frame] = 0;
@@ -124,6 +124,19 @@ internal sealed partial class EngineWarningTap : Godot.Logger
     {
         int slash = Math.Max(file.LastIndexOf('/'), file.LastIndexOf('\\'));
         return slash < 0 ? file : file[(slash + 1)..];
+    }
+
+    /// <summary>A note for engine errors already traced to Godot itself, so the summary does not send anyone
+    /// looking for them in our code again.</summary>
+    private static string KnownEngineIssue(string function, string text)
+    {
+        // Godot 4.7: the text server hands its glyph-cache Image to ImageTexture.update and keeps
+        // writing new glyphs into it while the separate render thread has not read it yet. Reproduced
+        // in an empty project (Label3D only): ~30 per 900 frames on "separate", none on "safe".
+        // The page update is skipped once; the next glyph re-uploads it.
+        if (function == "_texture_2d_update" && text.Contains("p_image->is_empty()", StringComparison.Ordinal))
+            return " | known Godot bug (font glyph cache vs separate render thread), harmless";
+        return "";
     }
 
     /// <summary>The first frame of the client's own C# code on the stack, if the engine gave a C# stack at

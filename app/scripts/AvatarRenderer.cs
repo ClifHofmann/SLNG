@@ -2269,7 +2269,10 @@ public partial class AvatarRenderer : Node3D
         float dist = 20f;
         if (camera != null && GodotObject.IsInstanceValid(camera))
         {
-            dist = Math.Max(0.5f, camera.GlobalPosition.DistanceTo(visual.Root != null && GodotObject.IsInstanceValid(visual.Root) ? visual.Root.GlobalPosition : visual.GodotPos));
+            // BUG-AVATAR-14: CreateVisual asks before Root is added to the tree, where
+            // GlobalPosition logs an engine error and returns the origin anyway.
+            bool rootPlaced = visual.Root != null && GodotObject.IsInstanceValid(visual.Root) && visual.Root.IsInsideTree();
+            dist = Math.Max(0.5f, camera.GlobalPosition.DistanceTo(rootPlaced ? visual.Root!.GlobalPosition : visual.GodotPos));
         }
         else
         {
