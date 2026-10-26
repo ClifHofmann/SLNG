@@ -9,7 +9,20 @@
       "save_login": "Save Login",
       "password_saved": "saved — type to change",
       "grid_sl": "Second Life (Agni)",
-      "grid_sl_beta": "Second Life Beta (Aditi)"
+      "grid_sl_beta": "Second Life Beta (Aditi)",
+      "start_location": "Start at",
+      "start_last": "My last location",
+      "start_home": "My home",
+      "start_favorites_heading": "Favorites",
+      "start_favorites_pending": "Favorites appear here after your next login",
+      "start_favorite_tooltip": "{0} - {1} ({2}, {3}, {4})",
+      "start_region": "Region...",
+      "start_region_placeholder": "Region, Region/x/y/z or SLURL",
+      "start_region_invalid": "Not a valid location",
+      "start_fallback_place": "Could not start at {0}. The grid placed you in {1} instead.",
+      "start_fallback_home": "Your home is not available. The grid placed you in {0} instead.",
+      "start_fallback_last": "Your last location is not available. The grid placed you in {0} instead.",
+      "start_fallback_retry": "Trying once to teleport you to {0}."
     },
     "menu": {
       "app": "App",

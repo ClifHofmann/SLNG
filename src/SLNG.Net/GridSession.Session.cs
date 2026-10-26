@@ -826,7 +826,9 @@ public sealed partial class GridSession
             }
 
             return response.Success
-                ? LoginResult.Ok(response.AgentID.ToString(), response.SessionID.ToString(), response.Message, response.MfaHash)
+                ? LoginResult.Ok(response.AgentID.ToString(), response.SessionID.ToString(), response.Message, response.MfaHash,
+                    // FEAT-UI-72: where the grid says it started the agent, for the "your start was not honoured" notice.
+                    response.StartLocation, response.FirstLogin)
                 : LoginResult.Fail(response.Reason, response.Message, response.MfaHash);
         }
         catch (Exception ex)

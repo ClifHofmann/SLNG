@@ -6,6 +6,7 @@ using SLNG.App;
 using SLNG.Core;
 using SLNG.Core.Avatars;
 using SLNG.Core.Components;
+using SLNG.Core.Login;
 using SLNG.Net;
 
 public partial class Boot : Control
@@ -432,7 +433,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.98-alpha";
+    public const string AppVersion = "v0.27.99-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -666,6 +667,9 @@ public partial class Boot : Control
         _profileDropdown.ItemSelected += OnProfileSelected;
         GetTree().Root.SizeChanged += OnWindowSizeChanged;
 
+        // FEAT-UI-72: the "Start at" row, before LoadProfiles -- selecting the remembered profile there fills it.
+        SetupStartPicker();
+
         // Skipped under --selftest: LoadProfiles reads logins.cfg and writes it back in three
         // places (the password migration, the window-geometry restore, and OnProfileSelected
         // recording last_profile). None of it is needed to check shaders, locales and the
@@ -778,7 +782,12 @@ public partial class Boot : Control
 
     /// <summary>The <c>logins.cfg</c> section a login is saved under.</summary>
     private static string ProfileKey(LoginCredentials creds)
-        => $"{creds.FirstName} {creds.LastName} @ {creds.GridLoginUri}";
+        => ProfileKey(creds.FirstName, creds.LastName, creds.GridLoginUri);
+
+    /// <summary>The same key from its parts, so the login screen can find the saved profile a form names (FEAT-UI-72) with
+    /// exactly the spelling a login saves it under.</summary>
+    private static string ProfileKey(string firstName, string lastName, string gridLoginUri)
+        => $"{firstName} {lastName} @ {gridLoginUri}";
 
     /// <summary>FEAT-SL-02: the grid refused the remembered MFA token, so it is dropped for good -- in
     /// memory and in <c>logins.cfg</c>. The prompt that follows (and, if the person goes on, the new
@@ -2987,6 +2996,10 @@ public partial class Boot : Control
         while (_pendingTeleportProgress.TryDequeue(out var tp)) ApplyTeleportProgress(tp);
         if (_teleportCameraResetPending) TryApplyTeleportCameraReset();
 
+        // FEAT-UI-72: favorites the resolver has worked out for the login screen, and the "did the grid start me where I
+        // asked" check. After the teleport drain above, so a teleport that began this frame is already known to it.
+        TickStartLocation();
+
         // FEAT-ENV-02: Use the server's synced time if we have received a SimulatorViewerTimeMessage,
         // otherwise fall back to local UtcNow.
         var simTime = _session?.SimUnixTime > 0
@@ -3052,6 +3065,9 @@ public partial class Boot : Control
                 // open (BUG-UI-07) -- doing it here, not in OnLoginPressed, is what stops the
                 // communication window appearing over the still-visible loading screen.
                 RestoreOpenWindows();
+
+                // FEAT-UI-72: the region has loaded; now the login screen's favorites list may be refreshed.
+                PokeLoginStartFavorites();
 
                 // FEAT-AVATAR-03: re-apply a persisted hover height to the local render now that
                 // the self avatar entity exists -- optimistic (see ApplySelfHoverHeight), not
@@ -3693,6 +3709,10 @@ public partial class Boot : Control
 
         SyncGridDropdownToUri(_gridInput.Text);
 
+        // FEAT-UI-72: this profile's remembered start and favorites. Reads logins.cfg only; the write below is the one that
+        // was always here.
+        RefreshStartPicker(force: true, profileSection: profile);
+
         _loginsConfig.SetValue("Settings", "last_profile", profile);
         _loginsConfig.Save("user://logins.cfg");
     }
@@ -3913,6 +3933,7 @@ public partial class Boot : Control
         {
             case SLNG.Core.TeleportStage.Started:
                 _teleportActive = true;
+                _teleportSeenSinceLogin = true; // FEAT-UI-72: the person has moved on; the start-place retry is not made
                 _teleportOverlay.ShowProgress(SLNG.App.UI.L10n.Tr("ui.teleport.requesting"));
                 break;
             case SLNG.Core.TeleportStage.Progress:
@@ -3965,7 +3986,14 @@ public partial class Boot : Control
 
     private async void OnLoginPressed()
     {
-        _loginButton.Disabled = true;
+        // FEAT-UI-72: the start choice is read here, synchronously, before the button is disabled and before any await -- while the
+        // form is still what the person filled in. A typed region that is not a location is said so and the login does not start;
+        // it must not quietly log in at "last".
+        var start = BeginStartRequest();
+        if (start == null) return;
+
+        _loginInFlight = true;
+        ApplyLoginButtonState();
 
         var firstName = _firstInput.Text.Trim();
         var lastName = _lastInput.Text.Trim();
@@ -4009,6 +4037,8 @@ public partial class Boot : Control
         // as a side effect of being called here; since BUG-INV-12 it runs after the login, and a
         // timer left armed by a session that ended early would otherwise pick up the new one.
         CancelInventoryPrefetch();
+        // FEAT-UI-72: the previous session's favorites resolver belongs to the session being replaced.
+        DisposeLoginStartFavorites();
         if (_session != null)
         {
             _session.Dispose();
@@ -4338,6 +4368,9 @@ public partial class Boot : Control
             // 0.7.x -- anyone reading a sim log saw a client seven minor versions stale, which is
             // exactly the sort of thing that gets reported as "your viewer is broken".
             Version = AppVersion.TrimStart('v'),
+
+            // FEAT-UI-72: last | home | uri:Region&x&y&z, built and checked in SLNG.Core -- never free text.
+            StartLocation = start.LoginString,
         };
 
         // Step 0 ("Initializing session") is genuinely done now -- everything above this line
@@ -4407,6 +4440,11 @@ public partial class Boot : Control
                 _storedPassHash = "";
             }
 
+            // FEAT-UI-72: the "Start at" choice follows the same "Save Login" switch as the password -- kept with the profile
+            // when ticked, erased together with the favorites cache when not -- and the grid's answer about where it started
+            // us is noted for the landing check.
+            OnStartLoginSucceeded(result, profileName, _saveLoginCheck.ButtonPressed);
+
             // FEAT-SL-02: what to do with the grid's "remember this computer" token. Stored beside the
             // password hash, under the same "Save Login" switch, and dropped whenever the grid
             // refused it or the person did not ask for it to be kept -- MfaLogin.DecideStorage.
@@ -4428,6 +4466,10 @@ public partial class Boot : Control
 
             _loginsConfig.SetValue("Settings", "last_profile", profileName);
             _loginsConfig.Save("user://logins.cfg");
+
+            // FEAT-UI-72: keep this profile's favorites cache current while the session runs (if it is being saved).
+            // Nothing is fetched until the loading screen clears.
+            BeginLoginStartFavorites();
 
             LogMessage($"[color=#2dd4bf]Login SUCCESS[/color] - AgentID: {result.AgentId}");
             if (!string.IsNullOrEmpty(result.Message))
@@ -4615,7 +4657,8 @@ public partial class Boot : Control
             GetNode<Control>("%LoadingScreen").Visible = false;
             GetNode<Control>("%LoginScreen").Visible = true;
             _vboxContainer.Visible = true;   // back with the login screen, where it is the point
-            _loginButton.Disabled = false;
+            _loginInFlight = false;
+            ApplyLoginButtonState();
         }
     }
 
@@ -5911,6 +5954,10 @@ public partial class Boot : Control
             _session.SaveInventoryCache();
             _session.SaveDisplayNameCache();
 
+            // FEAT-UI-72: one last write of the login screen's favorites from the local store (no network, nothing awaited), so
+            // a favorite added or renamed during the session is covered, then the resolver stops.
+            FlushAndStopLoginStartFavorites();
+
             // Hide all UI components for a clean screenshot
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
             if (loginScreen != null) loginScreen.Visible = false;
@@ -6021,6 +6068,10 @@ public partial class Boot : Control
         }
         else
         {
+            // FEAT-UI-72: a session the grid ended skipped the flush above; the resolver still has to stop.
+            DisposeLoginStartFavorites();
+            ResetStartLanding();
+
             if (_session != null)
             {
                 LogMessage("Disconnecting...");
@@ -6036,6 +6087,14 @@ public partial class Boot : Control
 
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");
             if (loginScreen != null) loginScreen.Visible = true;
+
+            // FEAT-UI-72: the login form is back. The Login button was left disabled by the login that just ended, which made a
+            // second login after Disconnect impossible; the "Start at" row shows what the session just wrote for this profile
+            // and the current language.
+            _loginInFlight = false;
+            _startPicker.RefreshTexts();
+            RefreshStartPicker(force: true);
+            FitLoginPanel();
 
             var bg = GetNodeOrNull<TextureRect>("%Background");
             if (bg != null)

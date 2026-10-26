@@ -51,6 +51,16 @@ public sealed record LoginResult
     /// A SECRET -- <see cref="PrintMembers"/> keeps it out of the record's text form.</summary>
     public string? MfaHash { get; init; }
 
+    /// <summary>FEAT-UI-72: the grid's <c>start_location</c> from the login reply -- where it says it started the
+    /// agent: <c>"last"</c>, <c>"home"</c> or <c>"url"</c> (a requested place), or something else such as
+    /// <c>"safe"</c> when it could not honour the request. Null when the grid sent none (OpenSim may not) or on a
+    /// failure. The reference viewer compares it with what it asked for (<c>llstartup.cpp:2340-2392</c>).</summary>
+    public string? StartLocation { get; init; }
+
+    /// <summary>FEAT-UI-72: the reply's <c>first_login</c> -- this is the account's first ever login. The reference
+    /// viewer stays quiet about a start that was not honoured on a first login (<c>llstartup.cpp:2348</c>).</summary>
+    public bool FirstLogin { get; init; }
+
     /// <summary>Grid <c>reason</c> value for "must accept the Terms of Service".</summary>
     public const string TosErrorKey = "tos";
 
@@ -58,8 +68,18 @@ public sealed record LoginResult
     public const string CriticalErrorKey = "critical";
 
     /// <summary>Creates a successful result.</summary>
-    public static LoginResult Ok(string agentId, string sessionId, string? message, string? mfaHash = null) =>
-        new() { Success = true, AgentId = agentId, SessionId = sessionId, Message = message, MfaHash = EmptyToNull(mfaHash) };
+    public static LoginResult Ok(string agentId, string sessionId, string? message, string? mfaHash = null,
+        string? startLocation = null, bool firstLogin = false) =>
+        new()
+        {
+            Success = true,
+            AgentId = agentId,
+            SessionId = sessionId,
+            Message = message,
+            MfaHash = EmptyToNull(mfaHash),
+            StartLocation = EmptyToNull(startLocation),
+            FirstLogin = firstLogin,
+        };
 
     /// <summary>Creates a failed result.</summary>
     public static LoginResult Fail(string? errorKey, string? message, string? mfaHash = null) =>
@@ -76,6 +96,8 @@ public sealed record LoginResult
             .Append(", SessionId = ").Append(SessionId)
             .Append(", Message = ").Append(Message)
             .Append(", ErrorKey = ").Append(ErrorKey)
+            .Append(", StartLocation = ").Append(StartLocation)
+            .Append(", FirstLogin = ").Append(FirstLogin)
             .Append(", MfaHash = ").Append(MfaHash is null ? "[none]" : "[set]");
         return true;
     }
