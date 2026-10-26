@@ -312,6 +312,9 @@ public sealed class EnvironmentDriver
             var tex = await gpuCache.GetOrUploadTextureAsync(wantedId, assetService, generateMipmaps: true).ConfigureAwait(false);
             MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Refine, () =>
             {
+                // BUG-PERF-21: evicted and disposed while this item waited behind a deep queue -- the
+                // same as not fetched, so the retry below picks it up again.
+                if (tex != null && !GodotObject.IsInstanceValid(tex)) tex = null;
                 if (tex != null && !slot.AppliedLogged)
                 {
                     slot.AppliedLogged = true;
