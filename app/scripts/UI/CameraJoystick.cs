@@ -17,7 +17,7 @@ namespace SLNG.App.UI;
 /// never depends on the frame rate. A press on the centre dot raises <see cref="ResetRequested"/> and moves nothing
 /// by itself.</para>
 ///
-/// <para>All distances are in the control's own pixels and scale with its size against the 100 px reference
+/// <para>All distances are in the control's own pixels and scale with its size against the 80 px reference
 /// (<see cref="CoreJoystick.ReferenceSize"/>), so a pad drawn larger keeps the same feel.</para>
 /// </summary>
 public partial class CameraJoystick : Control

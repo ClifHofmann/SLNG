@@ -124,9 +124,6 @@
     "camera": {
       "title": "Camera",
       "waiting": "Waiting for the camera …",
-      "view_front": "Front",
-      "view_side": "Side",
-      "view_rear": "Rear",
       "view_front_tooltip": "Camera in front of the avatar, looking back at them",
       "view_side_tooltip": "Camera beside the avatar",
       "view_rear_tooltip": "Camera back behind the avatar (the default view)",
@@ -136,7 +133,6 @@
       "zoom_in_tooltip": "Zoom in — hold to keep zooming",
       "zoom_out_tooltip": "Zoom out — hold to keep zooming",
       "zoom_slider_tooltip": "Camera distance — drag up to get closer, down to move away",
-      "show_focus_marker": "Show Look-At / focus point",
       "show_focus_marker_tooltip": "Shows the camera's Look-At target in 3D space. Remains anchored to the subject when moving or panning the camera."
     },
     "snapshot": {

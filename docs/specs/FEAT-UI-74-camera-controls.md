@@ -47,11 +47,16 @@ slider follows the camera every frame while not dragged; dragging it sets the di
 
 ## Acceptance Criteria
 
-- [ ] Layout: preset column (Front, Side, Rear, Reset) | round orbit trackball | zoom column
-      (+, vertical slider, -) | square pan pad; "Show focus point" checkbox below. No 10 px
-      captions; each control has a tooltip that says what it does and that the centre resets.
-- [ ] Opens at content scale 1.0 with targets of at least 24 px; the trackball and pan pad are
-      ~100 px. A saved size smaller than the new minimum is not restored smaller.
+- [ ] Layout (compact, v0.28.4-alpha, after "too chunky" in-world feedback; the first cut had a
+      preset column, 100 px pads and 28 px buttons, about 365 px wide): one thin row of 20 px icon
+      buttons (Front, Side, Rear, Reset, and the focus-point toggle at the right end), below it
+      the round orbit trackball | slim zoom column (18 px: +, vertical slider, -) | square pan
+      pad. No captions; each control has a tooltip that says what it does and that the centre
+      resets.
+- [ ] Opens at content scale 1.0 (pads 80 px, the reference viewer's size; icon buttons 18-20 px)
+      and 236 x 184 px in all, frame and title bar included. Scales with the window between 0.8
+      and 2.0. Saved under `camera_controls_v2`, so a size saved from the first cut is not
+      restored. A saved size smaller than the new minimum is not restored smaller.
 - [ ] Trackball and pan pad behave as above (quadrant press, drag while held, slop, ramp,
       centre reset, highlight, capture).
 - [ ] Rates per second as above, times the Preferences multipliers; identical at 30 and 144 fps.
