@@ -85,7 +85,7 @@ public partial class SelfTest
 
             float scissorThreshold = (float)matMask.GetShaderParameter(PrimShaderFamily.AlphaScissorThreshold);
             if (matMask.Shader != PrimShaderFamily.Scissor || MathF.Abs(scissorThreshold - 0.4f) > Tol)
-                return new Check(Name, false, $"mask test failed: shader={matMask.Shader}, cutoff={scissorThreshold}");
+                return new Check(Name, false, $"mask test failed: shader={matMask.Shader} path={matMask.Shader?.ResourcePath} id={matMask.Shader?.GetInstanceId()} scissor={PrimShaderFamily.Scissor} spath={PrimShaderFamily.Scissor.ResourcePath} sid={PrimShaderFamily.Scissor.GetInstanceId()} opaque={PrimShaderFamily.Opaque} ref={ReferenceEquals(matMask.Shader, PrimShaderFamily.Scissor)} cutoff={scissorThreshold}");
 
             // 4. BLEND: shader is Blend. Double-sided: the shader is double-sided twin
             var ovBlend2Sided = new GltfMaterialOverride
