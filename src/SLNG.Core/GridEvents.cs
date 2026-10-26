@@ -103,8 +103,10 @@ public record FriendStatusEvent(Guid FriendId, bool IsOnline);
 /// <summary>A 1:1 instant message from another avatar (LibreMetaverse's
 /// <c>InstantMessageDialog.MessageFromAgent</c> only -- friendship offers, teleport requests,
 /// group notices etc. ride the same wire event but aren't modeled here yet). Not world-state, so
-/// intentionally not an <see cref="IWorldEvent"/>.</summary>
-public record InstantMessageEvent(Guid FromAgentId, string FromAgentName, string Message, Guid SessionId);
+/// intentionally not an <see cref="IWorldEvent"/>. <paramref name="SentUtc"/> is set only for a message the
+/// grid stored while we were offline (BUG-NET-35): it says when the sender sent it. A live message is null.</summary>
+public record InstantMessageEvent(Guid FromAgentId, string FromAgentName, string Message, Guid SessionId,
+    DateTime? SentUtc = null);
 
 /// <summary>The agent's group membership list arrived (or was refreshed). Identity/social state,
 /// not world simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>

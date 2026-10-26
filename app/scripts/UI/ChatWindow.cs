@@ -518,11 +518,14 @@ public partial class ChatWindow : SLNGWindow
     /// <summary>Appends an incoming 1:1 IM, opening a new closeable tab keyed by the sender's
     /// agent id if this is the first message from them this session. Called by Boot on
     /// GridSession.InstantMessageReceived, marshalled to the main thread first.</summary>
-    public void AppendIncomingInstantMessage(Guid fromAgentId, string fromAgentName, string message)
+    public void AppendIncomingInstantMessage(Guid fromAgentId, string fromAgentName, string message,
+        DateTime? sentUtc = null)
     {
         var tab = GetOrCreateImTab(fromAgentId, fromAgentName);
         SetPeerTyping(tab, false); // a message is the end of typing, whether or not the stop arrived
-        AppendMessageToTab(tab, fromAgentName, message, fromAgentId);
+        // sentUtc is set for a message the grid kept while we were offline: shown and logged with the time
+        // the sender sent it, not the time we logged in (BUG-NET-35).
+        AppendMessageToTab(tab, fromAgentName, message, fromAgentId, sentUtc?.ToLocalTime());
     }
 
     /// <summary>Switches to the Chat tab and opens (or focuses) an IM conversation with one
@@ -757,14 +760,15 @@ public partial class ChatWindow : SLNGWindow
     private const string GridNotOnlineMessage = "User not online - message will be stored and delivered later.";
     private const string GridNotOnlineInventory = "User not online - inventory has been saved.";
 
-    private void AppendMessageToTab(ChatTab tab, string sender, string message, Guid senderAgentId = default)
+    private void AppendMessageToTab(ChatTab tab, string sender, string message, Guid senderAgentId = default,
+        DateTime? at = null)
     {
         if (message == GridNotOnlineMessage || message == GridNotOnlineInventory) tab.OfflineNoticeShown = true;
         if (!string.IsNullOrWhiteSpace(sender) && sender != "You" && sender != _session?.AgentName)
         {
             _recentSpeakers.Add(sender);
         }
-        var now = DateTime.Now;
+        var now = at ?? DateTime.Now;
         AppendLineToTab(tab, FormatChatLine(now, sender, message, senderAgentId));
         _ = _logger.AppendAsync(tab.LogKind, tab.LogName, sender, message, now);
         TrackRecent(tab, now);
@@ -1062,7 +1066,9 @@ public partial class ChatWindow : SLNGWindow
     {
         bool isOwn = !string.IsNullOrEmpty(_session?.AgentName) && sender == _session!.AgentName;
         string senderColor = isOwn ? "#79B8F0" : "#E0E0E0";
-        string stamp = $"[color=#888888][lb]{timestamp:HH:mm}][/color]";
+        // A line from an earlier day (a message stored while we were offline) says which day.
+        string time = timestamp.Date == DateTime.Today ? $"{timestamp:HH:mm}" : $"{timestamp:yyyy-MM-dd HH:mm}";
+        string stamp = $"[color=#888888][lb]{time}][/color]";
 
         // The Display Name when there is one. Only what is shown: the log line (AppendMessageToTab) and
         // the own-message test above keep the legacy name the network gave us.

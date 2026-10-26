@@ -874,8 +874,12 @@ public sealed partial class GridSession
         {
             if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
 
+            // A message the grid kept for us while we were offline carries when it was sent (BUG-NET-35).
+            DateTime? sentUtc = e.IM.Offline == InstantMessageOnline.Offline
+                ? OfflineMessages.SentUtc(e.IM.Timestamp)
+                : null;
             InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
-                imFrom, e.IM.FromAgentName, e.IM.Message, sessionId));
+                imFrom, e.IM.FromAgentName, e.IM.Message, sessionId, sentUtc));
             return;
         }
 

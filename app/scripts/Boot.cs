@@ -433,7 +433,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.4-alpha";
+    public const string AppVersion = "v0.28.5-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -4715,12 +4715,17 @@ public partial class Boot : Control
     {
         // Same marshalling reason as OnChatMessage -- fires on a LibreMetaverse network thread.
         // Guid isn't a Variant-safe CallDeferred argument, so it travels as a string.
-        CallDeferred(nameof(AppendInstantMessage), e.FromAgentId.ToString(), e.FromAgentName, e.Message);
+        // The time a stored (offline) message was sent travels as UTC ticks, 0 for a live one.
+        CallDeferred(nameof(AppendInstantMessage), e.FromAgentId.ToString(), e.FromAgentName, e.Message,
+            e.SentUtc?.Ticks ?? 0L);
     }
 
-    private void AppendInstantMessage(string fromAgentId, string fromAgentName, string message)
+    private void AppendInstantMessage(string fromAgentId, string fromAgentName, string message, long sentUtcTicks)
     {
-        _chatWindow.AppendIncomingInstantMessage(System.Guid.Parse(fromAgentId), fromAgentName, message);
+        System.DateTime? sentUtc = sentUtcTicks > 0
+            ? new System.DateTime(sentUtcTicks, System.DateTimeKind.Utc)
+            : null;
+        _chatWindow.AppendIncomingInstantMessage(System.Guid.Parse(fromAgentId), fromAgentName, message, sentUtc);
     }
 
     private void OnGroupChatMessageReceived(object? sender, SLNG.Core.GroupChatMessageEvent e)
