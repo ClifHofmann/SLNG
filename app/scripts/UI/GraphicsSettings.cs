@@ -70,9 +70,14 @@ public sealed class GraphicsSettings
     /// default; off means the options below apply exactly as set, whatever the card.</summary>
     public bool LowVramCaps { get; private set; } = true;
 
-    /// <summary>FEAT-PERF-23: merge other avatars' worn meshes (<see cref="RenderConfig.OutfitMerge"/>). Off by
-    /// default until the in-world A/B. Not part of the presets.</summary>
-    public bool OutfitMerge { get; private set; }
+    /// <summary>FEAT-PERF-23: merge other avatars' worn meshes (<see cref="RenderConfig.OutfitMerge"/>). On by
+    /// default since v0.28.1 (in-world A/B: 51 avatars, 22-26 -> 28-33 fps). Not part of the presets.</summary>
+    public bool OutfitMerge { get; private set; } = true;
+
+    /// <summary>The key was <c>outfit_merge</c> while the merge was off by default. <see cref="Save"/> writes
+    /// every value, so nearly every config holds <c>outfit_merge=false</c> without anyone having chosen it;
+    /// a new key lets the new default reach them.</summary>
+    private const string OutfitMergeKey = "outfit_merge_v2";
 
     /// <summary>FEAT-PERF-25: the <see cref="LowVramPolicy"/> tier Boot chose from the OS budget. Not
     /// saved: it is a property of the card and the session, not a preference.</summary>
@@ -187,7 +192,7 @@ public sealed class GraphicsSettings
         TextureMemoryAuto = (bool)cfg.GetValue(Section, "texture_memory_auto", TextureMemoryAuto);
         CompressTextures = (bool)cfg.GetValue(Section, "compress_textures", CompressTextures);
         LowVramCaps = (bool)cfg.GetValue(Section, "low_vram_caps", LowVramCaps);
-        OutfitMerge = (bool)cfg.GetValue(Section, "outfit_merge", OutfitMerge);
+        OutfitMerge = (bool)cfg.GetValue(Section, OutfitMergeKey, OutfitMerge);
         PostFxSsao = (bool)cfg.GetValue(Section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(Section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(Section, "post_fx_glow", PostFxGlow);
@@ -221,7 +226,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(Section, "texture_memory_auto", TextureMemoryAuto);
         cfg.SetValue(Section, "compress_textures", CompressTextures);
         cfg.SetValue(Section, "low_vram_caps", LowVramCaps);
-        cfg.SetValue(Section, "outfit_merge", OutfitMerge);
+        cfg.SetValue(Section, OutfitMergeKey, OutfitMerge);
         cfg.SetValue(Section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(Section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(Section, "post_fx_glow", PostFxGlow);
@@ -482,7 +487,7 @@ public sealed class GraphicsSettings
         cfg.SetValue(section, "texture_memory_auto", TextureMemoryAuto);
         cfg.SetValue(section, "compress_textures", CompressTextures);
         cfg.SetValue(section, "low_vram_caps", LowVramCaps);
-        cfg.SetValue(section, "outfit_merge", OutfitMerge);
+        cfg.SetValue(section, OutfitMergeKey, OutfitMerge);
         cfg.SetValue(section, "post_fx_ssao", PostFxSsao);
         cfg.SetValue(section, "post_fx_ssil", PostFxSsil);
         cfg.SetValue(section, "post_fx_glow", PostFxGlow);
@@ -527,7 +532,7 @@ public sealed class GraphicsSettings
         TextureMemoryAuto = (bool)cfg.GetValue(section, "texture_memory_auto", TextureMemoryAuto);
         CompressTextures = (bool)cfg.GetValue(section, "compress_textures", CompressTextures);
         LowVramCaps = (bool)cfg.GetValue(section, "low_vram_caps", LowVramCaps);
-        OutfitMerge = (bool)cfg.GetValue(section, "outfit_merge", OutfitMerge);
+        OutfitMerge = (bool)cfg.GetValue(section, OutfitMergeKey, OutfitMerge);
         PostFxSsao = (bool)cfg.GetValue(section, "post_fx_ssao", PostFxSsao);
         PostFxSsil = (bool)cfg.GetValue(section, "post_fx_ssil", PostFxSsil);
         PostFxGlow = (bool)cfg.GetValue(section, "post_fx_glow", PostFxGlow);

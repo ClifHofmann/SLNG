@@ -590,6 +590,23 @@ separate, V-Sync off), 3 x 30 s per state once loading has settled:
 - Conclusion: the gate held in-world, about +25 % fps from the merge (draws -20 %, skinned meshes drawn -75 %,
   `renderCpuMs` ~-28 %). The Sirens Beach A/B above (3 x 30 s per state) is still open.
 
+**In-world A/B, second run** (2026-10-26, v0.28.0-alpha, a crowded Second Life region, no `--diag`, render thread
+separate, switched at runtime; `slng-perf.log` 17:24-17:28):
+
+| State | Window | Avatars | fps | `renderCpuMs` | draws | `drawnSkinnedMeshes` |
+|---|---|---|---|---|---|---|
+| Merge off | 17:24:37-17:25:27 | 27-29 | 24-27 | ~22.5-24.8 | ~22.9k | 1,693-1,775 |
+| Merge on | 17:25:37-17:25:52 | 28 | 30-32 | ~18.5-20.0 | ~20.7k | 612 |
+| Merge on (moved, same view for both rows below) | 17:27:23-17:27:43 | 51 | 28-33 | ~17.0-17.8 | ~18.8k | ~550 |
+| Merge off | 17:27:53-17:28:03 | 51 | 26 | ~20.6-23.8 | ~22.1k | 2,149 |
+
+- About +20-25 % fps again; the user zoomed over the merged avatars and saw no difference.
+- After the move (17:26:08, 28 -> 57 avatars) merging resumed only once the new avatars had finished loading,
+  about 40 s later, as designed.
+- **Decision: on by default from v0.28.1-alpha** for remote avatars, ahead of Phase 2 (self avatar). The settings key
+  changed from `outfit_merge` to `outfit_merge_v2`: `GraphicsSettings.Save` writes every value, so almost every
+  existing config held the old default `false` without anyone having chosen it.
+
 ## Risks
 
 1. **Materials dedupe less than hoped.** Each garment has its own textures, so draws barely drop.
@@ -642,7 +659,7 @@ separate, V-Sync off), 3 x 30 s per state once loading has settled:
   - texture refs are unchanged after merge and detach.
 - [x] xUnit `OutfitMergerTests`: slot dedupe and remap, slot-0 fallback kept, material grouping,
       stable order, Blend kept apart, per-item ranges, an empty or all-hidden item.
-- [ ] In-world A/B result (draws, `renderCpuMs`, `postFlushMs`, fps) recorded here and in `docs/perf/`.
+- [x] In-world A/B result (draws, `renderCpuMs`, `postFlushMs`, fps) recorded here (Phase 1: as built).
 
 ## Technical Specs & Affected Files
 
@@ -680,6 +697,6 @@ separate, V-Sync off), 3 x 30 s per state once loading has settled:
 - [x] Phase 1: readiness, buckets, merge job, commit and swap, outfit skin (v0.27.74-alpha)
 - [x] Phase 1: `_riggedAttachments` readers, BoM by entity, bake arrival in place, re-bind (v0.27.74-alpha)
 - [x] Phase 1: setting, `[AvatarCost]` fields, self test (v0.27.74-alpha); Phase 0 probe 3 retired
-- [ ] Phase 1: in-world A/B
+- [x] Phase 1: in-world A/B (2026-10-18 and 2026-10-26); on by default (v0.28.1-alpha)
 - [ ] Phase 2: self avatar, packed buckets, Blend runs, park cold level
 - [ ] Phase 3: direct merge, canonicalisation, worker packing, P4 cache

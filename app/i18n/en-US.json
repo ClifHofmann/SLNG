@@ -722,7 +722,7 @@
       "low_vram_caps": "Limit expensive effects on small graphics cards",
       "low_vram_caps_hint": "Below 6 GB of video memory: anti-aliasing at most 2x (off below 4.5 GB), no SSIL, smaller shadow and reflection maps, no live mirrors -- so the texture memory keeps nearby objects sharp. Off: every option applies exactly as set.",
       "low_vram_caps_active": "Limited now:",
-      "outfit_merge": "Merge other avatars' worn meshes (experimental)",
+      "outfit_merge": "Merge other avatars' worn meshes",
       "outfit_merge_hint": "Draws each worn object of another avatar as a few merged meshes on one skin instead of dozens of separate ones: far fewer draw calls in a crowd. Items that are being edited, change often or are still loading stay separate. Your own avatar is not merged. Can be switched while logged in.",
       "quality_heading": "Quality:",
       "msaa": "Anti-aliasing",
