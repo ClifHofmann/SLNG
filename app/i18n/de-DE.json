@@ -722,7 +722,7 @@
       "low_vram_caps": "Teure Effekte bei kleinen Grafikkarten begrenzen",
       "low_vram_caps_hint": "Unter 6 GB Grafikspeicher: Kantenglättung höchstens 2x (unter 4,5 GB aus), kein SSIL, kleinere Schatten- und Spiegelungskarten, keine Live-Spiegel -- damit der Texturspeicher nahe Objekte scharf hält. Aus: jede Option gilt genau wie eingestellt.",
       "low_vram_caps_active": "Gerade begrenzt:",
-      "outfit_merge": "Getragene Meshes anderer Avatare zusammenführen (experimentell)",
+      "outfit_merge": "Getragene Meshes anderer Avatare zusammenführen",
       "outfit_merge_hint": "Zeichnet jedes getragene Objekt eines anderen Avatars als wenige zusammengeführte Meshes auf einem Skin statt als Dutzende einzelne: deutlich weniger Draw Calls in einer Menge. Teile, die gerade bearbeitet werden, sich oft ändern oder noch laden, bleiben einzeln. Der eigene Avatar wird nicht zusammengeführt. Lässt sich im eingeloggten Zustand umschalten.",
       "quality_heading": "Qualität:",
       "msaa": "Kantenglättung",

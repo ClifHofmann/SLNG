@@ -90,10 +90,10 @@ public static class RenderConfig
 
     /// <summary>
     /// FEAT-PERF-23 Phase 1: merge other avatars' worn rigged meshes per worn linkset and material onto one
-    /// skin per avatar (AvatarRenderer.OutfitMerge.cs). Graphics > Hardware, off by default until the
-    /// in-world A/B; switchable at runtime (off puts every item back on its own instance).
+    /// skin per avatar (AvatarRenderer.OutfitMerge.cs). Graphics > Hardware, on by default since v0.28.1;
+    /// switchable at runtime (off puts every item back on its own instance).
     /// </summary>
-    public static bool OutfitMerge { get; set; } = false;
+    public static bool OutfitMerge { get; set; } = true;
 
     /// <summary>FEAT-PERF-23: the value of <c>--outfit-merge=on|off</c> when it was given. Wins over the
     /// saved Graphics preference, like <see cref="SmallObjectCullArg"/>.</summary>
