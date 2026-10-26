@@ -142,6 +142,33 @@ public sealed partial class GridSession
         }
     }
 
+    private int _offlineMessagesRequested;
+
+    /// <summary>Asks the grid for the instant messages it stored while we were offline, once per login
+    /// (BUG-NET-35). LibreMetaverse can ask -- <c>RetrieveInstantMessagesAsync</c>, through the
+    /// <c>ReadOfflineMsgs</c> capability or the legacy <c>RetrieveInstantMessages</c> packet -- but nothing
+    /// calls it, so every message sent to us while we were logged out stayed on the server. The reference
+    /// viewer asks exactly once, when the avatar and the region's capabilities are ready
+    /// (<c>llimprocessing.cpp:1528</c>); the answers arrive through the normal IM path, so a stored message
+    /// opens its tab, is logged and counts as unread like a live one. Called from
+    /// <see cref="OnEventQueueRunning"/>, which fires for every poll -- hence the latch.</summary>
+    private void RequestOfflineMessagesOnce()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _offlineMessagesRequested, 1) != 0) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _client.Self.RetrieveInstantMessagesAsync().ConfigureAwait(false);
+                Console.WriteLine("[Chat] Asked the grid for offline messages");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Chat] Offline message request failed: {ex.Message}");
+            }
+        });
+    }
+
     /// <summary>Captures the region's environment once its capabilities are live (FEAT-ENV-01
     /// Phase A). Fire-and-forget on purpose: nothing in the login path waits on the environment,
     /// and a sim that never answers must not stall the connection.
@@ -199,6 +226,9 @@ public sealed partial class GridSession
         // push omits NewGroupData (ListInProfile flags), leaving them all false until AgentDataUpdateRequest
         // is sent. Re-asking here populates the full membership data with true ListInProfile values.
         RequestGroups();
+
+        // BUG-NET-35: messages the grid kept while we were away. LibreMetaverse never asks for them itself.
+        RequestOfflineMessagesOnce();
 
         _ = Task.Run(async () =>
         {
