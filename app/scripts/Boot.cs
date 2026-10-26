@@ -433,7 +433,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.2-alpha";
+    public const string AppVersion = "v0.28.3-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -519,6 +519,14 @@ public partial class Boot : Control
         // does not have to know the rule; the selftest tells them.
         IsSelfTest = SelfTest.Requested;
         if (IsSelfTest) SelfTest.SnapshotUserData();
+
+        // BUG-RENDER-51: the prim shader family is loaded here, on the main thread, before any worker
+        // can touch it. ObjectRenderer.Initialize did this only at login, so a worker-thread material
+        // build that came first (every selftest run, which never logs in) loaded a variant while the main
+        // thread asked for the same shader, and the one native Shader ended up with TWO C# wrappers.
+        // Every `shader == PrimShaderFamily.Scissor` test then read a scissor face as something else
+        // (CI: same instance id and path, ReferenceEquals false).
+        PrimShaderFamily.Preload();
 
         GetTree().AutoAcceptQuit = false;
         MouseFilter = MouseFilterEnum.Ignore;
