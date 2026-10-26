@@ -112,6 +112,38 @@ public static class MainThreadWorkQueue
 
     public static string? CurrentLabel => _currentLabel;
 
+    /// <summary>BUG-PERF-21: throws per label + exception type + throwing method. Main thread only.</summary>
+    private static readonly Dictionary<string, int> _throwCounts = new();
+
+    /// <summary>BUG-PERF-21: the message alone ("Cannot access a disposed object") never said WHICH item
+    /// threw -- 33 of them in one crowded arrival could not be traced. The first throw of a kind logs the
+    /// label, the method and the stack; repeats log at 2, 4, 8, ... so a flood stays a few lines.</summary>
+    private static void ReportThrow(string label, Exception ex)
+    {
+        string site = ThrowSite(ex);
+        string key = $"{label}|{ex.GetType().Name}|{site}";
+        _throwCounts.TryGetValue(key, out int n);
+        _throwCounts[key] = ++n;
+        if (n == 1)
+            GD.PrintErr($"[MainThreadWork] item '{label}' threw {ex.GetType().Name} in {site}: {ex.Message}\n{ex.StackTrace}");
+        else if ((n & (n - 1)) == 0)
+            GD.PrintErr($"[MainThreadWork] item '{label}' threw {ex.GetType().Name} in {site} ({n} times so far): {ex.Message}");
+    }
+
+    /// <summary>The first frame of our own code: a disposed-object throw comes from inside Godot's
+    /// bindings (GodotObject.GetPtr), which names no caller.</summary>
+    private static string ThrowSite(Exception ex)
+    {
+        foreach (var frame in new StackTrace(ex).GetFrames())
+        {
+            var method = frame.GetMethod();
+            var type = method?.DeclaringType;
+            if (type == null || (type.Namespace ?? "").StartsWith("Godot", StringComparison.Ordinal)) continue;
+            return $"{type.FullName}.{method!.Name}";
+        }
+        return "?";
+    }
+
     /// <summary>
     /// Queues <paramref name="work"/> to run on the main thread within the frame budget.
     ///
@@ -200,7 +232,7 @@ public static class MainThreadWorkQueue
                 {
                     // One bad unit of work must not take the pump down with it, or every later object
                     // in the queue silently never appears.
-                    GD.PrintErr($"[MainThreadWork] item threw: {ex.Message}");
+                    ReportThrow(item.Label, ex);
                 }
                 _currentLabel = null;
                 double took = _clock.Elapsed.TotalMilliseconds - before;

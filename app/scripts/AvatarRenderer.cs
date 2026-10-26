@@ -2288,7 +2288,7 @@ public partial class AvatarRenderer : Node3D
         return SLNG.Assets.TextureLod.ScreenPixelAreaForSphere(dist, radius, fovDegrees, vpHeight);
     }
 
-    private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId, Guid oldTextureId = default)
+    private async System.Threading.Tasks.Task LoadAndApplyTextureAsync(AvatarVisual visual, int bakeIndex, Guid textureId, Guid oldTextureId = default, bool retried = false)
     {
         if (_assetService == null || _gpuCache == null) return;
 
@@ -2324,10 +2324,11 @@ public partial class AvatarRenderer : Node3D
         }
         visual.PinnedTextureIds.Add(textureId);
         visual.UsedTextureIds.Add(textureId);
-        if (!visual.TexturesPinned)
-        {
-            _gpuCache?.ReleaseRef(textureId);
-        }
+        // BUG-PERF-21: an avatar whose textures are not pinned (parked) used to give this ref back here,
+        // before the bake was applied. Behind a deep main-thread queue (20-30k items on arrival in a
+        // crowd) the texture outlived its fresh grace, was evicted and disposed, and the apply item threw
+        // on it. The ref is now a lease that the apply item gives back.
+        bool leased = !visual.TexturesPinned;
         // Map SL bake indices (AvatarTextureIndex) to which mesh parts they cover.
         // 8=HeadBaked, 9=UpperBaked, 10=LowerBaked, 11=EyesBaked, 19=SkirtBaked, 20=HairBaked —
         // per LibreMetaverse's AvatarTextureIndex enum (12/13 are LowerSocks/UpperJacket wearable
@@ -2344,67 +2345,83 @@ public partial class AvatarRenderer : Node3D
         };
 
         MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => {
-            if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
-
-            var targets = partsForBake != null
-                ? partsForBake.Select(n => visual.Parts.TryGetValue(n, out var m) ? m : null)
-                              .Where(m => m != null)
-                              .Cast<MeshInstance3D>()
-                : visual.Parts.Values.Cast<MeshInstance3D>();
-
-            var targetNames = string.Join(", ", targets.Select(m => m.Name));
-            // GD.Print($"[AvatarRenderer] Applying bake {bakeIndex} (ID: {textureId}) to meshes: {targetNames}");
-
-            foreach (var meshInstance in targets)
+            try
             {
-                if (!IsInstanceValid(meshInstance)) continue;
-                // FEAT-RENDER-01 Phase 3: the system bake runs on the shader family's Avatar
-                // surface, which carries the cull_disabled this path used to set explicitly.
-                // FEAT-PERF-08: a bake that lands while the avatar is the jelly-doll stand-in is written
-                // into the material SetAvatarFull will put back, not over the stand-in's shared colour.
-                bool stashed = visual.StashedPartMaterials.TryGetValue(meshInstance, out var stashedMaterial);
-                var mat = (stashed ? stashedMaterial : meshInstance.MaterialOverride) as ShaderMaterial;
-                if (mat == null)
+                if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
+                if (!IsInstanceValid(godotTexture))
                 {
-                    mat = new ShaderMaterial();
-                    if (stashed) visual.StashedPartMaterials[meshInstance] = mat;
-                    else meshInstance.MaterialOverride = mat;
+                    // BUG-PERF-21: the avatar was parked between the fetch and this item, and the park
+                    // gave back the pin this bake was relying on. Fetch it once more if it is still the
+                    // current bake for its slot (from the decoded cache, no download).
+                    if (!retried && visual.LoadedTextures.TryGetValue(bakeIndex, out var current) && current == textureId)
+                        _ = LoadAndApplyTextureAsync(visual, bakeIndex, textureId, retried: true);
+                    return;
                 }
-                mat.SetShaderParameter(PrimShaderFamily.AlbedoTexture, godotTexture);
-                mat.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
-                mat.SetShaderParameter(PrimShaderFamily.AlbedoColor, Godot.Colors.White); // Reset placeholder tint!
 
-                // SL avatars use baked alpha to hide the system body when wearing mesh bodies/
-                // clothing (alpha-layer wearables painted by the user, composited server-side
-                // into this bake's alpha channel; hidden RGB is conventionally black). Always
-                // enable AlphaHash — never gate on DetectAlpha() to decide whether to apply one
-                // at all, which is unreliable (see ApplyAlphaCutout below and the
-                // godot-material-transparency-gotchas note).
-                //
-                // Unconditional AlphaHash here, NOT the Blend-vs-Hash choice ApplyAlphaCutout
-                // uses for worn-mesh-attachment faces (2026-07-22, reverted after this system-
-                // bake path briefly used that same Blend branch and the system body/head reappeared
-                // fully opaque, replacing an "invisible bald head + patchy chest" for a visible
-                // one — plausible mechanism: `Transparency.Alpha` never writes depth in Godot even
-                // at high alpha, unlike AlphaHash/Scissor's discard-based opaque-queue depth write,
-                // so this material's draw-order relative to the enclosing mesh body/head — both now
-                // competing in the transparent queue — stopped being depth-test-safe). This bake's
-                // ENTIRE job is to disappear; a dithered discard pattern on something that's
-                // ~90%+ alpha=0 anyway costs nothing visually, so there's no tradeoff here worth
-                // risking reliability for — unlike hair, which is actually meant to be seen.
-                //
-                // MIGRATION NOTE (Phase 3): what runs here is AlphaScissor at 0.5, and the comment
-                // block above still describes AlphaHash. That disagreement is REAL and deliberately
-                // parked -- 175d308 switched the code and said so in its own message, because
-                // AlphaScissor(0.5) is the state the avatar was last visually confirmed correct in,
-                // while the documented objection (a hard 0.5 cutoff blotches the soft gradients SL's
-                // alpha-layer wearables paint into the bake) still stands unanswered. This migration
-                // carries the CODE across unchanged, not the comment. Settle it with a live A/B, not
-                // by picking whichever of the two reads more convincingly.
-                mat.Shader = PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.Avatar);
-                mat.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.5f);
-                // alpha_to_coverage is baked into the scissor variant's render_mode. MSAA 4x is on
-                // project-wide (app/project.godot) specifically so this edge resolves smoothly.
+                var targets = partsForBake != null
+                    ? partsForBake.Select(n => visual.Parts.TryGetValue(n, out var m) ? m : null)
+                                  .Where(m => m != null)
+                                  .Cast<MeshInstance3D>()
+                    : visual.Parts.Values.Cast<MeshInstance3D>();
+
+                var targetNames = string.Join(", ", targets.Select(m => m.Name));
+                // GD.Print($"[AvatarRenderer] Applying bake {bakeIndex} (ID: {textureId}) to meshes: {targetNames}");
+
+                foreach (var meshInstance in targets)
+                {
+                    if (!IsInstanceValid(meshInstance)) continue;
+                    // FEAT-RENDER-01 Phase 3: the system bake runs on the shader family's Avatar
+                    // surface, which carries the cull_disabled this path used to set explicitly.
+                    // FEAT-PERF-08: a bake that lands while the avatar is the jelly-doll stand-in is written
+                    // into the material SetAvatarFull will put back, not over the stand-in's shared colour.
+                    bool stashed = visual.StashedPartMaterials.TryGetValue(meshInstance, out var stashedMaterial);
+                    var mat = (stashed ? stashedMaterial : meshInstance.MaterialOverride) as ShaderMaterial;
+                    if (mat == null)
+                    {
+                        mat = new ShaderMaterial();
+                        if (stashed) visual.StashedPartMaterials[meshInstance] = mat;
+                        else meshInstance.MaterialOverride = mat;
+                    }
+                    mat.SetShaderParameter(PrimShaderFamily.AlbedoTexture, godotTexture);
+                    mat.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+                    mat.SetShaderParameter(PrimShaderFamily.AlbedoColor, Godot.Colors.White); // Reset placeholder tint!
+
+                    // SL avatars use baked alpha to hide the system body when wearing mesh bodies/
+                    // clothing (alpha-layer wearables painted by the user, composited server-side
+                    // into this bake's alpha channel; hidden RGB is conventionally black). Always
+                    // enable AlphaHash — never gate on DetectAlpha() to decide whether to apply one
+                    // at all, which is unreliable (see ApplyAlphaCutout below and the
+                    // godot-material-transparency-gotchas note).
+                    //
+                    // Unconditional AlphaHash here, NOT the Blend-vs-Hash choice ApplyAlphaCutout
+                    // uses for worn-mesh-attachment faces (2026-07-22, reverted after this system-
+                    // bake path briefly used that same Blend branch and the system body/head reappeared
+                    // fully opaque, replacing an "invisible bald head + patchy chest" for a visible
+                    // one — plausible mechanism: `Transparency.Alpha` never writes depth in Godot even
+                    // at high alpha, unlike AlphaHash/Scissor's discard-based opaque-queue depth write,
+                    // so this material's draw-order relative to the enclosing mesh body/head — both now
+                    // competing in the transparent queue — stopped being depth-test-safe). This bake's
+                    // ENTIRE job is to disappear; a dithered discard pattern on something that's
+                    // ~90%+ alpha=0 anyway costs nothing visually, so there's no tradeoff here worth
+                    // risking reliability for — unlike hair, which is actually meant to be seen.
+                    //
+                    // MIGRATION NOTE (Phase 3): what runs here is AlphaScissor at 0.5, and the comment
+                    // block above still describes AlphaHash. That disagreement is REAL and deliberately
+                    // parked -- 175d308 switched the code and said so in its own message, because
+                    // AlphaScissor(0.5) is the state the avatar was last visually confirmed correct in,
+                    // while the documented objection (a hard 0.5 cutoff blotches the soft gradients SL's
+                    // alpha-layer wearables paint into the bake) still stands unanswered. This migration
+                    // carries the CODE across unchanged, not the comment. Settle it with a live A/B, not
+                    // by picking whichever of the two reads more convincingly.
+                    mat.Shader = PrimShaderFamily.Select(PrimShaderFamily.Kind.Scissor, PrimShaderFamily.Surface.Avatar);
+                    mat.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.5f);
+                    // alpha_to_coverage is baked into the scissor variant's render_mode. MSAA 4x is on
+                    // project-wide (app/project.godot) specifically so this edge resolves smoothly.
+                }
+            }
+            finally
+            {
+                if (leased) _gpuCache?.ReleaseRef(textureId);
             }
         }, label: "avatar.bake");
     }
