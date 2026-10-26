@@ -4,7 +4,7 @@ Willkommen beim Benutzerhandbuch für den **Puris Viewer** (internes Projekt: *S
 
 > **Status:** Alpha. Es kommen kontinuierlich neue Funktionen hinzu.
 >
-> Dieses Handbuch beschreibt Version **v0.27.96-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
+> Dieses Handbuch beschreibt Version **v0.28.0-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
 
 ---
 
@@ -66,6 +66,13 @@ Alle Menüs und schwebenden Fenster (UI-Fenster) bestehen aus ansprechenden, hal
 - **Original einer Verknüpfung:** Per Doppelklick auf eine Verknüpfung oder über Rechtsklick -> `Original anzeigen` springt das Inventar zum echten Gegenstand. Bei einer Ordner-Verknüpfung klappt es den Ordner auf und wählt ihn aus; ist das Original nicht mehr im Inventar, sagt der Viewer es Ihnen.
 - **Schutzregeln:** Systemordner (z. B. „Objekte“) lassen sich weder umbenennen noch löschen noch ausschneiden, denn das Grid sortiert eingehende Gegenstände nach dem *Typ* des Ordners, nicht nach dem Namen. Ein Ordner kann nicht in sich selbst oder in einen eigenen Unterordner eingefügt werden. Aus `#Library` lässt sich nichts ausschneiden, denn das gehört Ihnen nicht – kopieren Sie es stattdessen.
 
+#### Objekte in die Welt stellen (Rezzen)
+- **Ziehen und Loslassen:** Ziehen Sie ein Objekt aus dem Inventar in die Welt und lassen Sie es auf dem Boden oder auf einem anderen Objekt los. Es erscheint an dieser Stelle, wie im Second-Life-Viewer.
+- **Die Karte am Mauszeiger** zeigt beim Ziehen, ob es klappt: „Hier platzieren“, „Hier wohl keine Baurechte“ (nur ein Hinweis, das Grid entscheidet), „Kein Boden oder Objekt“, „Wird getragen“ oder „Nur in dieser Region“.
+- **Nicht kopierbare Objekte** verlassen dabei Ihr Inventar – sie stehen jetzt in der Welt. Kopierbare bleiben im Inventar.
+- **Was Sie tragen**, lässt sich nicht platzieren: erst ausziehen. Platziert wird nur in der Region, in der Sie gerade sind.
+- Lehnt das Grid ab (z. B. keine Baurechte auf dem Grundstück), erscheint seine Meldung. (ab Version v0.27.97-alpha)
+
 #### Papierkorb
 Was Sie löschen, landet zuerst im Papierkorb. Von dort holen Sie es zurück oder entfernen es endgültig:
 - **Papierkorb leeren:** Rechtsklick auf den Papierkorb -> `Papierkorb leeren…`. Der Viewer zählt zuerst, was darin liegt, und fragt dann mit der Anzahl nach, z. B. „3 Objekte und 1 Ordner im Papierkorb endgültig löschen?“.
@@ -95,6 +102,14 @@ Rechtsklick auf ein gespeichertes Outfit im Reiter *Outfits*:
 - **Klicken über Regionsgrenzen:** Objekte auf der anderen Seite einer Regionsgrenze lassen sich berühren, auswählen und kaufen wie Objekte in Ihrer eigenen Region.
 - **Berühren mit Fläche:** Ein Klick meldet dem Objekt auch, *welche Fläche* Sie getroffen haben. Verkaufstafeln mit einem Produkt pro Fläche reagieren deshalb richtig.
 - **Teleport im Sitzen:** Nach jedem Teleport steht Ihr Avatar am Ziel auf, statt in einer Sitzpose zu einem Stuhl zurückzufallen, der eine Region entfernt steht.
+
+### Kamera-Fenster
+Das Fenster öffnen Sie mit dem Augen-Symbol in der Leiste unten oder mit `Strg+K`. Es ist aufgebaut wie im Second-Life-Viewer:
+- **Links:** `Vorn`, `Seite` und `Hinten` stellen die Kamera an diese Seite des Avatars; der runde Pfeil setzt alles zurück (hinter den Avatar, Standardabstand, kein Schwenk).
+- **Die runde Fläche dreht die Kamera** um den Fokuspunkt. Drücken Sie irgendwo darauf: oben dreht nach oben, links nach links usw. Halten Sie gedrückt und ziehen Sie, um die Richtung zu ändern oder schräg zu drehen. Kurzes Antippen bewegt nur ein kleines Stück, Halten dreht weiter. Ein Klick auf den Punkt in der Mitte setzt die Drehung zurück.
+- **Zoom:** `+` und `−` gedrückt halten, oder den Regler dazwischen ziehen (oben = nah, unten = weit). Der Regler zeigt immer den aktuellen Abstand, auch wenn Sie mit dem Mausrad zoomen.
+- **Die eckige Fläche schwenkt die Kamera** seitlich und nach oben oder unten, genauso bedient. Der Punkt in der Mitte hebt den Schwenk auf.
+- Die Geschwindigkeiten stellen Sie unter `Preferences` -> `Kamera` ein; sie hängen nicht von der Bildrate ab. Das Fenster lässt sich größer und kleiner ziehen. (ab Version v0.27.101-alpha)
 
 ### Kamerasteuerung (Alt-Zoom & Co.)
 - **Mauskamera (Alt+Zoom):** Halten Sie `Alt` gedrückt und klicken Sie mit der linken Maustaste auf ein Objekt oder einen Avatar, um diesen zu fokussieren. Mit Mausbewegungen können Sie dann darum kreisen oder hineinzoomen. Die Kamera **folgt dem Ziel**: geht der Avatar weiter oder fährt, fliegt oder bewegt sich das Objekt, bleibt es im Bild, auch wenn Sie selbst weiterlaufen. Verschwindet das Ziel (Objekt gelöscht, Avatar gegangen), bleibt die Kamera an der letzten Stelle. Mit `Esc` oder einem neuen Alt-Klick ist das Folgen beendet. Wie nah die Kamera ans Ziel heranzoomen darf, hängt vom Ziel ab (wie im Second-Life-Viewer): bei einem Objekt bis auf 2 cm, beim Boden bis auf 15 cm, bei einem Avatar (und allem, was er trägt) bis auf 50 cm.
