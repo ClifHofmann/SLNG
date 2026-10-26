@@ -249,6 +249,7 @@ public partial class InventoryPanel : SLNGWindow
         _tree.AddChild(_trashItemMenu);
         _tree.OnDropIntoFolder = MoveIntoFolder;
         _tree.NameOf = InventoryName;
+        _tree.IsObjectItem = id => _session?.IsObjectItem(id) == true;
         
         _tree.ItemCollapsed += OnItemCollapsed;
         // FEAT-INV-07 Phase 3: remember the picked row so clearing the search box can put the user
@@ -411,7 +412,13 @@ public partial class InventoryPanel : SLNGWindow
 
             string payload = $"slng_item|{itemIdStr}|{name}|{canTransfer}|{isFolder}|{assetType}|{sourceFolder}";
 
-            var preview = new Label { Text = name };
+            // The rez card is for something that can be rezzed. Every other drag (a folder, a notecard, a
+            // texture, ...) keeps the plain label it always had.
+            bool rezzable = !isFolder
+                && (assetType == SLNG.Core.AssetTypeIds.Object
+                    || (assetType == SLNG.Core.AssetTypeIds.Link && Guid.TryParse(itemIdStr, out var linkId)
+                        && IsObjectItem?.Invoke(linkId) == true));
+            Control preview = rezzable ? new RezDragPreview(name, assetType) : new Label { Text = name };
             SetDragPreview(preview);
 
             return payload;
@@ -424,6 +431,10 @@ public partial class InventoryPanel : SLNGWindow
 
         /// <summary>An inventory id's real name. Same reason: the tree has no session.</summary>
         internal Func<Guid, string>? NameOf;
+
+        /// <summary>Whether an item, or the item a link points at, is an in-world object (FEAT-INV-15).
+        /// The tree has no session either.</summary>
+        internal Func<Guid, bool>? IsObjectItem;
 
         public override bool _CanDropData(Vector2 atPosition, Variant data)
         {
@@ -488,14 +499,23 @@ public partial class InventoryPanel : SLNGWindow
 
     public void Initialize(GridSession session)
     {
-        if (_session != null) _session.WornItemsChanged -= OnWornItemsChanged;
+        if (_session != null)
+        {
+            _session.WornItemsChanged -= OnWornItemsChanged;
+            _session.InventoryItemRemoved -= OnInventoryItemRemoved;
+        }
         _session = session;
         _session.WornItemsChanged += OnWornItemsChanged;
+        _session.InventoryItemRemoved += OnInventoryItemRemoved;
     }
 
     public override void _ExitTree()
     {
-        if (_session != null) _session.WornItemsChanged -= OnWornItemsChanged;
+        if (_session != null)
+        {
+            _session.WornItemsChanged -= OnWornItemsChanged;
+            _session.InventoryItemRemoved -= OnInventoryItemRemoved;
+        }
         base._ExitTree();
     }
 
@@ -582,6 +602,19 @@ public partial class InventoryPanel : SLNGWindow
     private void OnWornItemsChanged(object? sender, EventArgs e)
     {
         if (IsInstanceValid(this)) CallDeferred(nameof(RefreshWornIfVisible));
+    }
+
+    // FEAT-INV-15: a no-copy object that was rezzed is gone from the local store at once; redraw the folder it
+    // sat in so the row goes too. Raised on the thread that rezzed (normally the main thread), but marshalled the
+    // same safe way as above.
+    private void OnInventoryItemRemoved(object? sender, SLNG.Core.InventoryItemRemovedEvent e)
+    {
+        if (IsInstanceValid(this)) CallDeferred(nameof(RefreshFolderDeferred), e.FolderId.ToString());
+    }
+
+    private void RefreshFolderDeferred(string folderId)
+    {
+        if (IsInstanceValid(this) && Guid.TryParse(folderId, out var id)) RefreshFolder(id);
     }
 
     private void RefreshWornIfVisible()

@@ -1032,8 +1032,10 @@ public sealed partial class GridSession
     private void OnCurrentGroups(object? sender, CurrentGroupsEventArgs e)
     {
         var list = new List<GroupEntry>(e.Groups.Count);
+        var powers = new Dictionary<Guid, ulong>(e.Groups.Count);
         foreach (var g in e.Groups.Values)
         {
+            powers[g.ID.Guid] = (ulong)g.Powers; // for the rez hint (HasLandCreatePowerIn)
             // Cache the name too: group chat lines and object owners resolve through the same
             // shared name cache, and a membership reply is a free source for it.
             // Only a real name: an empty one in the cache looks like "known" to every request that checks for
@@ -1043,6 +1045,7 @@ public sealed partial class GridSession
         }
         list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
 
+        _groupPowers = powers;
         _groups = list;
         GroupsUpdated?.Invoke(this, new GroupsUpdatedEvent(list));
     }

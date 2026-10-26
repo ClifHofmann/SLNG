@@ -788,6 +788,54 @@ namespace SLNG.App
             }
         }
 
+        /// <summary>
+        /// Raycasts from a screen position to find where an inventory object dropped there would go
+        /// (FEAT-INV-15). Returns false when the drop has no target: nothing was hit, or what was hit is
+        /// an avatar or one of the local avatar's worn items -- the reference viewer treats an attachment
+        /// as part of its avatar and refuses a rez onto either (<c>LLToolDragAndDrop::pick</c>,
+        /// lltooldraganddrop.cpp:840-860).
+        /// </summary>
+        /// <param name="screenPos">The mouse position.</param>
+        /// <param name="cameraPos">The camera, Godot world space: where the rez ray starts.</param>
+        /// <param name="hitPoint">The surface point the ray hit, exactly as hit -- NOT lifted off the
+        /// surface; the simulator seats the object itself.</param>
+        /// <param name="hitObjectId">The FULL UUID of the prim that was hit (the same collider-to-entity
+        /// mapping a click uses), or <see cref="System.Guid.Empty"/> for terrain and anything that is not
+        /// an object.</param>
+        public bool TryGetRezTarget(Vector2 screenPos, out Vector3 cameraPos, out Vector3 hitPoint, out System.Guid hitObjectId)
+        {
+            cameraPos = Vector3.Zero;
+            hitPoint = Vector3.Zero;
+            hitObjectId = System.Guid.Empty;
+            if (_camera == null || _world == null) return false;
+
+            var hit = RaycastFromMouse(screenPos);
+            if (hit.Count == 0 || !hit.ContainsKey("position")) return false;
+
+            if (hit.ContainsKey("collider") && hit["collider"].As<Node>() is StaticBody3D body && body.HasMeta("LocalId"))
+            {
+                var localIdText = body.GetMeta("LocalId").AsString();
+                if (localIdText == "Avatar") return false;
+
+                // A real prim carries its local id as a number; terrain carries the literal "TERRAIN".
+                if (uint.TryParse(localIdText, out _))
+                {
+                    if (IsOwnAttachmentBody(body)) return false;
+                    if (!body.HasMeta("EntityId") || !System.Guid.TryParse(body.GetMeta("EntityId").AsString(), out var entityId))
+                        return false;
+
+                    // Entity.Id is an internal ECS id; the simulator knows the object by its own UUID.
+                    var objectId = _world.GetEntity(entityId)?.GetComponent<MetadataComponent>()?.Id ?? System.Guid.Empty;
+                    if (objectId == System.Guid.Empty) return false; // not (yet) known: no ray target to name
+                    hitObjectId = objectId;
+                }
+            }
+
+            hitPoint = hit["position"].AsVector3();
+            cameraPos = _camera.GlobalPosition;
+            return true;
+        }
+
         /// <summary>Where a prim rezzed from a right-click should sit: the point that was hit,
         /// lifted clear of the surface along its normal.</summary>
         /// <remarks>
