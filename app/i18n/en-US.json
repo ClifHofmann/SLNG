@@ -1424,17 +1424,20 @@
     "rez": {
       "drag_hint": "Rez in world",
       "status_ready": "✦ Place here",
-      "status_no_rights": "⚠ No build rights on parcel",
+      "status_no_rights": "⚠ Probably no build rights here",
       "status_no_surface": "✕ No terrain or object",
       "status_window": "✕ Occluded by window",
       "status_not_object": "✕ Not an object",
+      "status_worn": "✕ You are wearing this",
+      "status_other_region": "✕ Only in this region",
       "success": "Rezzing '{0}'...",
-      "no_permission": "No permission to build on this parcel.",
       "not_an_object": "Item is not an in-world object.",
       "item_not_found": "Inventory item not found.",
       "not_connected": "Not connected to the simulator.",
       "no_surface": "No placement surface found. Please aim at terrain or an object.",
-      "blocked_by_ui": "Cannot rez an object onto a window."
+      "blocked_by_ui": "Cannot rez an object onto a window.",
+      "worn": "You are wearing this item. Take it off before rezzing it.",
+      "other_region": "Objects can only be rezzed in the region you are in."
     }
   }
 }

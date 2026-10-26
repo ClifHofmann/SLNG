@@ -290,6 +290,7 @@ public static partial class SelfTest
         results.Add(CheckWorkQueueOnceThePumpIsGone());
         results.Add(CheckWorkQueuePartsAddUp());
         results.Add(CheckLoginScreenCoversTheWorld());
+        results.Add(CheckWorldDropTarget(tree)); // FEAT-INV-15
         results.Add(CheckAvatarAnimationPlayer());
         results.Add(CheckAvatarHoldMode());
         results.Add(CheckAvatarAnimationFreeze());
@@ -2206,6 +2207,36 @@ public static partial class SelfTest
         return new Check(Name, covered, covered
             ? "nametags stay hidden while the login screen is up"
             : "Boot.IsWorldCovered is false at the login screen -- nametags would draw over it");
+    }
+
+    /// <summary>
+    /// FEAT-INV-15: an inventory item dropped on the 3D world only reaches <c>Boot</c> through
+    /// <see cref="UI.WorldDropTarget"/>, because Godot's drop search skips Ignore controls and Boot is Ignore.
+    /// The target has to be Boot's first child (everything above it wins the hit test) and has to be Ignore
+    /// while no inventory drag is running, or it would swallow every world click.
+    /// </summary>
+    private static Check CheckWorldDropTarget(SceneTree tree)
+    {
+        const string Name = "world drop target";
+        var boot = tree.Root.GetNodeOrNull<Control>("Boot");
+        if (boot == null) return new Check(Name, false, "no Boot node under the root");
+
+        var problems = new List<string>();
+        if (boot.GetChildCount() == 0 || boot.GetChild(0) is not UI.WorldDropTarget target)
+        {
+            return new Check(Name, false, "Boot's first child is not a WorldDropTarget -- a drop on the 3D view reaches nobody");
+        }
+
+        if (target.MouseFilter != Control.MouseFilterEnum.Ignore)
+            problems.Add($"mouse filter is {target.MouseFilter} with no drag running -- world clicks would be swallowed");
+        if (boot.MouseFilter != Control.MouseFilterEnum.Ignore)
+            problems.Add($"Boot's mouse filter is {boot.MouseFilter}, not Ignore -- world clicks would be swallowed");
+        if (target.AnchorLeft != 0f || target.AnchorTop != 0f || target.AnchorRight != 1f || target.AnchorBottom != 1f)
+            problems.Add("anchors are not full rect");
+
+        return problems.Count == 0
+            ? new Check(Name, true, "Boot's first child, full rect, Ignore until an inventory item is dragged")
+            : new Check(Name, false, string.Join("; ", problems));
     }
 
     /// <summary>

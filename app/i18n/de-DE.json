@@ -1424,17 +1424,20 @@
     "rez": {
       "drag_hint": "In Welt platzieren",
       "status_ready": "✦ Hier platzieren",
-      "status_no_rights": "⚠ Keine Baurechte auf Parzelle",
+      "status_no_rights": "⚠ Hier wohl keine Baurechte",
       "status_no_surface": "✕ Kein Boden oder Objekt",
       "status_window": "✕ Durch Fenster verdeckt",
       "status_not_object": "✕ Kein 3D-Objekt",
+      "status_worn": "✕ Wird getragen",
+      "status_other_region": "✕ Nur in dieser Region",
       "success": "Objekt '{0}' wird platziert...",
-      "no_permission": "Keine Baurechte auf dieser Parzelle.",
       "not_an_object": "Das Objekt kann nicht in der Welt platziert werden.",
       "item_not_found": "Inventargegenstand nicht gefunden.",
       "not_connected": "Nicht mit dem Simulator verbunden.",
       "no_surface": "Keine Oberfläche zum Platzieren gefunden. Bitte auf Boden oder ein Objekt zielen.",
-      "blocked_by_ui": "Objekt kann nicht auf einem Fenster platziert werden."
+      "blocked_by_ui": "Objekt kann nicht auf einem Fenster platziert werden.",
+      "worn": "Dieser Gegenstand wird getragen. Zum Platzieren zuerst ausziehen.",
+      "other_region": "Objekte lassen sich nur in der aktuellen Region platzieren."
     }
   }
 }

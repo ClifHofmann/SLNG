@@ -433,6 +433,10 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// thread — marshal before touching a scene node.</summary>
     public event EventHandler<InventoryOfferEvent>? InventoryOfferReceived;
 
+    /// <summary>FEAT-INV-15: an item left the local inventory because a rez used it up (a no-copy object).
+    /// Raised on the thread that called <see cref="RezObjectFromInventory"/>.</summary>
+    public event EventHandler<InventoryItemRemovedEvent>? InventoryItemRemoved;
+
     /// <summary>BUG-NET-27: somebody offered the agent a teleport, or asked for one. Answer with
     /// <see cref="AcceptTeleportOffer"/> / <see cref="DeclineTeleportOffer"/> (an offer) or
     /// <see cref="AnswerTeleportRequest"/> (a request). Raised on a LibreMetaverse network thread —

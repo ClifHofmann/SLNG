@@ -432,7 +432,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.27.96-alpha";
+    public const string AppVersion = "v0.27.97-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -531,6 +531,9 @@ public partial class Boot : Control
         SLNG.App.UI.NameDisplay.UseDisplayNames = () => _uiSettings.ShowDisplayNames;
         SLNG.App.UI.NameDisplay.ShowUsernames = () => _uiSettings.ShowLegacyNames; // chat, Friends, Recent follow the nametag switch
         AddChild(new SLNG.App.UI.UiScaleWatcher(_uiSettings));
+        // FEAT-INV-15: what an inventory item dropped on the 3D world lands on. First child of Boot, so every
+        // window, HUD and menu added later (all of them above it) wins the hit test.
+        SetupWorldDropTarget();
         GD.Print($"[Boot] UI scale {_uiSettings.Scale:0.##}x ({(_uiSettings.ScaleAutomatic ? "automatic" : "chosen")}, display reports {SLNG.App.UI.UiScale.OsScale:0.##}x)");
 
         _localizationManager = LoadLocalizationManager();
@@ -4230,6 +4233,9 @@ public partial class Boot : Control
         // cancelled because it exceeds limits for physical prims" when a Physical toggle is denied.
         _session.AlertMessageReceived += (s, e) =>
         {
+            // Into the log file as well, not only the in-app panel below: the simulator's refusal of a rez
+            // ("Can't rez object ...") arrives here and nowhere else. Network thread: a print, no nodes.
+            GD.Print($"[Alert] {e.Message}");
             CallDeferred(MethodName.LogMessage, $"[color=orange][Alert] {e.Message}[/color]");
             _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, e.Message);
         };

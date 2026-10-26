@@ -3,8 +3,9 @@ using Godot;
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Rich drag-and-drop preview attached to the mouse cursor when dragging inventory items (FEAT-INV-15).
-/// Displays item icon, name, and live feedback on whether rezzing is permitted at the cursor location.
+/// Drag-and-drop preview attached to the mouse cursor when dragging a rezzable inventory object (FEAT-INV-15).
+/// Shows the item's icon and name and live feedback on whether a drop at the cursor would rez. Only used for
+/// objects -- every other inventory drag keeps the plain label preview.
 /// </summary>
 public partial class RezDragPreview : Control
 {
@@ -14,7 +15,9 @@ public partial class RezDragPreview : Control
     private readonly StyleBoxFlat _styleBox;
     private readonly Label _statusLabel;
 
-    public RezDragPreview(string name, int assetType, bool isObject)
+    /// <param name="name">The item's name.</param>
+    /// <param name="assetType">The item's asset type: the icon is the one its inventory row shows.</param>
+    public RezDragPreview(string name, int assetType)
     {
         MouseFilter = MouseFilterEnum.Ignore;
         Active = this;
@@ -34,7 +37,7 @@ public partial class RezDragPreview : Control
         _styleBox = new StyleBoxFlat
         {
             BgColor = new Color(0.06f, 0.09f, 0.15f, 0.94f),
-            BorderColor = isObject ? new Color(0.2f, 0.75f, 0.9f, 0.85f) : new Color(0.4f, 0.5f, 0.6f, 0.6f),
+            BorderColor = new Color(0.2f, 0.75f, 0.9f, 0.85f),
             BorderWidthLeft = 1,
             BorderWidthTop = 1,
             BorderWidthRight = 1,
@@ -67,7 +70,7 @@ public partial class RezDragPreview : Control
 
         var iconLabel = new Label
         {
-            Text = isObject ? "📦" : InventoryIcons.ForAssetType(assetType),
+            Text = InventoryIcons.ForAssetType(assetType),
             MouseFilter = MouseFilterEnum.Ignore,
         };
 
@@ -85,11 +88,11 @@ public partial class RezDragPreview : Control
 
         _statusLabel = new Label
         {
-            Text = isObject ? L10n.Tr("ui.rez.drag_hint") : L10n.Tr("ui.rez.status_not_object"),
+            Text = L10n.Tr("ui.rez.drag_hint"),
             MouseFilter = MouseFilterEnum.Ignore,
         };
         _statusLabel.AddThemeFontSizeOverride("font_size", 10);
-        _statusLabel.AddThemeColorOverride("font_color", isObject ? new Color(0.35f, 0.8f, 1f) : new Color(0.85f, 0.4f, 0.4f));
+        _statusLabel.AddThemeColorOverride("font_color", new Color(0.35f, 0.8f, 1f));
         vbox.AddChild(_statusLabel);
 
         _card.AddChild(vbox);
@@ -97,7 +100,7 @@ public partial class RezDragPreview : Control
     }
 
     /// <summary>
-    /// Dynamically updates the preview's status text and border highlighting based on raycast/permissions.
+    /// Updates the preview's status text and border colour from what a drop at the cursor would do.
     /// </summary>
     public void UpdateStatus(string status, Color textColor, Color borderColor)
     {
