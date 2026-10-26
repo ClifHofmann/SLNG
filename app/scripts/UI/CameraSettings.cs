@@ -1,5 +1,6 @@
 using System;
 using Godot;
+using SLNG.Core.Camera;
 
 namespace SLNG.App.UI;
 
@@ -26,8 +27,14 @@ public sealed class CameraSettings
     public const float MinMultiplier = 0.1f;
     public const float MaxMultiplier = 3.0f;
 
-    public const float MinFov = 50f;
-    public const float MaxFov = 100f;
+    /// <summary>The absolute bounds of the stored field of view, in degrees: the reference viewer's
+    /// <c>MIN_FIELD_OF_VIEW</c> / <c>MAX_FIELD_OF_VIEW</c> (llmath/llcamera.h:51-52), where SLNG used 50 and 100
+    /// before FEAT-UI-73. The range actually available depends on the window's shape (a wide window allows
+    /// less, a narrow one needs more) and is <see cref="CameraFovLimits.MinDegrees"/> /
+    /// <see cref="CameraFovLimits.MaxDegrees"/>; <see cref="AvatarController"/> applies it every frame, and the
+    /// stored value is left alone so a window resize cannot silently rewrite it.</summary>
+    public const float MinFov = CameraFovLimits.AbsoluteMinDegrees;
+    public const float MaxFov = CameraFovLimits.AbsoluteMaxDegrees;
 
     /// <summary>Second Life's own default vertical field of view: <c>DEFAULT_FIELD_OF_VIEW =
     /// 60.f * DEG_TO_RAD</c> (indra/llmath/llcamera.h), which is also the shipped default of the
@@ -37,7 +44,7 @@ public sealed class CameraSettings
     /// so the avatar simply renders a third smaller than in the reference viewer — and pulling the
     /// camera closer to compensate exaggerates perspective, which both shrinks the head relative to
     /// anything nearer the camera and visibly distorts a face in close-up. BUG-AVATAR-07.</summary>
-    public const float DefaultFov = 60f;
+    public const float DefaultFov = CameraFovLimits.DefaultDegrees;
 
     /// <summary>The pre-BUG-AVATAR-07 default (Godot's own). A stored value of exactly this is
     /// treated as "never chosen" by <see cref="Load"/> and migrated once to
@@ -48,6 +55,10 @@ public sealed class CameraSettings
     /// not pin every user to the old default forever. Stored alongside the value itself.</summary>
     private const int FovVersion = 1;
 
+    // The range of the "Rear view distance" slider: where the camera RESTS behind the avatar after a reset. It is not
+    // how close the wheel can go - that is CameraZoomLimits.MinDistance, per kind of focus, and CameraZoom.MaxZoom.
+    // The viewer's equivalent slider (CameraOffsetScale, 0.5 to 3 times a 3.09 m offset, panel_preferences_move.xml:
+    // 40-57 and settings.xml:1359) bottoms out at 1.55 m, so a 1 m floor here is already closer than it.
     public const float MinDistance = 1.0f;
     public const float MaxDistance = 20.0f;
     public const float DefaultDistance = 4.0f;
@@ -73,6 +84,15 @@ public sealed class CameraSettings
 
     /// <summary>Height above the avatar origin the camera looks at / orbits around (was a hardcoded 1.8).</summary>
     public float FocusHeight { get; private set; } = DefaultFocusHeight;
+
+    /// <summary>Width / height of the 3D view, which is what the field-of-view limits depend on. A viewport that is
+    /// missing or has no size yet (a minimised window) reports 16:9.</summary>
+    public static float ViewAspect(Viewport? viewport)
+    {
+        if (viewport == null) return 16f / 9f;
+        var size = viewport.GetVisibleRect().Size;
+        return size.X > 0f && size.Y > 0f ? size.X / size.Y : 16f / 9f;
+    }
 
     public void Load()
     {

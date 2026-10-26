@@ -656,7 +656,7 @@
       "camera_fov": "Blickwinkel (FOV)",
       "camera_rear_distance": "Kameraabstand (Rückansicht)",
       "camera_focus_height": "Fokus-Höhe",
-      "camera_view_hint": "FOV und Fokus-Höhe wirken sofort; der Kameraabstand greift beim nächsten Zurücksetzen der Kamera (Esc).",
+      "camera_view_hint": "FOV und Fokus-Höhe wirken sofort; der Kameraabstand greift beim nächsten Zurücksetzen der Kamera (Esc). Ein kleiner FOV zoomt heran (bis 5°); der größte Wert sinkt in einem breiten Fenster, wie im Referenz-Viewer.",
       "camera_speed_reset": "Auf Standard zurücksetzen",
       "tab_quality": "Hardware / Qualität",
       "tab_design": "Design / Style",

@@ -6,36 +6,41 @@ namespace SLNG.Core.Tests.Camera;
 
 public class CameraZoomTests
 {
+    /// <summary>The floor most of these tests use: what the camera may do to a person.</summary>
+    private const float Min = CameraZoomLimits.AvatarMinZoom;
+
     [Fact]
     public void WheelStep_one_notch_in_is_two_to_minus_a_quarter()
-        => Assert.Equal(4f * MathF.Pow(2f, -0.25f), CameraZoom.WheelStep(4f, -1), 4);
+        => Assert.Equal(4f * MathF.Pow(2f, -0.25f), CameraZoom.WheelStep(4f, -1, Min), 4);
 
     [Fact]
     public void WheelStep_one_notch_out_is_two_to_a_quarter()
-        => Assert.Equal(4f * MathF.Pow(2f, 0.25f), CameraZoom.WheelStep(4f, 1), 4);
+        => Assert.Equal(4f * MathF.Pow(2f, 0.25f), CameraZoom.WheelStep(4f, 1, Min), 4);
 
     [Fact]
     public void WheelStep_four_notches_halve_or_double()
     {
-        Assert.Equal(2f, CameraZoom.WheelStep(4f, -4), 4);
-        Assert.Equal(8f, CameraZoom.WheelStep(4f, 4), 4);
+        Assert.Equal(2f, CameraZoom.WheelStep(4f, -4, Min), 4);
+        Assert.Equal(8f, CameraZoom.WheelStep(4f, 4, Min), 4);
     }
 
     [Fact]
     public void WheelStep_in_then_out_returns_to_start()
-        => Assert.Equal(5f, CameraZoom.WheelStep(CameraZoom.WheelStep(5f, -3), 3), 4);
+        => Assert.Equal(5f, CameraZoom.WheelStep(CameraZoom.WheelStep(5f, -3, Min), 3, Min), 4);
 
     [Fact]
     public void WheelStep_clamps_to_the_limits()
     {
-        Assert.Equal(CameraZoom.MinZoom, CameraZoom.WheelStep(0.6f, -8));
-        Assert.Equal(CameraZoom.MaxZoom, CameraZoom.WheelStep(190f, 8));
+        Assert.Equal(Min, CameraZoom.WheelStep(0.6f, -8, Min));
+        Assert.Equal(CameraZoom.MaxZoom, CameraZoom.WheelStep(190f, 8, Min));
+        // The floor is the caller's: an object may be approached to 2 cm, where a person stops at 50 cm.
+        Assert.Equal(CameraZoomLimits.ObjectMinZoom, CameraZoom.WheelStep(0.05f, -8, CameraZoomLimits.ObjectMinZoom));
         Assert.Equal(1f, CameraZoom.WheelStep(0.2f, 0, 1f, 10f));
     }
 
     [Fact]
     public void WheelStep_zero_notches_keeps_the_value()
-        => Assert.Equal(4f, CameraZoom.WheelStep(4f, 0));
+        => Assert.Equal(4f, CameraZoom.WheelStep(4f, 0, Min));
 
     [Fact]
     public void EaseToward_halves_the_remaining_distance_in_one_half_life()
@@ -131,19 +136,19 @@ public class CameraZoomTests
             var cam = point + z * (1f + (float)rng.NextDouble() * 59f) + x * ((float)rng.NextDouble() * 10 - 5)
                 + y * ((float)rng.NextDouble() * 10 - 5);
 
-            var (panX, panY, zoom) = CameraZoom.AnchorPan(cam, point, x, y, z);
+            var (panX, panY, zoom) = CameraZoom.AnchorPan(cam, point, x, y, z, Min);
 
             var target = point + x * panX + y * panY;
             var rebuilt = target + z * zoom;
             Assert.True(Vector3.Distance(cam, rebuilt) < 1e-3f, $"case {i}: {Vector3.Distance(cam, rebuilt)}");
-            Assert.True(zoom >= CameraZoom.MinZoom);
+            Assert.True(zoom >= Min);
         }
     }
 
     [Fact]
     public void AnchorPan_on_the_view_axis_has_no_pan()
     {
-        var (panX, panY, zoom) = CameraZoom.AnchorPan(new Vector3(0, 0, 5), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
+        var (panX, panY, zoom) = CameraZoom.AnchorPan(new Vector3(0, 0, 5), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, Min);
         Assert.Equal(0f, panX, 4);
         Assert.Equal(0f, panY, 4);
         Assert.Equal(5f, zoom, 4);
@@ -154,8 +159,8 @@ public class CameraZoomTests
     {
         // The camera is 0.2 m in front of the point's plane and 1 m to the right: zoom is clamped to the
         // minimum, the sideways part survives, and the missing depth is what a pan cannot carry.
-        var (panX, panY, zoom) = CameraZoom.AnchorPan(new Vector3(1, 0, 0.2f), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
-        Assert.Equal(CameraZoom.MinZoom, zoom);
+        var (panX, panY, zoom) = CameraZoom.AnchorPan(new Vector3(1, 0, 0.2f), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ, Min);
+        Assert.Equal(Min, zoom);
         Assert.Equal(1f, panX, 4);
         Assert.Equal(0f, panY, 4);
 

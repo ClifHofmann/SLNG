@@ -1,5 +1,6 @@
 using Godot;
 using SLNG.App;
+using SLNG.Core.Camera;
 using SLNG.Core.Components;
 using SLNG.Core.Input;
 using static SLNG.Core.Input.KeyActionIds;
@@ -91,9 +92,9 @@ public partial class Boot
             _topMenu.OnToggleHud?.Invoke();
             return true;
         });
-        keys.Register(this, ViewZoomIn, () => ZoomFieldOfView(1f / FovZoomStep));
-        keys.Register(this, ViewZoomOut, () => ZoomFieldOfView(FovZoomStep));
-        keys.Register(this, ViewZoomDefault, () => ZoomFieldOfView(null));
+        keys.Register(this, ViewZoomIn, () => ChangeFieldOfView(CameraFovLimits.ZoomIn));
+        keys.Register(this, ViewZoomOut, () => ChangeFieldOfView(CameraFovLimits.ZoomOut));
+        keys.Register(this, ViewZoomDefault, () => ChangeFieldOfView((_, aspect) => CameraFovLimits.Default(aspect)));
         keys.Register(this, AppExit, () => QuitGracefully(true));
 
         // ---- Chat.
@@ -111,19 +112,16 @@ public partial class Boot
         return true;
     }
 
-    /// <summary>The reference viewer's View.ZoomIn/ZoomOut step (llviewermenu.cpp, <c>LLZoomer(1.2f)</c> and
-    /// <c>LLZoomer(1/1.2f)</c>): the field of view is multiplied by this, or by its inverse.</summary>
-    private const float FovZoomStep = 1.2f;
-
     /// <summary>View -> Zoom in / out / default: changes the camera's field of view, like the viewer
-    /// (NOT the camera distance, which the wheel and the Alt keys move). <paramref name="factor"/> null
-    /// = back to the default angle. Persists, as the Camera preferences slider does.</summary>
-    private void ZoomFieldOfView(float? factor)
+    /// (NOT the camera distance, which the wheel and the Alt keys move). <paramref name="next"/> maps the
+    /// current angle and the window's aspect to the new angle; the limits and the 1.2 step are the viewer's
+    /// (<see cref="CameraFovLimits"/>, FEAT-UI-73), so Ctrl+0 goes down to 5 degrees. Persists, as the viewer
+    /// stores its CameraAngle setting and as the Camera preferences slider does.</summary>
+    private void ChangeFieldOfView(System.Func<float, float, float> next)
     {
         if (_cameraSettings == null) return;
-        _cameraSettings.SetFov(factor is { } f
-            ? Mathf.Clamp(_cameraSettings.Fov * f, SLNG.App.UI.CameraSettings.MinFov, SLNG.App.UI.CameraSettings.MaxFov)
-            : SLNG.App.UI.CameraSettings.DefaultFov);
+        float aspect = SLNG.App.UI.CameraSettings.ViewAspect(GetViewport());
+        _cameraSettings.SetFov(next(_cameraSettings.Fov, aspect));
     }
 
     private void TogglePreferencesWindow()
