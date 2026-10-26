@@ -4,7 +4,7 @@ Willkommen beim Benutzerhandbuch für den **Puris Viewer** (internes Projekt: *S
 
 > **Status:** Alpha. Es kommen kontinuierlich neue Funktionen hinzu.
 >
-> Dieses Handbuch beschreibt Version **v0.28.3-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
+> Dieses Handbuch beschreibt Version **v0.28.4-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
 
 ---
 
@@ -104,12 +104,14 @@ Rechtsklick auf ein gespeichertes Outfit im Reiter *Outfits*:
 - **Teleport im Sitzen:** Nach jedem Teleport steht Ihr Avatar am Ziel auf, statt in einer Sitzpose zu einem Stuhl zurückzufallen, der eine Region entfernt steht.
 
 ### Kamera-Fenster
-Das Fenster öffnen Sie mit dem Augen-Symbol in der Leiste unten oder mit `Strg+K`. Es ist aufgebaut wie im Second-Life-Viewer:
-- **Links:** `Vorn`, `Seite` und `Hinten` stellen die Kamera an diese Seite des Avatars; der runde Pfeil setzt alles zurück (hinter den Avatar, Standardabstand, kein Schwenk).
-- **Die runde Fläche dreht die Kamera** um den Fokuspunkt. Drücken Sie irgendwo darauf: oben dreht nach oben, links nach links usw. Halten Sie gedrückt und ziehen Sie, um die Richtung zu ändern oder schräg zu drehen. Kurzes Antippen bewegt nur ein kleines Stück, Halten dreht weiter. Ein Klick auf den Punkt in der Mitte setzt die Drehung zurück.
-- **Zoom:** `+` und `−` gedrückt halten, oder den Regler dazwischen ziehen (oben = nah, unten = weit). Der Regler zeigt immer den aktuellen Abstand, auch wenn Sie mit dem Mausrad zoomen.
-- **Die eckige Fläche schwenkt die Kamera** seitlich und nach oben oder unten, genauso bedient. Der Punkt in der Mitte hebt den Schwenk auf.
-- Die Geschwindigkeiten stellen Sie unter `Preferences` -> `Kamera` ein; sie hängen nicht von der Bildrate ab. Das Fenster lässt sich größer und kleiner ziehen. (ab Version v0.27.101-alpha)
+Das Fenster öffnen Sie mit dem Augen-Symbol in der Leiste unten oder mit `Strg+K`. Es ist aufgebaut wie im Second-Life-Viewer und öffnet sich klein und flach, damit es wenig vom Bild verdeckt:
+- **Obere Symbolleiste:** Eine schmale Reihe kleiner Symbole ohne Beschriftung; wenn Sie den Mauszeiger darauf halten, erscheint ein Hinweis, was sie tun. Von links nach rechts: das Gesicht (`Kamera vor den Avatar, mit Blick auf ihn`), die Figur im Profil (`Kamera seitlich neben den Avatar`) und der Kopf mit Schultern ohne Gesicht (`Kamera zurück hinter den Avatar`, die Standardansicht) stellen die Kamera an diese Seite des Avatars. Der runde Pfeil setzt alles zurück (hinter den Avatar, Standardabstand, kein Schwenk).
+- **Am rechten Ende der Leiste** sitzt ein Schalter (Symbol: Zielmarke mit Rahmen), der das Look-At-Ziel der Kamera im 3D-Raum anzeigt. Es ist derselbe Schalter wie `Look-At / Fokuspunkt anzeigen` im Menü `Ansicht`. Eingeschaltet leuchtet das Symbol in der Akzentfarbe.
+- **Darunter links die runde Fläche: sie dreht die Kamera** um den Fokuspunkt. Drücken Sie irgendwo darauf: oben dreht nach oben, links nach links usw. Halten Sie gedrückt und ziehen Sie, um die Richtung zu ändern oder schräg zu drehen. Kurzes Antippen bewegt nur ein kleines Stück, Halten dreht weiter. Ein Klick auf den Punkt in der Mitte setzt die Drehung zurück.
+- **Zoom (schmale Spalte in der Mitte):** `+` und `−` gedrückt halten, oder den Regler dazwischen ziehen (oben = nah, unten = weit). Der Regler zeigt immer den aktuellen Abstand, auch wenn Sie mit dem Mausrad zoomen.
+- **Rechts die eckige Fläche: sie schwenkt die Kamera** seitlich und nach oben oder unten, genauso bedient. Der Punkt in der Mitte hebt den Schwenk auf.
+- **Größe:** Das Fenster lässt sich größer ziehen, und alle Flächen und Symbole wachsen mit (bis auf das Doppelte der Anfangsgröße); kleiner als etwa vier Fünftel der Anfangsgröße geht es nicht. Wer größere Flächen möchte, zieht es einfach auf. Position und Größe merkt sich der Viewer. Eine Größe, die Sie in einer früheren Version eingestellt haben, gilt nicht mehr: das Fenster öffnet sich einmal wieder in der neuen, kleinen Anfangsgröße. (ab Version v0.28.4-alpha)
+- Die Geschwindigkeiten stellen Sie unter `Preferences` -> `Kamera` ein; sie hängen nicht von der Bildrate ab.
 
 ### Kamerasteuerung (Alt-Zoom & Co.)
 - **Mauskamera (Alt+Zoom):** Halten Sie `Alt` gedrückt und klicken Sie mit der linken Maustaste auf ein Objekt oder einen Avatar, um diesen zu fokussieren. Mit Mausbewegungen können Sie dann darum kreisen oder hineinzoomen. Die Kamera **folgt dem Ziel**: geht der Avatar weiter oder fährt, fliegt oder bewegt sich das Objekt, bleibt es im Bild, auch wenn Sie selbst weiterlaufen. Verschwindet das Ziel (Objekt gelöscht, Avatar gegangen), bleibt die Kamera an der letzten Stelle. Mit `Esc` oder einem neuen Alt-Klick ist das Folgen beendet. Wie nah die Kamera ans Ziel heranzoomen darf, hängt vom Ziel ab (wie im Second-Life-Viewer): bei einem Objekt bis auf 2 cm, beim Boden bis auf 15 cm, bei einem Avatar (und allem, was er trägt) bis auf 50 cm.

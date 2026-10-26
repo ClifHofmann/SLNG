@@ -9,10 +9,10 @@ public static partial class SelfTest
 {
     /// <summary>
     /// FEAT-UI-74: the Camera Controls window. The maths is tested in SLNG.Core.Tests; this is the engine half -
-    /// the window opens with its pads at 100 px and its buttons at 24 px or more (scale 1.0), cannot be made
-    /// smaller than 0.8, the pad turns presses into per-axis rates the way the viewer's joystick does (side,
-    /// centre dot, drag while held), and the controller maps the zoom slider onto its distance. Everything is built
-    /// off the running client, driven by synthetic events, and freed again.
+    /// the window opens compact, with its pads at 80 px and its icon buttons at 18 px or more (scale 1.0), cannot be
+    /// made smaller than 0.8 (pads at 64 px or more), the pad turns presses into per-axis rates the way the
+    /// viewer's joystick does (side, centre dot, drag while held), and the controller maps the zoom slider onto its
+    /// distance. Everything is built off the running client, driven by synthetic events, and freed again.
     /// </summary>
     private static Check CheckCameraControls(SceneTree tree)
     {
@@ -31,19 +31,20 @@ public static partial class SelfTest
             static IEnumerable<T> All<T>(Node n) where T : Node => n.GetChildren().SelectMany(k => (k is T t ? new[] { t } : Array.Empty<T>()).Concat(All<T>(k)));
 
             var want = hud.Size;
+            if (want.X > 260f || want.Y > 200f) problems.Add($"the window opens {want.X:0} x {want.Y:0} px, want a compact one (at most 260 x 200)");
             for (int pass = 0; pass < 3; pass++) { hud.Size = want; Layout(hud); }
             var pads = All<UI.CameraJoystick>(hud).ToList();
             if (pads.Count != 2) problems.Add($"{pads.Count} pads, want the trackball and the pan pad");
             foreach (var pad in pads)
             {
                 float size = pad.Size.X * pad.GetGlobalTransform().Scale.X;
-                if (Math.Abs(size - 100f) > 3f) problems.Add($"a pad is {size:0} px at the default size, want 100");
+                if (Math.Abs(size - 80f) > 3f) problems.Add($"a pad is {size:0} px at the default size, want 80");
             }
 
             foreach (var button in All<Button>(hud.ContentContainer).Where(b => b.GetType() == typeof(Button)))
             {
                 float height = button.Size.Y * button.GetGlobalTransform().Scale.Y;
-                if (height < 24f - 0.5f) problems.Add($"a button is {height:0.#} px high at the default size, want at least 24");
+                if (height < 18f - 0.5f) problems.Add($"a button is {height:0.#} px high at the default size, want at least 18");
             }
 
             hud.Size = hud.CustomMinimumSize;
@@ -51,7 +52,7 @@ public static partial class SelfTest
             foreach (var pad in All<UI.CameraJoystick>(hud))
             {
                 float size = pad.Size.X * pad.GetGlobalTransform().Scale.X;
-                if (Math.Abs(size - 80f) > 3f) problems.Add($"a pad is {size:0} px at the minimum size, want 80 (scale 0.8)");
+                if (size < 64f - 3f) problems.Add($"a pad is {size:0} px at the minimum size, want at least 64 (scale 0.8)");
             }
 
             hud.Size = hud.CustomMinimumSize - new Vector2(60, 40);
@@ -59,8 +60,8 @@ public static partial class SelfTest
                 problems.Add($"the window shrank to {hud.Size} below its minimum {hud.CustomMinimumSize}");
 
             // ---- the pad ----
-            round = new UI.CameraJoystick { Round = true, Size = new Vector2(100, 100) };
-            square = new UI.CameraJoystick { Round = false, Size = new Vector2(100, 100) };
+            round = new UI.CameraJoystick { Round = true, Size = new Vector2(80, 80) };
+            square = new UI.CameraJoystick { Round = false, Size = new Vector2(80, 80) };
             tree.Root.AddChild(round);
             tree.Root.AddChild(square);
 
@@ -74,41 +75,41 @@ public static partial class SelfTest
             }
 
             // Screen y is down; the pad's Rate is y UP.
-            Click(round, true, new Vector2(50, 10)); Expect("press on top", round.Rate, 0, 1);
-            Click(round, false, new Vector2(50, 10)); Expect("release", round.Rate, 0, 0);
-            Click(round, true, new Vector2(10, 50)); Expect("press on the left", round.Rate, -1, 0);
-            Click(round, false, new Vector2(10, 50));
-            Click(round, true, new Vector2(50, 90)); Expect("press at the bottom", round.Rate, 0, -1);
-            Click(round, false, new Vector2(50, 90));
+            Click(round, true, new Vector2(40, 8)); Expect("press on top", round.Rate, 0, 1);
+            Click(round, false, new Vector2(40, 8)); Expect("release", round.Rate, 0, 0);
+            Click(round, true, new Vector2(8, 40)); Expect("press on the left", round.Rate, -1, 0);
+            Click(round, false, new Vector2(8, 40));
+            Click(round, true, new Vector2(40, 72)); Expect("press at the bottom", round.Rate, 0, -1);
+            Click(round, false, new Vector2(40, 72));
 
-            Click(round, true, new Vector2(50, 10)); // up, then drag right 40 px: past the 16 px slop on X as well
-            Move(round, new Vector2(90, 10)); Expect("up, dragged right", round.Rate, 1, 1);
-            Move(round, new Vector2(50, 70)); Expect("up, dragged down 60 px", round.Rate, 0, -1); // 24 - 60 = -36
-            Click(round, false, new Vector2(50, 70));
+            Click(round, true, new Vector2(40, 8)); // up, then drag right 40 px: past the 16 px slop on X as well
+            Move(round, new Vector2(80, 8)); Expect("up, dragged right", round.Rate, 1, 1);
+            Move(round, new Vector2(40, 68)); Expect("up, dragged down 60 px", round.Rate, 0, -1); // 24 - 60 = -36
+            Click(round, false, new Vector2(40, 68));
 
-            Click(round, true, new Vector2(90, 50)); // right, then drag back left 41 px: reversed
-            Move(round, new Vector2(49, 50)); Expect("right, dragged back past the start", round.Rate, -1, 0);
-            Click(round, false, new Vector2(49, 50));
+            Click(round, true, new Vector2(72, 40)); // right, then drag back left 41 px: reversed
+            Move(round, new Vector2(31, 40)); Expect("right, dragged back past the start", round.Rate, -1, 0);
+            Click(round, false, new Vector2(31, 40));
 
             int resets = 0;
             round.ResetRequested += () => resets++;
-            Click(round, true, new Vector2(52, 49));
+            Click(round, true, new Vector2(42, 39));
             Expect("press on the centre dot", round.Rate, 0, 0);
-            Click(round, false, new Vector2(52, 49));
+            Click(round, false, new Vector2(42, 39));
             if (resets != 1) problems.Add($"the centre dot raised {resets} resets, want 1");
-            Click(round, true, new Vector2(50, 10)); Click(round, false, new Vector2(50, 10));
+            Click(round, true, new Vector2(40, 8)); Click(round, false, new Vector2(40, 8));
             if (resets != 1) problems.Add("a press on the side raised a reset");
 
             if (round._HasPoint(new Vector2(3, 3))) problems.Add("the round pad takes a press in its square corner");
-            if (!round._HasPoint(new Vector2(50, 3))) problems.Add("the round pad ignores a press at its top");
+            if (!round._HasPoint(new Vector2(40, 3))) problems.Add("the round pad ignores a press at its top");
             if (!square._HasPoint(new Vector2(3, 3))) problems.Add("the square pad ignores a press in its corner");
 
             // A pad drawn twice as large keeps the feel: 40 px of travel is 20 px at half the size.
-            square.Size = new Vector2(200, 200);
-            Click(square, true, new Vector2(100, 20)); // up
-            Move(square, new Vector2(100 + 33, 20)); Expect("scaled pad, 33 px of 200 is past its slop", square.Rate, 1, 1);
-            Move(square, new Vector2(100 + 31, 20)); Expect("scaled pad, 31 px of 200 is not", square.Rate, 0, 1);
-            Click(square, false, new Vector2(100, 20));
+            square.Size = new Vector2(160, 160);
+            Click(square, true, new Vector2(80, 16)); // up
+            Move(square, new Vector2(80 + 33, 16)); Expect("scaled pad, 33 px of 160 is past its slop", square.Rate, 1, 1);
+            Move(square, new Vector2(80 + 31, 16)); Expect("scaled pad, 31 px of 160 is not", square.Rate, 0, 1);
+            Click(square, false, new Vector2(80, 16));
 
             // ---- the controller's end of the slider ----
             controller = new AvatarController();
@@ -124,7 +125,7 @@ public static partial class SelfTest
             controller.ResetPan(); // nothing to read back; it must at least not throw
 
             return problems.Count == 0
-                ? new Check(Name, true, "pads 100 px and buttons >= 24 px at the default size, 80 px at the minimum and no smaller; press, drag, reversal, centre reset and size scaling; slider 1 = 0.5 m ... 0 = 200 m")
+                ? new Check(Name, true, "pads 80 px and icon buttons >= 18 px at the default size, pads >= 64 px at the minimum and no smaller; press, drag, reversal, centre reset and size scaling; slider 1 = 0.5 m ... 0 = 200 m")
                 : new Check(Name, false, string.Join("; ", problems));
         }
         catch (Exception ex)

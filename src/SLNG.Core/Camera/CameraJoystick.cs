@@ -16,8 +16,8 @@ namespace SLNG.Core.Camera;
 /// moves.</para>
 ///
 /// <para>Everything here is in the viewer's orientation, <b>y up</b>, in pixels at a control of the reference size
-/// (100 px); <c>scale</c> stretches the pixel constants for a control drawn larger or smaller. A caller whose own
-/// y points down negates it before and after.</para>
+/// (<see cref="ReferenceSize"/>, 80 px); <c>scale</c> stretches the pixel constants for a control drawn larger or
+/// smaller. A caller whose own y points down negates it before and after.</para>
 /// </summary>
 public static class CameraJoystick
 {
@@ -37,8 +37,10 @@ public static class CameraJoystick
     /// <summary>Radius of the centre dot, within which a press resets instead of moving (<c>CENTER_DOT_RADIUS</c>, :58).</summary>
     public const float CenterDotRadius = 7f;
 
-    /// <summary>The control size, in pixels, that the constants above are written for.</summary>
-    public const float ReferenceSize = 100f;
+    /// <summary>The control size, in pixels, that the constants above are written for: the viewer's own joysticks are
+    /// about 78-80 px, and its slop (16/32) and centre dot (7) are tuned to that. The Camera window opens its pads at
+    /// this size, so they feel as the viewer's do.</summary>
+    public const float ReferenceSize = 80f;
 
     /// <summary>
     /// The quadrant of a press at (<paramref name="x"/>, <paramref name="yUp"/>) from the centre of the control:
