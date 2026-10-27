@@ -36,7 +36,7 @@ public partial class CameraHUD : SLNGWindow
     /// margin and the 1 px border on each side, plus the title bar above. Measured; if these change,
     /// the cluster merely gains or loses a few px of gap at the default size.</summary>
     private const float FrameWidth = 18f;
-    private const float FrameAndTitleBarHeight = 56f;
+    private const float FrameAndTitleBarHeight = 43f;
 
     // The viewer's rates at full push (llagentcamera.cpp:1271-1273, 1291-1297), per SECOND; CameraSettings
     // multiplies them live. They were per frame (0.035 rad, 0.1 m, 0.5 m), which is a different speed at every
