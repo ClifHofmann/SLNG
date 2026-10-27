@@ -82,6 +82,9 @@ public partial class InventoryPanel : SLNGWindow
     public Action<Guid>? StopAnimationLocalHandler;
     /// <summary>FEAT-UI-67: Handler to add a landmark to the Favorites Bar.</summary>
     public Action<Guid, Guid, string>? OnAddToFavorites;
+
+    /// <summary>Asks the owner to open a texture in the image viewer (asset id, item name).</summary>
+    public Action<Guid, string>? OnOpenTextureRequested;
     private Guid _lastInWorldAnimId;
 
     // FEAT-INV-04: Outfits tab.
@@ -2811,6 +2814,21 @@ public partial class InventoryPanel : SLNGWindow
         if (ShowOriginal(item)) return;
         TryTeleportFromItem(item);
         TryPlayAnimationFromItem(item);
+        TryOpenTextureFromItem(item);
+    }
+
+    /// <summary>Double-clicking a texture opens it in the image viewer. Same metadata layout as
+    /// <see cref="TryTeleportFromItem"/>.</summary>
+    private void TryOpenTextureFromItem(TreeItem item)
+    {
+        var metaStr = item.GetMetadata(0).AsString();
+        if (!metaStr.Contains(',')) return;
+        var parts = metaStr.Split(',');
+        if (parts.Length < 7) return;
+        if (!int.TryParse(parts[4], out var assetType) || assetType != SLNG.Core.AssetTypeIds.Texture) return;
+        if (!Guid.TryParse(parts[5], out var assetId) || assetId == Guid.Empty) return;
+
+        OnOpenTextureRequested?.Invoke(assetId, item.GetText(0));
     }
 
     private void TryPlayAnimationFromItem(TreeItem item)

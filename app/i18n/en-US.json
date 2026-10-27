@@ -156,6 +156,11 @@
       "zoom_slider_tooltip": "Camera distance — drag up to get closer, down to move away",
       "show_focus_marker_tooltip": "Shows the camera's Look-At target in 3D space. Remains anchored to the subject when moving or panning the camera."
     },
+    "texture_viewer": {
+      "title": "Image",
+      "loading": "Loading…",
+      "failed": "The image could not be loaded."
+    },
     "snapshot": {
       "title": "Snapshot",
       "capture": "Capture",
