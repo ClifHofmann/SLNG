@@ -204,8 +204,8 @@ public partial class SLNGWindow : MarginContainer
         var headerMargin = new MarginContainer();
         headerMargin.AddThemeConstantOverride("margin_left", 12);
         headerMargin.AddThemeConstantOverride("margin_right", 12);
-        headerMargin.AddThemeConstantOverride("margin_top", 6);
-        headerMargin.AddThemeConstantOverride("margin_bottom", 6);
+        headerMargin.AddThemeConstantOverride("margin_top", 3);
+        headerMargin.AddThemeConstantOverride("margin_bottom", 3);
         headerMargin.MouseFilter = MouseFilterEnum.Pass;
         _headerPanel.AddChild(headerMargin);
 
@@ -223,31 +223,11 @@ public partial class SLNGWindow : MarginContainer
         _titleLabel.AddThemeColorOverride("font_color", new Color(0.88f, 0.88f, 0.88f));
         headerHBox.AddChild(_titleLabel);
 
-        _minimizeButton = new Button
-        {
-            Text = "_",
-            Flat = true,
-            CustomMinimumSize = new Vector2(16, 16),
-            SizeFlagsVertical = SizeFlags.ShrinkCenter,
-            FocusMode = FocusModeEnum.None
-        };
-        _minimizeButton.AddThemeFontSizeOverride("font_size", 12);
-        _minimizeButton.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
-        _minimizeButton.AddThemeColorOverride("font_hover_color", new Color(1f, 1f, 1f));
+        _minimizeButton = new HeaderGlyphButton(HeaderGlyphButton.GlyphKind.Minimize, new Color(1f, 1f, 1f));
         _minimizeButton.Pressed += ToggleMinimize;
         headerHBox.AddChild(_minimizeButton);
 
-        _closeButton = new Button
-        {
-            Text = "×",
-            Flat = true,
-            CustomMinimumSize = new Vector2(16, 16),
-            SizeFlagsVertical = SizeFlags.ShrinkCenter,
-            FocusMode = FocusModeEnum.None
-        };
-        _closeButton.AddThemeFontSizeOverride("font_size", 12);
-        _closeButton.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
-        _closeButton.AddThemeColorOverride("font_hover_color", new Color(1f, 0.4f, 0.4f));
+        _closeButton = new HeaderGlyphButton(HeaderGlyphButton.GlyphKind.Close, new Color(1f, 0.4f, 0.4f));
         _closeButton.Pressed += CloseFromTitleBar;
         headerHBox.AddChild(_closeButton);
 

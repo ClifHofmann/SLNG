@@ -1,4 +1,5 @@
 using LibreMetaverse;
+using LibreMetaverse.Packets;
 using SLNG.Core;
 
 namespace SLNG.Net;
@@ -50,7 +51,17 @@ public sealed partial class GridSession
     {
         if (groupId == Guid.Empty || !_client.Network.Connected) return false;
         if (!ApplyLocalGroupFlags(groupId, acceptNotices, listInProfile)) return false;
-        _client.Groups.SetGroupAcceptNotices(new UUID(groupId), acceptNotices, listInProfile);
+        // Built here, not via GroupManager.SetGroupAcceptNotices: that sends the packet unreliable, so a
+        // single lost datagram silently dropped the change and the next group refresh showed the old
+        // value. The reference viewer sends it reliable (sendReliableMessage, llagent.cpp:3229).
+        var packet = new SetGroupAcceptNoticesPacket
+        {
+            AgentData = { AgentID = _client.Self.AgentID, SessionID = _client.Self.SessionID },
+            Data = { GroupID = new UUID(groupId), AcceptNotices = acceptNotices },
+            NewData = { ListInProfile = listInProfile },
+        };
+        packet.Header.Reliable = true;
+        _client.Network.SendPacket(packet);
         _client.Groups.RequestCurrentGroups();
         return true;
     }

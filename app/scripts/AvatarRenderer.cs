@@ -633,6 +633,34 @@ public partial class AvatarRenderer : Node3D
         }
     }
 
+    /// <summary>A right-click on a nametag asks for the same avatar menu the body gives (agent id,
+    /// name, is it the local avatar, screen position). The tag is a Control that swallows the click,
+    /// so without this it was a dead zone -- and for your own avatar it is the easy thing to hit.</summary>
+    public Action<Guid, string, bool, Godot.Vector2>? NameTagContextRequested;
+
+    /// <summary>A double-click on a nametag opens that avatar's profile (agent id, name).</summary>
+    public Action<Guid, string>? NameTagActivated;
+
+    private void OnNameTagInput(AvatarComponent avatar, Godot.Control panel, Godot.InputEvent ev)
+    {
+        if (ev is not Godot.InputEventMouseButton { Pressed: true } button) return;
+
+        string name = !string.IsNullOrEmpty(avatar.DisplayName)
+            ? avatar.DisplayName
+            : $"{avatar.FirstName} {avatar.LastName}".Trim();
+
+        if (button.ButtonIndex == Godot.MouseButton.Right)
+        {
+            NameTagContextRequested?.Invoke(avatar.AgentId, name, avatar.IsLocalAgent, panel.GetGlobalMousePosition());
+            panel.AcceptEvent();
+        }
+        else if (button.ButtonIndex == Godot.MouseButton.Left && button.DoubleClick)
+        {
+            NameTagActivated?.Invoke(avatar.AgentId, name);
+            panel.AcceptEvent();
+        }
+    }
+
     private void CreateVisual(string entityIdStr)
     {
         if (!Guid.TryParse(entityIdStr, out var entityId)) return;
@@ -742,6 +770,7 @@ public partial class AvatarRenderer : Node3D
         lines.AddChild(legacyLabel);
 
         visual.NameTag = panel;
+        panel.GuiInput += ev => OnNameTagInput(avatar, panel, ev);
         if (_nameTagLayer != null) _nameTagLayer.AddChild(panel);
 
         // Neutral skin tone as placeholder — replaced by baked textures once they arrive.

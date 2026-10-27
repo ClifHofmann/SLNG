@@ -436,7 +436,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.14-alpha";
+    public const string AppVersion = "v0.28.19-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1272,6 +1272,7 @@ public partial class Boot : Control
         {
             _avatarRenderer?.StopSelfAnimationLocal(assetId);
         };
+        _inventoryPanel.OnOpenTextureRequested = (texId, name) => OpenTextureViewer(hudLayer, texId, name);
         _inventoryPanel.OnAddToFavorites = (itemId, assetId, name) =>
         {
             if (_topMenu?.FavoritesBar != null)
@@ -1309,6 +1310,13 @@ public partial class Boot : Control
         };
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+        if (_avatarRenderer != null)
+        {
+            _avatarRenderer.NameTagContextRequested = (agentId, name, isSelf, screenPos) =>
+                _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf,
+                    _session?.IsAvatarMuted(agentId) ?? false, AvatarRenderer.IsAlwaysRenderFully(agentId));
+            _avatarRenderer.NameTagActivated = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+        }
         _inWorldContextMenu.OnAvatarImClicked = (agentId, name) => _chatWindow.OpenOrFocusImTab(agentId, name);
         _inWorldContextMenu.OnAvatarOfferTeleportClicked = (agentId, name) => _session?.OfferTeleport(agentId);
         _inWorldContextMenu.OnAvatarPayClicked = (agentId, name) => ShowPayAvatarWindow(agentId, name);
@@ -1765,6 +1773,7 @@ public partial class Boot : Control
         win.CascadeIndex = _userProfileWindows.Count % 8;
         win.OnOpenImRequested = (id, n) => _chatWindow.OpenOrFocusImTab(id, n);
         win.OnPayRequested = (id, n) => ShowPayAvatarWindow(id, n);
+        win.OnOpenTextureRequested = (texId, n) => OpenTextureViewer(hudLayer, texId, n);
         win.Closed += () =>
         {
             if (_userProfileWindows.Remove(agentId)) _openProfileWindows = _userProfileWindows.Count;
@@ -1772,6 +1781,29 @@ public partial class Boot : Control
         _userProfileWindows[agentId] = win;
         _openProfileWindows = _userProfileWindows.Count;
         win.Initialize(agentId, name, _session, _gpuCache, _assetService);
+    }
+
+    /// <summary>One image viewer per texture: a second click on the same picture raises the open
+    /// one instead of stacking another on top.</summary>
+    private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.TextureViewerWindow> _textureViewers = new();
+
+    private void OpenTextureViewer(CanvasLayer hudLayer, System.Guid textureId, string name)
+    {
+        if (textureId == System.Guid.Empty) return;
+
+        if (_textureViewers.TryGetValue(textureId, out var existing) && GodotObject.IsInstanceValid(existing))
+        {
+            existing.Visible = true;
+            existing.MoveToFront();
+            return;
+        }
+
+        var win = new SLNG.App.UI.TextureViewerWindow();
+        hudLayer.AddChild(win);
+        win.Position += new Vector2(24, 24) * (_textureViewers.Count % 8);
+        win.Closed += () => _textureViewers.Remove(textureId);
+        _textureViewers[textureId] = win;
+        win.Initialize(textureId, name, _assetService);
     }
 
     /// <summary>

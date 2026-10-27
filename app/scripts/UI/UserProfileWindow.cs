@@ -61,17 +61,16 @@ public partial class UserProfileWindow : SLNGWindow
     private string _agentName = "";
     private bool _isSelf;
     private GridSession? _session;
-    private GpuCache? _gpuCache;
     private SLNG.Assets.AssetService? _assetService;
 
     private AvatarProfileProperties? _lastProps;
     private bool _editFieldsSeeded;
 
-    // Which texture id is currently pinned (GpuCache.AddRef'd) in each picture slot -- see
-    // RepinTexture's doc comment for why this exists.
-    private Guid _pinnedProfilePicId = Guid.Empty;
-    private Guid _pinnedFirstLifePicId = Guid.Empty;
-    private Guid _pinnedPickSnapshotId = Guid.Empty;
+    // Which texture id each picture slot is meant to show: a load that finishes for any other id
+    // is stale and dropped (ApplyImage), and a click opens this id in the image viewer.
+    private Guid _profilePicId = Guid.Empty;
+    private Guid _firstLifePicId = Guid.Empty;
+    private Guid _pickSnapshotId = Guid.Empty;
 
     // Shell
     private VBoxContainer _root = null!;
@@ -82,6 +81,8 @@ public partial class UserProfileWindow : SLNGWindow
 
     // Header
     private TextureRect _profilePic = null!;
+    private PanelContainer _profilePicFrame = null!;
+    private static readonly Vector2 ProfilePicMax = new(200, 190);
     private Label _nameLabel = null!;
     private Label _idLabel = null!;
     private Label _bornLabel = null!;
@@ -151,6 +152,9 @@ public partial class UserProfileWindow : SLNGWindow
     /// transfer that cannot be taken back.</summary>
     public Action<Guid, string>? OnPayRequested;
 
+    /// <summary>Asks the owner to open a texture in the image viewer (texture id, title).</summary>
+    public Action<Guid, string>? OnOpenTextureRequested;
+
     /// <summary>Fired from the close button so Boot can drop this window from its per-agent map.</summary>
     public Action? Closed;
 
@@ -203,15 +207,6 @@ public partial class UserProfileWindow : SLNGWindow
     {
         if (_session != null) _session.FriendListChanged -= OnFriendListChanged;
         FlushNotes();
-        // Give back every GpuCache ref this window pinned -- see RepinTexture's doc comment.
-        // Without this, closing the window (or QueueFree on relogin) would leave these entries
-        // pinned in GpuCache forever, since nothing else would ever call ReleaseRef for them.
-        if (_gpuCache != null)
-        {
-            if (_pinnedProfilePicId != Guid.Empty) _gpuCache.ReleaseRef(_pinnedProfilePicId);
-            if (_pinnedFirstLifePicId != Guid.Empty) _gpuCache.ReleaseRef(_pinnedFirstLifePicId);
-            if (_pinnedPickSnapshotId != Guid.Empty) _gpuCache.ReleaseRef(_pinnedPickSnapshotId);
-        }
         base._ExitTree();
     }
 
@@ -222,7 +217,6 @@ public partial class UserProfileWindow : SLNGWindow
         _agentId = agentId;
         _agentName = initialName ?? "";
         _session = session;
-        _gpuCache = gpuCache;
         _assetService = assetService;
         _isSelf = session != null && Guid.TryParse(session.AgentId, out var me) && me == agentId;
 
@@ -274,9 +268,9 @@ public partial class UserProfileWindow : SLNGWindow
             _session?.RequestAvatarName(p.PartnerId);
         }
 
-        RepinTexture(ref _pinnedProfilePicId, p.ProfileImageId);
+        _profilePicId = p.ProfileImageId;
         LoadTextureInto(p.ProfileImageId, _profilePic);
-        RepinTexture(ref _pinnedFirstLifePicId, p.FirstLifeImageId);
+        _firstLifePicId = p.FirstLifeImageId;
         LoadTextureInto(p.FirstLifeImageId, _firstLifePic);
 
         if (_isSelf)
@@ -385,9 +379,9 @@ public partial class UserProfileWindow : SLNGWindow
 
         _pickDetail.Visible = true;
         _pickSnapshot.Texture = null;
-        // Release the previous pick's snapshot ref now that we're done showing it -- ApplyPickDetail
-        // pins the new one once its id is known.
-        RepinTexture(ref _pinnedPickSnapshotId, Guid.Empty);
+        // Forget the previous pick's snapshot so a late load of it is dropped -- ApplyPickDetail
+        // sets the new one once its id is known.
+        _pickSnapshotId = Guid.Empty;
         _pickTitleValue.Text = Tr("loading");
         _pickDescValue.Text = "";
         _pickLocationValue.Text = "";
@@ -403,7 +397,7 @@ public partial class UserProfileWindow : SLNGWindow
         _pickLocationValue.Text = string.IsNullOrWhiteSpace(d.SimName)
             ? ""
             : $"{d.SimName} ({d.GlobalX % 256:0}, {d.GlobalY % 256:0}, {d.GlobalZ:0})";
-        RepinTexture(ref _pinnedPickSnapshotId, d.SnapshotId);
+        _pickSnapshotId = d.SnapshotId;
         LoadTextureInto(d.SnapshotId, _pickSnapshot);
     }
 
@@ -434,15 +428,18 @@ public partial class UserProfileWindow : SLNGWindow
         row.AddThemeConstantOverride("separation", 10);
         parent.AddChild(row);
 
-        var picFrame = new PanelContainer { CustomMinimumSize = new Vector2(76, 76) };
+        var picFrame = new PanelContainer { CustomMinimumSize = new Vector2(154, 154), SizeFlagsVertical = SizeFlags.ShrinkBegin };
+        _profilePicFrame = picFrame;
         picFrame.AddThemeStyleboxOverride("panel", RoundedPanel(new Color(0, 0, 0, 0.35f)));
         _profilePic = new TextureRect
         {
-            CustomMinimumSize = new Vector2(72, 72),
+            CustomMinimumSize = new Vector2(150, 150),
+            TextureFilter = CanvasItem.TextureFilterEnum.LinearWithMipmaps,
             ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
             StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
         };
         picFrame.AddChild(_profilePic);
+        MakeClickable(_profilePic, () => _profilePicId);
         row.AddChild(picFrame);
 
         var col = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -674,8 +671,10 @@ public partial class UserProfileWindow : SLNGWindow
             ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
             StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
             CustomMinimumSize = new Vector2(0, 126),
+            TextureFilter = CanvasItem.TextureFilterEnum.LinearWithMipmaps,
         };
         picFrame.AddChild(_pickSnapshot);
+        MakeClickable(_pickSnapshot, () => _pickSnapshotId);
         _pickDetail.AddChild(picFrame);
 
         _pickDetail.AddChild(SectionLabel(Tr("pick_title")));
@@ -713,9 +712,27 @@ public partial class UserProfileWindow : SLNGWindow
             ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
             StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
             CustomMinimumSize = new Vector2(0, 156),
+            TextureFilter = CanvasItem.TextureFilterEnum.LinearWithMipmaps,
         };
         picFrame.AddChild(_firstLifePic);
+        MakeClickable(_firstLifePic, () => _firstLifePicId);
         return picFrame;
+    }
+
+    /// <summary>A click on a picture opens it in the image viewer, as in the reference viewer.
+    /// Does nothing while no texture is showing yet.</summary>
+    private void MakeClickable(TextureRect pic, Func<Guid> currentId)
+    {
+        pic.MouseFilter = MouseFilterEnum.Stop;
+        pic.MouseDefaultCursorShape = CursorShape.PointingHand;
+        pic.GuiInput += ev =>
+        {
+            if (ev is not InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left }) return;
+            var id = currentId();
+            if (id == Guid.Empty || pic.Texture == null) return;
+            OnOpenTextureRequested?.Invoke(id, _nameLabel.Text);
+            pic.AcceptEvent();
+        };
     }
 
     private static VBoxContainer GroupsListBox()
@@ -1151,44 +1168,56 @@ public partial class UserProfileWindow : SLNGWindow
         ClampToViewport();
     }
 
-    /// <summary>Pins <paramref name="newId"/> in <see cref="GpuCache"/> and releases whatever this
-    /// "slot" had pinned before, so a texture <see cref="LoadTextureInto"/> is still displaying
-    /// can never be evicted (and disposed) out from under its <see cref="TextureRect"/> --
-    /// <see cref="GpuCache.GetOrUploadTextureAsync"/> itself starts an entry at RefCount 0
-    /// (nothing here passes <c>initialRefCount</c>), and this class previously called it without
-    /// ever pinning the result at all. <see cref="WorldMapWindow"/> hit the exact same bug class
-    /// live (a disposed <c>Godot.ImageTexture</c> crashing every subsequent redraw) -- this
-    /// follows its fix, matching <c>ObjectRenderer</c>'s own established convention: <see
-    /// cref="GpuCache.GetOrUploadTextureAsync"/> itself stays ref-neutral, and explicit
-    /// <see cref="GpuCache.AddRef"/>/<see cref="GpuCache.ReleaseRef"/> is the sole ref-counting
-    /// mechanism, called BEFORE the async fetch even starts (not after it completes) -- safe even
-    /// if the fetch is still in flight or ultimately fails, since <c>GpuCache</c>'s own
-    /// <c>_pendingRefDelta</c> buffers a ref for an id that hasn't been <c>Put</c> into the cache
-    /// yet.</summary>
-    private void RepinTexture(ref Guid pinnedId, Guid newId)
-    {
-        if (_gpuCache == null || pinnedId == newId) return;
-        if (pinnedId != Guid.Empty) _gpuCache.ReleaseRef(pinnedId);
-        if (newId != Guid.Empty) _gpuCache.AddRef(newId);
-        pinnedId = newId;
-    }
-
+    /// <summary>Loads a picture into <paramref name="target"/> at full size. These pictures do not
+    /// come from <see cref="GpuCache"/>: its world-budget copy is whatever resolution the scene
+    /// last needed, which showed a profile picture as a blocky thumbnail -- see
+    /// <see cref="FullResImage"/>. The window owns the texture, so there is nothing to pin or
+    /// release.</summary>
     private async Task LoadTextureIntoAsync(Guid texId, TextureRect target)
     {
-        if (texId == Guid.Empty || _gpuCache == null || _assetService == null) return;
-        var tex = await _gpuCache.GetOrUploadTextureAsync(texId, _assetService, generateMipmaps: true)
-            .ConfigureAwait(false);
-        if (tex == null) return;
+        if (texId == Guid.Empty || _assetService == null) return;
+        Image? image;
+        try { image = await FullResImage.LoadAsync(_assetService, texId).ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            Logger.Info($"[Profile] picture {texId.ToString()[..8]} failed: {ex.Message}");
+            return;
+        }
+        if (image == null) return;
         // No SynchronizationContext on the Godot main thread — marshal via CallDeferred on this
         // node (safe, unlike Callable.From(lambda).CallDeferred from a worker thread).
-        CallDeferred(MethodName.ApplyTexture, target, tex);
+        CallDeferred(MethodName.ApplyImage, target, texId.ToString(), image);
     }
 
     private void LoadTextureInto(Guid texId, TextureRect target) => _ = LoadTextureIntoAsync(texId, target);
 
-    private void ApplyTexture(TextureRect target, Texture2D tex)
+    private Guid CurrentIdFor(TextureRect target) =>
+        target == _profilePic ? _profilePicId : target == _firstLifePic ? _firstLifePicId : _pickSnapshotId;
+
+    private void ApplyImage(TextureRect target, string texId, Image image)
     {
-        if (IsInstanceValid(target)) target.Texture = tex;
+        if (!IsInstanceValid(target)) return;
+        // The slot moved on to another picture (a different pick, a newer profile reply) while this
+        // one was loading -- do not paint the stale one over it.
+        if (CurrentIdFor(target).ToString() != texId) return;
+        var tex = ImageTexture.CreateFromImage(image);
+        target.Texture = tex;
+        if (target == _profilePic) FitProfilePicToTexture(tex);
+    }
+
+    /// <summary>
+    /// Profile images come square or rectangular (Firestorm shows both as uploaded), so the
+    /// header slot follows the texture's aspect inside a <see cref="ProfilePicMax"/> box
+    /// instead of letterboxing everything into one fixed shape.
+    /// </summary>
+    private void FitProfilePicToTexture(Texture2D tex)
+    {
+        float w = tex.GetWidth(), h = tex.GetHeight();
+        if (w <= 0 || h <= 0) return;
+        float scale = Mathf.Min(ProfilePicMax.X / w, ProfilePicMax.Y / h);
+        var size = new Vector2(Mathf.Round(w * scale), Mathf.Round(h * scale));
+        _profilePic.CustomMinimumSize = size;
+        _profilePicFrame.CustomMinimumSize = size + new Vector2(4, 4);
     }
 
     private static void FillNameList(VBoxContainer list, string emptyText, int count, Func<int, string> nameAt)

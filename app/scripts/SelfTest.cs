@@ -306,6 +306,7 @@ public static partial class SelfTest
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
+        results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -1358,6 +1359,57 @@ public static partial class SelfTest
     /// synchronously (one call, no frames to wait for), at the default size and in the default tab; the
     /// radar's full-bleed map is the one exception.
     /// </summary>
+    /// <summary>
+    /// An llDialog menu shows every button at one width, however short or long its label (a furniture menu with
+    /// "[BACK]" next to "Wildest Dreams" used to show three different widths), and a partial last row keeps the columns.
+    /// </summary>
+    private static Check CheckScriptDialogButtonWidths(SceneTree tree)
+    {
+        const string Name = "script dialog button widths";
+        var session = new SLNG.Net.GridSession();
+        var window = new UI.ScriptDialogWindow();
+        try
+        {
+            tree.Root.AddChild(window);
+            var labels = new[] { "[BACK]", "To You", "Breathe", "Blue Jeans", "End Game", "Wildest Dreams", "Caught", "Good Morning" };
+            window.Initialize(session, new ScriptDialogEvent(Guid.NewGuid(), "Object", Guid.NewGuid(), "Owner", "Pick", 1, labels));
+
+            static void Layout(Control c)
+            {
+                if (c is Container) c.Notification((int)Container.NotificationSortChildren);
+                foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc);
+            }
+            for (int pass = 0; pass < 3; pass++) Layout(window);
+
+            var widths = new List<float>();
+            void Collect(Node n)
+            {
+                if (n is Button b && labels.Contains(b.Text)) widths.Add(b.Size.X);
+                foreach (var k in n.GetChildren()) Collect(k);
+            }
+            Collect(window);
+
+            bool all = widths.Count == labels.Length;
+            float spread = widths.Count > 0 ? widths.Max() - widths.Min() : float.MaxValue;
+            bool ok = all && spread < 1f;
+            return new Check(Name, ok, ok
+                ? $"{widths.Count} buttons, all {widths[0]:0.#} px wide"
+                : $"{widths.Count}/{labels.Length} buttons found, width spread {spread:0.#} px");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(window))
+            {
+                window.GetParent()?.RemoveChild(window);
+                window.QueueFree();
+            }
+        }
+    }
+
     private static Check CheckWindowInsets(SceneTree tree)
     {
         var session = new SLNG.Net.GridSession();
