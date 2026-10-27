@@ -305,6 +305,7 @@ public static partial class SelfTest
         results.Add(CheckLoginStartResolver()); // FEAT-UI-72
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
+        results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -1502,6 +1503,61 @@ public static partial class SelfTest
         return failures.Count == 0
             ? new Check("window top inset clamping", true, "windows clamp Y >= TopInset (56 px/70 px), re-clamp on dynamic change, never open under top menus")
             : new Check("window top inset clamping", false, string.Join("; ", failures));
+    }
+
+    /// <summary>
+    /// FEAT-UI-75: the Auto-response Preferences page builds, takes the controller's configuration and lays its four
+    /// text boxes out with a real height. Nothing is applied, so the real preferences.cfg is left alone.
+    /// </summary>
+    private static Check CheckAutoresponseWindow(SceneTree tree)
+    {
+        const string Name = "autoresponse preferences page";
+        var presence = new PresenceController();
+        var window = new UI.AutoresponsePreferencesPage();
+        try
+        {
+            tree.Root.AddChild(presence);
+            tree.Root.AddChild(window);
+            window.Initialize(presence);
+            window.Size = new Vector2(480, 600);
+            window.Refresh();
+
+            static void Layout(Control c)
+            {
+                if (c is Container) c.Notification((int)Container.NotificationSortChildren);
+                foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc);
+            }
+            for (int pass = 0; pass < 3; pass++) Layout(window);
+
+            var boxes = new List<TextEdit>();
+            void Collect(Node n)
+            {
+                if (n is TextEdit t) boxes.Add(t);
+                foreach (var k in n.GetChildren()) Collect(k);
+            }
+            Collect(window);
+
+            bool fourBoxes = boxes.Count == 4;
+            bool tall = boxes.TrueForAll(b => b.Size.Y >= 40);
+            bool filled = boxes.TrueForAll(b => b.Text.Length > 0);
+            bool ok = fourBoxes && tall && filled;
+            return new Check(Name, ok, ok
+                ? "four response texts shown, each >= 40 px tall"
+                : $"boxes {boxes.Count} (want 4), all tall: {tall}, all filled: {filled}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            foreach (var n in new Node[] { window, presence })
+            {
+                if (!GodotObject.IsInstanceValid(n)) continue;
+                n.GetParent()?.RemoveChild(n);
+                n.QueueFree();
+            }
+        }
     }
 
     /// <summary>

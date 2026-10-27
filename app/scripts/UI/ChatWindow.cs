@@ -528,6 +528,16 @@ public partial class ChatWindow : SLNGWindow
         AppendMessageToTab(tab, fromAgentName, message, fromAgentId, sentUtc?.ToLocalTime());
     }
 
+    /// <summary>FEAT-UI-75: shows the automatic answer the viewer just sent to <paramref name="toAgentId"/>, in the
+    /// conversation the message it answers opened (the reference viewer logs it right after that message). The sim does
+    /// not echo our own IMs back, so this is the only copy.</summary>
+    public void AppendOutgoingAutoresponse(Guid toAgentId, string text)
+    {
+        var tab = _chatTabs.Find(t => t.Id == toAgentId.ToString());
+        if (tab == null) return;
+        AppendMessageToTab(tab, _session?.AgentName ?? "You", L10n.TrFormat("ui.presence.chat_notice", text));
+    }
+
     /// <summary>Switches to the Chat tab and opens (or focuses) an IM conversation with one
     /// friend -- wired to FriendsPanel's "IM / Call" button and double-clicking a friend row.</summary>
     public void OpenOrFocusImTab(Guid friendId, string friendName)

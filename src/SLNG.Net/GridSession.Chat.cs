@@ -872,14 +872,24 @@ public sealed partial class GridSession
         // Keep the 1:1 XOR id path unchanged: non-foreign session and not marked as group chat.
         if (!isForeign && !e.IM.GroupIM)
         {
+            // FEAT-UI-75: another viewer's automatic answer (Do Not Disturb / autorespond) is shown like any line of
+            // the conversation, and never answered itself.
+            if (e.IM.Dialog == InstantMessageDialog.BusyAutoResponse)
+            {
+                if (hasText)
+                    InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
+                        imFrom, e.IM.FromAgentName, e.IM.Message, sessionId));
+                return;
+            }
+
             if (e.IM.Dialog != InstantMessageDialog.MessageFromAgent) return;
 
             // A message the grid kept for us while we were offline carries when it was sent (BUG-NET-35).
-            DateTime? sentUtc = e.IM.Offline == InstantMessageOnline.Offline
-                ? OfflineMessages.SentUtc(e.IM.Timestamp)
-                : null;
+            bool online = e.IM.Offline != InstantMessageOnline.Offline;
+            DateTime? sentUtc = online ? null : OfflineMessages.SentUtc(e.IM.Timestamp);
             InstantMessageReceived?.Invoke(this, new InstantMessageEvent(
                 imFrom, e.IM.FromAgentName, e.IM.Message, sessionId, sentUtc));
+            if (hasText) TryAutorespond(imFrom, e.IM.FromAgentName, sessionId, online);
             return;
         }
 
@@ -1005,6 +1015,7 @@ public sealed partial class GridSession
     /// <summary>Sends a 1:1 instant message.</summary>
     public void SendInstantMessage(Guid targetAgentId, string message)
     {
+        _autoresponder.NoteOutgoing(targetAgentId); // a conversation we started is not answered when they reply (FEAT-UI-75)
         if (_client.Network.Connected)
             _client.Self.InstantMessage(new UUID(targetAgentId), message);
     }

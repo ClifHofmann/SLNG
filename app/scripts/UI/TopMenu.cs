@@ -2,6 +2,7 @@ using System;
 using Godot;
 using SLNG.Core.Avatars;
 using SLNG.Core.Input;
+using SLNG.Core.Presence;
 
 namespace SLNG.App.UI
 {
@@ -66,6 +67,13 @@ namespace SLNG.App.UI
         public Action<bool>? OnToggleShowFps;
         /// <summary>Invoked when the user toggles the focus marker display from the View menu.</summary>
         public Action<bool>? OnToggleShowFocusMarker;
+        /// <summary>FEAT-UI-75: the Avatar menu's status entries and the readout beside the version.</summary>
+        public Action? OnToggleAway;
+        public Action? OnToggleDoNotDisturb;
+        public Action? OnToggleAutorespond;
+        public Action? OnToggleAutorespondNonFriends;
+        /// <summary>Clicking the status readout ("Away" / "Do Not Disturb") returns to available.</summary>
+        public Action? OnClearStatus;
 
         private Button _locationBtn = null!;
         private Button _copySlurlBtn = null!;
@@ -108,6 +116,36 @@ namespace SLNG.App.UI
 
         private Label _balanceLabel = null!;
         private VSeparator _balanceSep = null!;
+        private Button _statusBtn = null!;
+        private VSeparator _statusSep = null!;
+
+        /// <summary>FEAT-UI-75: shows the agent's availability -- the checks in the Avatar menu and, while Away or
+        /// in Do Not Disturb, a readout in the bar (Do Not Disturb wins, as in the nametag).</summary>
+        public void SetPresence(PresenceConfig config)
+        {
+            if (_avatarMenu != null)
+            {
+                void Check(int id, bool on)
+                {
+                    int idx = _avatarMenu.GetItemIndex(id);
+                    if (idx >= 0) _avatarMenu.SetItemChecked(idx, on);
+                }
+                Check(20, config.Away);
+                Check(21, config.DoNotDisturb);
+                Check(22, config.Autorespond);
+                Check(23, config.AutorespondNonFriends);
+            }
+
+            var status = config.Status;
+            _statusBtn.Visible = status != PresenceStatus.Available;
+            _statusSep.Visible = _statusBtn.Visible;
+            _statusBtn.Text = status == PresenceStatus.DoNotDisturb
+                ? L10n.Tr("ui.presence.status_dnd")
+                : L10n.Tr("ui.presence.status_away");
+            _statusBtn.AddThemeColorOverride("font_color", status == PresenceStatus.DoNotDisturb
+                ? new Color(1f, 0.45f, 0.4f, 0.95f)
+                : new Color(1f, 0.8f, 0.4f, 0.95f));
+        }
 
         /// <summary>FEAT-ECON-01: the L$ balance readout.</summary>
         /// <param name="balance">The simulator's figure.</param>
@@ -430,6 +468,23 @@ namespace SLNG.App.UI
             _fpsSep.AddThemeConstantOverride("separation", 6);
             hbox.AddChild(_fpsSep);
 
+            // FEAT-UI-75: Away / Do Not Disturb readout, hidden while available.
+            _statusBtn = new Button
+            {
+                Flat = true,
+                Visible = false,
+                FocusMode = Control.FocusModeEnum.None,
+                TooltipText = L10n.Tr("ui.presence.status_tooltip"),
+                SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+            };
+            _statusBtn.AddThemeFontSizeOverride("font_size", 13);
+            _statusBtn.Pressed += () => OnClearStatus?.Invoke();
+            hbox.AddChild(_statusBtn);
+
+            _statusSep = new VSeparator { Visible = false };
+            _statusSep.AddThemeConstantOverride("separation", 6);
+            hbox.AddChild(_statusSep);
+
             // FEAT-ECON-01: left of the version, right of the FPS readout -- the corner the
             // reference viewer keeps money in.
             _balanceLabel = new Label
@@ -549,6 +604,12 @@ namespace SLNG.App.UI
             var avatarMenu = new PopupMenu();
             _avatarMenu = avatarMenu;
             avatarMenu.Name = L10n.Tr("ui.menu.avatar");
+            // FEAT-UI-75: Firestorm's status entries, first in the menu as they are there.
+            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.away"), 20);
+            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.do_not_disturb"), 21);
+            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.autorespond"), 22);
+            avatarMenu.AddCheckItem(L10n.Tr("ui.menu.autorespond_non_friends"), 23);
+            avatarMenu.AddSeparator();
             AddHinted(avatarMenu, "ui.menu.rebake_avatar", 0, KeyActionIds.AvatarRebake);
             AddHinted(avatarMenu, "ui.menu.hover_height", 3, KeyActionIds.WindowHoverHeight);
             avatarMenu.AddSeparator();
@@ -631,6 +692,10 @@ namespace SLNG.App.UI
                 else if (id == 11) OnOpenActiveAnimations?.Invoke();
                 else if (id == 12) OnTogglePlayTypingAnimation?.Invoke();
                 else if (id == 13) OnToggleHeadFollowsCamera?.Invoke();
+                else if (id == 20) OnToggleAway?.Invoke();
+                else if (id == 21) OnToggleDoNotDisturb?.Invoke();
+                else if (id == 22) OnToggleAutorespond?.Invoke();
+                else if (id == 23) OnToggleAutorespondNonFriends?.Invoke();
             };
             menuBar.AddChild(avatarMenu);
 
