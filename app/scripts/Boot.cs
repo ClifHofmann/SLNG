@@ -436,7 +436,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.17-alpha";
+    public const string AppVersion = "v0.28.18-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1309,6 +1309,13 @@ public partial class Boot : Control
         };
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+        if (_avatarRenderer != null)
+        {
+            _avatarRenderer.NameTagContextRequested = (agentId, name, isSelf, screenPos) =>
+                _inWorldContextMenu.ShowAvatarMenu(screenPos, agentId, name, isSelf,
+                    _session?.IsAvatarMuted(agentId) ?? false, AvatarRenderer.IsAlwaysRenderFully(agentId));
+            _avatarRenderer.NameTagActivated = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+        }
         _inWorldContextMenu.OnAvatarImClicked = (agentId, name) => _chatWindow.OpenOrFocusImTab(agentId, name);
         _inWorldContextMenu.OnAvatarOfferTeleportClicked = (agentId, name) => _session?.OfferTeleport(agentId);
         _inWorldContextMenu.OnAvatarPayClicked = (agentId, name) => ShowPayAvatarWindow(agentId, name);
