@@ -102,22 +102,60 @@ public partial class ScriptDialogWindow : SLNGWindow
     /// separate always-at-bottom Ignore button, matching the real viewer's reserved ignore row.</summary>
     private void BuildButtonGrid(System.Collections.Generic.IReadOnlyList<string> labels)
     {
+        // One grid, one button width: an HBox per row sized every button to its own text, so "Ignore"-short and
+        // "Wildest Dreams"-long labels sat side by side at different widths. Every cell is now as wide as the
+        // widest label (within a cap; a longer one is cut with an ellipsis and its full text is the tooltip),
+        // and a partial row is padded with empty cells so it keeps the grid's columns.
+        const int Gap = 6;
+        var grid = new GridContainer { Columns = ButtonsPerRow, SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        grid.AddThemeConstantOverride("h_separation", Gap);
+        grid.AddThemeConstantOverride("v_separation", Gap);
+        _contentVBox.AddChild(grid);
+
+        var buttons = new System.Collections.Generic.List<Button>();
         var rowCount = Mathf.CeilToInt(labels.Count / (float)ButtonsPerRow);
         for (int row = rowCount - 1; row >= 0; row--)
         {
-            var rowBox = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-            rowBox.AddThemeConstantOverride("separation", 6);
             for (int col = 0; col < ButtonsPerRow; col++)
             {
                 int index = row * ButtonsPerRow + col;
-                if (index >= labels.Count) break;
+                if (index >= labels.Count)
+                {
+                    grid.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+                    continue;
+                }
 
                 var label = labels[index];
-                var btn = new Button { Text = label, SizeFlagsHorizontal = SizeFlags.ExpandFill };
+                var btn = new Button
+                {
+                    Text = label,
+                    TooltipText = label,
+                    ClipText = true,
+                    TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+                    SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                };
                 btn.Pressed += () => Close(sendReply: true, buttonIndex: index, buttonLabel: label);
-                rowBox.AddChild(btn);
+                grid.AddChild(btn);
+                buttons.Add(btn);
             }
-            _contentVBox.AddChild(rowBox);
+        }
+
+        if (buttons.Count > 0)
+        {
+            var font = buttons[0].GetThemeFont("font");
+            int fontSize = buttons[0].GetThemeFontSize("font_size");
+            float widest = 0;
+            foreach (var l in labels)
+                widest = Mathf.Max(widest, font.GetStringSize(l, HorizontalAlignment.Left, -1, fontSize).X);
+            float cell = Mathf.Clamp(widest + 28f, 96f, 180f);
+
+            foreach (var child in grid.GetChildren())
+                if (child is Control c) c.CustomMinimumSize = new Vector2(cell, 0);
+
+            // The window grows to fit the grid instead of squeezing the cells back to different widths.
+            float needed = ButtonsPerRow * cell + (ButtonsPerRow - 1) * Gap + 2 * DefaultContentMarginH + 8;
+            CustomMinimumSize = new Vector2(Mathf.Max(CustomMinimumSize.X, needed), 0);
+            Size = new Vector2(CustomMinimumSize.X, Size.Y);
         }
 
         var ignoreBox = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
