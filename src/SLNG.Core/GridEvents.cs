@@ -108,6 +108,10 @@ public record FriendStatusEvent(Guid FriendId, bool IsOnline);
 public record InstantMessageEvent(Guid FromAgentId, string FromAgentName, string Message, Guid SessionId,
     DateTime? SentUtc = null);
 
+/// <summary>FEAT-UI-75: the viewer answered a first instant message on the agent's behalf (Away, Do Not Disturb or an
+/// autorespond mode). Raised on a network thread, after the message it answers.</summary>
+public record AutoresponseSentEvent(Guid ToAgentId, string Text);
+
 /// <summary>The agent's group membership list arrived (or was refreshed). Identity/social state,
 /// not world simulation state, so intentionally not an <see cref="IWorldEvent"/>.</summary>
 public record GroupsUpdatedEvent(IReadOnlyList<GroupEntry> Groups);

@@ -359,6 +359,9 @@ public partial class Boot : Control
     private SLNG.App.UI.AvatarHoverSettings _avatarHoverSettings = new();
     private readonly SLNG.App.UI.AnimationSettings _animationSettings = new();
     private SLNG.App.UI.AvatarHoverWindow _avatarHoverWindow = null!;
+    // FEAT-UI-75: Away / Do Not Disturb / autorespond.
+    private PresenceController _presenceController = null!;
+    private SLNG.App.UI.AutoresponsePreferencesPage _autoresponsePage = null!;
     private SLNG.App.UI.ToastOverlay _toastOverlay = null!;
 
     // M5-3 Tabbed Chat window
@@ -433,7 +436,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.5-alpha";
+    public const string AppVersion = "v0.28.14-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1001,6 +1004,7 @@ public partial class Boot : Control
             // it again once that settled. Measured live on Aditi.
             _graphicsPage?.Refresh();
             _maturityPage?.Refresh();
+            _autoresponsePage?.Refresh();
             _preferencesWindow.Unminimize();
             _preferencesWindow.Visible = true;
             _preferencesWindow.EnsureOnScreen();
@@ -1036,6 +1040,15 @@ public partial class Boot : Control
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
         _topMenu.OnOpenHoverHeight = () => ActivateLauncher(_avatarHoverWindow, _avatarHoverWindow.Toggle);
+        // FEAT-UI-75: the Avatar menu's status entries (the controller and its window are built in SetupHud).
+        _presenceController.Changed += _topMenu.SetPresence;
+        _topMenu.SetPresence(_presenceController.Config);
+        _topMenu.OnToggleAway = () => _presenceController.SetAway(!_presenceController.Config.Away);
+        _topMenu.OnToggleDoNotDisturb = () => _presenceController.SetDoNotDisturb(!_presenceController.Config.DoNotDisturb);
+        _topMenu.OnToggleAutorespond = () => _presenceController.SetAutorespond(!_presenceController.Config.Autorespond);
+        _topMenu.OnToggleAutorespondNonFriends = () =>
+            _presenceController.SetAutorespondNonFriends(!_presenceController.Config.AutorespondNonFriends);
+        _topMenu.OnClearStatus = _presenceController.ClearStatus;
         _topMenu.OnOpenMaterialLab = () =>
         {
             _materialLabWindow ??= new SLNG.App.UI.MaterialLabWindow();
@@ -1355,6 +1368,11 @@ public partial class Boot : Control
         _environmentWindow = new SLNG.App.UI.EnvironmentWindow { Name = "EnvironmentWindow" };
         hudLayer.AddChild(_environmentWindow);
         _environmentWindow.Initialize(_windlightPresets, _environmentDriver);
+
+        // FEAT-UI-75: the controller is attached to the session at login (see Attach below); the menu is wired to it
+        // in SetupTopMenu, which runs after this, and its Preferences tab is added with the other tabs.
+        _presenceController = new PresenceController { Name = "PresenceController" };
+        AddChild(_presenceController);
 
         // FEAT-AVATAR-03: hover height. OnHoverChanged applies the local self-avatar render offset
         // immediately (not only after the sim echoes AvatarAppearance back) and sends the new value
@@ -2095,6 +2113,11 @@ public partial class Boot : Control
                 ? new SLNG.App.UI.ChatLogImportContext(_chatLogger, _chatTarget.Directory, _chatTarget.Naming,
                     ChatLogPaths.OldSources(_sessionGridUri, _sessionFirstName, _sessionLastName))
                 : null);
+
+        // FEAT-UI-75: Away timeout and the texts of the automatic IM responses.
+        _autoresponsePage = new SLNG.App.UI.AutoresponsePreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_autoresponse"), _autoresponsePage);
+        _autoresponsePage.Initialize(_presenceController);
 
         // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
         // Rebound to the live session per login in BindSession, once a session exists to read
@@ -4200,6 +4223,9 @@ public partial class Boot : Control
 
         _session.ChatMessageReceived += OnChatMessage;
         _session.InstantMessageReceived += OnInstantMessageReceived;
+        // FEAT-UI-75: from here on the session answers first messages and shows Away to the sim.
+        _session.AutoresponseSent += OnAutoresponseSent;
+        _presenceController.Attach(_session);
         // M5-3 Phase 2: group chat. Same network-thread marshalling reason as the IM handlers.
         _session.GroupChatMessageReceived += OnGroupChatMessageReceived;
         _session.ConferenceChatMessageReceived += OnConferenceChatMessageReceived;
@@ -4719,6 +4745,12 @@ public partial class Boot : Control
         CallDeferred(nameof(AppendInstantMessage), e.FromAgentId.ToString(), e.FromAgentName, e.Message,
             e.SentUtc?.Ticks ?? 0L);
     }
+
+    private void OnAutoresponseSent(object? sender, AutoresponseSentEvent e) =>
+        CallDeferred(nameof(AppendAutoresponse), e.ToAgentId.ToString(), e.Text); // network thread
+
+    private void AppendAutoresponse(string toAgentId, string text) =>
+        _chatWindow.AppendOutgoingAutoresponse(System.Guid.Parse(toAgentId), text);
 
     private void AppendInstantMessage(string fromAgentId, string fromAgentName, string message, long sentUtcTicks)
     {
