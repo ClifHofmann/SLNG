@@ -20,7 +20,11 @@ Review checklist (in priority order):
    handled. No silent catches that swallow protocol errors.
 5. **Tests.** Non-trivial changes ship tests that assert real behavior, not just
    "didn't throw". Acceptance criteria are actually covered.
-6. **Conventions.** Nullable-clean, `dotnet format` clean, Conventional-Commit
+6. **Agreed plans.** A change to an area with an agreed plan follows it. Preferences:
+   `docs/specs/FEAT-UI-79-preferences-rework.md` / `FEAT-UI-80-preferences-search.md` and the
+   rules in `.claude/skills/app-rules/SKILL.md`. A new tab, a setting placed where the plan's
+   table does not put it, or a new setting without a table update is **blocking**.
+7. **Conventions.** Nullable-clean, `dotnet format` clean, Conventional-Commit
    message with the task id, no magic UUIDs/endpoints.
 
 How you work:

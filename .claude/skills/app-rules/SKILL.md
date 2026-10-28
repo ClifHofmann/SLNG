@@ -1,6 +1,6 @@
 ---
 name: app-rules
-description: Rules for app/ (the Godot 4 .NET client) — the mandatory SLNGWindow base class for floating UI, the AppVersion bump rule, the separate build step app/ needs, and the Godot/SL rendering traps this project has hit. Loads automatically when working under app/.
+description: Rules for app/ (the Godot 4 .NET client) — the mandatory SLNGWindow base class for floating UI, the AppVersion bump rule, the agreed plan the Preferences window follows, the separate build step app/ needs, and the Godot/SL rendering traps this project has hit. Loads automatically when working under app/.
 paths: app/**
 ---
 
@@ -60,6 +60,30 @@ Preferences > Keyboard (FEAT-UI-43, `docs/specs/FEAT-UI-43-keybindings.md`).
 - If the feature you build has a Second Life shortcut, it is probably listed in `SlShortcutGaps` with your ticket id:
   bind it as part of the feature and delete the entry (recipe in the spec). `SlShortcutGapTests` fails when the
   ticket is ✅ Done and the chord is still a gap.
+
+## Preferences follow the plan (FEAT-UI-79 / FEAT-UI-80)
+
+The Preferences window has an agreed target, decided with the maintainer on 2026-10-28: seven categories made of
+sections, no sub-tabs, expert options in a collapsed "Advanced" per section, and a search that filters in place like
+Firestorm's. `docs/specs/FEAT-UI-79-preferences-rework.md` and `docs/specs/FEAT-UI-80-preferences-search.md` are the
+plan. Every change to Preferences moves toward it, never away from it.
+
+- **No new tab or category.** A new setting goes into the category and section that FEAT-UI-79's table names for its
+  topic. If no section fits, propose one to the maintainer and add it to the table before building it.
+- **Update the table in the same commit** as the setting: category, section, main or Advanced, where it came from.
+- **Main or Advanced:** Advanced when the setting is outside the graphics presets and needs knowledge to set
+  (experimental, needs a restart, a trade-off a newcomer cannot judge), or when it fine-tunes a main switch. Everything
+  else is a main row.
+- **Before FEAT-UI-79 is built:** put the setting on today's page that becomes its category (the table's "From today"
+  column), with that page's existing helpers. Do not start a new layout or a new set of helpers.
+- **After FEAT-UI-79 is built:** build every row with `PrefsSection` / `PrefsRow` from L10n keys, in both language
+  files. Give a row that does not apply at once its badge, and declare `DependsOn` when another switch hides or disables
+  it. A row built any other way is invisible to the search, and the selftest "preferences complete" fails on a setting
+  that is missing from its inventory.
+- **After FEAT-UI-80 is built:** give a row the SL debug-setting name it corresponds to as a keyword, checked against
+  `scratch/slviewer/indra/newview/app_settings/settings.xml`, never written from memory.
+- **No silent deviation.** A sub-tab, a separate result list, a global basic/expert switch, a second checkbox style, or
+  anything else the plan does not cover or contradicts: ask the maintainer first, then update the spec, then build it.
 
 ## Threading
 

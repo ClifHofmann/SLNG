@@ -152,12 +152,16 @@ that area is being worked on. All three are plain Markdown — Gemini CLI can lo
 | `app/**` | `.claude/skills/app-rules/SKILL.md` | **`SLNGWindow` for all floating UI**, **the `AppVersion` bump rule**, the separate `app/` build, Godot/SL rendering traps |
 | `tests/**` | `.claude/skills/tests-rules/SKILL.md` | what a test must assert, fixtures, the local-OpenSim-only policy |
 
-Two of these are hard requirements and are called out here so they are not missed:
+Three of these are hard requirements and are called out here so they are not missed:
 
 - **Every floating, draggable UI window MUST inherit `SLNG.App.UI.SLNGWindow`.** No native
   Godot `Window` nodes, no bare `PanelContainer` popups.
 - **Every feature, fix or significant UI change MUST bump `AppVersion`** in
   `app/scripts/Boot.cs` — it is shown on the login screen and in the title bar.
+- **The Preferences window MUST follow its plan**, `docs/specs/FEAT-UI-79-preferences-rework.md`
+  and `docs/specs/FEAT-UI-80-preferences-search.md`. No new tab; a new setting goes into the
+  category and section the plan's table names, and the table is updated in the same commit. A
+  change the plan does not cover or contradicts needs the maintainer's OK and a spec update first.
 
 ## Feature Tracking & ID Convention
 
