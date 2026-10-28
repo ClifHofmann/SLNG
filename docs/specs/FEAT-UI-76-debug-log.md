@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-76`
 - **Track:** `ui` / `core`
-- **Status:** 🧪 Review
+- **Status:** ✅ Done
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
