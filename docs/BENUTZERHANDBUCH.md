@@ -281,6 +281,15 @@ Eines der Highlights des Viewers sind die modernen Navigations- und Karten-Tools
 - **Sound:** Musik-URL, die Beschränkung von Gesten- und Objektsounds, wer Avatar-Sounds machen darf, die Voice-Einstellungen (hat der Grundbesitz Voice abgeschaltet, steht dort „vom Grundbesitz festgelegt“) und „MOAP auf diese Parzelle beschränken“. Letzteres kann der Viewer noch nicht aus der Sim lesen; es steht deshalb als „unbekannt“ da und nicht als nicht angehakt.
 - Die Häkchen sind reine Anzeige und lassen sich nicht umschalten; ein Hinweistext sagt, dass das Ändern noch nicht verfügbar ist.
 
+### Favoritenleiste
+Die Leiste unter der Menüleiste zeigt die Orte aus Ihrem Inventar-Ordner **Favoriten**, also dieselben wie in Firestorm und in der Liste „Startort wählen“ beim Login:
+- Ein Klick auf einen Ort teleportiert Sie dorthin. Rechtsklick: **Teleportieren**, **SLurl kopieren**, **Aus Favoriten entfernen**.
+- **Hinzufügen:** Ziehen Sie eine Landmarke aus dem Inventar oder dem Landmarken-Fenster auf die Leiste, oder wählen Sie **+** und dann **Aktuellen Ort zu Favoriten hinzufügen**. Die Landmarke wird als **Kopie** in den Ordner Favoriten gelegt, das Original bleibt in „Landmarken“. Eine Landmarke, die sich nicht kopieren lässt, oder ein Ort, der schon ein Favorit ist, wird abgelehnt und der Viewer sagt es.
+- **Entfernen** legt die Kopie in den Papierkorb; das Original bleibt erhalten.
+- Ein Favorit, den Sie in einem anderen Viewer hinzufügen oder entfernen, erscheint hier nach kurzer Zeit.
+- Die Reihenfolge merkt sich nur dieser Viewer; ein neuer Favorit steht zuerst.
+- Hat ein Grid keinen Favoriten-Ordner, sagt die Leiste das und lässt nichts hinzufügen. Die frühere lokale Favoritenliste des Viewers wird nicht mehr benutzt und nicht übernommen. (ab Version v0.28.26-alpha)
+
 ### Regions-Neustart
 Kündigt das Grid einen Neustart der Region an, in der Sie stehen, öffnet sich das Fenster **Regions-Neustart**:
 - Es nennt die Region und zählt die Zeit bis zum Neustart herunter (ab zehn Sekunden Restzeit wird die Zahl rot). Die Taskleiste blinkt, falls der Viewer im Hintergrund ist.

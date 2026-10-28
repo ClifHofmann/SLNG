@@ -1,19 +1,32 @@
 using System;
+using System.Threading.Tasks;
 using Godot;
 using SLNG.Core;
+using SLNG.Core.Landmarks;
 
 namespace SLNG.App.UI;
 
 /// <summary>
 /// Firestorm-parity horizontal favorites bar docked beneath the top menu bar (FEAT-UI-67).
-/// Displays quick-teleport landmark buttons, handles drag-and-drop from inventory and landmarks window,
-/// and persists favorites per resident.
+/// Displays quick-teleport landmark buttons and handles drag-and-drop from inventory and landmarks window.
+///
+/// <para>Since FEAT-UI-72 phase 2 it is a VIEW of the inventory's Favorites folder, the same list the login screen and
+/// other viewers use: it shows <see cref="FavoritesService.Items"/> and every add or remove goes through the service, which
+/// copies into or trashes from that folder. SLNG's old local list is no longer read, and nothing was migrated. Only
+/// whether the bar is shown is kept here, per resident.</para>
 /// </summary>
 public partial class FavoritesBar : PanelContainer
 {
     private string? _gridSlug;
     private string? _agentId;
-    private LandmarkFavoritesList _list = new();
+    private FavoritesService? _service;
+
+    /// <summary>The bar of this client, for the drag card (<see cref="LandmarkDragPreview"/>) to ask what a drop would do.</summary>
+    public static FavoritesBar? Current { get; private set; }
+
+    private StyleBoxFlat _normalStyle = null!;
+    private StyleBoxFlat _dropStyle = null!;
+    private bool _dropHover;
 
     private HBoxContainer _itemsHBox = null!;
     private ScrollContainer _scroll = null!;
@@ -24,20 +37,24 @@ public partial class FavoritesBar : PanelContainer
     private PopupMenu _itemContextMenu = null!;
     private PopupMenu _addMenu = null!;
     private PopupMenu _barContextMenu = null!;
-    private LandmarkFavoriteItem? _contextItem;
+    private LandmarkInventoryItem? _contextItem;
 
     public Action<Guid, Guid, string>? OnTeleportRequested;
     public Action? OnOpenLandmarksWindow;
     public Action? OnAddCurrentLocation;
     public Action<string>? OnToast;
 
-    public LandmarkFavoritesList FavoritesList => _list;
-
     public override void _Ready()
     {
         base._Ready();
 
-        AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        Current = this;
+        TreeExited += () =>
+        {
+            if (Current == this) Current = null;
+        };
+
+        _normalStyle = new StyleBoxFlat
         {
             BgColor = new Color(0.02f, 0.04f, 0.07f, 0.45f),
             BorderWidthBottom = 1,
@@ -46,7 +63,22 @@ public partial class FavoritesBar : PanelContainer
             ContentMarginRight = 6,
             ContentMarginTop = 1,
             ContentMarginBottom = 1
-        });
+        };
+        // While a landmark is dragged over the bar: a lit outline, so the bar itself says "drop here".
+        _dropStyle = new StyleBoxFlat
+        {
+            BgColor = new Color(0.05f, 0.18f, 0.12f, 0.8f),
+            BorderWidthLeft = 2,
+            BorderWidthTop = 2,
+            BorderWidthRight = 2,
+            BorderWidthBottom = 2,
+            BorderColor = new Color(0.25f, 0.85f, 0.4f, 0.9f),
+            ContentMarginLeft = 6,
+            ContentMarginRight = 6,
+            ContentMarginTop = 1,
+            ContentMarginBottom = 1
+        };
+        AddThemeStyleboxOverride("panel", _normalStyle);
 
         var mainHBox = new HBoxContainer();
         mainHBox.AddThemeConstantOverride("separation", 4);
@@ -162,31 +194,69 @@ public partial class FavoritesBar : PanelContainer
         Reset();
     }
 
-    public void Initialize(string? gridSlug, string? agentId)
+    /// <summary>What a drop of a landmark on the bar would do: the text and colours the drag card shows.</summary>
+    public readonly record struct DropStatus(string Text, Color TextColor, Color Border);
+
+    /// <summary>The answer for the drag card. <paramref name="assetId"/> is the landmark's asset when the drag source knows it.</summary>
+    public DropStatus DropStatusFor(Guid itemId, Guid assetId)
     {
+        var good = (new Color(0.35f, 0.95f, 0.45f), new Color(0.25f, 0.85f, 0.4f, 0.9f));
+        var warn = (new Color(1.0f, 0.75f, 0.25f), new Color(0.9f, 0.65f, 0.2f, 0.9f));
+        var bad = (new Color(0.95f, 0.4f, 0.4f), new Color(0.85f, 0.3f, 0.3f, 0.9f));
+
+        var mode = _service?.Mode ?? FavoritesMode.Loading;
+        if (mode == FavoritesMode.NoFolder)
+            return new DropStatus(L10n.Tr("ui.favorites_bar.drop_no_folder"), bad.Item1, bad.Item2);
+        if (mode != FavoritesMode.Folder)
+            return new DropStatus(L10n.Tr("ui.favorites_bar.drop_not_ready"), warn.Item1, warn.Item2);
+
+        foreach (var favorite in _service!.Items)
+        {
+            if (favorite.Id == itemId || (assetId != Guid.Empty && favorite.AssetId == assetId))
+                return new DropStatus(L10n.Tr("ui.favorites_bar.drop_already"), warn.Item1, warn.Item2);
+        }
+        return new DropStatus(L10n.Tr("ui.favorites_bar.drop_add"), good.Item1, good.Item2);
+    }
+
+    public override void _Process(double delta)
+    {
+        var viewport = GetViewport();
+        bool want = Visible && viewport != null && viewport.GuiIsDragging()
+            && _CanDropData(Vector2.Zero, viewport.GuiGetDragData())
+            && GetGlobalRect().HasPoint(GetGlobalMousePosition());
+        if (want == _dropHover) return;
+        _dropHover = want;
+        AddThemeStyleboxOverride("panel", want ? _dropStyle : _normalStyle);
+    }
+
+    public void Initialize(FavoritesService service, string? gridSlug, string? agentId)
+    {
+        DetachService();
+        _service = service;
+        _service.Changed += OnServiceChanged;
         _gridSlug = gridSlug;
         _agentId = agentId;
-        if (!string.IsNullOrWhiteSpace(gridSlug) && !string.IsNullOrWhiteSpace(agentId))
-        {
-            _list = LandmarkFavoritesStore.Load(gridSlug, agentId);
-            Visible = LandmarkFavoritesStore.LoadVisible(gridSlug, agentId);
-        }
-        else
-        {
-            _list = new LandmarkFavoritesList();
-            Visible = false;
-        }
+        Visible = !string.IsNullOrWhiteSpace(gridSlug) && !string.IsNullOrWhiteSpace(agentId)
+            && LandmarkFavoritesStore.LoadVisible(gridSlug, agentId);
         RebuildItems();
     }
 
     public void Reset()
     {
+        DetachService();
         _gridSlug = null;
         _agentId = null;
-        _list = new LandmarkFavoritesList();
         Visible = false;
         RebuildItems();
     }
+
+    private void DetachService()
+    {
+        if (_service != null && IsInstanceValid(_service)) _service.Changed -= OnServiceChanged;
+        _service = null;
+    }
+
+    private void OnServiceChanged() => RebuildItems();
 
     public void SetVisibleState(bool visible)
     {
@@ -194,33 +264,21 @@ public partial class FavoritesBar : PanelContainer
         LandmarkFavoritesStore.SaveVisible(_gridSlug, _agentId, visible);
     }
 
-    public bool AddFavorite(Guid itemId, Guid assetId, string name)
+    /// <summary>Makes a landmark a favorite and says what came of it. The copy is requested here; the button appears when the
+    /// grid's update arrives.</summary>
+    public async Task AddFavoriteAsync(Guid itemId, string name)
     {
-        if (string.IsNullOrWhiteSpace(_gridSlug) || string.IsNullOrWhiteSpace(_agentId))
-            return false;
-
-        var item = new LandmarkFavoriteItem(itemId, assetId, name);
-        if (_list.Add(item))
+        if (_service == null) return;
+        var verdict = await _service.AddAsync(itemId);
+        OnToast?.Invoke(verdict switch
         {
-            LandmarkFavoritesStore.Save(_gridSlug, _agentId, _list);
-            RebuildItems();
-            return true;
-        }
-        return false;
-    }
-
-    public bool RemoveFavorite(Guid id)
-    {
-        if (string.IsNullOrWhiteSpace(_gridSlug) || string.IsNullOrWhiteSpace(_agentId))
-            return false;
-
-        if (_list.Remove(id))
-        {
-            LandmarkFavoritesStore.Save(_gridSlug, _agentId, _list);
-            RebuildItems();
-            return true;
-        }
-        return false;
+            FavoriteAddVerdict.Add => L10n.TrFormat("ui.favorites_bar.added_toast", name),
+            FavoriteAddVerdict.NoFolder => L10n.Tr("ui.favorites_bar.no_folder"),
+            FavoriteAddVerdict.NotCopyable => L10n.TrFormat("ui.favorites_bar.not_copyable", name),
+            FavoriteAddVerdict.AlreadyInFolder or FavoriteAddVerdict.AssetAlreadyFavorite
+                => L10n.TrFormat("ui.favorites_bar.already", name),
+            _ => L10n.TrFormat("ui.favorites_bar.add_failed", name),
+        });
     }
 
     public void RebuildItems()
@@ -233,17 +291,28 @@ public partial class FavoritesBar : PanelContainer
                 child.QueueFree();
         }
 
-        bool hasItems = _list.Items.Count > 0;
+        var mode = _service?.Mode ?? FavoritesMode.Loading;
+        var items = _service?.Items ?? Array.Empty<LandmarkInventoryItem>();
+        bool hasItems = mode == FavoritesMode.Folder && items.Count > 0;
         _emptyLabel.Visible = !hasItems;
+        _emptyLabel.Text = L10n.Tr(mode switch
+        {
+            FavoritesMode.Loading => "ui.favorites_bar.loading",
+            FavoritesMode.NoFolder => "ui.favorites_bar.no_folder",
+            FavoritesMode.Unavailable => "ui.favorites_bar.unavailable",
+            _ => "ui.favorites_bar.empty_hint",
+        });
+        if (_addBtn != null) _addBtn.Disabled = mode == FavoritesMode.NoFolder;
 
-        foreach (var item in _list.Items)
+        if (!hasItems) return;
+        foreach (var item in items)
         {
             var btn = CreateFavoriteButton(item);
             _itemsHBox.AddChild(btn);
         }
     }
 
-    private Button CreateFavoriteButton(LandmarkFavoriteItem item)
+    private Button CreateFavoriteButton(LandmarkInventoryItem item)
     {
         string labelText = item.Name.Length > 24 ? item.Name[..22] + "…" : item.Name;
         var btn = new Button
@@ -260,7 +329,7 @@ public partial class FavoritesBar : PanelContainer
         btn.AddThemeColorOverride("font_pressed_color", new Color(0.4f, 0.8f, 1.0f, 1.0f));
 
         var captured = item;
-        btn.Pressed += () => OnTeleportRequested?.Invoke(captured.AssetId, captured.ItemId, captured.Name);
+        btn.Pressed += () => OnTeleportRequested?.Invoke(captured.AssetId, captured.Id, captured.Name);
 
         btn.GuiInput += (ev) =>
         {
@@ -288,7 +357,7 @@ public partial class FavoritesBar : PanelContainer
 
         if (id == 0) // Teleport
         {
-            OnTeleportRequested?.Invoke(_contextItem.AssetId, _contextItem.ItemId, _contextItem.Name);
+            OnTeleportRequested?.Invoke(_contextItem.AssetId, _contextItem.Id, _contextItem.Name);
         }
         else if (id == 1) // Copy SLurl
         {
@@ -299,9 +368,9 @@ public partial class FavoritesBar : PanelContainer
         else if (id == 2) // Remove
         {
             string name = _contextItem.Name;
-            Guid removeId = _contextItem.ItemId != Guid.Empty ? _contextItem.ItemId : _contextItem.AssetId;
-            if (RemoveFavorite(removeId))
+            if (_service != null)
             {
+                _ = _service.RemoveAsync(_contextItem.Id);
                 OnToast?.Invoke(L10n.TrFormat("ui.favorites_bar.removed_toast", name));
             }
         }
@@ -335,12 +404,8 @@ public partial class FavoritesBar : PanelContainer
             if (parts.Length >= 4)
             {
                 Guid.TryParse(parts[1], out var itemId);
-                Guid.TryParse(parts[2], out var assetId);
                 string name = parts[3];
-                if (AddFavorite(itemId, assetId, name))
-                {
-                    OnToast?.Invoke(L10n.TrFormat("ui.favorites_bar.added_toast", name));
-                }
+                _ = AddFavoriteAsync(itemId, name);
             }
         }
         else if (s.StartsWith("slng_item|"))
@@ -351,10 +416,7 @@ public partial class FavoritesBar : PanelContainer
             {
                 Guid.TryParse(parts[1], out var itemId);
                 string name = parts[2];
-                if (AddFavorite(itemId, Guid.Empty, name))
-                {
-                    OnToast?.Invoke(L10n.TrFormat("ui.favorites_bar.added_toast", name));
-                }
+                _ = AddFavoriteAsync(itemId, name);
             }
         }
     }

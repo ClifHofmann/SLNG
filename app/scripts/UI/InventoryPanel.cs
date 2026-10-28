@@ -421,7 +421,11 @@ public partial class InventoryPanel : SLNGWindow
                 && (assetType == SLNG.Core.AssetTypeIds.Object
                     || (assetType == SLNG.Core.AssetTypeIds.Link && Guid.TryParse(itemIdStr, out var linkId)
                         && IsObjectItem?.Invoke(linkId) == true));
-            Control preview = rezzable ? new RezDragPreview(name, assetType) : new Label { Text = name };
+            // A landmark gets a card that also tells what dropping it on the favorites bar will do (LandmarkDragPreview).
+            bool landmark = !isFolder && assetType == SLNG.Core.AssetTypeIds.Landmark;
+            Control preview = rezzable ? new RezDragPreview(name, assetType)
+                : landmark ? new LandmarkDragPreview(name, Guid.TryParse(itemIdStr, out var landmarkId) ? landmarkId : Guid.Empty, Guid.Empty)
+                : new Label { Text = name };
             SetDragPreview(preview);
 
             return payload;

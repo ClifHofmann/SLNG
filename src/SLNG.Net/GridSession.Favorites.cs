@@ -136,4 +136,73 @@ public sealed partial class GridSession
             return FavoritesSnapshot.Unconfirmed;
         }
     }
+
+    // ---- phase 2: the bar is this folder -----------------------------------------------------------------------------------
+
+    /// <summary>The inventory changed in a way that can change the Favorites folder: a landmark or a folder was added,
+    /// updated or removed. Raised on a network thread, often many times in a row (a login fills the whole tree), so the
+    /// listener debounces and then reads <see cref="ReadFavoritesFromStore"/>, which needs no network.</summary>
+    public event EventHandler? FavoritesChanged;
+
+    private int _favoritesWatching;
+
+    /// <summary>Starts listening to the inventory store for <see cref="FavoritesChanged"/>. Call once after login;
+    /// further calls do nothing.</summary>
+    public void StartFavoritesWatch()
+    {
+        var store = _client.Inventory?.Store;
+        if (store == null || Interlocked.Exchange(ref _favoritesWatching, 1) == 1) return;
+        store.InventoryObjectAdded += (_, e) => NoteFavoritesRelevant(e.Obj);
+        store.InventoryObjectUpdated += (_, e) => NoteFavoritesRelevant(e.NewObject);
+        store.InventoryObjectRemoved += (_, e) => NoteFavoritesRelevant(e.Obj);
+    }
+
+    private void NoteFavoritesRelevant(LibreMetaverse.InventoryBase? obj)
+    {
+        // A landmark, or a folder (one moved to the Trash takes its landmarks with it). Anything else cannot matter.
+        bool relevant = obj is LibreMetaverse.InventoryFolder
+            || obj is LibreMetaverse.InventoryLandmark
+            || obj is LibreMetaverse.InventoryItem { InventoryType: LibreMetaverse.InventoryType.Landmark };
+        if (relevant) FavoritesChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Makes a landmark a favorite by copying it into the Favorites folder. The decision is
+    /// <see cref="FavoritesAddPolicy"/>, made before anything is sent; <see cref="FavoriteAddVerdict.Add"/> means the copy was
+    /// <b>requested</b>, not that it happened (<see cref="CopyItemAsync"/> explains why its result is no proof) -- the
+    /// folder is read again when the grid's update arrives, and that is what shows up in the bar.
+    /// </summary>
+    public async Task<FavoriteAddVerdict> AddFavoriteAsync(Guid itemId, CancellationToken ct = default)
+    {
+        var folder = FavoritesFolderId;
+        var item = _client.Inventory.Store?.GetNodeOrDefault(new LibreMetaverse.UUID(itemId))?.Data as LibreMetaverse.InventoryItem;
+        bool isLandmark = item is LibreMetaverse.InventoryLandmark
+            || item?.InventoryType == LibreMetaverse.InventoryType.Landmark;
+        // The CURRENT owner's Copy right: a favorite is a copy and the grid refuses one the person may not make.
+        bool canCopy = item != null && (item.Permissions.OwnerMask & LibreMetaverse.PermissionMask.Copy) != LibreMetaverse.PermissionMask.None;
+
+        var verdict = FavoritesAddPolicy.Decide(
+            folder != null, isLandmark, itemId, item?.ResolvedAssetID.Guid ?? Guid.Empty, canCopy,
+            ReadFavoritesFromStore().Items);
+        if (verdict != FavoriteAddVerdict.Add) return verdict;
+
+        await CopyItemAsync(itemId, folder!.Value, "", ct).ConfigureAwait(false);
+        return verdict;
+    }
+
+    /// <summary>Takes a favorite out of the bar by moving its copy to the Trash (what the viewer's <c>removeItem</c> does).
+    /// Only the copy in the Favorites folder goes; the original in Landmarks is another item.</summary>
+    public async Task RemoveFavoriteAsync(Guid itemId)
+    {
+        await MoveToTrashAsync(itemId, isFolder: false).ConfigureAwait(false);
+        FavoritesChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Creates a landmark for where the agent stands, straight in the Favorites folder. Null when the grid has no
+    /// such folder.</summary>
+    public async Task<LandmarkCreateResult?> AddCurrentLocationAsync(string name, CancellationToken ct = default)
+    {
+        if (FavoritesFolderId is not { } folder) return null;
+        return await CreateLandmarkHereAsync(name, "", folder, ct).ConfigureAwait(false);
+    }
 }

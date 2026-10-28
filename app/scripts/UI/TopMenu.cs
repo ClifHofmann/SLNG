@@ -81,6 +81,10 @@ namespace SLNG.App.UI
         private VSeparator _fpsSep = null!;
         private string? _currentRegion;
         private string? _currentParcel;
+
+        /// <summary>The parcel's name, or the region's when the parcel has none of its own; empty before the agent is anywhere.
+        /// What a landmark of the current place is called.</summary>
+        public string CurrentPlaceName => !string.IsNullOrWhiteSpace(_currentParcel) ? _currentParcel! : _currentRegion ?? "";
         private int _currentX, _currentY, _currentZ;
         private bool _showFps = true;
         private bool _showFocusMarker = false;
