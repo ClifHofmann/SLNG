@@ -302,7 +302,8 @@ public static partial class SelfTest
         results.Add(CheckMfaHashStore());
         results.Add(CheckLoginStartStore()); // FEAT-UI-72
         results.Add(CheckLoginStartPicker(tree)); // FEAT-UI-72
-        results.Add(CheckLoginStartResolver()); // FEAT-UI-72
+        results.Add(CheckLoginStartResolver());
+        results.Add(CheckLoginStartFlushResolves()); // FEAT-UI-72 // FEAT-UI-72
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75

@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.27-alpha";
+    public const string AppVersion = "v0.28.28-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -6061,9 +6061,9 @@ public partial class Boot : Control
             _session.SaveInventoryCache();
             _session.SaveDisplayNameCache();
 
-            // FEAT-UI-72: one last write of the login screen's favorites from the local store (no network, nothing awaited), so
-            // a favorite added or renamed during the session is covered, then the resolver stops.
-            FlushAndStopLoginStartFavorites();
+            // FEAT-UI-72: one last write of the login screen's favorites. The session is still connected, so a favorite added
+            // since the last pass is resolved now (a few seconds at most) instead of waiting for the next session.
+            await FlushAndStopLoginStartFavoritesAsync();
 
             // Hide all UI components for a clean screenshot
             var loginScreen = GetNodeOrNull<Control>("%LoginScreen");

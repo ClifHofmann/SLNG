@@ -121,6 +121,52 @@ internal sealed class LoginStartFavorites : IDisposable
         return TryTakeUpdate(out update);
     }
 
+    /// <summary>
+    /// The last write before a logout, WITH the landmarks nobody has resolved yet. <see cref="TryFlush"/> leaves those out, which
+    /// is why a favorite added shortly before logging out was missing from the login list: it had not been resolved to a region
+    /// and a position, and resolving needs the network. The session is still connected at this point, so each unresolved
+    /// landmark is looked up (a few hundred milliseconds apiece) within <paramref name="budget"/>; whatever did not finish is
+    /// left out and picked up by the next session. Runs on a worker thread like the rest of this class.
+    /// </summary>
+    public async Task<LoginStartFavoritesUpdate?> FlushAsync(TimeSpan budget)
+    {
+        var snapshot = _source.ReadFavoritesFromStore();
+        if (snapshot.Confirmed)
+        {
+            var reconciled = Reconcile(snapshot.Items);
+            Publish(reconciled.Favorites);
+
+            if (reconciled.Unresolved.Count > 0)
+            {
+                using var cts = new CancellationTokenSource(budget);
+                try
+                {
+                    foreach (var item in reconciled.Unresolved)
+                    {
+                        if (item.AssetId == Guid.Empty) continue;
+                        lock (_gate)
+                        {
+                            if (_failed.Contains(item.AssetId)) continue;
+                        }
+
+                        var lookup = await _source.LookupLandmarkTargetAsync(item.AssetId, cts.Token).ConfigureAwait(false);
+                        lock (_gate)
+                        {
+                            if (lookup.Target != null) _known[item.AssetId] = lookup.Target;
+                            else _failed.Add(item.AssetId);
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // out of time: what was resolved so far is published below
+                }
+                Publish(Reconcile(snapshot.Items).Favorites);
+            }
+        }
+        return TryTakeUpdate(out var update) ? update : null;
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;

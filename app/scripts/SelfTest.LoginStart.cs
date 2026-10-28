@@ -260,6 +260,46 @@ public static partial class SelfTest
         public int LookedCount() { lock (_gate) return Looked.Count; }
     }
 
+    /// <summary>FEAT-UI-72: the flush before a logout resolves the landmarks nobody has resolved yet, so a favorite added shortly
+    /// before logging out still reaches the login list; one that cannot be resolved is left out.</summary>
+    private static Check CheckLoginStartFlushResolves()
+    {
+        const string Name = "login start flush resolves new favorites";
+        try
+        {
+            var known = Guid.NewGuid(); var fresh = Guid.NewGuid(); var broken = Guid.NewGuid();
+            LandmarkInventoryItem Item(string name, Guid asset, int age) =>
+                new(Guid.NewGuid(), Guid.NewGuid(), asset, name, "Favorites", "Favorites", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(-age));
+
+            StartTarget.TryCreate("Ahern", 1, 2, 3, StartTarget.OpenMaxXY, out var ahern);
+            StartTarget.TryCreate("Sunset", 4, 5, 6, StartTarget.OpenMaxXY, out var sunset);
+
+            var source = new FakeLoginStartSource();
+            source.Local = new FavoritesSnapshot(true, new[] { Item("Known", known, 3), Item("Fresh", fresh, 1), Item("Broken", broken, 2) });
+            source.Targets[fresh] = sunset!;
+
+            var cached = new[] { new LoginFavorite(known, Guid.Empty, "Known", ahern!) };
+            using var favorites = new LoginStartFavorites(source, cached, populated: true);
+
+            var update = favorites.FlushAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
+            var failures = new List<string>();
+            if (update == null) return new Check(Name, false, "the flush published nothing");
+
+            var names = update.Favorites.Select(f => f.Name).ToArray();
+            if (!names.SequenceEqual(new[] { "Fresh", "Known" }))
+                failures.Add("flush published [" + string.Join(", ", names) + "], wanted [Fresh, Known]");
+            if (source.LookedCount() != 2) failures.Add($"{source.LookedCount()} lookups, wanted 2 (the new one and the broken one; the known one is never asked again)");
+
+            return failures.Count == 0
+                ? new Check(Name, true, "a new favorite is resolved at flush time, a known one is not asked again, an unresolvable one is left out")
+                : new Check(Name, false, string.Join("; ", failures));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     /// <summary>
     /// FEAT-UI-72: the background resolver behind the login screen's favorites. An unconfirmed folder read never publishes (a refused
     /// fetch reads as an empty folder); landmarks are resolved once and what cannot be resolved is left out; a repeat pass resolves

@@ -280,16 +280,17 @@ public partial class Boot
         _loginStartFavorites = null;
     }
 
-    /// <summary>One last write of what is known, then stop. For just before the logout call: reads the local inventory store only,
-    /// so no network is involved and nothing is awaited.</summary>
-    private void FlushAndStopLoginStartFavorites()
+    /// <summary>One last write of what is known, then stop. For just before the logout call, while the session is still connected:
+    /// the landmarks that were added since the last pass are resolved now (a few seconds at most) so they reach the login screen.</summary>
+    private async System.Threading.Tasks.Task FlushAndStopLoginStartFavoritesAsync()
     {
         var favorites = _loginStartFavorites;
         _loginStartFavorites = null;
         if (favorites == null) return;
         try
         {
-            if (favorites.TryFlush(out var update)) ApplyStartFavoritesUpdate(update);
+            var update = await favorites.FlushAsync(TimeSpan.FromSeconds(4));
+            if (update != null) ApplyStartFavoritesUpdate(update);
         }
         catch (Exception ex)
         {
