@@ -1,10 +1,16 @@
 using System.Collections.Generic;
 using System.IO;
 using Godot;
+using SLNG.App.UI.Prefs;
 
 namespace SLNG.App.UI;
 
-public partial class NetworkPreferencesPage : VBoxContainer
+/// <summary>
+/// The "Network" and "Cache" sections of the Network &amp; cache category (FEAT-UI-79): the maximum bandwidth (FEAT-NET-05),
+/// the favorites' region check (FEAT-UI-77), the size of the asset and object caches with the button that clears them
+/// (FEAT-NET-04), and under Advanced the decoded texture cache (FEAT-PERF-11).
+/// </summary>
+public sealed class NetworkPreferencesPage
 {
     private string _cacheDir = null!;
     private System.Func<IReadOnlyList<string>> _objectCacheDirs = () => System.Array.Empty<string>();
@@ -12,15 +18,11 @@ public partial class NetworkPreferencesPage : VBoxContainer
     private Label _sizeLabel = null!;
     private NetworkSettings _networkSettings = null!;
     private System.Action<float>? _onMaxBandwidthChanged;
-    private System.Action<bool>? _onDecodedCacheToggled;
     private System.Action? _clearDecodedCache;
     private bool _dragging;
 
-    public override void _Ready()
-    {
-        AddThemeConstantOverride("separation", 10);
-    }
-
+    /// <summary>Fills <paramref name="network"/> and <paramref name="cache"/> (Network &amp; cache), which Boot has already
+    /// put in their places. Call once, after the sections are in the window's tree.</summary>
     /// <param name="cacheDir">The asset cache directory.</param>
     /// <param name="objectCacheDirs">FEAT-NET-04: where the object cache keeps one file per region.
     /// BUG-GRID-01: there is one such directory per grid, so this is asked each time rather than
@@ -33,7 +35,8 @@ public partial class NetworkPreferencesPage : VBoxContainer
     /// slider only calls it once a drag is over, not on each tick.</param>
     /// <param name="onDecodedCacheToggled">FEAT-PERF-11: toggles decoded-texture disk caching.</param>
     /// <param name="clearDecodedCache">FEAT-PERF-11: clears in-memory decoded-texture state and stats.</param>
-    public void Initialize(string cacheDir, NetworkSettings networkSettings,
+    /// <param name="onCheckFavoriteRegionsToggled">FEAT-UI-77: told when the favorites' region check is switched.</param>
+    public void Build(PrefsSection network, PrefsSection cache, string cacheDir, NetworkSettings networkSettings,
         System.Action<float>? onMaxBandwidthChanged = null,
         System.Func<IReadOnlyList<string>>? objectCacheDirs = null,
         System.Action? clearObjectCache = null,
@@ -44,116 +47,64 @@ public partial class NetworkPreferencesPage : VBoxContainer
         _cacheDir = cacheDir;
         _networkSettings = networkSettings;
         _onMaxBandwidthChanged = onMaxBandwidthChanged;
-        _onDecodedCacheToggled = onDecodedCacheToggled;
         _clearDecodedCache = clearDecodedCache;
         if (objectCacheDirs != null) _objectCacheDirs = objectCacheDirs;
         _clearObjectCache = clearObjectCache;
 
-        var heading = new Label { Text = L10n.Tr("ui.preferences.network_heading") };
-        heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        AddChild(heading);
+        string net = $"{network.CategoryId}.{network.Id}";
+        AddMaxBandwidthRow(network, $"{net}.max_bandwidth");
 
-        var row = new HBoxContainer();
-        row.AddThemeConstantOverride("separation", 12);
-        AddChild(row);
+        // FEAT-UI-77: a checkbox takes effect at once, like the others.
+        network.AddCheck($"{net}.check_favorite_regions", "ui.preferences.check_favorite_regions",
+            _networkSettings.CheckFavoriteRegions,
+            toggled =>
+            {
+                _networkSettings.SetCheckFavoriteRegions(toggled);
+                onCheckFavoriteRegionsToggled?.Invoke(toggled);
+            },
+            hintKey: "ui.preferences.check_favorite_regions_hint");
 
-        var clearBtn = new Button { Text = L10n.Tr("ui.preferences.clear_cache") };
+        string cch = $"{cache.CategoryId}.{cache.Id}";
+        var clearBtn = new Button { Text = L10n.Tr("ui.preferences.clear_cache"), FocusMode = Control.FocusModeEnum.None };
         clearBtn.Pressed += ClearCache;
-        row.AddChild(clearBtn);
+        _sizeLabel = PrefsStyle.MakeLabel(GetCacheSizeText());
+        var sizeRow = new HBoxContainer();
+        sizeRow.AddThemeConstantOverride("separation", PrefsStyle.ColumnGap);
+        sizeRow.AddChild(clearBtn);
+        sizeRow.AddChild(_sizeLabel);
+        cache.AddBlock($"{cch}.size", sizeRow, null, false, "ui.preferences.clear_cache");
 
-        _sizeLabel = new Label { Text = GetCacheSizeText() };
-        row.AddChild(_sizeLabel);
-
-        var decodedCheck = new CheckBox
-        {
-            Text = L10n.Tr("ui.preferences.decoded_cache_enabled"),
-            ButtonPressed = _networkSettings.DecodedCacheEnabled,
-        };
-        decodedCheck.Toggled += toggled =>
-        {
-            _networkSettings.SetDecodedCacheEnabled(toggled);
-            _onDecodedCacheToggled?.Invoke(toggled);
-        };
-        AddChild(decodedCheck);
-
-        // FEAT-UI-77: a checkbox takes effect at once, like the others on this page.
-        var regionsCheck = new CheckBox
-        {
-            Text = L10n.Tr("ui.preferences.check_favorite_regions"),
-            ButtonPressed = _networkSettings.CheckFavoriteRegions,
-        };
-        regionsCheck.Toggled += toggled =>
-        {
-            _networkSettings.SetCheckFavoriteRegions(toggled);
-            onCheckFavoriteRegionsToggled?.Invoke(toggled);
-        };
-        AddChild(regionsCheck);
-
-        var regionsHint = new Label
-        {
-            Text = L10n.Tr("ui.preferences.check_favorite_regions_hint"),
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-        };
-        regionsHint.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
-        regionsHint.AddThemeFontSizeOverride("font_size", 12);
-        AddChild(regionsHint);
-
-        AddMaxBandwidthRow();
+        cache.AddCheck($"{cch}.decoded_cache_enabled", "ui.preferences.decoded_cache_enabled",
+            _networkSettings.DecodedCacheEnabled,
+            toggled =>
+            {
+                _networkSettings.SetDecodedCacheEnabled(toggled);
+                onDecodedCacheToggled?.Invoke(toggled);
+            },
+            advanced: true);
     }
 
     /// <summary>FEAT-NET-05: the bandwidth slider. The value label follows the drag, but the setting
     /// is saved and applied only when a drag ends (or on a keyboard / wheel step, which has no drag):
     /// applying it resends the throttle to every simulator, which must not happen on every tick.</summary>
-    private void AddMaxBandwidthRow()
+    private void AddMaxBandwidthRow(PrefsSection section, string id)
     {
-        var caption = new Label { Text = L10n.Tr("ui.preferences.max_bandwidth") };
-        caption.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.75f));
-        AddChild(caption);
+        var row = section.AddSlider(id, "ui.preferences.max_bandwidth",
+                NetworkSettings.MinBandwidthKbps, NetworkSettings.CeilingBandwidthKbps, 100, _networkSettings.MaxBandwidthKbps,
+                FormatKbps, v =>
+                {
+                    if (!_dragging) ApplyMaxBandwidth((float)v);
+                },
+                hintKey: "ui.preferences.max_bandwidth_hint")
+            .WithKeywords("ThrottleBandwidthKBPS");
 
-        var sliderRow = new HBoxContainer();
-        sliderRow.AddThemeConstantOverride("separation", 12);
-        AddChild(sliderRow);
-
-        var initial = _networkSettings.MaxBandwidthKbps;
-        var slider = new HSlider
-        {
-            MinValue = NetworkSettings.MinBandwidthKbps,
-            MaxValue = NetworkSettings.CeilingBandwidthKbps,
-            Step = 100,
-            Value = initial,
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(200, 0),
-        };
-        sliderRow.AddChild(slider);
-
-        var valueLabel = new Label
-        {
-            Text = FormatKbps(initial),
-            CustomMinimumSize = new Vector2(80, 0),
-        };
-        valueLabel.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        sliderRow.AddChild(valueLabel);
-
+        var slider = row.ControlAs<HSlider>()!;
         slider.DragStarted += () => _dragging = true;
         slider.DragEnded += valueChanged =>
         {
             _dragging = false;
             if (valueChanged) ApplyMaxBandwidth((float)slider.Value);
         };
-        slider.ValueChanged += value =>
-        {
-            valueLabel.Text = FormatKbps(value);
-            if (!_dragging) ApplyMaxBandwidth((float)value);
-        };
-
-        var hint = new Label
-        {
-            Text = L10n.Tr("ui.preferences.max_bandwidth_hint"),
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-        };
-        hint.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
-        hint.AddThemeFontSizeOverride("font_size", 12);
-        AddChild(hint);
     }
 
     private void ApplyMaxBandwidth(float kbps)

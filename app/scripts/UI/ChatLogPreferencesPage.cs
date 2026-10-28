@@ -4,20 +4,25 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Godot;
+using SLNG.App.UI.Prefs;
 using SLNG.Core.ChatLogs;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// FEAT-UI-41: "Chat logs" tab of Preferences. For each saved account (the login screen's list): the
-/// base folder its chat logs go into -- picked with the OS folder picker, or SLNG's default -- and the
-/// folder actually in effect, including the account sub-folder named the way Firestorm names it. Also
-/// how IM files are named, and the explicit, user-triggered import of logs older SLNG builds wrote.
-/// Point an account at the folder Firestorm uses for it and both viewers share one history; SLNG does
-/// not look at Firestorm to decide anything.
+/// FEAT-UI-41: the "Chat logs" section of the Chat &amp; IM category (FEAT-UI-79). For each saved account (the login
+/// screen's list): the base folder its chat logs go into -- picked with the OS folder picker, or SLNG's default -- and the
+/// folder actually in effect, including the account sub-folder named the way Firestorm names it. Under Advanced: how IM
+/// files are named, and the explicit, user-triggered import of logs older SLNG builds wrote. Point an account at the
+/// folder Firestorm uses for it and both viewers share one history; SLNG does not look at Firestorm to decide anything.
+///
+/// This is a Node, not a plain object: the import runs on a worker thread and comes back to the main thread through
+/// <c>CallDeferred</c>, which needs a Godot object. <see cref="Build"/> puts it in the section so it is in the tree.
 /// </summary>
-public partial class ChatLogPreferencesPage : VBoxContainer
+public partial class ChatLogPreferencesPage : Node
 {
+    private static readonly ImLogNameStyle[] NameStyles = { ImLogNameStyle.Legacy, ImLogNameStyle.Account };
+
     private Func<IReadOnlyList<ChatLogAccount>> _accounts = () => Array.Empty<ChatLogAccount>();
     private Func<ChatLogTarget?> _activeTarget = () => null;
     private Func<string?> _activeKey = () => null;
@@ -28,8 +33,8 @@ public partial class ChatLogPreferencesPage : VBoxContainer
     private Button _browse = null!;
     private Button _useDefault = null!;
     private Label _effective = null!;
+    private PrefsRow _relogRow = null!;
     private Label _relogNotice = null!;
-    private OptionButton _names = null!;
     private Button _importButton = null!;
     private Label _importStatus = null!;
 
@@ -43,94 +48,99 @@ public partial class ChatLogPreferencesPage : VBoxContainer
     private ChatLogImportPlan? _applied;
     private ChatLogImportContext? _appliedContext;
 
-    public override void _Ready()
-    {
-        AddThemeConstantOverride("separation", 10);
-    }
-
     public override void _ExitTree()
     {
         ChatLogSettings.Changed -= RefreshFolder;
     }
 
+    /// <summary>Fills <paramref name="section"/> (Chat &amp; IM, "chat_logs"), which Boot has already put in its place. Call
+    /// once, after the section is in the window's tree.</summary>
     /// <param name="accounts">The saved accounts, in the order the login screen lists them.</param>
     /// <param name="activeKey">Key of the account logged in right now, or null.</param>
     /// <param name="activeTarget">Where this session's logs go, or null before a login.</param>
     /// <param name="importContext">What the import needs, or null before a login.</param>
-    public void Initialize(Func<IReadOnlyList<ChatLogAccount>> accounts, Func<string?> activeKey,
+    public void Build(PrefsSection section, Func<IReadOnlyList<ChatLogAccount>> accounts, Func<string?> activeKey,
         Func<ChatLogTarget?> activeTarget, Func<ChatLogImportContext?> importContext)
     {
         _accounts = accounts;
         _activeKey = activeKey;
         _activeTarget = activeTarget;
         _importContext = importContext;
+        section.AddChild(this);
+        string prefix = $"{section.CategoryId}.{section.Id}";
 
-        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_heading")));
-        AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_intro")));
+        section.AddNote($"{prefix}.intro", "ui.preferences.chat_logs_intro");
+        section.AddNote($"{prefix}.one_viewer", "ui.preferences.chat_logs_one_viewer");
 
-        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_account")));
-        _account = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _account = new OptionButton { ClipText = true, FocusMode = Control.FocusModeEnum.None, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         _account.ItemSelected += index =>
         {
             _selectedKey = (index >= 0 && index < _rows.Count) ? _rows[(int)index].Key : null;
             RefreshFolder();
         };
-        AddChild(_account);
+        section.AddControl($"{prefix}.account", "ui.preferences.chat_logs_account", _account);
 
-        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_folder")));
-        _folder = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
-        AddChild(_folder);
-
+        // The folder this account's logs go into, with the buttons that change it. A change takes effect at the next login.
         // Firestorm has a "Choose..." button here; typing a path is not an acceptable way to pick a folder.
-        var row = new HBoxContainer();
-        row.AddThemeConstantOverride("separation", 6);
-        _browse = new Button { Text = L10n.Tr("ui.preferences.chat_logs_browse") };
+        _folder = PrefsStyle.MakeLabel("");
+        var buttons = new HFlowContainer(); // wraps rather than pushing the page wider than a narrow window
+        buttons.AddThemeConstantOverride("h_separation", PrefsStyle.ColumnGap);
+        buttons.AddThemeConstantOverride("v_separation", PrefsStyle.RowSeparation);
+        _browse = new Button { Text = L10n.Tr("ui.preferences.chat_logs_browse"), FocusMode = Control.FocusModeEnum.None };
         _browse.Visible = DisplayServer.HasFeature(DisplayServer.Feature.NativeDialogFile);
         _browse.Pressed += OnBrowsePressed;
-        row.AddChild(_browse);
-        _useDefault = new Button { Text = L10n.Tr("ui.preferences.chat_logs_use_default") };
+        buttons.AddChild(_browse);
+        _useDefault = new Button { Text = L10n.Tr("ui.preferences.chat_logs_use_default"), FocusMode = Control.FocusModeEnum.None };
         _useDefault.Pressed += () => { if (_selectedKey != null) ChatLogSettings.ClearFolder(_selectedKey); };
-        row.AddChild(_useDefault);
-        AddChild(row);
+        buttons.AddChild(_useDefault);
+        var folderSide = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        folderSide.AddThemeConstantOverride("separation", PrefsStyle.RowSeparation);
+        folderSide.AddChild(_folder);
+        folderSide.AddChild(buttons);
+        section.AddControl($"{prefix}.folder", "ui.preferences.chat_logs_folder", folderSide)
+            .WithApply(PrefsApply.NextLogin)
+            .WithLiteralTexts(L10n.Tr("ui.preferences.chat_logs_browse"), L10n.Tr("ui.preferences.chat_logs_use_default"));
 
-        _effective = Hint("");
-        AddChild(_effective);
+        _effective = PrefsStyle.MakeHint("");
+        section.AddBlock($"{prefix}.in_effect", _effective);
         // Shown only while the logged-in account's folder differs from the one this login is writing to:
         // a change takes effect at the next login, and a person who changed it and kept chatting wondered
         // why nothing arrived in the new folder (reported 2026-10-03).
-        _relogNotice = Hint("");
-        _relogNotice.AddThemeColorOverride("font_color", new Color(0.95f, 0.72f, 0.3f));
-        _relogNotice.Visible = false;
-        AddChild(_relogNotice);
-        AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_apply_hint")));
+        _relogNotice = PrefsStyle.MakeNotice("");
+        _relogRow = section.AddBlock($"{prefix}.relog_notice", _relogNotice);
+        _relogRow.Visible = false;
 
-        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_im_names")));
-        _names = new OptionButton();
-        _names.AddItem(L10n.Tr("ui.preferences.chat_logs_im_legacy"), (int)ImLogNameStyle.Legacy);
-        _names.AddItem(L10n.Tr("ui.preferences.chat_logs_im_account"), (int)ImLogNameStyle.Account);
-        _names.Selected = _names.GetItemIndex((int)ChatLogSettings.ImStyle);
-        _names.ItemSelected += index => ChatLogSettings.SetImStyle((ImLogNameStyle)_names.GetItemId((int)index));
-        AddChild(_names);
+        // Advanced: how IM files are named.
+        var styleLabels = new[] { L10n.Tr("ui.preferences.chat_logs_im_legacy"), L10n.Tr("ui.preferences.chat_logs_im_account") };
+        section.AddOption($"{prefix}.im_names", "ui.preferences.chat_logs_im_names", styleLabels,
+            Math.Max(0, Array.IndexOf(NameStyles, ChatLogSettings.ImStyle)),
+            index => ChatLogSettings.SetImStyle(NameStyles[index]),
+            advanced: true,
+            optionKeys: new[] { "ui.preferences.chat_logs_im_legacy", "ui.preferences.chat_logs_im_account" });
 
-        AddChild(new HSeparator());
-
-        AddChild(Heading(L10n.Tr("ui.preferences.chat_logs_import_heading")));
-        AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_import_hint")));
-        _importButton = new Button { Text = L10n.Tr("ui.preferences.chat_logs_import") };
+        // Advanced: the explicit import of what older SLNG builds wrote.
+        var importBox = new VBoxContainer();
+        importBox.AddThemeConstantOverride("separation", PrefsStyle.RowSeparation);
+        importBox.AddChild(PrefsStyle.MakeHint(L10n.Tr("ui.preferences.chat_logs_import_hint")));
+        _importButton = new Button
+        {
+            Text = L10n.Tr("ui.preferences.chat_logs_import"),
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
+            FocusMode = Control.FocusModeEnum.None,
+        };
         _importButton.Pressed += OnImportPressed;
-        AddChild(_importButton);
-        _importStatus = Hint("");
-        AddChild(_importStatus);
-
-        AddChild(new HSeparator());
-        AddChild(Hint(L10n.Tr("ui.preferences.chat_logs_one_viewer")));
+        importBox.AddChild(_importButton);
+        _importStatus = PrefsStyle.MakeHint("");
+        importBox.AddChild(_importStatus);
+        section.AddBlock($"{prefix}.import", importBox, "ui.preferences.chat_logs_import_heading", true,
+            "ui.preferences.chat_logs_import_hint", "ui.preferences.chat_logs_import");
 
         ChatLogSettings.Changed += RefreshFolder;
-        VisibilityChanged += () => { if (IsVisibleInTree()) RefreshAccounts(); };
+        // The list is read again whenever the section is shown: a login saved since the last time is in it.
+        section.VisibilityChanged += () => { if (section.IsVisibleInTree()) RefreshAccounts(); };
         RefreshAccounts();
     }
 
-    // The list is read again whenever the tab is shown: a login saved since the last time is in it.
     private void RefreshAccounts()
     {
         _rows = _accounts().ToList();
@@ -191,7 +201,7 @@ public partial class ChatLogPreferencesPage : VBoxContainer
         bool isRunningAccount = running != null && account.Key == _activeKey();
         if (!isRunningAccount)
         {
-            _relogNotice.Visible = false;
+            _relogRow.Visible = false;
             return;
         }
 
@@ -200,7 +210,7 @@ public partial class ChatLogPreferencesPage : VBoxContainer
         string current = Path.GetFullPath(running.Directory);
         bool differs = !string.Equals(wanted.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
 
-        _relogNotice.Visible = differs;
+        _relogRow.Visible = differs;
         if (differs) _relogNotice.Text = L10n.TrFormat("ui.preferences.chat_logs_relog_notice", wanted, current);
     }
 
@@ -281,7 +291,7 @@ public partial class ChatLogPreferencesPage : VBoxContainer
         }
 
         var win = new ConfirmWindow();
-        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer") ?? (Node?)GetParent() ?? this;
+        var host = GetTree()?.Root?.GetNodeOrNull<CanvasLayer>("Boot/HudLayer") ?? GetParent() ?? this;
         host.AddChild(win);
         win.Initialize(
             L10n.Tr("ui.preferences.chat_logs_import_title"),
@@ -328,22 +338,5 @@ public partial class ChatLogPreferencesPage : VBoxContainer
             ? L10n.TrFormat("ui.preferences.chat_logs_import_failed", _error ?? "")
             : L10n.TrFormat("ui.preferences.chat_logs_import_done",
                 _applied.MessagesToImport, _applied.Appends.Count, _appliedContext.Directory);
-    }
-
-    // ---- small helpers ---------------------------------------------------------------------
-
-    private static Label Heading(string text)
-    {
-        var label = new Label { Text = text };
-        label.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        return label;
-    }
-
-    private static Label Hint(string text)
-    {
-        var label = new Label { Text = text, AutowrapMode = TextServer.AutowrapMode.WordSmart };
-        label.AddThemeFontSizeOverride("font_size", 11);
-        label.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
-        return label;
     }
 }

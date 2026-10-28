@@ -188,8 +188,11 @@ public static partial class SelfTest
             // --- the real Camera & movement builders ---------------------------------------------------------------
             var camWindow = NewWindow();
             var cam = camWindow.AddCategory("camera_movement", "ui.preferences.cat_camera_movement");
-            new UI.CameraPreferencesPage().Build(cam, new UI.CameraSettings());
-            new UI.AnimationPreferencesPage().Build(cam, new UI.AnimationSettings());
+            var camSection = cam.AddSection("camera", "ui.preferences.sec_camera_movement_camera");
+            var moveSection = cam.AddSection("movement", "ui.preferences.sec_camera_movement_movement");
+            var avatarSection = cam.AddSection("avatar", "ui.preferences.sec_camera_movement_avatar");
+            new UI.CameraPreferencesPage().Build(camSection, new UI.CameraSettings());
+            new UI.AnimationPreferencesPage().Build(moveSection, avatarSection, new UI.AnimationSettings());
             string[] camIds =
             {
                 "camera_movement.camera.fov", "camera_movement.camera.rear_distance", "camera_movement.camera.focus_height",
@@ -245,8 +248,21 @@ public static partial class SelfTest
         }
     }
 
-    /// <summary>The window the running client built in SetupHud: seven categories in the plan's order, each with a
-    /// section, row ids that are unique and shaped <c>category.section.name</c>, and a name in both languages.</summary>
+    /// <summary>The sections of every category, in the order of the plan's table (docs/specs/FEAT-UI-79-preferences-rework.md).</summary>
+    private static readonly (string Category, string[] Sections)[] PreferenceSectionPlan =
+    {
+        ("general", new[] { "interface", "bottom_bar", "names", "content_rating", "building" }),
+        ("graphics", new[] { "all" }),
+        ("camera_movement", new[] { "camera", "movement", "avatar" }),
+        ("chat_im", new[] { "conversations", "friends_online", "away", "chat_logs" }),
+        ("keyboard", new[] { "all" }),
+        ("network_cache", new[] { "network", "cache" }),
+        ("help_info", new[] { "debug_log", "licences" }),
+    };
+
+    /// <summary>The window the running client built in SetupHud: seven categories in the plan's order with exactly the
+    /// plan's sections, row ids that are unique and shaped <c>category.section.name</c>, every text key present in both
+    /// languages, and no old page embedded whole -- bar the Graphics page, the Keyboard table and the Licences notice.</summary>
     private static Check CheckPreferencesWindowWiring(SceneTree tree)
     {
         const string Name = "preferences window wiring";
@@ -261,6 +277,22 @@ public static partial class SelfTest
             foreach (var category in window.Categories)
             {
                 if (category.Sections.Count == 0) problems.Add($"{category.Id} has no section");
+                var plan = PreferenceSectionPlan.FirstOrDefault(p => p.Category == category.Id).Sections;
+                var actual = category.Sections.Select(x => x.Id).ToArray();
+                if (plan == null || !actual.SequenceEqual(plan))
+                    problems.Add($"{category.Id} sections are {string.Join(",", actual)} (plan: {(plan == null ? "none" : string.Join(",", plan))})");
+
+                foreach (var section in category.Sections)
+                {
+                    if (section.Rows.Count == 0) problems.Add($"{category.Id}.{section.Id} has no row");
+                    foreach (var row in section.Rows)
+                    {
+                        // A block that is a whole old *PreferencesPage Control: only the planned exceptions may still be one.
+                        bool wholePage = row.GetChildren().Any(k => k is Control && k.GetType().Name.EndsWith("PreferencesPage", StringComparison.Ordinal));
+                        bool allowed = category.Id is "graphics" or "keyboard" || (category.Id == "help_info" && section.Id == "licences");
+                        if (wholePage && !allowed) problems.Add($"{row.Id} still embeds a whole old page");
+                    }
+                }
                 foreach (var row in category.Rows)
                 {
                     if (!row.Id.StartsWith(category.Id + ".", StringComparison.Ordinal) || row.Id.Split('.').Length != 3)
@@ -271,6 +303,22 @@ public static partial class SelfTest
             var dupes = window.AllRows.GroupBy(r => r.Id).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
             if (dupes.Count > 0) problems.Add("row ids used twice: " + string.Join(", ", dupes));
 
+            // Spot checks on what the plan says about when a change applies, and where the fold-outs are.
+            PrefsRow? Row(string id) => window.AllRows.FirstOrDefault(r => r.Id == id);
+            if (Row("general.interface.language")?.Apply != PrefsApply.ReopenWindows) problems.Add("the language row has no 'reopen windows' badge");
+            if (Row("chat_im.chat_logs.folder")?.Apply != PrefsApply.NextLogin) problems.Add("the chat log folder row has no 'next login' badge");
+            foreach (string id in new[] { "chat_im.chat_logs", "network_cache.cache", "camera_movement.camera" })
+            {
+                var section = window.Categories.SelectMany(c => c.Sections).FirstOrDefault(x => $"{x.CategoryId}.{x.Id}" == id);
+                if (section?.AdvancedFold is not { Folded: true }) problems.Add($"{id} has no collapsed Advanced fold-out");
+            }
+            foreach (var section in window.Categories.Where(c => c.Id is not "graphics").SelectMany(c => c.Sections))
+            {
+                string id = $"{section.CategoryId}.{section.Id}";
+                bool hasAdvancedRows = section.Rows.Any(r => r.IsAdvanced);
+                if (hasAdvancedRows != (section.AdvancedFold != null)) problems.Add($"{id}: Advanced fold-out and advanced rows disagree");
+            }
+
             foreach (var locale in new[] { "en-US", "de-DE" })
             {
                 using var file = Godot.FileAccess.Open($"res://i18n/{locale}.json", Godot.FileAccess.ModeFlags.Read);
@@ -278,13 +326,19 @@ public static partial class SelfTest
                 var manager = new SLNG.Core.Services.LocalizationManager { FallbackLocale = locale, CurrentLocale = locale };
                 manager.LoadLocaleFromJson(locale, file.GetAsText());
                 var dict = manager.GetDictionaryForLocale(locale);
-                var keys = window.Categories.SelectMany(c => c.Sections.Select(s => s.TitleKey).Append(c.TitleKey)).OfType<string>();
+                var keys = window.Categories.SelectMany(c => c.Sections.Select(s => s.TitleKey).Append(c.TitleKey)).OfType<string>().ToList();
+                foreach (var row in window.AllRows)
+                {
+                    keys.AddRange(new[] { row.LabelKey, row.HintKey, row.TooltipKey }.OfType<string>());
+                    keys.AddRange(row.SearchKeys);
+                    keys.AddRange(row.OptionKeys);
+                }
                 var missing = keys.Distinct().Where(k => !dict.TryGetValue(k, out var v) || string.IsNullOrWhiteSpace(v)).ToList();
-                if (missing.Count > 0) problems.Add($"{locale} missing {string.Join(", ", missing)}");
+                if (missing.Count > 0) problems.Add($"{locale} missing {string.Join(", ", missing.Take(8))}");
             }
 
             return problems.Count == 0
-                ? new Check(Name, true, $"{ids.Count} categories, {window.AllRows.Count()} registered rows, ids unique")
+                ? new Check(Name, true, $"{ids.Count} categories with the plan's {PreferenceSectionPlan.Sum(p => p.Sections.Length)} sections, {window.AllRows.Count()} registered rows, ids unique, only Graphics, Keyboard and Licences are blocks of old pages")
                 : new Check(Name, false, string.Join("; ", problems));
         }
         catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }

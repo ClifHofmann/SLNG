@@ -12,35 +12,30 @@ namespace SLNG.App.UI;
 /// </summary>
 public sealed class AnimationPreferencesPage
 {
-    private const string CategoryId = "camera_movement";
-
     private AnimationSettings _settings = null!;
 
     /// <summary>Raised when the user changes the seat-pose preference, so Boot can push it onto the
     /// renderer without this page knowing the renderer exists.</summary>
     public event Action<bool>? SeatPoseOverridesAoChanged;
 
-    /// <summary>Adds the "movement" and "avatar" sections to <paramref name="category"/> and fills them. Call once, after
-    /// the category is in the window's tree.</summary>
-    public void Build(PrefsCategory category, AnimationSettings settings)
+    /// <summary>Fills <paramref name="movement"/> and <paramref name="avatar"/> (Camera &amp; movement), which Boot has
+    /// already put in their places. Call once, after the sections are in the window's tree.</summary>
+    public void Build(PrefsSection movement, PrefsSection avatar, AnimationSettings settings)
     {
         _settings = settings;
 
         // Movement / locomotion
-        var movement = category.AddSection("movement", "ui.preferences.sec_camera_movement_movement");
-        var alwaysRun = movement.AddCheck($"{CategoryId}.movement.always_run", "ui.preferences.always_run",
+        var alwaysRun = movement.AddCheck($"{movement.CategoryId}.{movement.Id}.always_run", "ui.preferences.always_run",
             _settings.AlwaysRun, on => _settings.SetAlwaysRun(on), hintKey: "ui.preferences.always_run_hint");
         KeepInSync(alwaysRun, add => _settings.AlwaysRunChanged += add);
 
         // Avatar behaviour (FEAT-ANIM-10) and sitting / furniture (FEAT-ANIM-03)
-        var avatar = category.AddSection("avatar", "ui.preferences.sec_camera_movement_avatar");
-
-        var headFollows = avatar.AddCheck($"{CategoryId}.avatar.head_follows_camera", "ui.preferences.head_follows_camera",
+        var headFollows = avatar.AddCheck($"{avatar.CategoryId}.{avatar.Id}.head_follows_camera", "ui.preferences.head_follows_camera",
             _settings.HeadFollowsCamera, on => _settings.SetHeadFollowsCamera(on),
             hintKey: "ui.preferences.head_follows_camera_hint");
         KeepInSync(headFollows, add => _settings.HeadFollowsCameraChanged += add);
 
-        var typing = avatar.AddCheck($"{CategoryId}.avatar.typing_animation", "ui.preferences.play_typing_animation",
+        var typing = avatar.AddCheck($"{avatar.CategoryId}.{avatar.Id}.typing_animation", "ui.preferences.play_typing_animation",
                 _settings.PlayTypingAnimation, on => _settings.SetPlayTypingAnimation(on),
                 hintKey: "ui.preferences.play_typing_animation_hint")
             .WithKeywords("PlayTypingAnim");
@@ -48,7 +43,7 @@ public sealed class AnimationPreferencesPage
 
         // The hint is spelled out because the behaviour is a departure from what other viewers do, and someone
         // who has patched their AO HUD for this needs to know which of the two is now in charge.
-        avatar.AddCheck($"{CategoryId}.avatar.seat_pose_overrides_ao", "ui.preferences.seat_pose_overrides_ao",
+        avatar.AddCheck($"{avatar.CategoryId}.{avatar.Id}.seat_pose_overrides_ao", "ui.preferences.seat_pose_overrides_ao",
             _settings.SeatPoseOverridesAo,
             on =>
             {

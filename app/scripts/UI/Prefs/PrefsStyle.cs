@@ -34,7 +34,7 @@ public static class PrefsStyle
     public const int ValueLabelWidth = 52;
 
     /// <summary>The narrowest a slider is drawn.</summary>
-    public const int SliderMinWidth = 96;
+    public const int SliderMinWidth = 80;
 
     /// <summary>Space between a category's rows and the scroll bar on its right.</summary>
     public const int PageGutter = 10;
@@ -48,6 +48,8 @@ public static class PrefsStyle
     public static readonly Color HintColor = new(0.6f, 0.6f, 0.6f);
     public static readonly Color AdvancedTitleColor = new(0.7f, 0.7f, 0.7f);
     public static readonly Color AdvancedTitleHoverColor = new(1f, 1f, 1f);
+    public static readonly Color NoticeColor = new(0.95f, 0.72f, 0.3f);
+    public static readonly Color InfoColor = new(0.62f, 0.72f, 0.82f);
     public static readonly Color BadgeTextColor = new(0.95f, 0.8f, 0.5f);
     public static readonly Color BadgeFillColor = new(0.95f, 0.7f, 0.3f, 0.16f);
     public static readonly Color AdvancedFillColor = new(1f, 1f, 1f, 0.03f);
@@ -88,6 +90,23 @@ public static class PrefsStyle
         };
         label.AddThemeColorOverride("font_color", HintColor);
         label.AddThemeFontSizeOverride("font_size", HintFontSize);
+        return label;
+    }
+
+    /// <summary>A line of text that changes while the window is open and needs attention (a pending change, a warning).
+    /// Same shape as <see cref="MakeHint"/>, in the notice colour.</summary>
+    public static Label MakeNotice(string text)
+    {
+        var label = MakeHint(text);
+        label.AddThemeColorOverride("font_color", NoticeColor);
+        return label;
+    }
+
+    /// <summary>A line of text that reports a live value (a detected scale), in the info colour.</summary>
+    public static Label MakeInfo(string text)
+    {
+        var label = MakeHint(text);
+        label.AddThemeColorOverride("font_color", InfoColor);
         return label;
     }
 

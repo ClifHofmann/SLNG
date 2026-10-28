@@ -59,6 +59,10 @@ public partial class PrefsRow : VBoxContainer
     /// <summary>L10n keys of further texts inside an embedded block that the search should find.</summary>
     public IReadOnlyList<string> SearchKeys => _searchKeys;
 
+    /// <summary>The value text right of a slider row's slider (null for any other row). A page that moves the slider
+    /// itself and wants the text to follow something other than the slider's own value sets it here.</summary>
+    public Label? ValueLabel { get; private set; }
+
     /// <summary>When a change takes effect. Anything but <see cref="PrefsApply.Immediately"/> shows a badge.</summary>
     public PrefsApply Apply { get; private set; } = PrefsApply.Immediately;
 
@@ -96,6 +100,17 @@ public partial class PrefsRow : VBoxContainer
         foreach (string keyword in keywords)
         {
             if (!string.IsNullOrWhiteSpace(keyword)) _keywords.Add(keyword);
+        }
+        return this;
+    }
+
+    /// <summary>Adds texts the search matches that are neither a key nor a keyword: the labels of controls inside an
+    /// embedded block that were never translated (the bottom-bar buttons).</summary>
+    public PrefsRow WithLiteralTexts(params string[] texts)
+    {
+        foreach (string text in texts)
+        {
+            if (!string.IsNullOrWhiteSpace(text)) _literalTexts.Add(text);
         }
         return this;
     }
@@ -212,6 +227,7 @@ public partial class PrefsRow : VBoxContainer
 
         row.BuildLabelLine(labelKey, side);
         row.Control = slider;
+        row.ValueLabel = valueLabel;
         row.AddHint(hintKey, 0);
         return row;
     }
@@ -225,6 +241,9 @@ public partial class PrefsRow : VBoxContainer
 
         var option = new OptionButton
         {
+            // A dropdown is as wide as its longest entry unless the text may be clipped, and a long entry would then push the
+            // whole page wider than the window.
+            ClipText = true,
             FocusMode = FocusModeEnum.None,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ShrinkCenter,

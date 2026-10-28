@@ -62,8 +62,8 @@ public partial class KeyboardPreferencesPage : VBoxContainer
         AddThemeConstantOverride("separation", 8);
     }
 
-    /// <summary>Builds the page. Call once, right after this page has been added via
-    /// PreferencesWindow.AddTab (mirrors the other preference pages).</summary>
+    /// <summary>Builds the page. Call once, right after this page has been added as the block of its
+    /// Preferences section (see Boot.SetupHud).</summary>
     public void Initialize(KeyBindingTable table, Action? onChanged, KeyDispatcher? dispatcher)
     {
         _table = table;

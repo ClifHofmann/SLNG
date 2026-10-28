@@ -1,19 +1,20 @@
 using System.Collections.Generic;
 using Godot;
+using SLNG.App.UI.Prefs;
 using SLNG.Core.Presence;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// FEAT-UI-75: the Preferences tab for Away and the automatic IM responses -- when the viewer goes Away by itself and
-/// the texts it answers a first instant message with (Firestorm: Preferences &gt; Chat &gt; Auto-response and the away
-/// timeout). The modes themselves are switched from the Avatar menu; the checkboxes here are the same switches.
+/// FEAT-UI-75: the "Away &amp; auto-response" section of the Chat &amp; IM category (FEAT-UI-79) -- when the viewer goes Away
+/// by itself and the texts it answers a first instant message with (Firestorm: Preferences &gt; Chat &gt; Auto-response and
+/// the away timeout). The modes themselves are switched from the Avatar menu; the checkboxes here are the same switches.
 ///
 /// <para>Checkboxes and the timeout take effect the moment they are changed. Only the four texts are applied by a button,
 /// because a half-typed text must never be what a stranger receives; Apply and Revert are enabled exactly while a
 /// text differs from the one in use.</para>
 /// </summary>
-public partial class AutoresponsePreferencesPage : VBoxContainer
+public sealed class AutoresponsePreferencesPage
 {
     private PresenceController? _presence;
     private OptionButton _timeout = null!;
@@ -31,93 +32,68 @@ public partial class AutoresponsePreferencesPage : VBoxContainer
     // True while Refresh pushes the live state INTO the controls, so that does not loop back out as a user change.
     private bool _refreshing;
 
-    public override void _Ready()
-    {
-        AddThemeConstantOverride("separation", 6);
-    }
-
-    /// <summary>Builds the page and hands it the controller. Call once, right after PreferencesWindow.AddTab.</summary>
-    public void Initialize(PresenceController presence)
+    /// <summary>Fills <paramref name="section"/> (Chat &amp; IM, "away"), which Boot has already put in its place, and hands
+    /// the page the controller. Call once, after the section is in the window's tree.</summary>
+    public void Build(PrefsSection section, PresenceController presence)
     {
         _presence = presence;
+        string prefix = $"{section.CategoryId}.{section.Id}";
 
-        var timeoutRow = new HBoxContainer();
-        timeoutRow.AddThemeConstantOverride("separation", 8);
-        timeoutRow.AddChild(new Label { Text = L10n.Tr("ui.presence.timeout") });
-        _timeout = new OptionButton { FocusMode = FocusModeEnum.None, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        foreach (int seconds in PresenceSettings.AwayTimeoutChoices)
-            _timeout.AddItem(TimeoutLabel(seconds));
-        _timeout.ItemSelected += idx =>
-        {
-            if (!_refreshing) _presence.SetTimeoutSeconds(PresenceSettings.AwayTimeoutChoices[(int)idx]);
-        };
-        timeoutRow.AddChild(_timeout);
-        AddChild(timeoutRow);
+        var timeoutLabels = new List<string>();
+        foreach (int seconds in PresenceSettings.AwayTimeoutChoices) timeoutLabels.Add(TimeoutLabel(seconds));
+        _timeout = section.AddOption($"{prefix}.timeout", "ui.presence.timeout", timeoutLabels, 2,
+                idx =>
+                {
+                    if (!_refreshing) presence.SetTimeoutSeconds(PresenceSettings.AwayTimeoutChoices[idx]);
+                }, hintKey: "ui.presence.timeout_hint")
+            .ControlAs<OptionButton>()!;
 
-        AddChild(Hint(L10n.Tr("ui.presence.timeout_hint")));
+        _awayOnFocusLoss = AddSwitch(section, $"{prefix}.away_on_focus_loss", "ui.presence.away_on_focus_loss",
+            on => presence.SetAwayOnFocusLoss(on));
 
-        _awayOnFocusLoss = AddSwitch(L10n.Tr("ui.presence.away_on_focus_loss"), on => _presence.SetAwayOnFocusLoss(on));
-
-        _sendAway = AddSwitch(L10n.Tr("ui.presence.send_away"), on => _presence.SetSendAwayResponse(on));
-        AddText(out _awayText);
-        AddChild(new Label { Text = L10n.Tr("ui.presence.busy_heading") });
-        AddText(out _busyText);
-        _autorespond = AddSwitch(L10n.Tr("ui.presence.autorespond"), on => _presence.SetAutorespond(on));
-        AddText(out _autorespondText);
-        _nonFriends = AddSwitch(L10n.Tr("ui.presence.autorespond_non_friends"), on => _presence.SetAutorespondNonFriends(on));
-        AddText(out _nonFriendsText);
+        _sendAway = AddSwitch(section, $"{prefix}.send_away", "ui.presence.send_away", on => presence.SetSendAwayResponse(on));
+        _awayText = AddText(section, $"{prefix}.away_text");
+        _busyText = AddText(section, $"{prefix}.busy_text", "ui.presence.busy_heading");
+        _autorespond = AddSwitch(section, $"{prefix}.autorespond", "ui.presence.autorespond", on => presence.SetAutorespond(on));
+        _autorespondText = AddText(section, $"{prefix}.autorespond_text");
+        _nonFriends = AddSwitch(section, $"{prefix}.autorespond_non_friends", "ui.presence.autorespond_non_friends",
+            on => presence.SetAutorespondNonFriends(on));
+        _nonFriendsText = AddText(section, $"{prefix}.non_friends_text");
 
         var buttons = new HBoxContainer();
-        buttons.AddThemeConstantOverride("separation", 8);
-        _apply = new Button { Text = L10n.Tr("ui.presence.apply"), FocusMode = FocusModeEnum.None, Disabled = true };
+        buttons.AddThemeConstantOverride("separation", PrefsStyle.ColumnGap);
+        _apply = new Button { Text = L10n.Tr("ui.presence.apply"), FocusMode = Control.FocusModeEnum.None, Disabled = true };
         _apply.Pressed += ApplyPressed;
-        _revert = new Button { Text = L10n.Tr("ui.presence.revert"), FocusMode = FocusModeEnum.None, Disabled = true };
+        _revert = new Button { Text = L10n.Tr("ui.presence.revert"), FocusMode = Control.FocusModeEnum.None, Disabled = true };
         _revert.Pressed += RevertPressed;
         buttons.AddChild(_apply);
         buttons.AddChild(_revert);
-        AddChild(buttons);
+        section.AddBlock($"{prefix}.buttons", buttons, null, false, "ui.presence.apply", "ui.presence.revert");
 
         // A change from outside (the Avatar menu's checks) shows here without waiting for the page to reopen.
         presence.Changed += _ => Refresh();
         Refresh();
     }
 
-    private static Label Hint(string text)
-    {
-        var label = new Label
-        {
-            Text = text,
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-            CustomMinimumSize = new Vector2(300, 0), // a width floor: without it the wrapped height is measured at ~0 px
-        };
-        label.AddThemeFontSizeOverride("font_size", 11);
-        label.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
-        return label;
-    }
-
-    private CheckBox AddSwitch(string text, System.Action<bool> onChanged)
-    {
-        var box = new CheckBox { Text = text, FocusMode = FocusModeEnum.None };
-        box.Toggled += on =>
-        {
-            if (!_refreshing) onChanged(on);
-        };
-        AddChild(box);
-        return box;
-    }
+    private CheckBox AddSwitch(PrefsSection section, string id, string labelKey, System.Action<bool> onChanged)
+        => section.AddCheck(id, labelKey, false, on =>
+            {
+                if (!_refreshing) onChanged(on);
+            })
+            .ControlAs<CheckBox>()!;
 
     /// <summary>A response text; typing in it only enables Apply and Revert.</summary>
-    private void AddText(out TextEdit text)
+    private TextEdit AddText(PrefsSection section, string id, string? labelKey = null)
     {
         var edit = new TextEdit
         {
             WrapMode = TextEdit.LineWrappingMode.Boundary,
             CustomMinimumSize = new Vector2(300, 64),
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
         };
         edit.TextChanged += UpdateButtons;
-        AddChild(edit);
-        text = edit;
+        section.AddBlock(id, edit, labelKey);
+        return edit;
     }
 
     private static string TimeoutLabel(int seconds)
