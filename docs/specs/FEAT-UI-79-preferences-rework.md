@@ -61,7 +61,7 @@ restarts (`preferences.cfg`).
 | | Chat logs | Account, folder, use default | IM file names, import old logs | Chat logs |
 | **Keyboard** | | today's page unchanged (it has its own filter) | | Keyboard |
 | **Network & cache** | Network | Max bandwidth, check favorites' regions | | Network |
-| | Cache | Size readout, clear | Decoded texture cache | Network |
+| | Cache | Size readout, max cache size, clear | Decoded texture cache | Network |
 | **Help & info** | Debug log | today's page unchanged | | Debug log |
 | | Licences | today's page unchanged | | Licences |
 

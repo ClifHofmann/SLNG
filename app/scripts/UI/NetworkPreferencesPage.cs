@@ -18,8 +18,10 @@ public sealed class NetworkPreferencesPage
     private Label _sizeLabel = null!;
     private NetworkSettings _networkSettings = null!;
     private System.Action<float>? _onMaxBandwidthChanged;
+    private System.Action<int>? _onCacheSizeLimitChanged;
     private System.Action? _clearDecodedCache;
     private bool _dragging;
+    private bool _cacheLimitDragging;
 
     /// <summary>Fills <paramref name="network"/> and <paramref name="cache"/> (Network &amp; cache), which Boot has already
     /// put in their places. Call once, after the sections are in the window's tree.</summary>
@@ -36,17 +38,20 @@ public sealed class NetworkPreferencesPage
     /// <param name="onDecodedCacheToggled">FEAT-PERF-11: toggles decoded-texture disk caching.</param>
     /// <param name="clearDecodedCache">FEAT-PERF-11: clears in-memory decoded-texture state and stats.</param>
     /// <param name="onCheckFavoriteRegionsToggled">FEAT-UI-77: told when the favorites' region check is switched.</param>
+    /// <param name="onCacheSizeLimitChanged">FEAT-CACHE-01: told when maximum disk cache size limit changes.</param>
     public void Build(PrefsSection network, PrefsSection cache, string cacheDir, NetworkSettings networkSettings,
         System.Action<float>? onMaxBandwidthChanged = null,
         System.Func<IReadOnlyList<string>>? objectCacheDirs = null,
         System.Action? clearObjectCache = null,
         System.Action<bool>? onDecodedCacheToggled = null,
         System.Action? clearDecodedCache = null,
-        System.Action<bool>? onCheckFavoriteRegionsToggled = null)
+        System.Action<bool>? onCheckFavoriteRegionsToggled = null,
+        System.Action<int>? onCacheSizeLimitChanged = null)
     {
         _cacheDir = cacheDir;
         _networkSettings = networkSettings;
         _onMaxBandwidthChanged = onMaxBandwidthChanged;
+        _onCacheSizeLimitChanged = onCacheSizeLimitChanged;
         _clearDecodedCache = clearDecodedCache;
         if (objectCacheDirs != null) _objectCacheDirs = objectCacheDirs;
         _clearObjectCache = clearObjectCache;
@@ -73,6 +78,8 @@ public sealed class NetworkPreferencesPage
         sizeRow.AddChild(clearBtn);
         sizeRow.AddChild(_sizeLabel);
         cache.AddBlock($"{cch}.size", sizeRow, null, false, "ui.preferences.clear_cache");
+
+        AddCacheSizeLimitRow(cache, $"{cch}.cache_size_limit");
 
         cache.AddCheck($"{cch}.decoded_cache_enabled", "ui.preferences.decoded_cache_enabled",
             _networkSettings.DecodedCacheEnabled,
@@ -115,6 +122,35 @@ public sealed class NetworkPreferencesPage
 
     private static string FormatKbps(double kbps) => $"{kbps:0} kbps";
 
+    private void AddCacheSizeLimitRow(PrefsSection section, string id)
+    {
+        var row = section.AddSlider(id, "ui.preferences.cache_size_limit",
+                NetworkSettings.MinCacheSizeLimitMb, NetworkSettings.MaxCacheSizeLimitMb, 1024, _networkSettings.CacheSizeLimitMb,
+                FormatGb, v =>
+                {
+                    if (!_cacheLimitDragging) ApplyCacheSizeLimit((int)v);
+                },
+                hintKey: "ui.preferences.cache_size_limit_hint")
+            .WithKeywords("CacheSize", "DiskCache");
+
+        var slider = row.ControlAs<HSlider>()!;
+        slider.DragStarted += () => _cacheLimitDragging = true;
+        slider.DragEnded += valueChanged =>
+        {
+            _cacheLimitDragging = false;
+            if (valueChanged) ApplyCacheSizeLimit((int)slider.Value);
+        };
+    }
+
+    private void ApplyCacheSizeLimit(int mb)
+    {
+        _networkSettings.SetCacheSizeLimitMb(mb);
+        _onCacheSizeLimitChanged?.Invoke(_networkSettings.CacheSizeLimitMb);
+        if (_sizeLabel != null) _sizeLabel.Text = GetCacheSizeText();
+    }
+
+    private static string FormatGb(double mb) => $"{mb / 1024:0} GB";
+
     private void ClearCache()
     {
         try
@@ -154,9 +190,8 @@ public sealed class NetworkPreferencesPage
     private string GetCacheSizeText()
     {
         long assetCacheSize = DirectorySize(_cacheDir, "*") + DirectorySize(Path.Combine(_cacheDir, "decoded"), "*.dec");
-        return L10n.TrFormat("ui.preferences.cache_size",
-            FormatSize(assetCacheSize),
-            FormatSize(ObjectCacheSize()));
+        long limitBytes = (long)_networkSettings.CacheSizeLimitMb * 1024L * 1024L;
+        return $"{FormatSize(assetCacheSize)} / {FormatSize(limitBytes)} ({L10n.TrFormat("ui.preferences.cache_size", FormatSize(assetCacheSize), FormatSize(ObjectCacheSize()))})";
     }
 
     private long ObjectCacheSize()
@@ -181,8 +216,9 @@ public sealed class NetworkPreferencesPage
         return size;
     }
 
-    /// <summary>Whole megabytes once it is large, one decimal while it is small: an object cache of
-    /// a few regions is a few megabytes, and "0 MB" for it would read as "empty".</summary>
+    /// <summary>Formats bytes into human-readable MB or GB string.</summary>
     private static string FormatSize(long bytes)
-        => bytes < 10L * 1024 * 1024 ? $"{bytes / (1024.0 * 1024.0):0.0} MB" : $"{bytes / (1024 * 1024)} MB";
+        => bytes < 10L * 1024 * 1024 ? $"{bytes / (1024.0 * 1024.0):0.0} MB"
+         : bytes < 1024L * 1024 * 1024 ? $"{bytes / (1024 * 1024)} MB"
+         : $"{bytes / (1024.0 * 1024.0 * 1024.0):0.0} GB";
 }

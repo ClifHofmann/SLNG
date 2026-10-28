@@ -35,6 +35,13 @@ public sealed class NetworkSettings
     // BUG-PERF-20: 4 GB held about one region's decoded textures (RGBA + BC copies share it), so a region hop evicted the last one.
     public int DecodedCacheSizeMb { get; private set; } = 16384;
 
+    /// <summary>FEAT-CACHE-01: maximum total asset disk cache size in megabytes (default 20 GB = 20,480 MB).</summary>
+    public const int DefaultCacheSizeLimitMb = 20480;
+    public const int MinCacheSizeLimitMb = 1024;
+    public const int MaxCacheSizeLimitMb = 65536;
+
+    public int CacheSizeLimitMb { get; private set; } = DefaultCacheSizeLimitMb;
+
     /// <summary>FEAT-UI-77: whether the regions of the favorites are checked every few minutes while playing. Off by default: it
     /// is a question to the grid per region that nobody asked for.</summary>
     public bool CheckFavoriteRegions { get; private set; }
@@ -57,6 +64,7 @@ public sealed class NetworkSettings
         MaxBandwidthKbps = Sanitize((float)cfg.GetValue(Section, "max_bandwidth_kbps", DefaultBandwidthKbps));
         DecodedCacheEnabled = (bool)cfg.GetValue(Section, "decoded_cache_enabled", true);
         DecodedCacheSizeMb = Mathf.Max(256, (int)cfg.GetValue(Section, "decoded_cache_size_mb", 16384));
+        CacheSizeLimitMb = Mathf.Clamp((int)cfg.GetValue(Section, "cache_size_limit_mb", DefaultCacheSizeLimitMb), MinCacheSizeLimitMb, MaxCacheSizeLimitMb);
     }
 
     public void SetMaxBandwidthKbps(float value)
@@ -77,6 +85,17 @@ public sealed class NetworkSettings
         var cfg = new ConfigFile();
         cfg.Load(ConfigPath);
         cfg.SetValue(Section, "decoded_cache_enabled", enabled);
+        cfg.Save(ConfigPath);
+    }
+
+    public void SetCacheSizeLimitMb(int valueMb)
+    {
+        var clamped = Mathf.Clamp(valueMb, MinCacheSizeLimitMb, MaxCacheSizeLimitMb);
+        CacheSizeLimitMb = clamped;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "cache_size_limit_mb", clamped);
         cfg.Save(ConfigPath);
     }
 

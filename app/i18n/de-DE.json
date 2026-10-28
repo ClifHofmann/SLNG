@@ -710,6 +710,8 @@
       "camera_rear_distance_hint": "Greift beim nächsten Zurücksetzen der Kamera (Esc).",
       "clear_cache": "Asset- und Objekt-Cache leeren",
       "cache_size": "{0} Assets, {1} Objekte",
+      "cache_size_limit": "Max. Cache-Größe",
+      "cache_size_limit_hint": "Empfohlen: 20 GB. Begrenzt den gesamten Festplatten-Cache für Texturen, Meshes und decodierte Assets (wie in Firestorm).",
       "decoded_cache_enabled": "Dekodierten Textur-Cache aktivieren (schnelleres Laden bei Wiederbesuch)",
       "check_favorite_regions": "Regelmäßig prüfen, ob die Regionen meiner Favoriten online sind",
       "check_favorite_regions_hint": "Alle 5 Minuten fragt der Viewer das Grid nach der Region jedes Favoriten. Eine Region, die offline ist, wird in der Favoritenleiste markiert, bevor du hinteleportierst. Standardmäßig aus.",

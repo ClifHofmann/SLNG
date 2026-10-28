@@ -305,7 +305,7 @@ public static partial class SelfTest
         "keyboard.all.keyboard_page",
         // Network & cache
         "network_cache.network.max_bandwidth", "network_cache.network.check_favorite_regions",
-        "network_cache.cache.size", "network_cache.cache.decoded_cache_enabled",
+        "network_cache.cache.size", "network_cache.cache.cache_size_limit", "network_cache.cache.decoded_cache_enabled",
         // Help & info
         "help_info.debug_log.enable", "help_info.debug_log.what", "help_info.debug_log.privacy", "help_info.debug_log.limits",
         "help_info.debug_log.folder", "help_info.debug_log.buttons", "help_info.debug_log.status",

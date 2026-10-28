@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.47-alpha";
+    public const string AppVersion = "v0.28.48-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -2222,7 +2222,8 @@ public partial class Boot : Control
             () => _session?.ClearObjectCache(), // FEAT-NET-04: one button clears both caches
             enabled => { if (_assetService != null) _assetService.DecodedCache.Enabled = enabled; },
             () => _assetService?.DecodedCache.Clear(),
-            enabled => { if (enabled) _loginStartFavorites?.RequestRegionCheck(); }); // FEAT-UI-77: asks now, not in 5 minutes
+            enabled => { if (enabled) _loginStartFavorites?.RequestRegionCheck(); }, // FEAT-UI-77: asks now, not in 5 minutes
+            limitMb => { if (_assetService?.DiskCache != null) _assetService.DiskCache.MaxCacheSizeBytes = (long)limitMb * 1024L * 1024L; }); // FEAT-CACHE-01: updates runtime disk cache limit
 
         // FEAT-UI-41: where chat logs are kept and the import of older SLNG logs. The page asks for the
         // running session's folder each time it needs it -- there is none before a login.
@@ -4285,7 +4286,7 @@ public partial class Boot : Control
         _world.EntityDeselected += (s, e) => _session?.DeselectObject(e.Entity.RegionHandle, e.Entity.LocalId);
 
         string cacheDir = ProjectSettings.GlobalizePath("user://cache/assets");
-        _assetService = new SLNG.Assets.AssetService(_session, cacheDir, _networkSettings.DecodedCacheSizeMb);
+        _assetService = new SLNG.Assets.AssetService(_session, cacheDir, _networkSettings.CacheSizeLimitMb, _networkSettings.DecodedCacheSizeMb);
         _assetService.DecodedCache.Enabled = _networkSettings.DecodedCacheEnabled;
 
         // GPU budget shared by meshes and textures. Sized for the nearby working set on a

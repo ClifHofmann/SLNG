@@ -35,10 +35,14 @@ public sealed class DecodedTextureCache
     /// <summary>Currently used cache size in bytes.</summary>
     public long CurrentSizeBytes => Interlocked.Read(ref _currentSizeBytes);
 
-    public DecodedTextureCache(string baseCacheDir, long maxSizeBytes = 16L * 1024 * 1024 * 1024)
+    /// <summary>Coordinator for the global asset disk cache (FEAT-CACHE-01).</summary>
+    public Cache.DiskCacheManager? DiskCacheManager { get; set; }
+
+    public DecodedTextureCache(string baseCacheDir, long maxSizeBytes = 16L * 1024 * 1024 * 1024, Cache.DiskCacheManager? diskCacheManager = null)
     {
         _cacheDir = Path.Combine(baseCacheDir, "decoded");
         _maxCacheSizeBytes = maxSizeBytes;
+        DiskCacheManager = diskCacheManager;
 
         try
         {
@@ -117,6 +121,7 @@ public sealed class DecodedTextureCache
                 return null;
             }
             try { File.SetLastAccessTimeUtc(filePath, DateTime.UtcNow); } catch { }
+            DiskCacheManager?.RecordAccess(filePath);
             return data;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -184,6 +189,7 @@ public sealed class DecodedTextureCache
             }
             File.Move(tempPath, targetPath, overwrite: true);
             Interlocked.Add(ref _currentSizeBytes, totalFileLen - oldLength);
+            DiskCacheManager?.RecordWrite(targetPath, totalFileLen - oldLength);
 
             if (Interlocked.Read(ref _currentSizeBytes) > _maxCacheSizeBytes) ScheduleEviction();
         }
@@ -358,6 +364,7 @@ public sealed class DecodedTextureCache
 
             // Update access timestamp for LRU
             try { File.SetLastAccessTimeUtc(filePath, DateTime.UtcNow); } catch { }
+            DiskCacheManager?.RecordAccess(filePath);
 
             return new TextureData(width, height, rgba, isDegraded, sourceWidth, sourceHeight);
         }
@@ -433,6 +440,7 @@ public sealed class DecodedTextureCache
 
             File.Move(tempPath, targetPath, overwrite: true);
             Interlocked.Add(ref _currentSizeBytes, totalFileLen);
+            DiskCacheManager?.RecordWrite(targetPath, totalFileLen);
 
             if (Interlocked.Read(ref _currentSizeBytes) > _maxCacheSizeBytes)
             {
@@ -459,6 +467,7 @@ public sealed class DecodedTextureCache
                 long len = new FileInfo(path).Length;
                 File.Delete(path);
                 Interlocked.Add(ref _currentSizeBytes, -len);
+                DiskCacheManager?.RecordDelete(path, len);
             }
         }
         catch { }
@@ -492,6 +501,7 @@ public sealed class DecodedTextureCache
                 }
             }
             Interlocked.Exchange(ref _currentSizeBytes, 0);
+            DiskCacheManager?.RefreshSize();
         }
         catch (Exception ex)
         {
@@ -502,11 +512,20 @@ public sealed class DecodedTextureCache
     /// <summary>Forces an eviction pass to prune cache files within the budget.</summary>
     public void EnforceBudget()
     {
-        RunEviction();
+        if (DiskCacheManager != null)
+            DiskCacheManager.EnforceBudget();
+        else
+            RunEviction();
     }
 
     private void ScheduleEviction()
     {
+        if (DiskCacheManager != null)
+        {
+            DiskCacheManager.ScheduleEviction();
+            return;
+        }
+
         long now = Stopwatch.GetTimestamp();
         // Cooldown: at most once every 5 seconds
         if (_lastEvictionTick != 0 && Stopwatch.GetElapsedTime(_lastEvictionTick, now).TotalSeconds < 5)

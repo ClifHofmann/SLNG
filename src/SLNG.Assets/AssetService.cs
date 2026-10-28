@@ -183,7 +183,10 @@ public class AssetService
     /// <summary>Persistent disk cache of decoded textures (FEAT-PERF-11).</summary>
     public DecodedTextureCache DecodedCache { get; }
 
-    public AssetService(GridSession session, string cacheDirectory, long decodedCacheSizeMb = 16384)
+    /// <summary>Global on-disk asset cache manager and LRU eviction coordinator (FEAT-CACHE-01).</summary>
+    public Cache.DiskCacheManager? DiskCache { get; }
+
+    public AssetService(GridSession session, string cacheDirectory, long maxCacheSizeMb = 20480, long decodedCacheSizeMb = 16384)
     {
         _session = session;
         _cacheDir = cacheDirectory;
@@ -192,8 +195,9 @@ public class AssetService
             Directory.CreateDirectory(_cacheDir);
         }
 
-        string decBaseDir = string.IsNullOrEmpty(_cacheDir) ? System.IO.Path.GetTempPath() : _cacheDir;
-        DecodedCache = new DecodedTextureCache(decBaseDir, decodedCacheSizeMb * 1024L * 1024L);
+        string baseDir = string.IsNullOrEmpty(_cacheDir) ? System.IO.Path.GetTempPath() : _cacheDir;
+        DiskCache = new Cache.DiskCacheManager(baseDir, maxCacheSizeMb * 1024L * 1024L);
+        DecodedCache = new DecodedTextureCache(baseDir, decodedCacheSizeMb * 1024L * 1024L, DiskCache);
 
         var opts = new MemoryCacheOptions
         {
@@ -334,6 +338,7 @@ public class AssetService
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
+            DiskCache?.RecordAccess(cacheFile);
             byte[]? cached = null;
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
@@ -344,7 +349,12 @@ public class AssetService
                 // below) that got written to disk before this retry logic existed, or the cache
                 // file is otherwise corrupt. Drop it so the fetch below has a clean shot, instead
                 // of returning null forever every time this mesh loads.
-                try { File.Delete(cacheFile); } catch { }
+                try
+                {
+                    File.Delete(cacheFile);
+                    DiskCache?.RecordDelete(cacheFile, cached.Length);
+                }
+                catch { }
             }
         }
 
@@ -392,7 +402,12 @@ public class AssetService
                 {
                     if (cacheFile != null)
                     {
-                        try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                        try
+                        {
+                            await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false);
+                            DiskCache?.RecordWrite(cacheFile, bytes.Length);
+                        }
+                        catch { }
                     }
                     return result;
                 }
@@ -725,6 +740,7 @@ public class AssetService
             }
 
             if (cacheFile == null || !File.Exists(cacheFile)) return null;
+            DiskCache?.RecordAccess(cacheFile);
             byte[] bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false);
             if (bytes.Length == 0) return null;
 
@@ -944,6 +960,7 @@ public class AssetService
 
         if (desiredDiscard == 0 && cacheFile != null && File.Exists(cacheFile))
         {
+            DiskCache?.RecordAccess(cacheFile);
             byte[]? cached = null;
             try { cached = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
             if (cached != null && cached.Length > 0)
@@ -1144,6 +1161,7 @@ public class AssetService
                         if (!File.Exists(badFile))
                         {
                             await File.WriteAllBytesAsync(badFile, bytes).ConfigureAwait(false);
+                            DiskCache?.RecordWrite(badFile, bytes.Length);
                             Console.Error.WriteLine($"[TextureFetch] {textureId}: " +
                                 (result == null ? "both decoders failed" : "decoded DEGRADED") +
                                 $" on {bytes.Length} bytes — saved to {System.IO.Path.GetFileName(badFile)}");
@@ -1156,7 +1174,12 @@ public class AssetService
                 {
                     if (desiredDiscard == 0 && cacheFile != null && !result.IsDegraded)
                     {
-                        try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                        try
+                        {
+                            await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false);
+                            DiskCache?.RecordWrite(cacheFile, bytes.Length);
+                        }
+                        catch { }
                         // FEAT-PERF-11: store freshly fetched and decoded clean texture into decoded disk cache
                         if (isSculpt)
                             _ = Task.Run(() => DecodedCache.PutSculptAsync(textureId, result));
@@ -1484,6 +1507,7 @@ public class AssetService
 
         if (cacheFile != null && File.Exists(cacheFile))
         {
+            DiskCache?.RecordAccess(cacheFile);
             try { bytes = await File.ReadAllBytesAsync(cacheFile).ConfigureAwait(false); } catch { }
         }
 
@@ -1507,7 +1531,12 @@ public class AssetService
 
             if (cacheFile != null)
             {
-                try { await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false); } catch { }
+                try
+                {
+                    await File.WriteAllBytesAsync(cacheFile, bytes).ConfigureAwait(false);
+                    DiskCache?.RecordWrite(cacheFile, bytes.Length);
+                }
+                catch { }
             }
         }
 

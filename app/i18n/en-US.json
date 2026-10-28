@@ -710,6 +710,8 @@
       "camera_rear_distance_hint": "Takes effect the next time the camera is reset (Esc).",
       "clear_cache": "Clear Asset & Object Cache",
       "cache_size": "{0} assets, {1} objects",
+      "cache_size_limit": "Max cache size",
+      "cache_size_limit_hint": "Recommended: 20 GB. Controls total disk cache for textures, meshes, and decoded assets (Firestorm parity).",
       "decoded_cache_enabled": "Enable decoded texture cache (faster loading on revisit)",
       "check_favorite_regions": "Regularly check whether the regions of my favorites are online",
       "check_favorite_regions_hint": "Every 5 minutes the viewer asks the grid about each favorite's region, so a region that is down is marked in the favorites bar before you teleport. Off by default.",
