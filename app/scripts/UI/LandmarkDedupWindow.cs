@@ -17,6 +17,7 @@ public partial class LandmarkDedupWindow : SLNGWindow
 {
     private GridSession? _session;
     private ISet<Guid>? _favoriteIds;
+    private FavoritesService? _favorites;
     private List<LandmarkInventoryItem> _rawLandmarks = new();
     private List<LandmarkDuplicateGroup> _groups = new();
     private readonly HashSet<Guid> _selectedToDelete = new();
@@ -135,15 +136,20 @@ public partial class LandmarkDedupWindow : SLNGWindow
         Position = new Vector2(140, Mathf.Max(TopInset + 20f, 70f));
     }
 
-    public void Initialize(GridSession? session, ISet<Guid>? favoriteIds)
+    /// <summary>Hands the window the session and the favorites. Since FEAT-UI-72 phase 2 a favorite is a COPY in the Favorites
+    /// folder, so the copies must never be proposed as duplicates of their originals; the favorites' ids are read again at
+    /// every scan.</summary>
+    public void Initialize(GridSession? session, FavoritesService? favorites)
     {
         _session = session;
-        _favoriteIds = favoriteIds;
+        _favorites = favorites;
+        _favoriteIds = favorites?.KnownIds();
     }
 
     public void Reset()
     {
         _session = null;
+        _favorites = null;
         _favoriteIds = null;
         _rawLandmarks.Clear();
         _groups.Clear();
@@ -166,13 +172,18 @@ public partial class LandmarkDedupWindow : SLNGWindow
         _summaryLabel.Text = L10n.Tr("ui.landmarks.loading");
         _cleanBtn.Disabled = true;
 
+        // The favorites as they are NOW: ids to keep (the copy's and the original's asset), and the copies themselves,
+        // which are not candidates.
+        _favoriteIds = _favorites?.KnownIds() ?? _favoriteIds;
+        var favoriteCopies = _favorites?.ItemIds() ?? new HashSet<Guid>();
+
         try
         {
             var items = await _session.GetLandmarksWithFoldersAsync().ConfigureAwait(false);
             Callable.From(() =>
             {
                 if (!IsInstanceValid(this)) return;
-                _rawLandmarks = items.ToList();
+                _rawLandmarks = items.Where(i => !favoriteCopies.Contains(i.Id)).ToList();
                 _groups = LandmarkDuplicateDetector.FindDuplicates(_rawLandmarks, _favoriteIds);
                 ApplyDefaultRecommendations();
                 RebuildTree();

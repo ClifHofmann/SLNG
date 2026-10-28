@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-72`
 - **Track:** `ui` (with `core` and `net` parts; phase 2 writes to the SL inventory)
-- **Status:** `🧪 Review` (phase 1 built, v0.27.99-alpha; phase 2 open)
+- **Status:** `🧪 Review` (phase 1 built v0.27.99-alpha; phase 2 built v0.28.26-alpha, no migration)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
@@ -288,6 +288,25 @@ detection above holds:
    said so. Otherwise `GridSession.TeleportToAsync(handle, new Vector3(x, y, z))` (`GridSession.Session.cs:421`; it has its own
    re-entrancy guard).
 5. The outcome is the normal teleport UI (FEAT-UI-18 overlay and failure text); nothing extra, no second attempt.
+
+### Decision 2026-10-28 (phase 2 as built, v0.28.26-alpha) - differs from the design below
+The user decided: **nothing is migrated; the bar simply takes the Favorites folder.** So the sections "Migration of the existing SLNG
+list" and the `Local` mode below were NOT built:
+- The bar shows `FavoritesService.Items` (the folder, in `FavoritesOrder` order) or says why it cannot: `Loading`, `NoFolder` (a grid
+  without the folder: the bar says so and nothing can be added) or `Unavailable` (the folder exists but the grid did not confirm it;
+  what was shown stays, and the next inventory change reads it again). There is no fallback to the old local list, which is no longer
+  read (its `data` key stays in `preferences.cfg`, untouched).
+- Add = `GridSession.AddFavoriteAsync` (copy into the folder; decided first by `FavoritesAddPolicy`: no folder, unknown item, already
+  in the folder, same place already a favorite, not copyable). Remove = `RemoveFavoriteAsync` (Trash). "Add current location" =
+  `AddCurrentLocationAsync` (a landmark named after the parcel or region, created straight in the folder).
+- Changes made elsewhere arrive through `GridSession.FavoritesChanged` (the inventory store's added/updated/removed events for landmarks
+  and folders), debounced 600 ms in `FavoritesService._Process`, then read from the store without network. Nothing is shown from the
+  store before the first real fetch (after the loading screen clears).
+- The bar's order (`order` key, JSON array of item ids, in the existing `favorites_bar_{grid}_{agent}` section) is frozen the way the
+  viewer does it (`needToSaveItemsOrder`) and pruned when a favorite goes. A new favorite shows first until then.
+- The duplicate cleaner keeps the favorites' asset ids as "keep" hints and no longer lists the copies in the Favorites folder as
+  duplicates.
+- Not done: the login cache still has its own resolver (`LoginStartFavorites`); it reads the same folder, in the viewer's default order.
 
 ### Phase 2: the Favorites bar becomes a view of the SL Favorites folder
 

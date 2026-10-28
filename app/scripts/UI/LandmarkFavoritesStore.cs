@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
 using Godot;
 using SLNG.Core;
 
@@ -16,6 +20,7 @@ public static class LandmarkFavoritesStore
     private const string SectionPrefix = "favorites_bar_";
     private const string DataKey = "data";
     private const string VisibleKey = "visible";
+    private const string OrderKey = "order";
 
     public static bool Persist { get; set; } = true;
 
@@ -124,5 +129,56 @@ public static class LandmarkFavoritesStore
     public static void SaveVisibleToConfig(ConfigFile cfg, string section, bool visible)
     {
         cfg.SetValue(section, VisibleKey, visible);
+    }
+
+    // ---- FEAT-UI-72 phase 2: the bar's order ---------------------------------------------------------------------------------
+    // What the bar shows is the inventory's Favorites folder; only the ORDER is kept here, as a JSON array of item ids in the
+    // same section (the reference viewer keeps its own in landmarks_sorting.xml, so another viewer never sees it either). The
+    // old `data` key, SLNG's former local list, is no longer read for the bar: nothing is migrated.
+
+    /// <summary>The stored order of the bar's items; empty when there is none or it is not what we wrote.</summary>
+    public static IReadOnlyList<Guid> LoadOrder(string? gridSlug, string? agentId)
+    {
+        string? section = GetSection(gridSlug, agentId);
+        if (section == null) return Array.Empty<Guid>();
+        var cfg = new ConfigFile();
+        return cfg.Load(ConfigPath) == Error.Ok ? LoadOrderFromConfig(cfg, section) : Array.Empty<Guid>();
+    }
+
+    public static IReadOnlyList<Guid> LoadOrderFromConfig(ConfigFile cfg, string section)
+    {
+        if (!cfg.HasSectionKey(section, OrderKey)) return Array.Empty<Guid>();
+        var value = cfg.GetValue(section, OrderKey);
+        if (value.VariantType != Variant.Type.String) return Array.Empty<Guid>();
+        try
+        {
+            var ids = JsonSerializer.Deserialize<List<string>>((string)value);
+            if (ids == null) return Array.Empty<Guid>();
+            var result = new List<Guid>(ids.Count);
+            foreach (var text in ids)
+                if (Guid.TryParse(text, out var id) && id != Guid.Empty && !result.Contains(id)) result.Add(id);
+            return result;
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<Guid>();
+        }
+    }
+
+    public static void SaveOrder(string? gridSlug, string? agentId, IReadOnlyList<Guid> order)
+    {
+        if (!Persist) return;
+        string? section = GetSection(gridSlug, agentId);
+        if (section == null) return;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        SaveOrderToConfig(cfg, section, order);
+        cfg.Save(ConfigPath);
+    }
+
+    public static void SaveOrderToConfig(ConfigFile cfg, string section, IReadOnlyList<Guid> order)
+    {
+        cfg.SetValue(section, OrderKey, JsonSerializer.Serialize(order.Select(id => id.ToString("N"))));
     }
 }

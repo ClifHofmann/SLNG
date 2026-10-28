@@ -361,6 +361,7 @@ public partial class Boot : Control
     private SLNG.App.UI.AvatarHoverWindow _avatarHoverWindow = null!;
     // FEAT-UI-75: Away / Do Not Disturb / autorespond.
     private PresenceController _presenceController = null!;
+    private FavoritesService _favoritesService = null!; // FEAT-UI-72 phase 2: the Favorites folder behind the bar
     private SLNG.App.UI.AutoresponsePreferencesPage _autoresponsePage = null!;
     private SLNG.App.UI.DebugLogPreferencesPage _debugLogPage = null!; // FEAT-UI-76
     private SLNG.App.UI.ToastOverlay _toastOverlay = null!;
@@ -437,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.24-alpha";
+    public const string AppVersion = "v0.28.26-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1037,11 +1038,7 @@ public partial class Boot : Control
             _ = TeleportToLandmarkAsync(assetId, itemId, name);
         };
         _topMenu.FavoritesBar.OnOpenLandmarksWindow = () => ActivateLauncher(_landmarksWindow, _landmarksWindow.Toggle);
-        _topMenu.FavoritesBar.OnAddCurrentLocation = () =>
-        {
-            var hudLayer = GetNodeOrNull<CanvasLayer>("HudLayer");
-            if (hudLayer != null) OpenCreateLandmarkWindow(hudLayer);
-        };
+        _topMenu.FavoritesBar.OnAddCurrentLocation = () => _ = AddCurrentLocationToFavoritesAsync();
         _topMenu.FavoritesBar.OnToast = msg => ShowToast(msg);
 
         _topMenu.OnRebakeAvatar = RebakeAvatar;
@@ -1281,13 +1278,7 @@ public partial class Boot : Control
         _inventoryPanel.OnOpenTextureRequested = (texId, name) => OpenTextureViewer(hudLayer, texId, name);
         _inventoryPanel.OnAddToFavorites = (itemId, assetId, name) =>
         {
-            if (_topMenu?.FavoritesBar != null)
-            {
-                if (_topMenu.FavoritesBar.AddFavorite(itemId, assetId, name))
-                {
-                    ShowToast(SLNG.App.UI.L10n.TrFormat("ui.favorites_bar.added_toast", name));
-                }
-            }
+            if (_topMenu?.FavoritesBar != null) _ = _topMenu.FavoritesBar.AddFavoriteAsync(itemId, name);
         };
 
         _inWorldContextMenu = new SLNG.App.UI.InWorldContextMenu();
@@ -1396,6 +1387,10 @@ public partial class Boot : Control
         _presenceController = new PresenceController { Name = "PresenceController" };
         AddChild(_presenceController);
 
+        // FEAT-UI-72 phase 2: the one list behind the favorites bar (the inventory's Favorites folder).
+        _favoritesService = new FavoritesService { Name = "FavoritesService" };
+        AddChild(_favoritesService);
+
         // FEAT-AVATAR-03: hover height. OnHoverChanged applies the local self-avatar render offset
         // immediately (not only after the sim echoes AvatarAppearance back) and sends the new value
         // to the sim; AvatarHoverSettings persists it regardless.
@@ -1444,13 +1439,7 @@ public partial class Boot : Control
         };
         _landmarksWindow.OnAddToFavoritesRequested = (itemId, assetId, name) =>
         {
-            if (_topMenu?.FavoritesBar != null)
-            {
-                if (_topMenu.FavoritesBar.AddFavorite(itemId, assetId, name))
-                {
-                    ShowToast(SLNG.App.UI.L10n.TrFormat("ui.favorites_bar.added_toast", name));
-                }
-            }
+            if (_topMenu?.FavoritesBar != null) _ = _topMenu.FavoritesBar.AddFavoriteAsync(itemId, name);
         };
         _landmarksWindow.OnCreateLandmarkRequested = () => OpenCreateLandmarkWindow(hudLayer);
         _landmarksWindow.OnToast = msg => ShowToast(msg);
@@ -1462,10 +1451,7 @@ public partial class Boot : Control
 
         _landmarksWindow.OnOpenDedupRequested = () =>
         {
-            var favIds = _topMenu?.FavoritesBar?.FavoritesList?.Items?
-                .Select(i => i.ItemId != System.Guid.Empty ? i.ItemId : i.AssetId)
-                .ToHashSet();
-            _landmarkDedupWindow.Initialize(_session, favIds);
+            _landmarkDedupWindow.Initialize(_session, _favoritesService);
             _landmarkDedupWindow.OpenAndScan();
         };
 
@@ -1795,6 +1781,22 @@ public partial class Boot : Control
         _userProfileWindows[agentId] = win;
         _openProfileWindows = _userProfileWindows.Count;
         win.Initialize(agentId, name, _session, _gpuCache, _assetService);
+    }
+
+    /// <summary>The bar's "Add Current Location to Favorites": a landmark for where the agent stands, created straight in the
+    /// Favorites folder, named after the parcel (or the region when the parcel has no name of its own).</summary>
+    private async System.Threading.Tasks.Task AddCurrentLocationToFavoritesAsync()
+    {
+        string name = _topMenu?.CurrentPlaceName ?? "";
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        bool? created = await _favoritesService.AddCurrentLocationAsync(name);
+        ShowToast(created switch
+        {
+            true => SLNG.App.UI.L10n.TrFormat("ui.favorites_bar.added_toast", name),
+            null => SLNG.App.UI.L10n.Tr("ui.favorites_bar.no_folder"),
+            false => SLNG.App.UI.L10n.TrFormat("ui.favorites_bar.add_failed", name),
+        });
     }
 
     /// <summary>One image viewer per texture: a second click on the same picture raises the open
@@ -3150,6 +3152,7 @@ public partial class Boot : Control
 
                 // FEAT-UI-72: the region has loaded; now the login screen's favorites list may be refreshed.
                 PokeLoginStartFavorites();
+                _favoritesService.Poke(); // FEAT-UI-72 phase 2: the bar reads the Favorites folder from the grid
 
                 // FEAT-AVATAR-03: re-apply a persisted hover height to the local render now that
                 // the self avatar entity exists -- optimistic (see ApplySelfHoverHeight), not
@@ -4706,15 +4709,18 @@ public partial class Boot : Control
 
             // BUG-UI-33: Favorites bar is initialized once login succeeds with the real Agent ID and grid.
             string gridSlug = GridIdentity.Slug(_sessionGridUri);
-            _topMenu.FavoritesBar.Initialize(gridSlug, _myAgentId.ToString());
+            // FEAT-UI-72 phase 2: the bar shows the inventory's Favorites folder; only its order is kept locally.
+            string favAgent = _myAgentId.ToString();
+            _favoritesService.Initialize(
+                new GridSessionFavoritesSource(_session),
+                SLNG.App.UI.LandmarkFavoritesStore.LoadOrder(gridSlug, favAgent),
+                order => SLNG.App.UI.LandmarkFavoritesStore.SaveOrder(gridSlug, favAgent, order));
+            _topMenu.FavoritesBar.Initialize(_favoritesService, gridSlug, favAgent);
             _chatWindow.InitializeFriends(gridSlug, _myAgentId.ToString());
             _avatarHoverSettings.Load(gridSlug, _myAgentId.ToString());
             _avatarHoverWindow?.Refresh();
             SLNG.App.UI.GroupMuteSettings.Initialize(gridSlug, _myAgentId.ToString());
-            var favIds = _topMenu.FavoritesBar.FavoritesList.Items
-                .Select(i => i.ItemId != System.Guid.Empty ? i.ItemId : i.AssetId)
-                .ToHashSet();
-            _landmarkDedupWindow.Initialize(_session, favIds);
+            _landmarkDedupWindow.Initialize(_session, _favoritesService);
             _waitingForWorldLoad = true;
             _worldLoadWaitTime = 0.0;
 
@@ -6076,6 +6082,7 @@ public partial class Boot : Control
                 _topMenu.Visible = false;
                 _topMenu.ClearLocation();
                 _topMenu.FavoritesBar.Reset();
+                _favoritesService.Reset();
             }
             _chatWindow?.ResetForNewSession();
             _landmarksWindow?.Reset();
@@ -6219,6 +6226,7 @@ public partial class Boot : Control
                 _topMenu.Visible = false;
                 _topMenu.ClearLocation();
                 _topMenu.FavoritesBar.Reset();
+                _favoritesService.Reset();
             }
             _chatWindow?.ResetForNewSession();
             _landmarksWindow?.Reset();
