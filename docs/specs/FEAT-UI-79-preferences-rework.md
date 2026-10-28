@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-UI-79`
 - **Track:** `ui`
-- **Status:** ⏸️ Pending
-- **Owner:**
+- **Status:** 🚧 In Progress
+- **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
 ## Overview & Goal

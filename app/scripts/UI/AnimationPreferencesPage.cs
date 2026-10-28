@@ -1,151 +1,71 @@
-using Godot;
 using System;
+using Godot;
+using SLNG.App.UI.Prefs;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// "Animation" tab content for PreferencesWindow (FEAT-ANIM-03). Its own reusable Control, same
-/// shape as <see cref="DisplayPreferencesPage"/> / <see cref="CameraPreferencesPage"/>, so
-/// PreferencesWindow itself stays generic — see PreferencesWindow.AddTab.
+/// The "Movement" and "Avatar" sections of the Camera &amp; movement category (FEAT-UI-79; FEAT-ANIM-03, FEAT-ANIM-10):
+/// always run, head follows camera, the typing animation and the seat-pose-over-AO switch. Bound to
+/// <see cref="AnimationSettings"/>. A builder rather than a Control: it fills two sections with
+/// <see cref="PrefsRow"/>s.
 /// </summary>
-public partial class AnimationPreferencesPage : VBoxContainer
+public sealed class AnimationPreferencesPage
 {
+    private const string CategoryId = "camera_movement";
+
     private AnimationSettings _settings = null!;
-    private CheckBox _alwaysRunCheck = null!;
 
     /// <summary>Raised when the user changes the seat-pose preference, so Boot can push it onto the
     /// renderer without this page knowing the renderer exists.</summary>
     public event Action<bool>? SeatPoseOverridesAoChanged;
 
-    public override void _Ready()
-    {
-        AddThemeConstantOverride("separation", 10);
-    }
-
-    /// <summary>Call once, right after this page has been added via PreferencesWindow.AddTab.</summary>
-    public void Initialize(AnimationSettings settings)
+    /// <summary>Adds the "movement" and "avatar" sections to <paramref name="category"/> and fills them. Call once, after
+    /// the category is in the window's tree.</summary>
+    public void Build(PrefsCategory category, AnimationSettings settings)
     {
         _settings = settings;
 
-        // Section: Movement / Locomotion
-        var moveHeading = new Label { Text = L10n.Tr("ui.preferences.locomotion_heading") };
-        moveHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        AddChild(moveHeading);
+        // Movement / locomotion
+        var movement = category.AddSection("movement", "ui.preferences.sec_camera_movement_movement");
+        var alwaysRun = movement.AddCheck($"{CategoryId}.movement.always_run", "ui.preferences.always_run",
+            _settings.AlwaysRun, on => _settings.SetAlwaysRun(on), hintKey: "ui.preferences.always_run_hint");
+        KeepInSync(alwaysRun, add => _settings.AlwaysRunChanged += add);
 
-        _alwaysRunCheck = new CheckBox
-        {
-            Text = L10n.Tr("ui.preferences.always_run"),
-            ButtonPressed = _settings.AlwaysRun,
-        };
-        _alwaysRunCheck.Toggled += on =>
-        {
-            _settings.SetAlwaysRun(on);
-        };
-        _settings.AlwaysRunChanged += on =>
-        {
-            if (_alwaysRunCheck != null && _alwaysRunCheck.ButtonPressed != on)
-            {
-                _alwaysRunCheck.SetPressedNoSignal(on);
-            }
-        };
-        AddChild(_alwaysRunCheck);
+        // Avatar behaviour (FEAT-ANIM-10) and sitting / furniture (FEAT-ANIM-03)
+        var avatar = category.AddSection("avatar", "ui.preferences.sec_camera_movement_avatar");
 
-        var moveHint = new Label
-        {
-            Text = L10n.Tr("ui.preferences.always_run_hint"),
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-        };
-        moveHint.AddThemeFontSizeOverride("font_size", 11);
-        moveHint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
-        AddChild(moveHint);
+        var headFollows = avatar.AddCheck($"{CategoryId}.avatar.head_follows_camera", "ui.preferences.head_follows_camera",
+            _settings.HeadFollowsCamera, on => _settings.SetHeadFollowsCamera(on),
+            hintKey: "ui.preferences.head_follows_camera_hint");
+        KeepInSync(headFollows, add => _settings.HeadFollowsCameraChanged += add);
 
-        var separator = new HSeparator();
-        separator.AddThemeConstantOverride("separation", 16);
-        AddChild(separator);
+        var typing = avatar.AddCheck($"{CategoryId}.avatar.typing_animation", "ui.preferences.play_typing_animation",
+                _settings.PlayTypingAnimation, on => _settings.SetPlayTypingAnimation(on),
+                hintKey: "ui.preferences.play_typing_animation_hint")
+            .WithKeywords("PlayTypingAnim");
+        KeepInSync(typing, add => _settings.PlayTypingAnimationChanged += add);
 
-        // Section: Sitting / Furniture
-        var heading = new Label { Text = L10n.Tr("ui.preferences.animation_seating_heading") };
-        heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        AddChild(heading);
-
-        var seatPose = new CheckBox
-        {
-            Text = L10n.Tr("ui.preferences.seat_pose_overrides_ao"),
-            ButtonPressed = _settings.SeatPoseOverridesAo,
-        };
-        seatPose.Toggled += on =>
-        {
-            _settings.SetSeatPoseOverridesAo(on);
-            SeatPoseOverridesAoChanged?.Invoke(on);
-        };
-        AddChild(seatPose);
-
-        // Spelled out because the behaviour is a departure from what other viewers do, and someone
+        // The hint is spelled out because the behaviour is a departure from what other viewers do, and someone
         // who has patched their AO HUD for this needs to know which of the two is now in charge.
-        var hint = new Label
-        {
-            Text = L10n.Tr("ui.preferences.seat_pose_overrides_ao_hint"),
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-        };
-        hint.AddThemeFontSizeOverride("font_size", 11);
-        hint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
-        AddChild(hint);
-
-        var separator2 = new HSeparator();
-        separator2.AddThemeConstantOverride("separation", 16);
-        AddChild(separator2);
-
-        // Section: Avatar Behavior (FEAT-ANIM-10)
-        var behavHeading = new Label { Text = L10n.Tr("ui.preferences.avatar_behavior_heading") };
-        behavHeading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        AddChild(behavHeading);
-
-        var typingCheck = new CheckBox
-        {
-            Text = L10n.Tr("ui.preferences.play_typing_animation"),
-            ButtonPressed = _settings.PlayTypingAnimation,
-        };
-        typingCheck.Toggled += on => _settings.SetPlayTypingAnimation(on);
-        _settings.PlayTypingAnimationChanged += on =>
-        {
-            if (typingCheck != null && typingCheck.ButtonPressed != on)
+        avatar.AddCheck($"{CategoryId}.avatar.seat_pose_overrides_ao", "ui.preferences.seat_pose_overrides_ao",
+            _settings.SeatPoseOverridesAo,
+            on =>
             {
-                typingCheck.SetPressedNoSignal(on);
-            }
-        };
-        AddChild(typingCheck);
+                _settings.SetSeatPoseOverridesAo(on);
+                SeatPoseOverridesAoChanged?.Invoke(on);
+            },
+            hintKey: "ui.preferences.seat_pose_overrides_ao_hint");
+    }
 
-        var typingHint = new Label
+    /// <summary>The setting can change from outside this page too (a menu entry, a key): follow it without raising
+    /// the checkbox's own Toggled, which would write the value back.</summary>
+    private static void KeepInSync(PrefsRow row, Action<Action<bool>> subscribe)
+    {
+        var check = row.ControlAs<CheckBox>()!;
+        subscribe(on =>
         {
-            Text = L10n.Tr("ui.preferences.play_typing_animation_hint"),
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-        };
-        typingHint.AddThemeFontSizeOverride("font_size", 11);
-        typingHint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
-        AddChild(typingHint);
-
-        var gazeCheck = new CheckBox
-        {
-            Text = L10n.Tr("ui.preferences.head_follows_camera"),
-            ButtonPressed = _settings.HeadFollowsCamera,
-        };
-        gazeCheck.Toggled += on => _settings.SetHeadFollowsCamera(on);
-        _settings.HeadFollowsCameraChanged += on =>
-        {
-            if (gazeCheck != null && gazeCheck.ButtonPressed != on)
-            {
-                gazeCheck.SetPressedNoSignal(on);
-            }
-        };
-        AddChild(gazeCheck);
-
-        var gazeHint = new Label
-        {
-            Text = L10n.Tr("ui.preferences.head_follows_camera_hint"),
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-        };
-        gazeHint.AddThemeFontSizeOverride("font_size", 11);
-        gazeHint.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
-        AddChild(gazeHint);
+            if (check.ButtonPressed != on) check.SetPressedNoSignal(on);
+        });
     }
 }

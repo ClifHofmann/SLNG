@@ -1,26 +1,64 @@
-using System;
 using System.Collections.Generic;
 using Godot;
+using SLNG.App.UI.Prefs;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Settings dialog shell: a classic two-pane layout with vertical tab-select buttons on the
-/// left and the selected tab's content on the right. Godot's built-in TabContainer only offers
-/// a horizontal, top-mounted tab strip, so this hand-builds the left column instead.
+/// Settings dialog shell (FEAT-UI-79): a category list on the left and, on the right, the selected category as one
+/// scrolling column of sections. Godot's built-in TabContainer only offers a horizontal, top-mounted tab strip, so
+/// the left column is hand-built instead.
 ///
-/// Deliberately generic -- this class knows nothing about toolbars, cameras, or inventory. Call
-/// <see cref="AddTab"/> once per tab (see Boot.SetupHud, which adds a "Toolbar" tab backed by
-/// <see cref="ToolbarPreferencesPage"/>). Adding a second tab later is exactly one more AddTab
-/// call plus whatever Control builds that tab's content -- no switch statement to extend here.
+/// <para>Deliberately generic -- this class knows nothing about toolbars, cameras, or inventory. Boot.SetupHud calls
+/// <see cref="AddCategory"/> once per category and fills its <see cref="PrefsSection"/>s with
+/// <see cref="PrefsRow"/>s (or, until a page is migrated, with the page embedded whole through
+/// <see cref="PrefsSection.AddBlock"/>). The plan this follows is docs/specs/FEAT-UI-79-preferences-rework.md.</para>
+///
+/// <para>The selected category is remembered across restarts (<see cref="PrefsState"/>) and restored the first time
+/// the window is shown.</para>
 /// </summary>
 public partial class PreferencesWindow : SLNGWindow
 {
-    private VBoxContainer _tabList = null!;
+    private VBoxContainer _navList = null!;
     private Control _pageHost = null!;
-    /// <summary>Holds the ScrollContainer wrapping each page, not the page itself -- the wrapper is
-    /// what gets shown and hidden.</summary>
-    private readonly List<(Button TabButton, Control Page)> _tabs = new();
+    private readonly List<(PrefsCategory Category, Button NavButton, ScrollContainer Scroll)> _categories = new();
+    private IReadOnlyList<PrefsCategory>? _categoryView;
+    private string? _selectedId;
+    private bool _restored;
+
+    /// <summary>The column left of the pages: the category list now, and FEAT-UI-80's search field above it later
+    /// (<c>AddChild</c> + <c>MoveChild(field, 0)</c>).</summary>
+    public VBoxContainer LeftColumn { get; private set; } = null!;
+
+    /// <summary>The categories, in the order of the list.</summary>
+    public IReadOnlyList<PrefsCategory> Categories
+    {
+        get
+        {
+            if (_categoryView == null || _categoryView.Count != _categories.Count)
+            {
+                var list = new List<PrefsCategory>();
+                foreach (var entry in _categories) list.Add(entry.Category);
+                _categoryView = list;
+            }
+            return _categoryView;
+        }
+    }
+
+    /// <summary>Every row of every category, in list order.</summary>
+    public IEnumerable<PrefsRow> AllRows
+    {
+        get
+        {
+            foreach (var entry in _categories)
+            {
+                foreach (var row in entry.Category.Rows) yield return row;
+            }
+        }
+    }
+
+    /// <summary>Id of the category that is showing, or null before the first one was added.</summary>
+    public string? SelectedCategoryId => _selectedId;
 
     public override void _Ready()
     {
@@ -29,8 +67,8 @@ public partial class PreferencesWindow : SLNGWindow
 
         Title = L10n.Tr("ui.preferences.title");
         Visible = false;
-        CustomMinimumSize = new Vector2(600, 420);
-        Size = new Vector2(600, 420);
+        CustomMinimumSize = new Vector2(640, 420);
+        Size = new Vector2(760, 520);
         Position = new Vector2(260, 160);
 
         OnCloseRequested = Hide;
@@ -39,9 +77,9 @@ public partial class PreferencesWindow : SLNGWindow
         hbox.AddThemeConstantOverride("separation", 0);
         ContentContainer.AddChild(hbox);
 
-        // Left: vertical tab strip.
-        var tabListPanel = new PanelContainer { CustomMinimumSize = new Vector2(140, 0) };
-        var tabListStyle = new StyleBoxFlat
+        // Left: the category list.
+        var navPanel = new PanelContainer { CustomMinimumSize = new Vector2(160, 0) };
+        var navStyle = new StyleBoxFlat
         {
             BgColor = new Color(1, 1, 1, 0.03f),
             BorderWidthRight = 1,
@@ -51,20 +89,24 @@ public partial class PreferencesWindow : SLNGWindow
             ContentMarginLeft = 6,
             ContentMarginRight = 6,
         };
-        tabListPanel.AddThemeStyleboxOverride("panel", tabListStyle);
-        hbox.AddChild(tabListPanel);
+        navPanel.AddThemeStyleboxOverride("panel", navStyle);
+        hbox.AddChild(navPanel);
 
-        _tabList = new VBoxContainer();
-        _tabList.AddThemeConstantOverride("separation", 4);
-        tabListPanel.AddChild(_tabList);
+        LeftColumn = new VBoxContainer();
+        LeftColumn.AddThemeConstantOverride("separation", 8);
+        navPanel.AddChild(LeftColumn);
 
-        // Right: selected tab's page.
+        _navList = new VBoxContainer();
+        _navList.AddThemeConstantOverride("separation", 4);
+        LeftColumn.AddChild(_navList);
+
+        // Right: the selected category.
         var pageMargin = new MarginContainer
         {
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
-        // Left only: the gap between the tab list and the page. Right, top and bottom are the
+        // Left only: the gap between the category list and the page. Right, top and bottom are the
         // window's standard inset (SLNGWindow); a margin there would stack a second one on it.
         pageMargin.AddThemeConstantOverride("margin_left", 16);
         hbox.AddChild(pageMargin);
@@ -75,18 +117,24 @@ public partial class PreferencesWindow : SLNGWindow
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
         pageMargin.AddChild(_pageHost);
+
+        VisibilityChanged += OnVisibilityChanged;
     }
 
-    /// <summary>Registers one tab: a left-column select button plus its content Control. The
-    /// first tab ever added starts selected. <paramref name="page"/> should be populated (or
-    /// populated right after this call returns) by its own Initialize-style method -- this only
-    /// places it in the tree and wires visibility, matching how the rest of this codebase
-    /// constructs a panel then calls a separate Initialize (see ItemPropertiesWindow).</summary>
-    public void AddTab(string tabName, Control page)
+    /// <summary>Appends a category: a button in the list plus its page. The first category ever added starts
+    /// selected; the one the person left open last time replaces it when the window is first shown. Fill the returned
+    /// category with sections.</summary>
+    public PrefsCategory AddCategory(string id, string titleKey)
     {
-        bool isFirst = _tabs.Count == 0;
+        foreach (var existing in _categories)
+        {
+            if (existing.Category.Id == id) GD.PushError($"[Preferences] category '{id}' exists twice");
+        }
 
-        // Each page lives in its own ScrollContainer. Without one a page taller than the dialog
+        bool isFirst = _categories.Count == 0;
+        var category = new PrefsCategory(id, titleKey);
+
+        // Each category lives in its own ScrollContainer. Without one a page taller than the dialog
         // does not clip -- it draws straight over the 3D world outside the window frame, which is
         // what the Graphics tab did as soon as it grew past four controls. Scrolling also means a
         // page can be extended later without anyone having to remember to resize this window.
@@ -107,12 +155,15 @@ public partial class PreferencesWindow : SLNGWindow
         // Inside a container, layout is the container's job -- an anchor preset on the child is
         // ignored at best and fights it at worst. Width comes from the fill flag; height is left to
         // the content, which is what gives the scroll bar something to scroll.
-        page.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-        scroll.AddChild(page);
+        // The gutter keeps the rows (value texts, the right end of a hint) off the scroll bar.
+        var gutter = new MarginContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        gutter.AddThemeConstantOverride("margin_right", PrefsStyle.PageGutter);
+        gutter.AddChild(category);
+        scroll.AddChild(gutter);
 
-        var tabButton = new Button
+        var navButton = new Button
         {
-            Text = tabName,
+            Text = L10n.Tr(titleKey),
             ToggleMode = true,
             ButtonPressed = isFirst,
             FocusMode = Control.FocusModeEnum.None,
@@ -120,14 +171,49 @@ public partial class PreferencesWindow : SLNGWindow
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(0, 32),
         };
-        StyleTabButton(tabButton);
-        tabButton.Pressed += () => SelectTab(scroll);
-        _tabList.AddChild(tabButton);
+        StyleNavButton(navButton);
+        navButton.Pressed += () => SelectCategory(id);
+        _navList.AddChild(navButton);
 
-        _tabs.Add((tabButton, scroll));
+        _categories.Add((category, navButton, scroll));
+        if (isFirst) _selectedId = id;
+        return category;
     }
 
-    private static void StyleTabButton(Button btn)
+    /// <summary>Shows a category and remembers it for the next start. An unknown id changes nothing. Choosing a
+    /// category here, before the window was first shown, also stops the remembered one from replacing it.</summary>
+    public void SelectCategory(string id)
+    {
+        if (!ShowCategory(id)) return;
+        _restored = true;
+        PrefsState.SetLastCategory(id);
+    }
+
+    private bool ShowCategory(string id)
+    {
+        if (!_categories.Exists(entry => entry.Category.Id == id)) return false;
+
+        foreach (var (category, navButton, scroll) in _categories)
+        {
+            bool selected = category.Id == id;
+            scroll.Visible = selected;
+            navButton.ButtonPressed = selected;
+        }
+        _selectedId = id;
+        return true;
+    }
+
+    /// <summary>The first time the window is shown, reopens the category the person had open. Reads only: restoring
+    /// is not a change, so nothing is written.</summary>
+    private void OnVisibilityChanged()
+    {
+        if (!Visible || _restored) return;
+        _restored = true;
+        string? last = PrefsState.LastCategory;
+        if (last != null) ShowCategory(last);
+    }
+
+    private static void StyleNavButton(Button btn)
     {
         var normalStyle = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0), ContentMarginLeft = 12 };
         var hoverStyle = new StyleBoxFlat { BgColor = new Color(1, 1, 1, 0.06f), ContentMarginLeft = 12, CornerRadiusTopLeft = 8, CornerRadiusBottomLeft = 8 };
@@ -138,15 +224,5 @@ public partial class PreferencesWindow : SLNGWindow
         btn.AddThemeStyleboxOverride("hover_pressed", pressedStyle);
         btn.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
         btn.AddThemeColorOverride("font_pressed_color", new Color(1, 1, 1));
-    }
-
-    private void SelectTab(Control selectedPage)
-    {
-        foreach (var (tabButton, page) in _tabs)
-        {
-            bool selected = page == selectedPage;
-            page.Visible = selected;
-            tabButton.ButtonPressed = selected;
-        }
     }
 }

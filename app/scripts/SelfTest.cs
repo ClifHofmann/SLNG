@@ -309,6 +309,8 @@ public static partial class SelfTest
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
+        results.Add(CheckPreferencesBuilder(tree)); // FEAT-UI-79
+        results.Add(CheckPreferencesWindowWiring(tree)); // FEAT-UI-79
         results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
         results.Add(CheckTextureViewerFit(tree));
         results.Add(CheckDebugLogSanitizes()); // FEAT-UI-76
@@ -1537,7 +1539,12 @@ public static partial class SelfTest
             W<UI.InventoryOfferWindow>(w => w.Initialize(session, new InventoryOfferEvent(id(), id(), "Someone", "Hat", id(), 6, false))),
             W<UI.NotificationWindow>(w => w.Initialize(new NotificationStore())), W<UI.ObjectEditWindow>(w => w.Initialize(session, new SLNG.Core.ECS.World())),
             W<UI.PayAvatarWindow>(w => w.Initialize(session, id(), "Someone")), W<UI.PayObjectWindow>(w => w.Initialize(session, 0, 1, id(), "Vendor")),
-            W<UI.PreferencesWindow>(w => w.AddTab("Test", new Label { Text = "Test" })), W<UI.RegionRestartWindow>(w => w.Initialize(session, new RegionRestartEvent("Testland", 120))),
+            W<UI.PreferencesWindow>(w =>
+            {
+                var section = w.AddCategory("test", "ui.preferences.cat_general").AddSection("test", "ui.preferences.sec_general_interface");
+                section.AddCheck("test.test.check", "ui.preferences.advanced", false, _ => { });
+                section.AddNote("test.test.note", "ui.preferences.apply_reopen");
+            }), W<UI.RegionRestartWindow>(w => w.Initialize(session, new RegionRestartEvent("Testland", 120))),
             W<UI.ScriptDialogWindow>(w => w.Initialize(session, new ScriptDialogEvent(id(), "Object", id(), "Owner", "Pick", 1, new[] { "Yes", "No" }))),
             W<UI.ScriptPermissionWindow>(w => w.Initialize(session, new ScriptPermissionRequestEvent(id(), id(), "Object", "Owner", 4))),
             W<UI.FriendshipOfferWindow>(w => w.Initialize(

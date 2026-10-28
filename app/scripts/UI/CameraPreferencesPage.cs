@@ -1,19 +1,22 @@
 using Godot;
+using SLNG.App.UI.Prefs;
 using SLNG.Core.Camera;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// "Camera" tab content for PreferencesWindow: pad-speed sliders (BUG-UI-02) and view settings
-/// -- FOV, rear-view distance, focus height (FEAT-UI-12). Bound to <see cref="CameraSettings"/>.
-/// Kept as its own reusable Control (mirrors <see cref="DisplayPreferencesPage"/>) so
-/// PreferencesWindow itself stays generic -- see PreferencesWindow.AddTab.
+/// The "Camera" section of the Camera &amp; movement category (FEAT-UI-79): view settings -- FOV, rear-view distance,
+/// focus height (FEAT-UI-12), Firestorm's "Disable camera constraints" -- and, under Advanced, the pad-speed sliders
+/// (BUG-UI-02). Bound to <see cref="CameraSettings"/>. A builder rather than a Control: it fills the section with
+/// <see cref="PrefsRow"/>s and keeps the sliders it needs for the reset button and the field-of-view range.
 /// </summary>
-public partial class CameraPreferencesPage : VBoxContainer
+public sealed class CameraPreferencesPage
 {
+    private const string CategoryId = "camera_movement";
+
     private CameraSettings _settings = null!;
 
-    // Kept for ResetToDefaults -- each row's value label is updated by its own ValueChanged closure.
+    // Kept for ResetToDefaults -- each row's value label is updated by the row's own ValueChanged handler.
     private HSlider _orbitSlider = null!;
     private HSlider _panSlider = null!;
     private HSlider _zoomSlider = null!;
@@ -24,83 +27,74 @@ public partial class CameraPreferencesPage : VBoxContainer
     // True while the field-of-view slider's range is being moved: changing a bound clamps the value and raises
     // ValueChanged, which must not be written back to the settings as if the person had moved the slider.
     private bool _syncingFovRange;
-    private CheckBox _constraintsBox = null!;
 
-    public override void _Ready()
-    {
-        AddThemeConstantOverride("separation", 10);
-    }
-
-    /// <summary>Builds the sliders. Call once, right after this page has been added via
-    /// PreferencesWindow.AddTab (mirrors DisplayPreferencesPage.Initialize).</summary>
-    public void Initialize(CameraSettings settings)
+    /// <summary>Adds the "camera" section to <paramref name="category"/> and fills it. Call once, after the category is
+    /// in the window's tree.</summary>
+    public void Build(PrefsCategory category, CameraSettings settings)
     {
         _settings = settings;
-
-        AddHeading(L10n.Tr("ui.preferences.camera_speed_heading"));
-
-        _orbitSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_orbit_speed"),
-            CameraSettings.MinMultiplier, CameraSettings.MaxMultiplier, 0.05f, _settings.OrbitSpeed,
-            FormatPercent, v => _settings.SetOrbitSpeed(v));
-        _panSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_pan_speed"),
-            CameraSettings.MinMultiplier, CameraSettings.MaxMultiplier, 0.05f, _settings.PanSpeed,
-            FormatPercent, v => _settings.SetPanSpeed(v));
-        _zoomSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_zoom_speed"),
-            CameraSettings.MinMultiplier, CameraSettings.MaxMultiplier, 0.05f, _settings.ZoomSpeed,
-            FormatPercent, v => _settings.SetZoomSpeed(v));
-
-        AddHint(L10n.Tr("ui.preferences.camera_speed_hint"));
-
-        var separator = new HSeparator();
-        separator.AddThemeConstantOverride("separation", 15);
-        AddChild(separator);
-
-        AddHeading(L10n.Tr("ui.preferences.camera_view_heading"));
+        var section = category.AddSection("camera", "ui.preferences.sec_camera_movement_camera");
 
         // FEAT-UI-73: the viewer's range for this window shape (5 degrees up to 175 / aspect), re-read whenever the page is
         // shown (llfloaterpreference.cpp:502-503, :618-619). The stored value may lie outside it after a resize and is
         // left alone: the camera applies the clamp itself, every frame.
-        _fovSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_fov"),
-            CameraFovLimits.AbsoluteMinDegrees, CameraFovLimits.AbsoluteMaxDegrees, 1f, _settings.Fov,
-            v => $"{v:0}°", v => { if (!_syncingFovRange) _settings.SetFov(v); });
+        _fovSlider = section.AddSlider($"{CategoryId}.camera.fov", "ui.preferences.camera_fov",
+                CameraFovLimits.AbsoluteMinDegrees, CameraFovLimits.AbsoluteMaxDegrees, 1.0, _settings.Fov,
+                v => $"{v:0}°", v => { if (!_syncingFovRange) _settings.SetFov((float)v); },
+                hintKey: "ui.preferences.camera_fov_hint")
+            .WithKeywords("CameraAngle")
+            .ControlAs<HSlider>()!;
         RefreshFovRange();
-        VisibilityChanged += RefreshFovRange;
-        _distanceSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_rear_distance"),
-            CameraSettings.MinDistance, CameraSettings.MaxDistance, 0.5f, _settings.RearDistance,
-            FormatMetres, v => _settings.SetRearDistance(v));
-        _heightSlider = AddSliderRow(L10n.Tr("ui.preferences.camera_focus_height"),
-            CameraSettings.MinFocusHeight, CameraSettings.MaxFocusHeight, 0.1f, _settings.FocusHeight,
-            FormatMetres, v => _settings.SetFocusHeight(v));
+        category.VisibilityChanged += RefreshFovRange;
 
-        AddHint(L10n.Tr("ui.preferences.camera_view_hint"));
+        // The rear distance is read when the camera is reset, not every frame -- that is what the hint says.
+        _distanceSlider = section.AddSlider($"{CategoryId}.camera.rear_distance", "ui.preferences.camera_rear_distance",
+                CameraSettings.MinDistance, CameraSettings.MaxDistance, 0.5, _settings.RearDistance,
+                FormatMetres, v => _settings.SetRearDistance((float)v),
+                hintKey: "ui.preferences.camera_rear_distance_hint")
+            .ControlAs<HSlider>()!;
+        _heightSlider = section.AddSlider($"{CategoryId}.camera.focus_height", "ui.preferences.camera_focus_height",
+                CameraSettings.MinFocusHeight, CameraSettings.MaxFocusHeight, 0.1, _settings.FocusHeight,
+                FormatMetres, v => _settings.SetFocusHeight((float)v))
+            .ControlAs<HSlider>()!;
 
         // Firestorm's "Disable camera constraints": takes effect at once, like every switch on a Preferences page.
-        _constraintsBox = new CheckBox
-        {
-            Text = L10n.Tr("ui.preferences.camera_disable_constraints"),
-            ButtonPressed = _settings.DisableConstraints,
-            FocusMode = Control.FocusModeEnum.None,
-        };
-        _constraintsBox.Toggled += on => _settings.SetDisableConstraints(on);
-        AddChild(_constraintsBox);
-        AddHint(L10n.Tr("ui.preferences.camera_disable_constraints_hint"));
+        section.AddCheck($"{CategoryId}.camera.disable_constraints", "ui.preferences.camera_disable_constraints",
+                _settings.DisableConstraints, on => _settings.SetDisableConstraints(on),
+                hintKey: "ui.preferences.camera_disable_constraints_hint")
+            .WithKeywords("DisableCameraConstraints");
 
         var resetButton = new Button
         {
             Text = L10n.Tr("ui.preferences.camera_speed_reset"),
-            SizeFlagsHorizontal = SizeFlags.ShrinkBegin,
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
             FocusMode = Control.FocusModeEnum.None,
         };
         resetButton.Pressed += ResetToDefaults;
-        AddChild(resetButton);
+        section.AddBlock($"{CategoryId}.camera.reset", resetButton, null, false, "ui.preferences.camera_speed_reset");
+
+        // Advanced: the speed of the on-screen Camera Controls pads.
+        section.AddNote($"{CategoryId}.camera.speed_note", "ui.preferences.camera_speed_hint", advanced: true);
+        _orbitSlider = AddSpeedSlider(section, "orbit_speed", "ui.preferences.camera_orbit_speed",
+            _settings.OrbitSpeed, v => _settings.SetOrbitSpeed(v));
+        _panSlider = AddSpeedSlider(section, "pan_speed", "ui.preferences.camera_pan_speed",
+            _settings.PanSpeed, v => _settings.SetPanSpeed(v));
+        _zoomSlider = AddSpeedSlider(section, "zoom_speed", "ui.preferences.camera_zoom_speed",
+            _settings.ZoomSpeed, v => _settings.SetZoomSpeed(v));
     }
+
+    private HSlider AddSpeedSlider(PrefsSection section, string name, string labelKey, float value, System.Action<float> set)
+        => section.AddSlider($"{CategoryId}.camera.{name}", labelKey,
+                CameraSettings.MinMultiplier, CameraSettings.MaxMultiplier, 0.05, value,
+                FormatPercent, v => set((float)v), advanced: true)
+            .ControlAs<HSlider>()!;
 
     /// <summary>Gives the field-of-view slider the range the window's shape allows now, showing the stored value
     /// (clamped into it, for display only).</summary>
     private void RefreshFovRange()
     {
         if (_fovSlider == null) return;
-        float aspect = CameraSettings.ViewAspect(GetViewport());
+        float aspect = CameraSettings.ViewAspect(_fovSlider.GetViewport());
         _syncingFovRange = true;
         try
         {
@@ -112,60 +106,6 @@ public partial class CameraPreferencesPage : VBoxContainer
         {
             _syncingFovRange = false;
         }
-    }
-
-    private void AddHeading(string text)
-    {
-        var heading = new Label { Text = text };
-        heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        AddChild(heading);
-    }
-
-    private void AddHint(string text)
-    {
-        var hint = new Label { Text = text, AutowrapMode = TextServer.AutowrapMode.WordSmart };
-        hint.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
-        hint.AddThemeFontSizeOverride("font_size", 12);
-        AddChild(hint);
-    }
-
-    private HSlider AddSliderRow(string label, float min, float max, float step, float initial,
-                                System.Func<double, string> format, System.Action<float> onChange)
-    {
-        var caption = new Label { Text = label };
-        caption.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.75f));
-        AddChild(caption);
-
-        var row = new HBoxContainer();
-        row.AddThemeConstantOverride("separation", 12);
-        AddChild(row);
-
-        var slider = new HSlider
-        {
-            MinValue = min,
-            MaxValue = max,
-            Step = step,
-            Value = initial,
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(200, 0),
-        };
-        row.AddChild(slider);
-
-        var valueLabel = new Label
-        {
-            Text = format(initial),
-            CustomMinimumSize = new Vector2(52, 0),
-        };
-        valueLabel.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        row.AddChild(valueLabel);
-
-        slider.ValueChanged += value =>
-        {
-            valueLabel.Text = format(value);
-            onChange((float)value);
-        };
-
-        return slider;
     }
 
     private void ResetToDefaults()
