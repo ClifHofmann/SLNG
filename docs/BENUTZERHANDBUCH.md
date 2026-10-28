@@ -4,7 +4,7 @@ Willkommen beim Benutzerhandbuch für den **Puris Viewer** (internes Projekt: *S
 
 > **Status:** Alpha. Es kommen kontinuierlich neue Funktionen hinzu.
 >
-> Dieses Handbuch beschreibt Version **v0.28.24-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
+> Dieses Handbuch beschreibt Version **v0.28.30-alpha**. Die Version steht oben rechts in der Menüleiste und auf dem Anmeldebildschirm. Was nicht funktioniert, steht in Abschnitt 11.
 
 ---
 
@@ -374,6 +374,7 @@ Da sich der Client in einer laufenden Alpha-Phase befindet, helfen Ihnen folgend
 - **"Wolken-Avatare":** Wenn Avatare oder Objekte kurzzeitig grau/als Wolke dargestellt werden, warten Sie einen Augenblick. Das Hintergrund-Streaming (`CoreJ2K`) decodiert die Texturen gerade noch.
 - **Abbrechen von Teleports:** Wenn Sie im Weltkarten-Menü "A teleport is already in progress" lesen, läuft im Hintergrund bereits ein Teleport-Vorgang. Der Puris Viewer blockiert hier gezielt Überlappungen, um korrupte Verbindungen (Race Conditions) zu vermeiden.
 - **Objekt-Detach funktioniert nicht:** Ein Klick auf "Detach" im Inventar räumt nun automatisch kaputte Server-Verknüpfungen auf, falls ein Kleidungsstück fehlerhaft anhing. 
+- **Nur Himmel und Wasser, keine Landschaft, kein Avatar:** Die Region antwortet nicht, und der Viewer meldet das im Chat und als Benachrichtigung. Fast immer blockiert eine Firewall oder ein Virenschutz den UDP-Verkehr des Viewers; Anmeldung und Inventar laufen über HTTP und funktionieren trotzdem. Erlauben Sie `PurisViewer.exe` unter Windows-Sicherheit → Firewall- & Netzwerkschutz → *Zugriff von App durch Firewall zulassen* (privat und öffentlich) und in einem anderen Virenschutz, dann melden Sie sich neu an. Haben Sie beim ersten Start die Windows-Frage nach dem Netzwerkzugriff mit *Abbrechen* beantwortet, liegt dort eine Sperrregel. Scheitert auch ein anderer Viewer im selben Netz, blockiert das Netz selbst (VPN, Router).
 - **Avatar sieht unvollständig aus** (Kopf leer, Haare wie ein Helm): Menü `Avatar` -> `Avatar neu backen` (`Strg+Alt+R`) lädt die Körpertexturen neu.
 - **Was noch fehlt (Alpha):**
   - **Gruppenmitteilungen** (Group Notices) kommen nicht an. Der Gruppen*chat* funktioniert.

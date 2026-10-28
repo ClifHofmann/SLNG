@@ -686,6 +686,10 @@ public enum SessionEndReason
     /// <summary>The current region never answered its seed capability request, so it has no
     /// HTTP capabilities at all (BUG-NET-31).</summary>
     CapabilitiesUnavailable,
+
+    /// <summary>The session timed out, and the current region had never sent anything over UDP:
+    /// most likely a firewall blocks the viewer (BUG-NET-36).</summary>
+    RegionNeverAnswered,
 }
 
 /// <summary>The session is over and the client must go back to the login screen. BUG-NET-22.</summary>

@@ -53,7 +53,13 @@ public sealed partial class GridSession
             // previously tore down. "[RegionEnter] X" with no following "[RegionData] ... for X" is
             // the sim not streaming (interest list / camera), not a render bug.
             Console.WriteLine($"[RegionEnter] {sim.Name} ({sim.Handle}) is now the current region");
+            // BUG-NET-36: LibreMetaverse raises this even when it gave up waiting for the handshake.
+            _currentRegionUnanswered = !sim.HandshakeComplete;
+            if (_currentRegionUnanswered)
+                Console.Error.WriteLine($"[RegionEnter] ({sim.Handle}) never answered over UDP (no RegionHandshake): " +
+                                        "a firewall or security program is probably blocking the viewer");
             RegionConnected?.Invoke(this, sim.Handle);
+            if (_currentRegionUnanswered) RegionNotAnswering?.Invoke(this, sim.Handle);
             ScheduleObjectRecovery(sim); // BUG-NET-21: a region we left and are back in
             // FEAT-ECON-01: ask for the L$ balance on arrival. The simulator volunteers one only
             // when it changes, so without asking, a session that spends nothing never learns it.

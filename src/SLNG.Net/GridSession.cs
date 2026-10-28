@@ -246,15 +246,25 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         // Our own logout is not news: whoever called it is already showing the login screen.
         if (e.Reason == NetworkManager.DisconnectType.ClientInitiated) return;
 
-        var reason = e.Reason switch
-        {
-            NetworkManager.DisconnectType.SimShutdown => SessionEndReason.SimShutdown,
-            NetworkManager.DisconnectType.NetworkTimeout => SessionEndReason.NetworkTimeout,
-            _ => SessionEndReason.ServerInitiated,
-        };
-        Console.Error.WriteLine($"[Net] session ended ({e.Reason}): {e.Message}");
+        // A handshake that came in late after all clears the suspicion.
+        bool neverAnswered = _currentRegionUnanswered && _client.Network.CurrentSim?.HandshakeComplete != true;
+        var reason = SessionEndReasonFor(e.Reason, neverAnswered);
+        Console.Error.WriteLine($"[Net] session ended ({e.Reason}{(neverAnswered ? ", the region never answered" : "")}): {e.Message}");
         RaiseSessionEnded(reason, e.Message ?? string.Empty);
     }
+
+    /// <summary>What a LibreMetaverse disconnect means for the user. BUG-NET-36: a timeout from a
+    /// region that never sent its handshake is not "the connection dropped" but "nothing ever got
+    /// through", which wants a different explanation.</summary>
+    internal static SessionEndReason SessionEndReasonFor(NetworkManager.DisconnectType reason, bool regionNeverAnswered)
+        => reason switch
+        {
+            NetworkManager.DisconnectType.SimShutdown => SessionEndReason.SimShutdown,
+            NetworkManager.DisconnectType.NetworkTimeout => regionNeverAnswered
+                ? SessionEndReason.RegionNeverAnswered
+                : SessionEndReason.NetworkTimeout,
+            _ => SessionEndReason.ServerInitiated,
+        };
 
     private readonly SLNG.Core.EventQueueHealth _eventQueueHealth = new();
 
@@ -488,6 +498,21 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
     /// Payload is the new region's handle. Consumers: RenderConfig.SetRegionOrigin (the floating-
     /// origin recenter) is the reason this exists -- see Boot.cs's subscription.</summary>
     public event EventHandler<ulong>? RegionConnected;
+
+    /// <summary>The region we just moved into never sent its <c>RegionHandshake</c>: nothing from it
+    /// arrives over UDP, so it shows no terrain, objects or avatars -- only sky and water -- and the
+    /// session times out a little later. BUG-NET-36.</summary>
+    /// <remarks>
+    /// Almost always a firewall or security program on the user's machine that lets the viewer's
+    /// HTTP through (login, inventory) but not its UDP. Raised from <c>SimConnected</c>, which
+    /// LibreMetaverse fires only after it has waited <c>LoginTimeout</c> for the handshake and given
+    /// up. Payload is the region's handle. Raised on a LibreMetaverse network thread.
+    /// </remarks>
+    public event EventHandler<ulong>? RegionNotAnswering;
+
+    // BUG-NET-36: the current region never completed its handshake. Read when the session times out,
+    // to tell "the grid stopped answering" from "the region never answered at all".
+    private volatile bool _currentRegionUnanswered;
 
     /// <summary>Fired once per region, after its HTTP CAPS have actually been seeded -- unlike
     /// <see cref="RegionConnected"/> (raised from <c>SimConnected</c>), which fires BEFORE the caps

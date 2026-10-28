@@ -1145,7 +1145,12 @@
       "capabilities": "Die Region „{0}“ hat die Fähigkeiten-Anfrage nicht beantwortet, deshalb würden Inventar, Texturen und Ereignisse nicht funktionieren. Die Sitzung wurde beendet — bitte melde dich neu an.",
       "sim_shutdown": "Der Simulator wurde heruntergefahren — ein Regions-Neustart macht das. Die Sitzung wurde beendet.",
       "timeout": "Die Verbindung zum Grid ist abgelaufen. Die Sitzung wurde beendet.",
+      "no_answer": "Die Region hat nie geantwortet, deshalb wurde die Sitzung beendet. Wahrscheinlich blockiert eine Firewall oder ein Virenschutz auf diesem Rechner den UDP-Verkehr des Viewers: Erlaube PurisViewer.exe in der Windows-Firewall und im Virenschutz und melde dich neu an.",
       "server": "Das Grid hat die Sitzung beendet."
+    },
+    "region_no_answer": {
+      "text": "Die Region antwortet nicht — von ihr kommt nichts an, deshalb siehst du nur Himmel und Wasser. Wahrscheinlich blockiert eine Firewall oder ein Virenschutz auf diesem Rechner den Viewer.",
+      "detail": "Anmeldung und Inventar laufen über HTTP und haben funktioniert; die Welt selbst kommt über UDP, und davon ist kein einziges Paket angekommen. Erlaube PurisViewer.exe in der Windows-Firewall (Windows-Sicherheit → Firewall- & Netzwerkschutz → Zugriff von App durch Firewall zulassen, für private und öffentliche Netzwerke) und in einem anderen Virenschutz, dann melde dich neu an. Scheitert auch ein anderer Viewer in diesem Netz, blockiert das Netz selbst (VPN, Router)."
     },
     "eventqueue": {
       "stalled": "Die Region „{0}“ liefert keine Ereignisse mehr — bis zur erneuten Verbindung fehlen von dort Gruppenchat, Teleport-Fortschritt, Objektmedien und Umgebungswechsel.",
