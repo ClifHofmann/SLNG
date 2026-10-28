@@ -307,6 +307,7 @@ public static partial class SelfTest
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
         results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
+        results.Add(CheckTextureViewerFit(tree));
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -1395,6 +1396,61 @@ public static partial class SelfTest
             return new Check(Name, ok, ok
                 ? $"{widths.Count} buttons, all {widths[0]:0.#} px wide"
                 : $"{widths.Count}/{labels.Length} buttons found, width spread {spread:0.#} px");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(window))
+            {
+                window.GetParent()?.RemoveChild(window);
+                window.QueueFree();
+            }
+        }
+    }
+
+    /// <summary>The image viewer opens with its picture area exactly the picture's size, so nothing is letterboxed
+    /// or squeezed, and its "free transform" switch changes only how the picture is stretched.</summary>
+    private static Check CheckTextureViewerFit(SceneTree tree)
+    {
+        const string Name = "texture viewer fit";
+        var window = new UI.TextureViewerWindow();
+        try
+        {
+            tree.Root.AddChild(window);
+            window.ShowImageOn(Image.CreateEmpty(400, 200, false, Image.Format.Rgba8), new Vector2(1920, 1080));
+
+            static void Layout(Control c)
+            {
+                if (c is Container) c.Notification((int)Container.NotificationSortChildren);
+                foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc);
+            }
+            for (int pass = 0; pass < 3; pass++) Layout(window);
+
+            TextureRect? pic = null;
+            CheckBox? free = null;
+            void Find(Node n)
+            {
+                if (n is TextureRect t) pic = t;
+                if (n is CheckBox c) free = c;
+                foreach (var k in n.GetChildren()) Find(k);
+            }
+            Find(window);
+            if (pic == null || free == null) return new Check(Name, false, "picture area or free-transform box missing");
+
+            bool sized = Mathf.Abs(pic.Size.X - 400) <= 1 && Mathf.Abs(pic.Size.Y - 200) <= 1;
+            bool keeps = pic.StretchMode == TextureRect.StretchModeEnum.KeepAspectCentered;
+            free.ButtonPressed = true;
+            bool stretches = pic.StretchMode == TextureRect.StretchModeEnum.Scale;
+            free.ButtonPressed = false;
+            bool back = pic.StretchMode == TextureRect.StretchModeEnum.KeepAspectCentered;
+
+            bool ok = sized && keeps && stretches && back;
+            return new Check(Name, ok, ok
+                ? "picture area 400 x 200 for a 400 x 200 image; free transform stretches, off restores the aspect"
+                : $"area {pic.Size.X:0.#} x {pic.Size.Y:0.#} (want 400 x 200), keeps {keeps}, stretches {stretches}, back {back}");
         }
         catch (Exception ex)
         {

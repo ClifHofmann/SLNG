@@ -160,7 +160,8 @@
     "texture_viewer": {
       "title": "Image",
       "loading": "Loading…",
-      "failed": "The image could not be loaded."
+      "failed": "The image could not be loaded.",
+      "free_transform": "Free transform"
     },
     "snapshot": {
       "title": "Snapshot",

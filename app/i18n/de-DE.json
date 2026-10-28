@@ -160,7 +160,8 @@
     "texture_viewer": {
       "title": "Bild",
       "loading": "Lädt…",
-      "failed": "Das Bild konnte nicht geladen werden."
+      "failed": "Das Bild konnte nicht geladen werden.",
+      "free_transform": "Frei skalieren"
     },
     "snapshot": {
       "title": "Schnappschuss",
