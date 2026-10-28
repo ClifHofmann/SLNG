@@ -701,6 +701,8 @@
       "sec_help_info_debug_log": "Debug log",
       "sec_help_info_licences": "Licences",
       "advanced": "Advanced",
+      "search_placeholder": "Search settings",
+      "search_no_match": "No setting matches",
       "apply_restart": "Restart",
       "apply_next_login": "Next login",
       "apply_reopen": "Reopen windows",

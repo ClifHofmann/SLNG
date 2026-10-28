@@ -16,9 +16,14 @@ namespace SLNG.App.UI;
 ///
 /// <para>The selected category is remembered across restarts (<see cref="PrefsState"/>) and restored the first time
 /// the window is shown.</para>
+///
+/// <para>The search field above the category list filters in place (FEAT-UI-80, <c>PreferencesWindow.Search.cs</c>).</para>
 /// </summary>
 public partial class PreferencesWindow : SLNGWindow
 {
+    private const int NavMinWidth = 160;
+
+    private PanelContainer _navPanel = null!;
     private VBoxContainer _navList = null!;
     private Control _pageHost = null!;
     private readonly List<(PrefsCategory Category, Button NavButton, ScrollContainer Scroll)> _categories = new();
@@ -26,8 +31,7 @@ public partial class PreferencesWindow : SLNGWindow
     private string? _selectedId;
     private bool _restored;
 
-    /// <summary>The column left of the pages: the category list now, and FEAT-UI-80's search field above it later
-    /// (<c>AddChild</c> + <c>MoveChild(field, 0)</c>).</summary>
+    /// <summary>The column left of the pages: the search field on top (index 0), then the category list.</summary>
     public VBoxContainer LeftColumn { get; private set; } = null!;
 
     /// <summary>The categories, in the order of the list.</summary>
@@ -60,10 +64,22 @@ public partial class PreferencesWindow : SLNGWindow
     /// <summary>Id of the category that is showing, or null before the first one was added.</summary>
     public string? SelectedCategoryId => _selectedId;
 
+    public override void _EnterTree()
+    {
+        L10n.LanguageChanged += OnSearchLanguageChanged;
+    }
+
+    public override void _ExitTree()
+    {
+        L10n.LanguageChanged -= OnSearchLanguageChanged;
+        base._ExitTree();
+    }
+
     public override void _Ready()
     {
         PersistId = "preferences";
         base._Ready(); // SLNGWindow styling
+        _builtLocale = L10n.CurrentLocale; // the language the rows' texts are in, whatever the person switches to later
 
         Title = L10n.Tr("ui.preferences.title");
         Visible = false;
@@ -78,7 +94,8 @@ public partial class PreferencesWindow : SLNGWindow
         ContentContainer.AddChild(hbox);
 
         // Left: the category list.
-        var navPanel = new PanelContainer { CustomMinimumSize = new Vector2(160, 0) };
+        var navPanel = new PanelContainer { CustomMinimumSize = new Vector2(NavMinWidth, 0) };
+        _navPanel = navPanel;
         var navStyle = new StyleBoxFlat
         {
             BgColor = new Color(1, 1, 1, 0.03f),
@@ -95,6 +112,8 @@ public partial class PreferencesWindow : SLNGWindow
         LeftColumn = new VBoxContainer();
         LeftColumn.AddThemeConstantOverride("separation", 8);
         navPanel.AddChild(LeftColumn);
+
+        BuildSearchField();
 
         _navList = new VBoxContainer();
         _navList.AddThemeConstantOverride("separation", 4);
@@ -117,6 +136,9 @@ public partial class PreferencesWindow : SLNGWindow
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
         pageMargin.AddChild(_pageHost);
+
+        _noMatch = PrefsStyle.MakeNoMatch(L10n.Tr("ui.preferences.search_no_match"));
+        _pageHost.AddChild(_noMatch);
 
         VisibilityChanged += OnVisibilityChanged;
     }
@@ -187,6 +209,7 @@ public partial class PreferencesWindow : SLNGWindow
         if (!ShowCategory(id)) return;
         _restored = true;
         PrefsState.SetLastCategory(id);
+        if (_searching) ScrollToFirstHitSoon(); // a deliberate choice during a search: land on its first hit
     }
 
     private bool ShowCategory(string id)
@@ -207,6 +230,7 @@ public partial class PreferencesWindow : SLNGWindow
     /// is not a change, so nothing is written.</summary>
     private void OnVisibilityChanged()
     {
+        OnSearchVisibilityChanged();
         if (!Visible || _restored) return;
         _restored = true;
         string? last = PrefsState.LastCategory;

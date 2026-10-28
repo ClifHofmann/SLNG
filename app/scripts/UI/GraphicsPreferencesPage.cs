@@ -383,7 +383,8 @@ public partial class GraphicsPreferencesPage : Node
 
     private void BuildLightEffects(PrefsSection s)
     {
-        CheckRow(s, "ssao", "ui.preferences.post_fx_ssao", () => _settings.PostFxSsao, on => _settings.SetPostFxSsao(on), apply: true, preset: true);
+        CheckRow(s, "ssao", "ui.preferences.post_fx_ssao", () => _settings.PostFxSsao, on => _settings.SetPostFxSsao(on), apply: true, preset: true)
+            .WithKeywords("RenderDeferredSSAO", "AO");
         CheckRow(s, "glow", "ui.preferences.post_fx_glow", () => _settings.PostFxGlow, on => _settings.SetPostFxGlow(on), apply: true, preset: true)
             .WithKeywords("RenderGlow");
 
@@ -615,6 +616,7 @@ public partial class GraphicsPreferencesPage : Node
             _apply();
             UpdateTextureMemControls();
         });
+        _textureMemAutoRow.WithKeywords("VRAM");
         var autoBox = _textureMemAutoRow.ControlAs<CheckBox>()!;
         _refreshers.Add(() => autoBox.ButtonPressed = _settings.TextureMemoryAuto);
 
@@ -628,7 +630,8 @@ public partial class GraphicsPreferencesPage : Node
                     _settings.SetTextureMemoryMb((int)v);
                     _apply();
                 })
-            .DependsOn(_textureMemAutoRow);
+            .DependsOn(_textureMemAutoRow)
+            .WithKeywords("VRAM");
         // The "Auto: 1920 MB" readout is wide. At the window's narrowest the slider gives way (it is greyed out while the text is that
         // long) rather than the whole page growing wider than the window.
         _textureMemRow.ControlAs<HSlider>()!.CustomMinimumSize = new Vector2(24, 0);

@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
+using SLNG.App.UI.Prefs;
 using SLNG.Core.Input;
+using SLNG.Core.Settings;
 
 namespace SLNG.App.UI;
 
@@ -25,8 +27,13 @@ namespace SLNG.App.UI;
 /// <para>Not on this page: SL shortcuts SLNG has no feature for (Mouselook, whisper/shout, build tool modes
 /// ...). They are deliberately unbound and are listed in the manual and in
 /// <see cref="SlShortcutGaps"/>, never as a fake action here.</para>
+///
+/// <para><b>Filter and search.</b> The filter box matches like the Preferences search (FEAT-UI-80): case, accents and ß are
+/// ignored, several words must all occur, and an action is found by its label and category in the current language and in
+/// English, by its id and by its chords. The window's search drives the box through <see cref="IPrefsSearchTarget"/>: while
+/// the typed query matches an action it is shown here, and it is taken off again when the search ends.</para>
 /// </summary>
-public partial class KeyboardPreferencesPage : VBoxContainer
+public partial class KeyboardPreferencesPage : VBoxContainer, IPrefsSearchTarget
 {
     private KeyBindingTable _table = null!;
     private Action? _onChanged;
@@ -49,6 +56,14 @@ public partial class KeyboardPreferencesPage : VBoxContainer
     private (string ActionId, int Index, KeyChord Chord)? _pending;
     private bool _resetAllArmed;
 
+    // What the filter and the window's search look in: per action, its texts normalized once. Built on first use, dropped
+    // whenever the list is rebuilt (the chords are in the texts) or the language changes.
+    private Dictionary<string, SettingsSearchEntry>? _searchEntries;
+    private string _listLocale = "en-US";
+    // The window's search put its query in the filter box and nobody has typed in it since.
+    private bool _searchOwnsFilter;
+    private string _searchSetText = "";
+
     /// <summary>How many times the page has asked for the table to be saved (the selftest reads this).</summary>
     public int ChangeCount { get; private set; }
 
@@ -56,6 +71,12 @@ public partial class KeyboardPreferencesPage : VBoxContainer
     public bool IsListening => _capture != null;
     public bool IsAwaitingConflictChoice => _pending != null;
     public IReadOnlyCollection<string> ListedActionIds => _rows.Keys;
+
+    /// <summary>What the filter box holds (typed by the person or put there by the window's search).</summary>
+    public string FilterText => _search.Text;
+
+    /// <summary>Whether the action's row shows under the current filter.</summary>
+    public bool IsActionShown(string actionId) => _rows.TryGetValue(actionId, out var row) && row.Visible;
 
     public override void _Ready()
     {
@@ -85,7 +106,11 @@ public partial class KeyboardPreferencesPage : VBoxContainer
             ClearButtonEnabled = true,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
-        _search.TextChanged += _ => ApplyFilter();
+        _search.TextChanged += _ =>
+        {
+            if (_search.Text != _searchSetText) _searchOwnsFilter = false; // typed by the person, not put there by the search
+            ApplyFilter();
+        };
         toolbar.AddChild(_search);
 
         _resetAll = new Button { Text = L10n.Tr("ui.keys.reset_all"), FocusMode = FocusModeEnum.None };
@@ -128,7 +153,12 @@ public partial class KeyboardPreferencesPage : VBoxContainer
 
         BuildList();
         VisibilityChanged += () => { if (!IsVisibleInTree()) CancelAll(); };
+        L10n.LanguageChanged += OnLanguageChanged;
     }
+
+    /// <summary>The labels shown stay in the old language until the list is rebuilt, but the new language's names are
+    /// searchable from now on.</summary>
+    private void OnLanguageChanged() => _searchEntries = null;
 
     // ---- list ------------------------------------------------------------------------------------
 
@@ -143,6 +173,8 @@ public partial class KeyboardPreferencesPage : VBoxContainer
         }
         _rows.Clear();
         _headings.Clear();
+        _searchEntries = null;
+        _listLocale = L10n.CurrentLocale; // the language the labels below are written in
 
         foreach (var group in _table.Actions.GroupBy(a => a.Category).OrderBy(g => g.Key))
         {
@@ -235,25 +267,81 @@ public partial class KeyboardPreferencesPage : VBoxContainer
         return box;
     }
 
-    /// <summary>Hides the rows (and category headings) that do not match the search text, which is
-    /// matched against the localized label, the id and every current chord.</summary>
+    /// <summary>Hides the rows (and category headings) that do not match the filter text, which is matched against the
+    /// action's label and category (current language and English), its id and every current chord.</summary>
     private void ApplyFilter()
     {
-        string needle = _search.Text.Trim().ToLowerInvariant();
+        var query = SettingsSearch.Parse(_search.Text);
+        var entries = SearchEntries();
         var visibleCategories = new HashSet<KeyCategory>();
         foreach (var action in _table.Actions)
         {
             if (!_rows.TryGetValue(action.Id, out var row)) continue;
-            bool match = needle.Length == 0
-                || KeyChordText.ActionLabel(action.Id).ToLowerInvariant().Contains(needle)
-                || action.Id.Contains(needle, StringComparison.Ordinal)
-                || _table.ChordsOf(action.Id).Any(c =>
-                    KeyChordText.Format(c).ToLowerInvariant().Contains(needle)
-                    || c.ToString().ToLowerInvariant().Contains(needle));
+            bool match = entries[action.Id].Matches(query);
             row.Visible = match;
             if (match) visibleCategories.Add(action.Category);
         }
         foreach (var (category, heading) in _headings) heading.Visible = visibleCategories.Contains(category);
+    }
+
+    private Dictionary<string, SettingsSearchEntry> SearchEntries()
+    {
+        if (_searchEntries != null) return _searchEntries;
+
+        var locales = new List<string> { L10n.CurrentLocale };
+        foreach (string locale in new[] { _listLocale, "en-US" })
+        {
+            if (!locales.Contains(locale)) locales.Add(locale);
+        }
+
+        var entries = new Dictionary<string, SettingsSearchEntry>();
+        foreach (var action in _table.Actions)
+        {
+            var texts = new List<string> { action.Id };
+            foreach (string locale in locales)
+            {
+                texts.Add(L10n.TrIn(locale, KeyChordText.ActionLabelKey(action.Id)) ?? "");
+                texts.Add(L10n.TrIn(locale, KeyChordText.CategoryLabelKey(action.Category)) ?? "");
+            }
+            foreach (var chord in _table.ChordsOf(action.Id))
+            {
+                texts.Add(KeyChordText.Format(chord));
+                texts.Add(chord.ToString());
+            }
+            entries[action.Id] = new SettingsSearchEntry(texts);
+        }
+        return _searchEntries = entries;
+    }
+
+    // ---- the Preferences window's search -----------------------------------------------------------
+
+    /// <inheritdoc />
+    public bool MatchesSearch(SettingsQuery query)
+    {
+        foreach (var entry in SearchEntries().Values)
+        {
+            if (entry.Matches(query)) return true;
+        }
+        return false;
+    }
+
+    /// <inheritdoc />
+    public void ShowSearch(string text)
+    {
+        _searchOwnsFilter = true;
+        _searchSetText = text;
+        _search.Text = text;
+        ApplyFilter();
+    }
+
+    /// <inheritdoc />
+    public void EndSearch()
+    {
+        if (!_searchOwnsFilter) return;
+        _searchOwnsFilter = false;
+        _searchSetText = "";
+        _search.Text = "";
+        ApplyFilter();
     }
 
     // ---- editing ---------------------------------------------------------------------------------
@@ -426,6 +514,7 @@ public partial class KeyboardPreferencesPage : VBoxContainer
 
     public override void _ExitTree()
     {
+        L10n.LanguageChanged -= OnLanguageChanged;
         if (_dispatcher != null) _dispatcher.Suspended = false;
         base._ExitTree();
     }

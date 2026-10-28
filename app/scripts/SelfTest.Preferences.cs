@@ -4,6 +4,8 @@ using System.IO;
 using System.Linq;
 using Godot;
 using SLNG.App.UI.Prefs;
+using SLNG.Core.Input;
+using SLNG.Core.Settings;
 
 namespace SLNG.App;
 
@@ -385,8 +387,11 @@ public static partial class SelfTest
             foreach (string id in new[] { "chat_im.chat_logs", "network_cache.cache", "camera_movement.camera", "graphics.view_detail", "graphics.shadows",
                                           "graphics.light_effects", "graphics.performance" })
             {
+                // Collapsed unless the person left it open: the window is built from the real preferences.cfg, so a fold-out that
+                // is open there is open here, and that is the remembered state doing its job.
                 var section = window.Categories.SelectMany(c => c.Sections).FirstOrDefault(x => $"{x.CategoryId}.{x.Id}" == id);
-                if (section?.AdvancedFold is not { Folded: true }) problems.Add($"{id} has no collapsed Advanced fold-out");
+                if (section?.AdvancedFold == null || section.AdvancedFold.Folded == PrefsState.IsAdvancedOpen(section.CategoryId, section.Id))
+                    problems.Add($"{id} has no Advanced fold-out that follows the remembered state");
             }
             foreach (var section in window.Categories.SelectMany(c => c.Sections))
             {
@@ -546,6 +551,303 @@ public static partial class SelfTest
             PrefsState.ConfigPath = savedPrefs;
             if (GodotObject.IsInstanceValid(host)) { host.GetParent()?.RemoveChild(host); host.QueueFree(); }
             try { File.Delete(temp); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>FEAT-UI-80: the Preferences search against the real window. The terms of the acceptance criteria, in both
+    /// languages (the language is switched through L10n's manager, which also drives the "index rebuilt on language change"
+    /// path); the Advanced fold-outs the search opens and what a person's own click does to them; a hit on a disabled
+    /// dependent; the Keyboard filter; the no-match line; Esc; and that nothing is written. Every setting it changes
+    /// (the language, Shadows) is put back, and PrefsState and the graphics settings write to temp files meanwhile.</summary>
+    private static Check CheckPreferencesSearch(SceneTree tree)
+    {
+        const string Name = "preferences search";
+        var window = FindPreferencesWindow(tree);
+        if (window == null) return new Check(Name, false, "the client has no PreferencesWindow");
+        var manager = UI.L10n.Manager;
+        if (manager == null) return new Check(Name, false, "L10n has no manager");
+
+        string savedPrefs = PrefsState.ConfigPath, savedGraphics = UI.GraphicsSettings.ConfigPath, savedLocale = manager.CurrentLocale;
+        string stem = Path.Combine(Path.GetTempPath(), "slng-selftest-search-" + Guid.NewGuid().ToString("N"));
+        string temp = stem + ".prefs.cfg", tempSelect = stem + ".select.cfg", tempGraphics = stem + ".graphics.cfg";
+        string? originalCategory = window.SelectedCategoryId;
+        var sections = window.Categories.SelectMany(c => c.Sections).ToList();
+        var foldBefore = sections.Where(s => s.AdvancedFold != null).ToDictionary(s => s, s => s.AdvancedFold!.Folded);
+        var problems = new List<string>();
+        UI.PreferencesWindow? spare = null;
+        string timing = "", facts = "";
+        void Expect(bool ok, string what) { if (!ok) problems.Add(what); }
+
+        try
+        {
+            PrefsState.ConfigPath = temp;
+            UI.GraphicsSettings.ConfigPath = tempGraphics;
+            foreach (var fold in foldBefore.Keys) fold.AdvancedFold!.Folded = true; // a known start, whatever the person left open
+
+            PrefsRow Row(string id) => window.AllRows.First(r => r.Id == id);
+            PrefsSection Section(string id) => sections.First(s => $"{s.CategoryId}.{s.Id}" == id);
+            string[] Listed() => window.Categories.Where(c => window.IsCategoryListed(c.Id)).Select(c => c.Id).ToArray();
+            string[] Shown(string category) => window.Categories.First(c => c.Id == category).Sections.Where(s => s.Visible).Select(s => s.Id).ToArray();
+            string Persisted() => File.Exists(temp) ? File.ReadAllText(temp) : "";
+            // SelectCategory remembers its choice; the search must not, so the reset between steps writes elsewhere.
+            void SelectQuietly(string? id)
+            {
+                if (id == null) return;
+                string path = PrefsState.ConfigPath;
+                PrefsState.ConfigPath = tempSelect;
+                window.SelectCategory(id);
+                PrefsState.ConfigPath = path;
+            }
+            var keyboardPage = Row("keyboard.all.keyboard_page").SearchTarget as UI.KeyboardPreferencesPage;
+            if (keyboardPage == null) return new Check(Name, false, "the Keyboard block does not implement IPrefsSearchTarget");
+            void ExpectClean(string when)
+            {
+                Expect(!window.IsSearching && window.SearchText.Length == 0 && !window.SearchFoundNothing, $"{when}: the search is still on");
+                Expect(Listed().Length == window.Categories.Count, $"{when}: a category button is still hidden ({string.Join(",", Listed())})");
+                Expect(sections.All(s => s.Visible), $"{when}: a section is still hidden");
+                Expect(!window.AllRows.Any(r => r.IsHighlighted), $"{when}: a row is still tinted");
+                Expect(foldBefore.Keys.All(s => s.AdvancedFold!.Folded && !s.IsAdvancedOpenedBySearch), $"{when}: an Advanced fold-out was not folded back");
+                Expect(keyboardPage.FilterText.Length == 0, $"{when}: the Keyboard filter still holds '{keyboardPage.FilterText}'");
+                Expect(Persisted() == "", $"{when}: the search wrote the preferences file");
+            }
+
+            ExpectClean("before");
+            Expect(window.SearchField == window.LeftColumn.GetChild(0) && window.SearchField.ClearButtonEnabled
+                   && window.SearchField.PlaceholderText == UI.L10n.Tr("ui.preferences.search_placeholder"), "the search field is not the first child of the left column, or lacks its clear button / placeholder");
+
+            // --- the text rules hold in the engine's runtime, not only in the unit tests ------------------------------------
+            Expect(SettingsSearch.Normalize("Schärfe") == "scharfe" && SettingsSearch.Normalize("Straße") == "strasse", "diacritics / ß are not folded in the Godot runtime");
+
+            // --- (a) the label of Shadows, in both languages ---------------------------------------------------------------
+            // Not "only the shadows section": the German low-VRAM hint mentions "Schatten" (Graphics > Performance > Advanced) and
+            // a key action is called "Avatar shadows". Both are real hits; the check holds the result to exactly those.
+            foreach (string locale in new[] { "de-DE", "en-US" })
+            {
+                manager.CurrentLocale = locale; // raises LanguageChanged: the index is rebuilt
+                SelectQuietly("general");
+                string label = UI.L10n.TrIn(locale, "ui.preferences.shadows") ?? "";
+                window.Search(label);
+                string what = $"{locale} '{label}'";
+
+                var listed = Listed();
+                Expect(listed.Contains("graphics") && listed.All(id => id is "graphics" or "keyboard"), $"{what}: categories listed are {string.Join(",", listed)}");
+                var shown = Shown("graphics");
+                facts += $"{locale} '{label}' lists {string.Join("+", listed)} / graphics sections {string.Join("+", shown)}; ";
+                Expect(shown.Contains("shadows") && shown.All(id => id is "shadows" or "performance"), $"{what}: Graphics sections shown are {string.Join(",", shown)}");
+                Expect(!shown.Contains("performance") || Row("graphics.performance.low_vram_caps").IsHighlighted, $"{what}: Performance is shown without a hit in it");
+                Expect(Row("graphics.shadows.shadows").IsHighlighted, $"{what}: the Shadows row is not tinted");
+                Expect(!Row("graphics.view_detail.draw_distance").IsHighlighted, $"{what}: the draw distance row is tinted");
+                // "Schatten-Auflösung" contains the German word; "Shadow resolution" does not contain "Shadows".
+                Expect(Row("graphics.shadows.shadow_resolution").IsHighlighted == (locale == "de-DE"), $"{what}: the shadow resolution row's tint is {Row("graphics.shadows.shadow_resolution").IsHighlighted}");
+                var fold = Section("graphics.shadows").AdvancedFold;
+                Expect(fold is { Folded: false } && Section("graphics.shadows").IsAdvancedOpenedBySearch, $"{what}: the Advanced fold-out of Shadows did not open");
+                Expect(window.SelectedCategoryId == "graphics", $"{what}: the selected category is {window.SelectedCategoryId}");
+                Expect(PrefsState.LastCategory == null && Persisted() == "", $"{what}: something was written");
+                Expect(keyboardPage.FilterText == label.Trim() && keyboardPage.IsActionShown(KeyActionIds.DevAvatarShadows), $"{what}: the Keyboard filter is '{keyboardPage.FilterText}'");
+
+                window.Search("");
+                ExpectClean($"{what} cleared");
+                Expect(window.SelectedCategoryId == "graphics", $"{what}: clearing changed the selected category to {window.SelectedCategoryId}");
+            }
+
+            // A fold-out the person touched meanwhile stays as they left it, and is remembered as usual.
+            {
+                manager.CurrentLocale = "en-US";
+                string label = UI.L10n.TrIn("en-US", "ui.preferences.shadows") ?? "";
+                var shadows = Section("graphics.shadows");
+                window.Search(label);
+                shadows.AdvancedFold!.Fold(); // closed by the person
+                window.Search("");
+                Expect(shadows.AdvancedFold.Folded && !shadows.IsAdvancedOpenedBySearch, "a fold-out the person closed was opened again by clearing");
+
+                window.Search(label);
+                shadows.AdvancedFold.Fold();
+                shadows.AdvancedFold.Expand(); // closed and opened again by the person
+                window.Search("");
+                Expect(!shadows.AdvancedFold.Folded && PrefsState.IsAdvancedOpen("graphics", "shadows"), "a fold-out the person opened was folded back, or not remembered");
+                shadows.AdvancedFold.Fold();
+                try { File.Delete(temp); } catch (IOException) { }
+                ExpectClean("after the person's own clicks");
+            }
+
+            // --- (b) debug-setting names and English words under a German UI ---------------------------------------------
+            manager.CurrentLocale = "de-DE";
+            foreach (var (query, rowId, category) in new[]
+            {
+                ("RenderFarClip", "graphics.view_detail.draw_distance", "graphics"),
+                ("renderfarclip", "graphics.view_detail.draw_distance", "graphics"),
+                ("fps", "graphics.performance.fps_limit", "graphics"),
+                ("bandwidth", "network_cache.network.max_bandwidth", "network_cache"),
+                ("maximum bandwidth", "network_cache.network.max_bandwidth", "network_cache"),
+                ("auflosung", "graphics.shadows.shadow_resolution", "graphics"),
+                ("Auflösung", "graphics.shadows.shadow_resolution", "graphics"),
+                ("vram", "graphics.performance.texture_memory", "graphics"),
+            })
+            {
+                SelectQuietly("general");
+                window.Search(query);
+                Expect(Row(rowId).IsHighlighted && window.IsCategoryListed(category) && window.SelectedCategoryId == category,
+                    $"de-DE '{query}': {rowId} tinted {Row(rowId).IsHighlighted}, {category} listed {window.IsCategoryListed(category)}, selected {window.SelectedCategoryId}");
+                window.Search("");
+            }
+            // An English word is found because English is indexed too, not by chance: a German-only index misses it.
+            {
+                var bandwidth = Row("network_cache.network.max_bandwidth");
+                var german = new PrefsSearchIndex(window.Categories, new[] { "de-DE" });
+                var both = new PrefsSearchIndex(window.Categories, new[] { "de-DE", "en-US" });
+                var maximum = SettingsSearch.Parse("maximum");
+                Expect(!german.Matches(bandwidth, maximum) && both.Matches(bandwidth, maximum), "'maximum' should find the bandwidth row through the English index only");
+            }
+            ExpectClean("after (b)");
+
+            // --- (c) a hit on a row its switch has disabled shows the switch too --------------------------------------------
+            {
+                manager.CurrentLocale = savedLocale;
+                var box = Row("graphics.shadows.shadows").ControlAs<CheckBox>()!;
+                bool shadowsWere = box.ButtonPressed;
+                try
+                {
+                    string distance = UI.L10n.Tr("ui.preferences.shadow_distance");
+                    box.ButtonPressed = false;
+                    Expect(!Row("graphics.shadows.shadow_distance").IsEnabled, "shadow distance is not disabled with Shadows off");
+                    SelectQuietly("general");
+                    window.Search(distance);
+                    Expect(Row("graphics.shadows.shadow_distance").IsHighlighted && Row("graphics.shadows.shadows").IsHighlighted,
+                        $"'{distance}' with Shadows off: distance tinted {Row("graphics.shadows.shadow_distance").IsHighlighted}, the Shadows switch tinted {Row("graphics.shadows.shadows").IsHighlighted}");
+                    Expect(Section("graphics.shadows").AdvancedFold is { Folded: false }, $"'{distance}': the Advanced fold-out did not open");
+                    window.Search("");
+
+                    box.ButtonPressed = true;
+                    window.Search(distance);
+                    Expect(Row("graphics.shadows.shadow_distance").IsHighlighted && !Row("graphics.shadows.shadows").IsHighlighted,
+                        $"'{distance}' with Shadows on: the switch must not be tinted (distance {Row("graphics.shadows.shadow_distance").IsHighlighted}, switch {Row("graphics.shadows.shadows").IsHighlighted})");
+                    window.Search("");
+                }
+                finally { box.ButtonPressed = shadowsWere; }
+                Expect(box.ButtonPressed == shadowsWere, "Shadows was not put back");
+
+                // Depth of field, when the person has it off (the default): its controls are dimmed and the Enable switch is tinted.
+                if (!Row("graphics.depth_of_field.focus_range").IsEnabled)
+                {
+                    window.Search(UI.L10n.Tr("ui.snapshot.dof_range"));
+                    Expect(Row("graphics.depth_of_field.focus_range").IsHighlighted && Row("graphics.depth_of_field.enable").IsHighlighted, "a hit on a depth-of-field control did not tint its Enable switch");
+                    window.Search("");
+                }
+                ExpectClean("after (c)");
+            }
+
+            // --- (d) the Keyboard category ---------------------------------------------------------------------------------
+            {
+                manager.CurrentLocale = "de-DE";
+                string english = UI.L10n.TrIn("en-US", KeyChordText.ActionLabelKey(KeyActionIds.DevAvatarShadows)) ?? "";
+                SelectQuietly("general");
+                window.Search(english);
+                Expect(window.IsCategoryListed("keyboard") && keyboardPage.FilterText == english.Trim(), $"'{english}' under de-DE: Keyboard listed {window.IsCategoryListed("keyboard")}, its filter is '{keyboardPage.FilterText}'");
+                int shownActions = keyboardPage.ListedActionIds.Count(keyboardPage.IsActionShown);
+                Expect(keyboardPage.IsActionShown(KeyActionIds.DevAvatarShadows) && shownActions > 0 && shownActions < keyboardPage.ListedActionIds.Count, $"the Keyboard filter shows {shownActions} of {keyboardPage.ListedActionIds.Count} actions");
+
+                window.Search(english + " zzqqxx"); // stops matching: the filter the search set is taken off again
+                Expect(!window.IsCategoryListed("keyboard") && keyboardPage.FilterText.Length == 0, $"a query that no longer matches left the Keyboard listed ({window.IsCategoryListed("keyboard")}) or its filter '{keyboardPage.FilterText}'");
+
+                window.Search(english);
+                window.Search("");
+                ExpectClean("after (d)");
+                Expect(keyboardPage.ListedActionIds.All(keyboardPage.IsActionShown), "clearing the search left the Keyboard filtered");
+            }
+
+            // --- (e) nothing matches ---------------------------------------------------------------------------------------
+            {
+                window.Search("qzxqzxqzx");
+                bool pagesHidden = window.Categories.All(c => !((ScrollContainer)c.GetParent().GetParent()).Visible);
+                Expect(window.SearchFoundNothing && Listed().Length == 0 && pagesHidden, $"no match: line {window.SearchFoundNothing}, categories listed {Listed().Length}, pages hidden {pagesHidden}");
+                window.Search("");
+                ExpectClean("after (e)");
+                var page = (ScrollContainer)window.Categories.First(c => c.Id == window.SelectedCategoryId).GetParent().GetParent();
+                Expect(page.Visible, "the selected page did not come back after a search without a hit");
+            }
+
+            // --- Esc in the field clears it --------------------------------------------------------------------------------
+            {
+                window.Search("fps");
+                var escape = new InputEventKey { Keycode = Key.Escape, Pressed = true };
+                window.SearchField.EmitSignal(Control.SignalName.GuiInput, escape);
+                ExpectClean("after Esc");
+                window.SearchField.EmitSignal(Control.SignalName.GuiInput, escape); // in an empty field: no error, nothing changes
+                ExpectClean("after Esc in an empty field");
+            }
+
+            // --- title matches show the whole section / category; hiding the window ends the search ----------------------
+            {
+                spare = new UI.PreferencesWindow();
+                tree.Root.AddChild(spare);
+                var alpha = spare.AddCategory("alpha", "ui.preferences.cat_general");
+                var beta = spare.AddCategory("beta", "ui.preferences.cat_graphics");
+                var one = alpha.AddSection("one", "ui.preferences.sec_general_interface");
+                var two = alpha.AddSection("two", "ui.preferences.sec_general_names");
+                one.AddCheck("alpha.one.a", "ui.preferences.always_run", false, _ => { });
+                two.AddCheck("alpha.two.b", "ui.preferences.head_follows_camera", false, _ => { });
+                two.AddSlider("alpha.two.c", "ui.preferences.camera_orbit_speed", 0.1, 3.0, 0.05, 1.0, v => $"{v}", _ => { });
+                beta.AddSection("only", null).AddCheck("beta.only.d", "ui.preferences.camera_fov", false, _ => { });
+
+                spare.Search("names above"); // the title of section two
+                Expect(spare.IsCategoryListed("alpha") && !spare.IsCategoryListed("beta") && !one.Visible && two.Visible
+                       && !alpha.Rows.Any(r => r.IsHighlighted), "a section title that matches should show that section whole, untinted, and hide the rest");
+                spare.Search("general"); // the title of category alpha
+                Expect(spare.IsCategoryListed("alpha") && !spare.IsCategoryListed("beta") && one.Visible && two.Visible && !alpha.Rows.Any(r => r.IsHighlighted),
+                    "a category title that matches should show the whole category");
+                spare.Search("always");
+                Expect(one.Visible && !two.Visible && alpha.Rows.First().IsHighlighted && spare.SelectedCategoryId == "alpha", "a row label that matches should tint the row and hide the other section");
+                spare.Search("");
+
+                spare.Visible = true;
+                spare.Search("always");
+                spare.Visible = false;
+                Expect(!spare.IsSearching && spare.SearchText.Length == 0 && spare.IsCategoryListed("beta") && one.Visible && two.Visible,
+                    "hiding the window did not end the search");
+            }
+
+            // --- what a keystroke costs ------------------------------------------------------------------------------------
+            {
+                manager.CurrentLocale = "de-DE";
+                var clock = new System.Diagnostics.Stopwatch();
+                var each = new List<double>();
+                foreach (string typed in new[] { "s", "sc", "sch", "scha", "schat", "schatt", "schatte", "schatten", "schatten d", "schatten di" })
+                {
+                    clock.Restart();
+                    window.Search(typed);
+                    each.Add(clock.Elapsed.TotalMilliseconds);
+                }
+                window.Search("");
+                ExpectClean("after typing");
+                timing = $"typing 'schatten di' costs {each.Average():0.00} ms per keystroke (worst {each.Max():0.00} ms)";
+                Expect(each.Max() < 40, $"a keystroke took {each.Max():0.0} ms");
+            }
+
+            return problems.Count == 0
+                ? new Check(Name, true, $"{facts}RenderFarClip / fps / bandwidth / Auflösung / vram found, disabled dependents tint their switch, Keyboard filter, no-match line, Esc, title matches, folds restored, nothing written; {timing}")
+                : new Check(Name, false, string.Join("; ", problems.Take(12)) + (problems.Count > 12 ? $"; ... {problems.Count - 12} more" : ""));
+        }
+        catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }
+        finally
+        {
+            try
+            {
+                window.Search("");
+                manager.CurrentLocale = savedLocale;
+                foreach (var (section, folded) in foldBefore) section.AdvancedFold!.Folded = folded;
+                PrefsState.ConfigPath = tempSelect;
+                if (originalCategory != null) window.SelectCategory(originalCategory);
+            }
+            finally
+            {
+                PrefsState.ConfigPath = savedPrefs;
+                UI.GraphicsSettings.ConfigPath = savedGraphics;
+                if (spare != null && GodotObject.IsInstanceValid(spare)) { spare.GetParent()?.RemoveChild(spare); spare.QueueFree(); }
+                foreach (string file in new[] { temp, tempSelect, tempGraphics })
+                {
+                    try { File.Delete(file); } catch (IOException) { }
+                }
+            }
         }
     }
 }

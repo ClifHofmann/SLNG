@@ -18,6 +18,7 @@ public partial class PrefsSection : VBoxContainer
     private readonly List<PrefsRow> _rows = new();
     private FoldableContainer? _fold;
     private VBoxContainer? _advancedBody;
+    private bool _openedBySearch;
 
     /// <summary>Section id, unique within its category.</summary>
     public string Id { get; }
@@ -33,6 +34,27 @@ public partial class PrefsSection : VBoxContainer
 
     /// <summary>The Advanced fold-out; null until a row is added with <c>advanced: true</c>.</summary>
     public FoldableContainer? AdvancedFold => _fold;
+
+    /// <summary>True while the Preferences search has the Advanced fold-out open, and the person has not touched it since.</summary>
+    public bool IsAdvancedOpenedBySearch => _openedBySearch;
+
+    /// <summary>Opens a collapsed Advanced fold-out because the search found something in it, without remembering that: the
+    /// state <see cref="PrefsState"/> holds stays as the person left it. A fold-out that is open already is left alone.</summary>
+    public void OpenAdvancedForSearch()
+    {
+        if (_fold == null || !_fold.Folded) return;
+        _fold.Folded = false; // the property, not Expand(): Expand() raises FoldingChanged, which persists
+        _openedBySearch = true;
+    }
+
+    /// <summary>Folds the Advanced fold-out back if the search opened it and the person has not opened or closed it
+    /// since (their click would have cleared the flag, and their state stands).</summary>
+    public void RestoreAdvancedAfterSearch()
+    {
+        if (!_openedBySearch) return;
+        _openedBySearch = false;
+        if (_fold != null) _fold.Folded = true;
+    }
 
     internal PrefsSection(string categoryId, string id, string? titleKey)
     {
@@ -118,7 +140,13 @@ public partial class PrefsSection : VBoxContainer
         PrefsStyle.StyleAdvancedFold(_fold);
         _fold.AddChild(_advancedBody);
         // Connected after the initial state is set: reading the remembered state at build time must not write it back.
-        _fold.FoldingChanged += folded => PrefsState.SetAdvancedOpen(CategoryId, Id, !folded);
+        // Only a click (or Fold() / Expand()) raises this, never the Folded property the search uses: from here on the
+        // fold-out is the person's, and the search leaves it as they put it.
+        _fold.FoldingChanged += folded =>
+        {
+            _openedBySearch = false;
+            PrefsState.SetAdvancedOpen(CategoryId, Id, !folded);
+        };
         AddChild(_fold);
         return _advancedBody;
     }

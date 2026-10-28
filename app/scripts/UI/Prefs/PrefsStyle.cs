@@ -55,6 +55,48 @@ public static class PrefsStyle
     public static readonly Color BadgeFillColor = new(0.95f, 0.7f, 0.3f, 0.16f);
     public static readonly Color AdvancedFillColor = new(1f, 1f, 1f, 0.03f);
 
+    /// <summary>The tint behind a row the search found. The blue of the selected category in the list.</summary>
+    public static readonly Color SearchHitColor = new(0.3f, 0.6f, 0.9f, 0.22f);
+
+    /// <summary>How far the search tint reaches past a row on each side (inside the page's gutters), and above and below it.</summary>
+    public const int SearchHitPadX = 6;
+    public const int SearchHitPadY = 3;
+
+    /// <summary>The tint behind a found row: a rounded, translucent rectangle. A dimmed row (a disabled dependent) is drawn
+    /// through its own half-transparent modulate, so it gets the doubled alpha to look the same.</summary>
+    public static StyleBoxFlat SearchHitStyle(bool dimmedRow)
+        => dimmedRow ? _dimmedSearchHit ??= MakeSearchHit(SearchHitColor.A * 2f) : _searchHit ??= MakeSearchHit(SearchHitColor.A);
+
+    private static StyleBoxFlat? _searchHit;
+    private static StyleBoxFlat? _dimmedSearchHit;
+
+    private static StyleBoxFlat MakeSearchHit(float alpha) => new()
+    {
+        BgColor = new Color(SearchHitColor.R, SearchHitColor.G, SearchHitColor.B, alpha),
+        CornerRadiusTopLeft = 6,
+        CornerRadiusTopRight = 6,
+        CornerRadiusBottomLeft = 6,
+        CornerRadiusBottomRight = 6,
+    };
+
+    /// <summary>The "no setting matches" line shown instead of a page.</summary>
+    public static Label MakeNoMatch(string text)
+    {
+        var label = new Label
+        {
+            Text = text,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            Visible = false,
+        };
+        label.AddThemeColorOverride("font_color", HintColor);
+        label.AddThemeFontSizeOverride("font_size", 14);
+        label.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        return label;
+    }
+
     /// <summary>A section heading: no trailing colon, a size up from the rows.</summary>
     public static Label MakeHeading(string text)
     {

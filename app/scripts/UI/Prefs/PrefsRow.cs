@@ -78,10 +78,37 @@ public partial class PrefsRow : VBoxContainer
     /// a note or a block.</summary>
     public Control? Control { get; private set; }
 
+    /// <summary>False while <see cref="SetEnabled"/> has switched the row off (a dependent whose switch is off).</summary>
+    public bool IsEnabled { get; private set; } = true;
+
+    /// <summary>The content of an embedded block when it filters itself (the Keyboard table); the search drives that
+    /// filter instead of highlighting the block. Null for every other row.</summary>
+    public IPrefsSearchTarget? SearchTarget { get; private set; }
+
+    /// <summary>True while the search tints this row as a hit.</summary>
+    public bool IsHighlighted { get; private set; }
+
     internal PrefsRow(string id)
     {
         Id = id;
         AddThemeConstantOverride("separation", PrefsStyle.HintSeparation);
+    }
+
+    /// <summary>Tints the row (a hit of the Preferences search) or takes the tint off. Only the background is drawn, behind
+    /// the row's own controls.</summary>
+    public void SetHighlighted(bool highlighted)
+    {
+        if (IsHighlighted == highlighted) return;
+        IsHighlighted = highlighted;
+        QueueRedraw();
+    }
+
+    public override void _Draw()
+    {
+        if (!IsHighlighted) return;
+        DrawStyleBox(PrefsStyle.SearchHitStyle(!IsEnabled), new Rect2(
+            -PrefsStyle.SearchHitPadX, -PrefsStyle.SearchHitPadY,
+            Size.X + 2 * PrefsStyle.SearchHitPadX, Size.Y + 2 * PrefsStyle.SearchHitPadY));
     }
 
     /// <summary>The control as <typeparamref name="T"/> (an <c>HSlider</c>, a <c>CheckBox</c>, an <c>OptionButton</c>),
@@ -168,6 +195,8 @@ public partial class PrefsRow : VBoxContainer
             case LineEdit edit: edit.Editable = enabled; break;
         }
         Modulate = enabled ? Colors.White : new Color(1f, 1f, 1f, 0.5f);
+        IsEnabled = enabled;
+        if (IsHighlighted) QueueRedraw(); // the tint is drawn stronger on a dimmed row
     }
 
     internal void Attach(string categoryId, string sectionId)
@@ -275,6 +304,7 @@ public partial class PrefsRow : VBoxContainer
         var row = new PrefsRow(id) { LabelKey = labelKey };
         row._searchKeys.AddRange(searchKeys);
         row._content = content;
+        row.SearchTarget = content as IPrefsSearchTarget;
         if (labelKey != null)
         {
             row._label = PrefsStyle.MakeLabel(L10n.Tr(labelKey));
