@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-PERF-22`
 - **Track:** `render` / `ui`
-- **Status:** ⏸️ Pending
+- **Status:** ✅ Done
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 - **Branch:** `fix/BUG-PERF-22-render-thread-fallback`
@@ -57,12 +57,12 @@ after one freeze the viewer starts on the main thread and says why.
 - Bump `AppVersion` (patch), commit `fix(render): [BUG-PERF-22] … (vX.Y.Z-alpha)`.
 
 ## Acceptance Criteria
-- [ ] With "Separate thread" saved, a main-thread stall of 10 s rewrites `engine_overrides.cfg` to the main thread and
+- [x] With "Separate thread" saved, a main-thread stall of 10 s rewrites `engine_overrides.cfg` to the main thread and
       writes the marker, once; with "Main thread" saved, or with only `--render-thread separate`, nothing is written.
-- [ ] The next start runs on the main thread (`[Boot] render thread: main …`), shows the notice once, deletes the marker.
-- [ ] A kill during the write never leaves a broken `engine_overrides.cfg` (temp file + move).
-- [ ] Other keys in `engine_overrides.cfg`, if any, survive.
-- [ ] `/slng-verify` clean.
+- [x] The next start runs on the main thread (`[Boot] render thread: main …`), shows the notice once, deletes the marker.
+- [x] A kill during the write never leaves a broken `engine_overrides.cfg` (temp file + move).
+- [x] Other keys in `engine_overrides.cfg`, if any, survive.
+- [x] `/slng-verify` clean.
 
 ## Tests
 - Selftest: run the fallback against temp paths (inject the stall instead of freezing the real main thread, e.g. a

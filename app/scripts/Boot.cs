@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.46-alpha";
+    public const string AppVersion = "v0.28.47-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1194,10 +1194,21 @@ public partial class Boot : Control
         // renderer and HUD exist so any work enqueued during startup is already being drained.
         AddChild(new MainThreadWorkPump());
 
-        // Off-thread stall detector (FEAT-PERF-01). Started here rather than in _Ready so it covers
-        // the world-loading phase, which is when the client is reported to freeze. A release does not
-        // carry the extra thread.
-        if (Diagnostics.Enabled) _watchdog.Start();
+        // Off-thread stall detector (FEAT-PERF-01, BUG-PERF-22). Started here rather than in _Ready so it covers
+        // the world-loading phase, which is when the client is reported to freeze. Runs under --diag or
+        // when the separate render thread is active.
+        string overrideAbsPath = ProjectSettings.GlobalizePath(RenderThread.OverridePath);
+        string markerAbsPath = ProjectSettings.GlobalizePath(RenderThread.FallbackMarkerPath);
+        bool savedPreferenceIsSeparate = RenderThread.SavedPreferenceIsSeparate();
+
+        _watchdog.ConfigureFallback(
+            isSeparate: RenderThread.IsSeparate,
+            savedPreferenceIsSeparate: savedPreferenceIsSeparate,
+            overrideFilePath: overrideAbsPath,
+            markerFilePath: markerAbsPath,
+            isHeadlessOrSelfTest: IsSelfTest || DisplayServer.GetName() == "headless");
+
+        if ((Diagnostics.Enabled || RenderThread.IsSeparate) && !IsSelfTest) _watchdog.Start();
 
         var hudLayer = new CanvasLayer { Name = "HudLayer", Layer = 10, Visible = false };
         AddChild(hudLayer);
@@ -1491,6 +1502,23 @@ public partial class Boot : Control
         // the sun and environment exist to receive it. The window-level settings (V-Sync, frame cap)
         // are applied by the same call and must hold even if Preferences is never opened.
         ApplyGraphicsSettings();
+
+        // BUG-PERF-22: notice if the separate render thread stalled and fell back on the previous start.
+        if (!IsSelfTest)
+        {
+            CheckRenderThreadFallback(markerAbsPath);
+        }
+    }
+
+    private void CheckRenderThreadFallback(string markerPath)
+    {
+        if (SLNG.Core.RenderThreadFallback.TryConsumeMarker(markerPath, out var marker))
+        {
+            string notice = SLNG.App.UI.L10n.Tr("ui.graphics.render_thread_fallback_notice");
+            GD.Print($"[RenderThread] fallback marker detected (stalled {marker?.StalledSeconds:0.0}s at {marker?.Timestamp}): {notice}");
+            _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, notice);
+            ShowToast(notice, 8.0f);
+        }
     }
 
     /// <summary>
@@ -3161,11 +3189,8 @@ public partial class Boot : Control
         // log alone. User reports Firestorm looks smooth on the same OSGrid region, which points at
         // a client-side stall rather than a real network/server characteristic. Remove once the
         // cause is confirmed.
-        if (Diagnostics.Enabled)
-        {
-            _watchdog.Beat();
-            if (delta > 0.2) GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
-        }
+        _watchdog.Beat();
+        if (Diagnostics.Enabled && delta > 0.2) GD.Print($"[FrameHitch] {delta:0.###}s since last _Process frame");
 
         // Drain queued world events on the main thread — the only place the world mutates.
         using (MainThreadPhase.Enter("world-drain")) _worldSimulation?.Pump();

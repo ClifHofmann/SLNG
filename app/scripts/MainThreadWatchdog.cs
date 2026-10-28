@@ -26,7 +26,10 @@ public sealed class MainThreadWatchdog
     /// <summary>Well past any legitimate frame. The worst frame ever measured on this client was
     /// ~350 ms, and the frame-time budget work has since brought the p99 to about 17 ms, so anything
     /// at this scale is a hang rather than a slow frame.</summary>
-    private const double StallSeconds = 2.0;
+    public const double StallSeconds = 2.0;
+
+    /// <summary>BUG-PERF-22: stall threshold for falling back from separate render thread to main thread.</summary>
+    public const double FallbackStallSeconds = 10.0;
 
     /// <summary>How often to re-report while a stall continues. Without it a five-minute hang would
     /// produce one line and no sense of duration; with it the log shows the stall growing, which also
@@ -37,9 +40,36 @@ public sealed class MainThreadWatchdog
     private Thread? _thread;
     private volatile bool _running;
 
+    private bool _isSeparate;
+    private bool _savedPreferenceIsSeparate;
+    private string? _overrideFilePath;
+    private string? _markerFilePath;
+    private bool _isHeadlessOrSelfTest;
+
+    private bool _fallbackHandled;
+    private bool _fallbackApplied;
+    private bool _fallbackRecoveredLogged;
+
+    public bool IsRunning => _running;
+    public bool FallbackApplied => _fallbackApplied;
+
     /// <summary>Called from _Process every frame. Just a timestamp write -- deliberately the cheapest
     /// thing that can be put in the frame path, since it is on every frame forever.</summary>
     public void Beat() => Interlocked.Exchange(ref _heartbeat, Stopwatch64.Now);
+
+    public void ConfigureFallback(
+        bool isSeparate,
+        bool savedPreferenceIsSeparate,
+        string overrideFilePath,
+        string markerFilePath,
+        bool isHeadlessOrSelfTest)
+    {
+        _isSeparate = isSeparate;
+        _savedPreferenceIsSeparate = savedPreferenceIsSeparate;
+        _overrideFilePath = overrideFilePath;
+        _markerFilePath = markerFilePath;
+        _isHeadlessOrSelfTest = isHeadlessOrSelfTest;
+    }
 
     public void Start()
     {
@@ -67,14 +97,36 @@ public sealed class MainThreadWatchdog
             Thread.Sleep(500);
 
             double stalledFor = Stopwatch64.SecondsSince(Interlocked.Read(ref _heartbeat));
+            EvaluateStall(stalledFor, ref reportedAt);
+        }
+    }
 
-            if (stalledFor < StallSeconds)
+    /// <summary>
+    /// Evaluates stall duration for testing or watchdog loop.
+    /// </summary>
+    public bool EvaluateStall(double stalledFor)
+    {
+        double dummy = 0;
+        return EvaluateStall(stalledFor, ref dummy);
+    }
+
+    private bool EvaluateStall(double stalledFor, ref double reportedAt)
+    {
+        if (stalledFor < StallSeconds)
+        {
+            if (_fallbackApplied && !_fallbackRecoveredLogged)
             {
-                reportedAt = 0;
-                continue;
+                _fallbackRecoveredLogged = true;
+                string recoveredMsg = "[RenderThread] main thread recovered after stall (saved choice remains main thread)";
+                Console.WriteLine(recoveredMsg);
+                GD.Print(recoveredMsg);
             }
+            reportedAt = 0;
+            return false;
+        }
 
-            if (reportedAt != 0 && stalledFor - reportedAt < RepeatSeconds) continue;
+        if (reportedAt == 0 || stalledFor - reportedAt >= RepeatSeconds)
+        {
             reportedAt = stalledFor;
 
             // GD.Print is used rather than Logger because this has to reach the log even when the
@@ -85,6 +137,41 @@ public sealed class MainThreadWatchdog
                       $"lastWork={MainThreadWorkQueue.CurrentLabel ?? "(none)"} " +
                       $"queue={MainThreadWorkQueue.Depth}");
         }
+
+        if (stalledFor >= FallbackStallSeconds && !_fallbackHandled)
+        {
+            _fallbackHandled = true;
+
+            if (_isSeparate)
+            {
+                if (_savedPreferenceIsSeparate && !_isHeadlessOrSelfTest)
+                {
+                    if (!string.IsNullOrEmpty(_overrideFilePath))
+                    {
+                        RenderThread.SavePreferenceOffThread(_overrideFilePath, separate: false);
+                    }
+                    if (!string.IsNullOrEmpty(_markerFilePath))
+                    {
+                        SLNG.Core.RenderThreadFallback.WriteMarker(_markerFilePath, stalledFor);
+                    }
+
+                    string fallbackMsg = $"[RenderThread] main thread stalled {(int)stalledFor} s with the separate render thread -- switched the saved choice back to the main thread for the next start";
+                    Console.WriteLine(fallbackMsg);
+                    GD.Print(fallbackMsg);
+
+                    _fallbackApplied = true;
+                    return true;
+                }
+                else if (!_savedPreferenceIsSeparate)
+                {
+                    string loggedMsg = $"[RenderThread] main thread stalled {(int)stalledFor} s with the separate render thread (command line, not saved -- not switching)";
+                    Console.WriteLine(loggedMsg);
+                    GD.Print(loggedMsg);
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Monotonic clock helpers. <see cref="DateTime"/> is unusable here because a clock

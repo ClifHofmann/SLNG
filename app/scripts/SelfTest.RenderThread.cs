@@ -129,4 +129,109 @@ public static partial class SelfTest
             return new Check(Name, false, $"out of order: queued {queued}, markers {a} / {b}, returned {returned}");
         return new Check(Name, true, $"both markers ran in order before the sync returned ({RenderThread.ModeName} thread)");
     }
+
+    /// <summary>
+    /// BUG-PERF-22: verify that a 10s stall with the separate render thread saved switches
+    /// engine_overrides.cfg back to the main thread and writes the fallback marker once,
+    /// that other keys survive, and that consuming the marker cleans it up.
+    /// </summary>
+    private static Check CheckRenderThreadFallback()
+    {
+        const string Name = "render-thread fallback";
+        var problems = new List<string>();
+        string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"slng_selftest_fallback_{System.Environment.ProcessId}_{System.Guid.NewGuid():N}");
+        string tempCfg = System.IO.Path.Combine(tempDir, "engine_overrides.cfg");
+        string tempMarker = System.IO.Path.Combine(tempDir, "render_thread_fallback.json");
+
+        try
+        {
+            System.IO.Directory.CreateDirectory(tempDir);
+
+            // 1. Separate saved + 10s stall: rewrites override (deletes if only key) and writes marker
+            System.IO.File.WriteAllText(tempCfg, "[rendering]\ndriver/threads/thread_model=2\n");
+            var watchdog1 = new MainThreadWatchdog();
+            watchdog1.ConfigureFallback(
+                isSeparate: true,
+                savedPreferenceIsSeparate: true,
+                overrideFilePath: tempCfg,
+                markerFilePath: tempMarker,
+                isHeadlessOrSelfTest: false);
+
+            bool trig1 = watchdog1.EvaluateStall(MainThreadWatchdog.FallbackStallSeconds);
+            if (!trig1) problems.Add("watchdog did not trigger fallback on 10s stall with separate saved");
+            if (System.IO.File.Exists(tempCfg)) problems.Add("override file with only thread_model was not deleted");
+            if (!System.IO.File.Exists(tempMarker)) problems.Add("fallback marker was not written");
+
+            // 2. Second trigger on the same watchdog writes nothing
+            bool trig2 = watchdog1.EvaluateStall(15.0);
+            if (trig2) problems.Add("second trigger wrote fallback again instead of once per run");
+
+            // 3. Main thread recovery logged/handled cleanly
+            bool recovered = watchdog1.EvaluateStall(0.5);
+            if (recovered) problems.Add("heartbeat recovery should return false");
+
+            // 4. Consuming the marker reads data and deletes the file
+            if (!SLNG.Core.RenderThreadFallback.TryConsumeMarker(tempMarker, out var marker) || marker == null)
+            {
+                problems.Add("failed to consume fallback marker");
+            }
+            else
+            {
+                if (marker.StalledSeconds < 9.9) problems.Add($"unexpected stall seconds: {marker.StalledSeconds}");
+                if (System.IO.File.Exists(tempMarker)) problems.Add("fallback marker was not deleted upon consumption");
+            }
+
+            // 5. Other keys survive in engine_overrides.cfg
+            System.IO.File.WriteAllText(tempCfg, "[rendering]\ndriver/threads/thread_model=2\n\n[display]\nwindow/size/width=1920\n");
+            var watchdog2 = new MainThreadWatchdog();
+            watchdog2.ConfigureFallback(
+                isSeparate: true,
+                savedPreferenceIsSeparate: true,
+                overrideFilePath: tempCfg,
+                markerFilePath: tempMarker,
+                isHeadlessOrSelfTest: false);
+
+            bool trig3 = watchdog2.EvaluateStall(10.0);
+            if (!trig3) problems.Add("watchdog did not trigger on stall when other keys were present");
+            if (!System.IO.File.Exists(tempCfg))
+            {
+                problems.Add("override file with other keys was deleted instead of rewritten");
+            }
+            else
+            {
+                string preserved = System.IO.File.ReadAllText(tempCfg);
+                if (preserved.Contains("driver/threads/thread_model")) problems.Add("thread_model was not removed from override file");
+                if (!preserved.Contains("[display]") || !preserved.Contains("window/size/width=1920"))
+                    problems.Add("other keys in override file were not preserved");
+            }
+            // Clean up marker written by watchdog2
+            if (System.IO.File.Exists(tempMarker)) System.IO.File.Delete(tempMarker);
+
+            // 6. Command-line only (savedPreferenceIsSeparate: false) writes nothing
+            System.IO.File.WriteAllText(tempCfg, "[display]\nwindow/size/width=1920\n");
+            var watchdog3 = new MainThreadWatchdog();
+            watchdog3.ConfigureFallback(
+                isSeparate: true,
+                savedPreferenceIsSeparate: false,
+                overrideFilePath: tempCfg,
+                markerFilePath: tempMarker,
+                isHeadlessOrSelfTest: false);
+
+            bool trig4 = watchdog3.EvaluateStall(10.0);
+            if (trig4) problems.Add("watchdog triggered write for command-line only separate thread");
+            if (System.IO.File.Exists(tempMarker)) problems.Add("marker was written when separate thread was not saved");
+        }
+        catch (Exception ex)
+        {
+            problems.Add($"{ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try { if (System.IO.Directory.Exists(tempDir)) System.IO.Directory.Delete(tempDir, true); } catch { }
+        }
+
+        return problems.Count == 0
+            ? new Check(Name, true, "10s stall switches saved choice, preserves other keys, writes and consumes marker")
+            : new Check(Name, false, string.Join("; ", problems));
+    }
 }

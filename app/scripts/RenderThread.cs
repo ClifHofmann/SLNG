@@ -37,6 +37,10 @@ public static class RenderThread
     /// back to the default, so a fresh install has no file at all.</summary>
     public const string OverridePath = "user://engine_overrides.cfg";
 
+    /// <summary>BUG-PERF-22: marker written when the watchdog switches the saved choice back to the
+    /// main thread due to a freeze.</summary>
+    public const string FallbackMarkerPath = "user://render_thread_fallback.json";
+
     private const string OverrideSection = "rendering";
     private const string OverrideKey = "driver/threads/thread_model";
     private const string SettingPath = "rendering/driver/threads/thread_model";
@@ -82,6 +86,15 @@ public static class RenderThread
             return;
         }
         cfg.Save(path);
+    }
+
+    /// <summary>
+    /// BUG-PERF-22: off-main-thread System.IO variant of SavePreference(false) taking absolute paths.
+    /// </summary>
+    public static bool SavePreferenceOffThread(string absolutePath, bool separate = false)
+    {
+        if (separate) return false;
+        return SLNG.Core.EngineOverrideConfig.RevertThreadModelPreference(absolutePath);
     }
 
     /// <summary>One line for the boot log: the mode and where it came from.</summary>

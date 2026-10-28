@@ -798,6 +798,7 @@
       "render_thread_separate": "Eigener Thread (experimentell)",
       "render_thread_hint": "Godot zeichnet in einem eigenen Thread, während der Viewer schon das nächste Bild vorbereitet. Kann die Bildrate in vollen Szenen erhöhen; die Engine stuft es als experimentell ein. Gilt erst nach einem Neustart.",
       "render_thread_restart": "Viewer neu starten, damit die Änderung wirkt.",
+      "render_thread_fallback_notice": "Der Viewer ist mit dem eigenen Render-Thread hängen geblieben und nutzt jetzt wieder den Haupt-Thread. Sie können ihn unter Einstellungen › Grafik › Leistung › Erweitert wieder einschalten.",
       "fps_unlimited": "Unbegrenzt",
       "draw_distance_heading": "Sichtweite",
       "texture_memory_heading": "Texturspeicher",

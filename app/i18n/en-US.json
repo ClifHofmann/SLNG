@@ -798,6 +798,7 @@
       "render_thread_separate": "Separate thread (experimental)",
       "render_thread_hint": "Lets Godot draw on its own thread while the viewer prepares the next frame. Can raise the frame rate in busy scenes; the engine marks it experimental. Takes effect after a restart.",
       "render_thread_restart": "Restart the viewer to apply this change.",
+      "render_thread_fallback_notice": "The viewer froze with the separate render thread and is back on the main thread. You can switch it on again under Preferences › Graphics › Performance › Advanced.",
       "fps_unlimited": "Unlimited",
       "draw_distance_heading": "Draw distance",
       "texture_memory_heading": "Texture memory",
