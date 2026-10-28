@@ -26,6 +26,9 @@ public sealed partial class GridSession
     public async Task<StartTarget?> ResolveLandmarkTargetAsync(Guid landmarkAssetId, CancellationToken ct = default) =>
         (await LookupLandmarkTargetAsync(landmarkAssetId, ct).ConfigureAwait(false)).Target;
 
+    // A few at a time: a favorites folder can hold dozens of landmarks.
+    private readonly System.Threading.SemaphoreSlim _landmarkFetchSemaphore = new(4);
+
     /// <summary>As <see cref="ResolveLandmarkTargetAsync"/>, but says why when there is no target.</summary>
     public async Task<LandmarkTargetLookup> LookupLandmarkTargetAsync(Guid landmarkAssetId, CancellationToken ct = default)
     {
@@ -38,10 +41,23 @@ public sealed partial class GridSession
         timeout.CancelAfter(LandmarkTargetTimeout);
         try
         {
-            var asset = await _client.Assets
-                .RequestAssetAsync(new UUID(landmarkAssetId), AssetType.Landmark, priority: false, timeout.Token)
+            // The way the reference viewer asks for every asset type: the region's ViewerAsset capability, {cap}/?landmark_id=
+            // (LLViewerAssetStorage::getAssetURL). The legacy transfer below went unanswered for the full 15 s on a connection
+            // whose UDP asset traffic does not come back, so a favorite added to the bar never reached the login list.
+            LibreMetaverse.Assets.AssetLandmark? landmark = null;
+            var (bytes, _) = await FetchAssetViaViewerAssetAsync(landmarkAssetId, "landmark", _landmarkFetchSemaphore, timeout.Token)
                 .ConfigureAwait(false);
-            if (asset is not LibreMetaverse.Assets.AssetLandmark landmark)
+            if (bytes is { Length: > 0 })
+                landmark = new LibreMetaverse.Assets.AssetLandmark(new UUID(landmarkAssetId), bytes);
+
+            if (landmark == null)
+            {
+                var asset = await _client.Assets
+                    .RequestAssetAsync(new UUID(landmarkAssetId), AssetType.Landmark, priority: false, timeout.Token)
+                    .ConfigureAwait(false);
+                landmark = asset as LibreMetaverse.Assets.AssetLandmark;
+            }
+            if (landmark == null)
                 return Fail("the landmark asset could not be fetched");
             if (!landmark.Decode() || landmark.RegionID == UUID.Zero)
                 return Fail("the landmark asset names no region");

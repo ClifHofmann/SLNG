@@ -762,7 +762,7 @@ public sealed partial class GridSession
     /// served; otherwise null, with the HTTP status when there was an answer (null when there was none:
     /// no capability yet, a timeout, a dropped connection). The caller has the UDP path to fall back on.</summary>
     private async Task<(byte[]? Bytes, HttpStatusCode? Status)> FetchAssetViaViewerAssetAsync(
-        Guid assetId, string typeName, System.Threading.SemaphoreSlim gate)
+        Guid assetId, string typeName, System.Threading.SemaphoreSlim gate, CancellationToken ct = default)
     {
         var cap = _client.Network.CurrentSim?.Caps?.CapabilityURI("ViewerAsset");
         if (cap is null) return (null, null);
@@ -771,10 +771,11 @@ public sealed partial class GridSession
         {
             var url = new Uri($"{cap.ToString().TrimEnd('/')}/?{typeName}_id={assetId}");
             // The 20 s is for the transfer, not for waiting for a slot: the clock starts once one is held.
-            await gate.WaitAsync().ConfigureAwait(false);
+            await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(20));
                 using var response = await _textureHttpClient.GetAsync(url, timeout.Token).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode) return (null, response.StatusCode);
                 return (await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false), response.StatusCode);
