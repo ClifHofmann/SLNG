@@ -104,6 +104,18 @@
       "audio_unmuted_tooltip": "Audio (no in-world sound yet — reserved for future use)",
       "audio_muted_tooltip": "Audio muted (no in-world sound yet — reserved for future use)"
     },
+    "debuglog": {
+      "enable": "Write a debug log",
+      "what": "While this is on, everything the viewer prints is written to a separate file, including the detailed diagnostics that are normally off. Switch it on, repeat the problem, then send the file.",
+      "privacy": "Nothing that identifies you is written: avatar and region names and IDs are replaced by short tags (the same tag always means the same thing inside one file, but it cannot be turned back), and passwords, tokens, IP addresses, the path part of web addresses and your Windows user name are removed. Chat and instant message text is never logged.",
+      "limits": "Text typed into the world, such as object or parcel names, cannot be recognised, so read the file before you share it. The file is capped at 64 MB and the last 10 sessions are kept. Logging slows the viewer down a little.",
+      "folder": "Log folder",
+      "open_folder": "Open log folder",
+      "show_file": "Show current log",
+      "copy_path": "Copy path",
+      "status_off": "The debug log is off. Earlier logs stay in the folder.",
+      "status_on": "Writing {0} ({1})"
+    },
     "presence": {
       "status_away": "Away",
       "status_dnd": "Do Not Disturb",
@@ -112,13 +124,14 @@
       "timeout_never": "Never",
       "timeout_minutes": "{0} minutes",
       "timeout_hours": "{0} hours",
-      "timeout_hint": "The same timeout also applies when this window loses focus. You come back with the next key press or click.",
+      "timeout_hint": "You come back with the next key press or click, ten seconds after going Away at the earliest.",
+      "away_on_focus_loss": "Also go Away when this window loses focus",
       "send_away": "Answer instant messages while Away",
       "busy_heading": "Do Not Disturb response",
       "autorespond": "Autorespond to everyone",
       "autorespond_non_friends": "Autorespond to non-friends",
       "apply": "Apply",
-      "defaults": "Default texts",
+      "revert": "Revert",
       "chat_notice": "[Auto-response] {0}"
     },
     "avatar_hover": {
@@ -159,7 +172,8 @@
     "texture_viewer": {
       "title": "Image",
       "loading": "Loading…",
-      "failed": "The image could not be loaded."
+      "failed": "The image could not be loaded.",
+      "free_transform": "Free transform"
     },
     "snapshot": {
       "title": "Snapshot",
@@ -629,6 +643,7 @@
       "max_bandwidth_hint": "The most the simulator may send you per second. Higher loads a new region faster; on a slow or unstable connection, lower helps. The default of 3000 kbps matches the Second Life viewer.",
       "tab_chat_logs": "Chat logs",
       "tab_autoresponse": "Away & Auto-response",
+      "tab_debuglog": "Debug log",
       "chat_logs_heading": "Chat logs",
       "chat_logs_intro": "Logs are written in Firestorm's format, so Firestorm and SLNG can read each other's history: same folder layout, same file names, same lines. To share a history, choose for an account the folder Firestorm uses for it.",
       "chat_logs_browse": "Choose...",

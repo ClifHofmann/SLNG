@@ -24,6 +24,11 @@ public static class PresenceSettings
 
     public static int AwayTimeoutSeconds { get; private set; } = DefaultAwayTimeoutSeconds;
 
+    /// <summary>Whether losing the window's focus sends the agent Away. The reference viewer does it whenever its timeout
+    /// is on; here it is its own switch, off by default -- looking at another window (a second client, a browser) is not
+    /// being away, and anyone who tests with two viewers sees the avatar go Away the moment the other one is clicked.</summary>
+    public static bool AwayOnFocusLoss { get; private set; }
+
     /// <summary>The persisted part of the configuration; Away and Do Not Disturb start off.</summary>
     public static PresenceConfig Load()
     {
@@ -37,6 +42,7 @@ public static class PresenceSettings
         }
 
         AwayTimeoutSeconds = (int)cfg.GetValue(Section, "away_timeout", DefaultAwayTimeoutSeconds);
+        AwayOnFocusLoss = (bool)cfg.GetValue(Section, "away_on_focus_loss", false);
         return new PresenceConfig(
             Autorespond: (bool)cfg.GetValue(Section, "autorespond", false),
             AutorespondNonFriends: (bool)cfg.GetValue(Section, "autorespond_non_friends", false),
@@ -47,12 +53,14 @@ public static class PresenceSettings
             NonFriendsMessage: Text("non_friends_message", PresenceConfig.DefaultAutorespondMessage));
     }
 
-    public static void Save(PresenceConfig config, int awayTimeoutSeconds)
+    public static void Save(PresenceConfig config, int awayTimeoutSeconds, bool awayOnFocusLoss)
     {
         AwayTimeoutSeconds = awayTimeoutSeconds;
+        AwayOnFocusLoss = awayOnFocusLoss;
         var cfg = new ConfigFile();
         cfg.Load(ConfigPath); // preserve sections owned by other settings classes
         cfg.SetValue(Section, "away_timeout", awayTimeoutSeconds);
+        cfg.SetValue(Section, "away_on_focus_loss", awayOnFocusLoss);
         cfg.SetValue(Section, "autorespond", config.Autorespond);
         cfg.SetValue(Section, "autorespond_non_friends", config.AutorespondNonFriends);
         cfg.SetValue(Section, "send_away_response", config.SendAwayResponse);

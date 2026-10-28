@@ -646,6 +646,7 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         }
 
         _client = new GridClient();
+        RegisterLogPrivacySources(); // FEAT-UI-76
         StartSeedCapabilityGuard();
 
         // LibreMetaverse keeps its own on-disk asset cache (the wearable / animation / gesture /

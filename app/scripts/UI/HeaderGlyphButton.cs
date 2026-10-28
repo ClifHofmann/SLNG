@@ -47,7 +47,9 @@ internal partial class HeaderGlyphButton : Button
         float h = GlyphSize / 2f;
         if (_kind == GlyphKind.Minimize)
         {
-            DrawLine(new Vector2(c.X - h, c.Y + h * 0.5f), new Vector2(c.X + h, c.Y + h * 0.5f), color, Thickness, true);
+            // On the lower edge of the close cross (its arms reach c.Y + d), not above it.
+            float lineY = c.Y + h * 0.8f;
+            DrawLine(new Vector2(c.X - h, lineY), new Vector2(c.X + h, lineY), color, Thickness, true);
             return;
         }
         float d = h * 0.8f;

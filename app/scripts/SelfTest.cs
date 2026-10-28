@@ -307,6 +307,9 @@ public static partial class SelfTest
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
         results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
+        results.Add(CheckTextureViewerFit(tree));
+        results.Add(CheckDebugLogSanitizes()); // FEAT-UI-76
+        results.Add(CheckWornItemMenuOffersProfile(tree));
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -1410,6 +1413,107 @@ public static partial class SelfTest
         }
     }
 
+    /// <summary>FEAT-UI-76: with the debug log on, what the client prints (GD.Print and Console alike) lands in the file with
+    /// the identifying parts replaced, and with it off nothing is written. Runs under <c>logs/selftest/debug</c>.</summary>
+    private static Check CheckDebugLogSanitizes()
+    {
+        const string Name = "debug log sanitizes";
+        bool wasRunning = DebugLog.IsRunning;
+        try
+        {
+            DebugLog.Stop();
+            DebugLog.Start();
+            const string id = "3f2a9c1e-77b4-4d0a-9e5c-12ab34cd56ef";
+            GD.Print($"[SelfTestProbe] avatar {id} from 203.0.113.42 password=hunter2 https://sim.example.org/cap/abc");
+            System.Console.WriteLine($"[SelfTestProbe] console line for {id}");
+            string? file = DebugLog.CurrentFile;
+            DebugLog.Stop(); // waits for the queue to drain
+            if (file == null || !System.IO.File.Exists(file)) return new Check(Name, false, "no log file was written");
+
+            string text = System.IO.File.ReadAllText(file);
+            bool printed = text.Contains("[SelfTestProbe] avatar <id-");
+            bool console = text.Contains("[SelfTestProbe] console line for <id-");
+            bool clean = !text.Contains("3f2a9c1e") && !text.Contains("203.0.113.42") && !text.Contains("hunter2") && !text.Contains("/cap/abc");
+            bool header = text.Contains("[DebugLog] Puris Viewer");
+
+            DebugLog.Start();
+            GD.Print("[SelfTestProbe] written while on");
+            DebugLog.Stop();
+            string? afterOff = DebugLog.CurrentFile;
+            GD.Print("[SelfTestProbe] written while off");
+            bool offSilent = afterOff == null;
+
+            bool ok = printed && console && clean && header && offSilent;
+            return new Check(Name, ok, ok
+                ? "GD.Print and Console lines written, id/ip/password/url path replaced, header present, off writes nothing"
+                : $"print {printed}, console {console}, clean {clean}, header {header}, off silent {offSilent}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            DebugLog.Stop();
+            if (wasRunning) DebugLog.Start();
+        }
+    }
+
+    /// <summary>The image viewer opens with its picture area exactly the picture's size, so nothing is letterboxed
+    /// or squeezed, and its "free transform" switch changes only how the picture is stretched.</summary>
+    private static Check CheckTextureViewerFit(SceneTree tree)
+    {
+        const string Name = "texture viewer fit";
+        var window = new UI.TextureViewerWindow();
+        try
+        {
+            tree.Root.AddChild(window);
+            window.ShowImageOn(Image.CreateEmpty(400, 200, false, Image.Format.Rgba8), new Vector2(1920, 1080));
+
+            static void Layout(Control c)
+            {
+                if (c is Container) c.Notification((int)Container.NotificationSortChildren);
+                foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc);
+            }
+            for (int pass = 0; pass < 3; pass++) Layout(window);
+
+            TextureRect? pic = null;
+            CheckBox? free = null;
+            void Find(Node n)
+            {
+                if (n is TextureRect t) pic = t;
+                if (n is CheckBox c) free = c;
+                foreach (var k in n.GetChildren()) Find(k);
+            }
+            Find(window);
+            if (pic == null || free == null) return new Check(Name, false, "picture area or free-transform box missing");
+
+            bool sized = Mathf.Abs(pic.Size.X - 400) <= 1 && Mathf.Abs(pic.Size.Y - 200) <= 1;
+            bool keeps = pic.StretchMode == TextureRect.StretchModeEnum.KeepAspectCentered;
+            free.ButtonPressed = true;
+            bool stretches = pic.StretchMode == TextureRect.StretchModeEnum.Scale;
+            free.ButtonPressed = false;
+            bool back = pic.StretchMode == TextureRect.StretchModeEnum.KeepAspectCentered;
+
+            bool ok = sized && keeps && stretches && back;
+            return new Check(Name, ok, ok
+                ? "picture area 400 x 200 for a 400 x 200 image; free transform stretches, off restores the aspect"
+                : $"area {pic.Size.X:0.#} x {pic.Size.Y:0.#} (want 400 x 200), keeps {keeps}, stretches {stretches}, back {back}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(window))
+            {
+                window.GetParent()?.RemoveChild(window);
+                window.QueueFree();
+            }
+        }
+    }
+
     private static Check CheckWindowInsets(SceneTree tree)
     {
         var session = new SLNG.Net.GridSession();
@@ -1708,6 +1812,66 @@ public static partial class SelfTest
             {
                 chat.GetParent()?.RemoveChild(chat);
                 chat.QueueFree();
+            }
+        }
+    }
+
+    /// <summary>Right-clicking a worn item offers its wearer's Profile above the item's own entries; a loose object
+    /// offers no avatar entries at all, and Profile is the only avatar entry for yourself.</summary>
+    private static Check CheckWornItemMenuOffersProfile(SceneTree tree)
+    {
+        const string Name = "worn item menu offers the wearer's profile";
+        var world = new World();
+        var worn = world.GetOrCreateEntity(2001, 100);
+        worn.SetComponent(new TransformComponent());
+        worn.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0));
+        worn.SetComponent(new AttachmentComponent(System.Guid.NewGuid(), 1));
+        var loose = world.GetOrCreateEntity(2002, 100);
+        loose.SetComponent(new TransformComponent());
+        loose.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0));
+
+        var menu = new UI.InWorldContextMenu();
+        try
+        {
+            tree.Root.AddChild(menu);
+            menu.ResolveWearer = _ => (System.Guid.NewGuid(), "Me Resident", true);
+
+            static List<string> Visible(Node n)
+            {
+                var found = new List<string>();
+                void Walk(Node k)
+                {
+                    if (k is Button b && b.IsVisibleInTree()) found.Add(b.Text);
+                    foreach (var c in k.GetChildren()) Walk(c);
+                }
+                Walk(n);
+                return found;
+            }
+
+            menu.ShowMenu(Vector2.Zero, worn, worn.LocalId, Vector3.Zero);
+            var wornButtons = Visible(menu);
+            menu.ShowMenu(Vector2.Zero, loose, loose.LocalId, Vector3.Zero);
+            var looseButtons = Visible(menu);
+
+            bool profile = wornButtons.Exists(t => t.Contains("Profile"));
+            bool noOthers = !wornButtons.Exists(t => t.Contains("IM") || t.Contains("Mute") || t.Contains("Teleport"));
+            bool detach = wornButtons.Exists(t => t.Contains("Detach"));
+            bool looseClean = !looseButtons.Exists(t => t.Contains("Profile"));
+            bool ok = profile && noOthers && detach && looseClean;
+            return new Check(Name, ok, ok
+                ? "worn: Profile + Detach, no IM/Mute/Teleport for yourself; loose object: no Profile"
+                : $"profile {profile}, no other avatar entries {noOthers}, detach {detach}, loose clean {looseClean}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(menu))
+            {
+                menu.GetParent()?.RemoveChild(menu);
+                menu.QueueFree();
             }
         }
     }

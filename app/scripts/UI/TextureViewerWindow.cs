@@ -68,14 +68,27 @@ public partial class TextureViewerWindow : SLNGWindow
         };
         frame.AddChild(_image);
 
+        var footer = new HBoxContainer();
+        footer.AddThemeConstantOverride("separation", 8);
+        box.AddChild(footer);
+
         _infoLabel = new Label
         {
             Text = L10n.Tr("ui.texture_viewer.loading"),
-            HorizontalAlignment = HorizontalAlignment.Center,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _infoLabel.AddThemeFontSizeOverride("font_size", 11);
         _infoLabel.AddThemeColorOverride("font_color", UiTheme.SecondaryText);
-        box.AddChild(_infoLabel);
+        footer.AddChild(_infoLabel);
+
+        // Off: the picture keeps its own shape and the window shows bars where it is not that shape.
+        // On: the picture takes the window's shape, stretched -- for someone who wants to size it freely.
+        var free = new CheckBox { Text = L10n.Tr("ui.texture_viewer.free_transform"), FocusMode = FocusModeEnum.None };
+        free.AddThemeFontSizeOverride("font_size", 11);
+        free.Toggled += on => _image.StretchMode = on
+            ? TextureRect.StretchModeEnum.Scale
+            : TextureRect.StretchModeEnum.KeepAspectCentered;
+        footer.AddChild(free);
     }
 
     /// <summary>Call once, right after the window is in the tree.</summary>
@@ -117,19 +130,31 @@ public partial class TextureViewerWindow : SLNGWindow
 
     private void ShowFailed() => _infoLabel.Text = L10n.Tr("ui.texture_viewer.failed");
 
-    private void ShowImage(Image image)
+    public void ShowImage(Image image) =>
+        ShowImageOn(image, GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280, 720));
+
+    /// <summary>Shows the picture on a screen of the given size (the window is sized to it, shrunk to fit).
+    /// Split out so a test can state the screen instead of inheriting a headless 64 x 64 one.</summary>
+    internal void ShowImageOn(Image image, Vector2 viewport)
     {
         var tex = ImageTexture.CreateFromImage(image);
         _image.Texture = tex;
         int w = image.GetWidth(), h = image.GetHeight();
         _infoLabel.Text = $"{w} × {h}";
 
-        // Open at the picture's own shape (and no larger than the window can sensibly be), so a
-        // wide image is not squeezed into the default box. Never shrink below what is showing.
-        float chrome = 90f; // title bar + insets + the info line
-        float scale = Mathf.Min(1f, Mathf.Min(MaxStartWidth / w, (MaxStartHeight - chrome) / h));
-        Size = new Vector2(Mathf.Max(CustomMinimumSize.X, w * scale + 2 * DefaultContentMarginH),
-            Mathf.Max(CustomMinimumSize.Y, h * scale + chrome));
+        // Open with the picture area at the picture's own size (shrunk, keeping its shape, only when it would not
+        // fit the screen): the window is made exactly as large as the picture needs, whatever the title bar, the
+        // insets and the footer take, instead of a guessed chrome height that left bars around it.
+        float maxW = Mathf.Min(MaxStartWidth, viewport.X - 80f);
+        float maxH = Mathf.Min(MaxStartHeight, viewport.Y - 160f);
+        float scale = Mathf.Min(1f, Mathf.Min(maxW / w, maxH / h));
+        _image.CustomMinimumSize = new Vector2(Mathf.Round(w * scale), Mathf.Round(h * scale));
+        Size = Vector2.Zero; // clamps up to the minimum size: exactly picture + chrome
         ClampToViewport();
+
+        // The picture area asked for that size only to size the window; give the freedom to shrink back.
+        CallDeferred(MethodName.ReleaseImageMinimum);
     }
+
+    private void ReleaseImageMinimum() => _image.CustomMinimumSize = new Vector2(0, 120);
 }

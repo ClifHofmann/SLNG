@@ -46,6 +46,11 @@ namespace SLNG.App.UI
         /// <summary>FEAT-PERF-08: toggle "always render fully" exemption for an avatar.</summary>
         public Action<Guid, string>? OnAvatarAlwaysRenderToggleClicked;
 
+        /// <summary>Who wears an attachment: the avatar entity the item is attached to, resolved to its agent id, best-known
+        /// name and whether it is the local agent. A worn item's menu shows that avatar's entries above its own, so the
+        /// wearer's Profile is one right-click away wherever on the body you hit (the body itself is mostly worn mesh).</summary>
+        public Func<Guid, (Guid AgentId, string Name, bool IsSelf)?>? ResolveWearer;
+
         /// <summary>MVP2-1: right-click "Sit Here" on bare ground (see ShowGroundMenu) -- the
         /// world position that was right-clicked, same one OnCreatePrimClicked receives.</summary>
         public Action<Vector3>? OnSitOnGroundClicked;
@@ -69,6 +74,7 @@ namespace SLNG.App.UI
         private string _currentAvatarName = "";
 
         private VBoxContainer _objectButtons = null!;
+        private HSeparator _wearerSeparator = null!;
         private VBoxContainer _avatarButtons = null!;
         private Button _avatarImButton = null!;
         private Button _avatarTeleportButton = null!;
@@ -121,6 +127,8 @@ namespace SLNG.App.UI
             // FEAT-UI-13: shown by ShowAvatarMenu instead of the object/create sets.
             _avatarButtons = new VBoxContainer { Visible = false };
             root.AddChild(_avatarButtons);
+            _wearerSeparator = new HSeparator { Visible = false };
+            root.AddChild(_wearerSeparator);
             AddMenuButton(_avatarButtons, "👤 Profile", () => OnAvatarProfileClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarImButton = AddMenuButton(_avatarButtons, "💬 IM", () => OnAvatarImClicked?.Invoke(_currentAvatarId, _currentAvatarName));
             _avatarTeleportButton = AddMenuButton(_avatarButtons, "🚀 Offer Teleport", () => OnAvatarOfferTeleportClicked?.Invoke(_currentAvatarId, _currentAvatarName));
@@ -264,8 +272,15 @@ namespace SLNG.App.UI
             RefreshSaleEntry();
 
             _objectButtons.Visible = true;
-            _avatarButtons.Visible = false;
             _groundOnlyButtons.Visible = false;
+
+            // A worn item also offers its wearer's entries (Profile for yourself), above its own.
+            (Guid AgentId, string Name, bool IsSelf)? wearer = isWorn
+                ? ResolveWearer?.Invoke(attachment!.AvatarEntityId)
+                : null;
+            if (wearer is { } w) ConfigureAvatarButtons(w.AgentId, w.Name, w.IsSelf, isMuted: false, isAlwaysRender: false);
+            _avatarButtons.Visible = wearer != null;
+            _wearerSeparator.Visible = wearer != null;
             // A HUD is on the screen, not in the region: there is no surface point to rez onto.
             _createRoot.Visible = attachment == null || !AttachmentPointMap.IsHudPoint(attachment.AttachmentPoint);
             _createShapes.Visible = false;
@@ -311,21 +326,12 @@ namespace SLNG.App.UI
             if (_buyButton.Visible || _payButton.Visible) CallDeferred(nameof(ClampIntoViewport));
         }
 
-        /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM / Offer Teleport /
-        /// Mute instead of the object Edit/Touch/Inspect set. <paramref name="isSelf"/> hides
-        /// everything but Profile (you can't IM/teleport-offer/mute yourself). <paramref
-        /// name="isMuted"/> only matters when <paramref name="isSelf"/> is false -- it picks
-        /// which way the Mute/Unmute toggle currently reads; the caller (whoever tracks the mute
-        /// list, e.g. <c>GridSession.IsAvatarMuted</c>) is the source of truth for it, not this
-        /// menu.</summary>
-        public void ShowAvatarMenu(Vector2 position, Guid agentId, string name, bool isSelf, bool isMuted = false, bool isAlwaysRender = false)
+        /// <summary>Points the avatar entries at one avatar: which of them make sense (none but Profile for yourself) and how
+        /// the Mute and Always-render toggles currently read.</summary>
+        private void ConfigureAvatarButtons(Guid agentId, string name, bool isSelf, bool isMuted, bool isAlwaysRender)
         {
             _currentAvatarId = agentId;
             _currentAvatarName = name ?? "";
-            _objectButtons.Visible = false;
-            _createRoot.Visible = false;
-            _groundOnlyButtons.Visible = false;
-            _avatarButtons.Visible = true;
             _avatarImButton.Visible = !isSelf;
             _avatarTeleportButton.Visible = !isSelf;
             // Paying yourself is not a transaction, and the simulator refuses it anyway.
@@ -336,6 +342,23 @@ namespace SLNG.App.UI
             _avatarAlwaysRenderButton.Text = isAlwaysRender
                 ? "🌟 " + L10n.Tr("ui.context_menu.avatar_normal_render")
                 : "🌟 " + L10n.Tr("ui.context_menu.avatar_always_render");
+        }
+
+        /// <summary>FEAT-UI-13: right-clicked an avatar -- offers Profile / IM / Offer Teleport /
+        /// Mute instead of the object Edit/Touch/Inspect set. <paramref name="isSelf"/> hides
+        /// everything but Profile (you can't IM/teleport-offer/mute yourself). <paramref
+        /// name="isMuted"/> only matters when <paramref name="isSelf"/> is false -- it picks
+        /// which way the Mute/Unmute toggle currently reads; the caller (whoever tracks the mute
+        /// list, e.g. <c>GridSession.IsAvatarMuted</c>) is the source of truth for it, not this
+        /// menu.</summary>
+        public void ShowAvatarMenu(Vector2 position, Guid agentId, string name, bool isSelf, bool isMuted = false, bool isAlwaysRender = false)
+        {
+            _objectButtons.Visible = false;
+            _createRoot.Visible = false;
+            _groundOnlyButtons.Visible = false;
+            _avatarButtons.Visible = true;
+            _wearerSeparator.Visible = false;
+            ConfigureAvatarButtons(agentId, name, isSelf, isMuted, isAlwaysRender);
 
             Position = position;
             Visible = true;
