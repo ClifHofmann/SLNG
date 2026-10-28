@@ -28,6 +28,7 @@ public partial class PrefsRow : VBoxContainer
     private Container? _badgeHost;
     private Label? _label;
     private Label? _badge;
+    private Godot.Control? _content;
 
     /// <summary>Stable id, <c>&lt;categoryId&gt;.&lt;sectionId&gt;.&lt;name&gt;</c>, e.g. <c>camera_movement.camera.fov</c>.</summary>
     public string Id { get; }
@@ -155,11 +156,12 @@ public partial class PrefsRow : VBoxContainer
         return this;
     }
 
-    /// <summary>Enables or disables the row's control and dims the row. Meant for a row that depends on another
-    /// (<see cref="DependsOn"/>); a control of an unknown kind is only dimmed.</summary>
+    /// <summary>Enables or disables the row's control (for a block: its content, when that is a button, slider or text
+    /// field itself) and dims the row. Meant for a row that depends on another (<see cref="DependsOn"/>); anything of an
+    /// unknown kind is only dimmed.</summary>
     public void SetEnabled(bool enabled)
     {
-        switch (Control)
+        switch (Control ?? _content)
         {
             case BaseButton button: button.Disabled = !enabled; break;
             case Slider slider: slider.Editable = enabled; break;
@@ -272,6 +274,7 @@ public partial class PrefsRow : VBoxContainer
     {
         var row = new PrefsRow(id) { LabelKey = labelKey };
         row._searchKeys.AddRange(searchKeys);
+        row._content = content;
         if (labelKey != null)
         {
             row._label = PrefsStyle.MakeLabel(L10n.Tr(labelKey));

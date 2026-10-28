@@ -31,8 +31,9 @@ The preferences search came from Firestorm into the Linden viewer (`<FS:ND/>` at
 - **Two improvements over the viewer:**
   1. A hit inside a collapsed Advanced fold-out opens it while the filter is on. It folds back when the filter is cleared,
      unless the user had opened it.
-  2. A hit on a row hidden by its switch (shadow distance with shadows off, the DoF controls, the mirror probe) is not
-     lost. Its controlling row (`DependsOn`, FEAT-UI-79) is highlighted, with a short note naming the hidden setting.
+  2. A hit on a row that is disabled by its switch (shadow distance with shadows off, the DoF controls, the mirror
+     probe) is found, and its switch (`DependsOn`, FEAT-UI-79) is highlighted too, so it is clear what to turn on.
+     FEAT-UI-79 dims such rows instead of hiding them, so the viewer's "invisible never matches" gap does not arise.
 - **Keyboard:** its action names are searched too. When it has a hit, its own filter box (`ui.keys.search_placeholder`)
   is set to the term.
 - **No hit anywhere:** one line, "No setting matches".
@@ -59,7 +60,7 @@ The preferences search came from Firestorm into the Linden viewer (`<FS:ND/>` at
       softness match.
 - [ ] "RenderFarClip" finds draw distance, "fps" finds the FPS limit, "bandwidth" finds max bandwidth while the UI is
       German.
-- [ ] A search for shadow distance with shadows off highlights the Shadows switch with the note.
+- [ ] A search for shadow distance with shadows off highlights that row and the Shadows switch.
 - [ ] A term that matches a key action fills the Keyboard page's own filter.
 - [ ] Esc clears the field; clearing restores everything and keeps the selected category.
 - [ ] Filtering on every keystroke causes no visible hitch.

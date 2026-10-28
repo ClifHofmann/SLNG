@@ -34,7 +34,7 @@ public static class PrefsStyle
     public const int ValueLabelWidth = 52;
 
     /// <summary>The narrowest a slider is drawn.</summary>
-    public const int SliderMinWidth = 80;
+    public const int SliderMinWidth = 64;
 
     /// <summary>Space between a category's rows and the scroll bar on its right.</summary>
     public const int PageGutter = 10;
@@ -49,6 +49,7 @@ public static class PrefsStyle
     public static readonly Color AdvancedTitleColor = new(0.7f, 0.7f, 0.7f);
     public static readonly Color AdvancedTitleHoverColor = new(1f, 1f, 1f);
     public static readonly Color NoticeColor = new(0.95f, 0.72f, 0.3f);
+    public static readonly Color SuccessColor = new(0.4f, 0.9f, 0.5f);
     public static readonly Color InfoColor = new(0.62f, 0.72f, 0.82f);
     public static readonly Color BadgeTextColor = new(0.95f, 0.8f, 0.5f);
     public static readonly Color BadgeFillColor = new(0.95f, 0.7f, 0.3f, 0.16f);
@@ -99,6 +100,14 @@ public static class PrefsStyle
     {
         var label = MakeHint(text);
         label.AddThemeColorOverride("font_color", NoticeColor);
+        return label;
+    }
+
+    /// <summary>A line of text that confirms something that was just done (a profile saved), in the success colour.</summary>
+    public static Label MakeStatus(string text)
+    {
+        var label = MakeHint(text);
+        label.AddThemeColorOverride("font_color", SuccessColor);
         return label;
     }
 

@@ -252,7 +252,7 @@ public static partial class SelfTest
     private static readonly (string Category, string[] Sections)[] PreferenceSectionPlan =
     {
         ("general", new[] { "interface", "bottom_bar", "names", "content_rating", "building" }),
-        ("graphics", new[] { "all" }),
+        ("graphics", new[] { "quality", "view_detail", "shadows", "light_effects", "depth_of_field", "performance" }),
         ("camera_movement", new[] { "camera", "movement", "avatar" }),
         ("chat_im", new[] { "conversations", "friends_online", "away", "chat_logs" }),
         ("keyboard", new[] { "all" }),
@@ -260,15 +260,88 @@ public static partial class SelfTest
         ("help_info", new[] { "debug_log", "licences" }),
     };
 
+    /// <summary>Every row the Preferences window is meant to hold, by id -- the inventory "preferences complete" holds the
+    /// window to. A new setting is added here in the same commit that adds its row (and to the plan's table); a row that is
+    /// not listed, or a listed one that is missing, fails the run. Ids are <c>category.section.name</c>.</summary>
+    private static readonly string[] ExpectedPreferenceRows =
+    {
+        // General
+        "general.interface.language", "general.interface.ui_scale_auto", "general.interface.ui_scale_detected", "general.interface.ui_scale",
+        "general.bottom_bar.intro", "general.bottom_bar.items",
+        "general.names.show_display_names", "general.names.show_legacy_names", "general.names.show_group_titles", "general.names.hide_own_group_title",
+        "general.content_rating.blurb", "general.content_rating.rating", "general.content_rating.unsupported", "general.content_rating.status",
+        "general.building.build_grid", "general.building.rotation_snap",
+        // Graphics
+        "graphics.quality.preset", "graphics.quality.profiles", "graphics.quality.profile_save", "graphics.quality.profile_status",
+        "graphics.view_detail.draw_distance", "graphics.view_detail.object_detail", "graphics.view_detail.max_full_avatars", "graphics.view_detail.small_cull",
+        "graphics.shadows.shadows", "graphics.shadows.shadow_resolution", "graphics.shadows.shadow_splits", "graphics.shadows.shadow_softness",
+        "graphics.shadows.shadow_distance", "graphics.shadows.shadow_opacity", "graphics.shadows.small_object_shadows",
+        "graphics.light_effects.ssao", "graphics.light_effects.glow", "graphics.light_effects.mirrors", "graphics.light_effects.ssil",
+        "graphics.light_effects.reflection_probe", "graphics.light_effects.probe_ambient", "graphics.light_effects.ssr", "graphics.light_effects.hero_probe",
+        "graphics.depth_of_field.enable", "graphics.depth_of_field.auto_focus", "graphics.depth_of_field.focus_distance", "graphics.depth_of_field.focus_range",
+        "graphics.depth_of_field.falloff", "graphics.depth_of_field.blur", "graphics.depth_of_field.near_blur", "graphics.depth_of_field.show_marker",
+        "graphics.depth_of_field.reset",
+        "graphics.performance.fps_limit", "graphics.performance.vsync", "graphics.performance.msaa", "graphics.performance.texture_memory_auto",
+        "graphics.performance.texture_memory", "graphics.performance.texture_memory_usage", "graphics.performance.render_thread",
+        "graphics.performance.render_thread_pending", "graphics.performance.compress_textures", "graphics.performance.low_vram_caps",
+        "graphics.performance.low_vram_state", "graphics.performance.outfit_merge",
+        // Camera & movement
+        "camera_movement.camera.fov", "camera_movement.camera.rear_distance", "camera_movement.camera.focus_height",
+        "camera_movement.camera.disable_constraints", "camera_movement.camera.reset", "camera_movement.camera.speed_note",
+        "camera_movement.camera.orbit_speed", "camera_movement.camera.pan_speed", "camera_movement.camera.zoom_speed",
+        "camera_movement.movement.always_run",
+        "camera_movement.avatar.head_follows_camera", "camera_movement.avatar.typing_animation", "camera_movement.avatar.seat_pose_overrides_ao",
+        // Chat & IM
+        "chat_im.conversations.conference_as_im",
+        "chat_im.friends_online.friend_presence_toasts", "chat_im.friends_online.friend_presence_in_local_chat",
+        "chat_im.away.timeout", "chat_im.away.away_on_focus_loss", "chat_im.away.send_away", "chat_im.away.away_text", "chat_im.away.busy_text",
+        "chat_im.away.autorespond", "chat_im.away.autorespond_text", "chat_im.away.autorespond_non_friends", "chat_im.away.non_friends_text",
+        "chat_im.away.buttons",
+        "chat_im.chat_logs.intro", "chat_im.chat_logs.one_viewer", "chat_im.chat_logs.account", "chat_im.chat_logs.folder",
+        "chat_im.chat_logs.in_effect", "chat_im.chat_logs.relog_notice", "chat_im.chat_logs.im_names", "chat_im.chat_logs.import",
+        // Keyboard
+        "keyboard.all.keyboard_page",
+        // Network & cache
+        "network_cache.network.max_bandwidth", "network_cache.network.check_favorite_regions",
+        "network_cache.cache.size", "network_cache.cache.decoded_cache_enabled",
+        // Help & info
+        "help_info.debug_log.enable", "help_info.debug_log.what", "help_info.debug_log.privacy", "help_info.debug_log.limits",
+        "help_info.debug_log.folder", "help_info.debug_log.buttons", "help_info.debug_log.status",
+        "help_info.licences.notices",
+    };
+
+    private static IEnumerable<Node> DescendantNodes(Node n)
+    {
+        foreach (var k in n.GetChildren())
+        {
+            yield return k;
+            foreach (var d in DescendantNodes(k)) yield return d;
+        }
+    }
+
+    /// <summary>Every L10n key a row hands the search (and the label, hint and tooltip), with what kind it is.</summary>
+    private static IEnumerable<(string Kind, string Key)> PreferenceRowKeys(PrefsRow row)
+    {
+        if (row.LabelKey != null) yield return ("label", row.LabelKey);
+        if (row.HintKey != null) yield return ("hint", row.HintKey);
+        if (row.TooltipKey != null) yield return ("tooltip", row.TooltipKey);
+        foreach (string key in row.OptionKeys) yield return ("option", key);
+        foreach (string key in row.SearchKeys) yield return ("search", key);
+    }
+
+    private static UI.PreferencesWindow? FindPreferencesWindow(SceneTree tree)
+        => tree.Root.FindChild("PreferencesWindow", true, false) as UI.PreferencesWindow;
+
     /// <summary>The window the running client built in SetupHud: seven categories in the plan's order with exactly the
-    /// plan's sections, row ids that are unique and shaped <c>category.section.name</c>, every text key present in both
-    /// languages, and no old page embedded whole -- bar the Graphics page, the Keyboard table and the Licences notice.</summary>
+    /// plan's sections, row ids that are unique and shaped <c>category.section.name</c>, the badges and Advanced fold-outs
+    /// the plan asks for, one checkbox type, and no old page embedded whole -- bar the Keyboard table (and the Licences
+    /// notice, should it ever be one).</summary>
     private static Check CheckPreferencesWindowWiring(SceneTree tree)
     {
         const string Name = "preferences window wiring";
         try
         {
-            var window = tree.Root.FindChild("PreferencesWindow", true, false) as UI.PreferencesWindow;
+            var window = FindPreferencesWindow(tree);
             if (window == null) return new Check(Name, false, "the client has no PreferencesWindow");
 
             var problems = new List<string>();
@@ -289,7 +362,7 @@ public static partial class SelfTest
                     {
                         // A block that is a whole old *PreferencesPage Control: only the planned exceptions may still be one.
                         bool wholePage = row.GetChildren().Any(k => k is Control && k.GetType().Name.EndsWith("PreferencesPage", StringComparison.Ordinal));
-                        bool allowed = category.Id is "graphics" or "keyboard" || (category.Id == "help_info" && section.Id == "licences");
+                        bool allowed = category.Id == "keyboard" || (category.Id == "help_info" && section.Id == "licences");
                         if (wholePage && !allowed) problems.Add($"{row.Id} still embeds a whole old page");
                     }
                 }
@@ -302,22 +375,69 @@ public static partial class SelfTest
             }
             var dupes = window.AllRows.GroupBy(r => r.Id).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
             if (dupes.Count > 0) problems.Add("row ids used twice: " + string.Join(", ", dupes));
+            if (DescendantNodes(window).OfType<CheckButton>().Any()) problems.Add("a CheckButton is in the Preferences window (CheckBox is the one checkbox type)");
 
-            // Spot checks on what the plan says about when a change applies, and where the fold-outs are.
+            // Spot checks on what the plan says about when a change applies, where the fold-outs are, and what depends on what.
             PrefsRow? Row(string id) => window.AllRows.FirstOrDefault(r => r.Id == id);
             if (Row("general.interface.language")?.Apply != PrefsApply.ReopenWindows) problems.Add("the language row has no 'reopen windows' badge");
             if (Row("chat_im.chat_logs.folder")?.Apply != PrefsApply.NextLogin) problems.Add("the chat log folder row has no 'next login' badge");
-            foreach (string id in new[] { "chat_im.chat_logs", "network_cache.cache", "camera_movement.camera" })
+            if (Row("graphics.performance.render_thread")?.Apply != PrefsApply.Restart) problems.Add("the render thread row has no 'restart' badge");
+            foreach (string id in new[] { "chat_im.chat_logs", "network_cache.cache", "camera_movement.camera", "graphics.view_detail", "graphics.shadows",
+                                          "graphics.light_effects", "graphics.performance" })
             {
                 var section = window.Categories.SelectMany(c => c.Sections).FirstOrDefault(x => $"{x.CategoryId}.{x.Id}" == id);
                 if (section?.AdvancedFold is not { Folded: true }) problems.Add($"{id} has no collapsed Advanced fold-out");
             }
-            foreach (var section in window.Categories.Where(c => c.Id is not "graphics").SelectMany(c => c.Sections))
+            foreach (var section in window.Categories.SelectMany(c => c.Sections))
             {
                 string id = $"{section.CategoryId}.{section.Id}";
                 bool hasAdvancedRows = section.Rows.Any(r => r.IsAdvanced);
                 if (hasAdvancedRows != (section.AdvancedFold != null)) problems.Add($"{id}: Advanced fold-out and advanced rows disagree");
             }
+            void Depends(string row, string controller)
+            {
+                if (Row(row)?.Controller?.Id != controller) problems.Add($"{row} does not declare DependsOn({controller})");
+            }
+            Depends("graphics.light_effects.hero_probe", "graphics.light_effects.mirrors");
+            foreach (string name in new[] { "shadow_resolution", "shadow_splits", "shadow_softness", "shadow_distance", "shadow_opacity", "small_object_shadows" })
+                Depends("graphics.shadows." + name, "graphics.shadows.shadows");
+            foreach (string name in new[] { "auto_focus", "focus_distance", "focus_range", "falloff", "blur", "near_blur", "show_marker", "reset" })
+                Depends("graphics.depth_of_field." + name, "graphics.depth_of_field.enable");
+
+            return problems.Count == 0
+                ? new Check(Name, true, $"{ids.Count} categories with the plan's {PreferenceSectionPlan.Sum(p => p.Sections.Length)} sections, {window.AllRows.Count()} registered rows, ids unique, only the Keyboard table is a block of an old page, no CheckButton")
+                : new Check(Name, false, string.Join("; ", problems));
+        }
+        catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    /// <summary>The Preferences window holds every row of the inventory exactly once and nothing else, in exactly seven
+    /// categories, and every text key a row hands the search resolves in en-US AND de-DE (no fallback). What holds later
+    /// changes to the plan: a setting must be added here, in the plan's table and in both language files together.</summary>
+    private static Check CheckPreferencesComplete(SceneTree tree)
+    {
+        const string Name = "preferences complete";
+        try
+        {
+            var window = FindPreferencesWindow(tree);
+            if (window == null) return new Check(Name, false, "the client has no PreferencesWindow");
+
+            var problems = new List<string>();
+            if (window.Categories.Count != PreferenceCategoryIds.Length)
+                problems.Add($"{window.Categories.Count} categories, the plan has {PreferenceCategoryIds.Length}: {string.Join(",", window.Categories.Select(c => c.Id))}");
+
+            foreach (var twice in ExpectedPreferenceRows.GroupBy(i => i).Where(g => g.Count() > 1))
+                problems.Add($"the inventory lists {twice.Key} twice");
+            var registered = window.AllRows.Select(r => r.Id).ToList();
+            foreach (string id in ExpectedPreferenceRows.Distinct())
+            {
+                int count = registered.Count(r => r == id);
+                if (count == 0) problems.Add($"row {id} is in the inventory but the window has none");
+                else if (count > 1) problems.Add($"row {id} is registered {count} times");
+            }
+            var expected = new HashSet<string>(ExpectedPreferenceRows);
+            foreach (string id in registered.Distinct().Where(r => !expected.Contains(r)))
+                problems.Add($"row {id} is registered but not in the inventory");
 
             foreach (var locale in new[] { "en-US", "de-DE" })
             {
@@ -325,22 +445,107 @@ public static partial class SelfTest
                 if (file == null) { problems.Add($"cannot open {locale}"); continue; }
                 var manager = new SLNG.Core.Services.LocalizationManager { FallbackLocale = locale, CurrentLocale = locale };
                 manager.LoadLocaleFromJson(locale, file.GetAsText());
-                var dict = manager.GetDictionaryForLocale(locale);
-                var keys = window.Categories.SelectMany(c => c.Sections.Select(s => s.TitleKey).Append(c.TitleKey)).OfType<string>().ToList();
+                void Need(string what, string key)
+                {
+                    if (string.IsNullOrWhiteSpace(manager.GetStringIn(locale, key))) problems.Add($"{locale}: {what} key '{key}' has no text");
+                }
+                foreach (var category in window.Categories)
+                {
+                    Need($"category {category.Id} title", category.TitleKey);
+                    foreach (var section in category.Sections)
+                    {
+                        if (section.TitleKey != null) Need($"section {category.Id}.{section.Id} title", section.TitleKey);
+                    }
+                }
                 foreach (var row in window.AllRows)
                 {
-                    keys.AddRange(new[] { row.LabelKey, row.HintKey, row.TooltipKey }.OfType<string>());
-                    keys.AddRange(row.SearchKeys);
-                    keys.AddRange(row.OptionKeys);
+                    foreach (var (kind, key) in PreferenceRowKeys(row)) Need($"row {row.Id} {kind}", key);
                 }
-                var missing = keys.Distinct().Where(k => !dict.TryGetValue(k, out var v) || string.IsNullOrWhiteSpace(v)).ToList();
-                if (missing.Count > 0) problems.Add($"{locale} missing {string.Join(", ", missing.Take(8))}");
             }
 
             return problems.Count == 0
-                ? new Check(Name, true, $"{ids.Count} categories with the plan's {PreferenceSectionPlan.Sum(p => p.Sections.Length)} sections, {window.AllRows.Count()} registered rows, ids unique, only Graphics, Keyboard and Licences are blocks of old pages")
-                : new Check(Name, false, string.Join("; ", problems));
+                ? new Check(Name, true, $"{registered.Count} rows = the inventory of {expected.Count}, {window.Categories.Count} categories, every key resolves in en-US and de-DE")
+                : new Check(Name, false, string.Join("; ", problems.Take(12)) + (problems.Count > 12 ? $"; ... {problems.Count - 12} more" : ""));
         }
         catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    /// <summary>A row whose switch is off is disabled, not hidden: the real-time mirror probe without Mirrors, the six shadow
+    /// rows without Shadows, every depth-of-field control without its Enable. Drives the real Graphics page through
+    /// its own checkboxes, on settings objects whose file is a temp file, so nothing of the person's is written; the paths
+    /// are put back afterwards.</summary>
+    private static Check CheckPreferencesDependents(SceneTree tree)
+    {
+        const string Name = "preferences dependents";
+        string temp = Path.Combine(Path.GetTempPath(), "slng-selftest-graphics-" + Guid.NewGuid().ToString("N") + ".cfg");
+        string savedGraphics = UI.GraphicsSettings.ConfigPath, savedDof = UI.DofSettings.ConfigPath, savedPrefs = PrefsState.ConfigPath;
+        var host = new Control { Size = new Vector2(640, 800) };
+        try
+        {
+            UI.GraphicsSettings.ConfigPath = UI.DofSettings.ConfigPath = PrefsState.ConfigPath = temp;
+            tree.Root.AddChild(host);
+            var category = new PrefsCategory("graphics", "ui.preferences.cat_graphics") { Size = new Vector2(640, 800) };
+            host.AddChild(category);
+            var quality = category.AddSection("quality", null);
+            var viewDetail = category.AddSection("view_detail", "ui.preferences.sec_graphics_view_detail");
+            var shadows = category.AddSection("shadows", "ui.preferences.sec_graphics_shadows");
+            var light = category.AddSection("light_effects", "ui.preferences.sec_graphics_light_effects");
+            var dof = category.AddSection("depth_of_field", "ui.preferences.sec_graphics_depth_of_field");
+            var perf = category.AddSection("performance", "ui.preferences.sec_graphics_performance");
+            new UI.GraphicsPreferencesPage().Build(quality, viewDetail, shadows, light, dof, perf,
+                new UI.GraphicsSettings(), () => { }, new UI.DofSettings(), () => { });
+
+            var problems = new List<string>();
+            PrefsRow Row(string id) => category.Rows.First(r => r.Id == id);
+            static bool Off(PrefsRow row) => row.Control switch
+            {
+                BaseButton button => button.Disabled,
+                Slider slider => !slider.Editable,
+                _ => row.GetChildren().OfType<Control>().SelectMany(c => new[] { c }.Concat(DescendantNodes(c).OfType<Control>())).OfType<BaseButton>().Any(b => b.Disabled),
+            };
+
+            void Drive(string switchId, string[] dependents, string what)
+            {
+                var box = Row(switchId).ControlAs<CheckBox>()!;
+                foreach (bool on in new[] { true, false, true, false })
+                {
+                    box.ButtonPressed = !on; // a change of state is what raises the signal: go the other way first
+                    box.ButtonPressed = on;
+                    foreach (string id in dependents)
+                    {
+                        var row = Row(id);
+                        if (Off(row) == on) problems.Add($"{what} {(on ? "on" : "off")}: {id} is {(Off(row) ? "disabled" : "enabled")}");
+                        if (!row.Visible) problems.Add($"{id} is hidden, it should only be disabled");
+                        if (row.Controller?.Id != switchId) problems.Add($"{id} does not depend on {switchId}");
+                    }
+                }
+            }
+
+            Drive("graphics.light_effects.mirrors", new[] { "graphics.light_effects.hero_probe" }, "Mirrors");
+            Drive("graphics.shadows.shadows", new[]
+            {
+                "graphics.shadows.shadow_resolution", "graphics.shadows.shadow_splits", "graphics.shadows.shadow_softness", "graphics.shadows.shadow_distance",
+                "graphics.shadows.shadow_opacity", "graphics.shadows.small_object_shadows",
+            }, "Shadows");
+            Drive("graphics.depth_of_field.enable", new[]
+            {
+                "graphics.depth_of_field.auto_focus", "graphics.depth_of_field.focus_distance", "graphics.depth_of_field.focus_range",
+                "graphics.depth_of_field.falloff", "graphics.depth_of_field.blur", "graphics.depth_of_field.near_blur",
+                "graphics.depth_of_field.show_marker", "graphics.depth_of_field.reset",
+            }, "Depth of field");
+
+            return problems.Count == 0
+                ? new Check(Name, true, "the mirror probe follows Mirrors, the six shadow rows follow Shadows, the eight depth-of-field rows follow Enable: disabled, never hidden")
+                : new Check(Name, false, string.Join("; ", problems.Take(10)));
+        }
+        catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }
+        finally
+        {
+            UI.GraphicsSettings.ConfigPath = savedGraphics;
+            UI.DofSettings.ConfigPath = savedDof;
+            PrefsState.ConfigPath = savedPrefs;
+            if (GodotObject.IsInstanceValid(host)) { host.GetParent()?.RemoveChild(host); host.QueueFree(); }
+            try { File.Delete(temp); } catch (IOException) { }
+        }
     }
 }

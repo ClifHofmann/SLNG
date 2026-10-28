@@ -20,7 +20,9 @@ namespace SLNG.App.UI;
 /// </summary>
 public sealed class DofSettings
 {
-    private const string ConfigPath = "user://preferences.cfg";
+    /// <summary>The file the settings live in. A selftest points this somewhere else so building and driving the Preferences
+    /// page cannot touch the person's real preferences.cfg.</summary>
+    internal static string ConfigPath { get; set; } = "user://preferences.cfg";
     private const string Section = "dof";
 
     public const float MinFocusDistance = 0.5f;

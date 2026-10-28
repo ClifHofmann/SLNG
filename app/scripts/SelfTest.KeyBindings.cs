@@ -92,7 +92,7 @@ public static partial class SelfTest
                 manager.LoadLocaleFromJson(locale, file.GetAsText());
                 var dict = manager.GetDictionaryForLocale(locale);
 
-                var keys = new List<string> { "ui.preferences.tab_keyboard" };
+                var keys = new List<string> { "ui.preferences.cat_keyboard" };
                 keys.AddRange(KeyActions.All.Select(a => KeyChordText.ActionLabelKey(a.Id)));
                 keys.AddRange(Enum.GetValues<KeyCategory>().Select(KeyChordText.CategoryLabelKey));
                 keys.AddRange(new[] { "ctrl", "alt", "shift" }.Select(m => "ui.keys.mod." + m));

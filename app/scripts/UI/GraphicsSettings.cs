@@ -33,7 +33,9 @@ public enum GraphicsPreset
 /// </summary>
 public sealed class GraphicsSettings
 {
-    private const string ConfigPath = "user://preferences.cfg";
+    /// <summary>The file the settings live in. A selftest points this somewhere else so building and driving the Preferences
+    /// page cannot touch the person's real preferences.cfg.</summary>
+    internal static string ConfigPath { get; set; } = "user://preferences.cfg";
     private const string Section = "graphics";
     private const string ProfileSectionPrefix = "graphics_profile_";
 

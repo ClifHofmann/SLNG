@@ -47,6 +47,15 @@ namespace SLNG.Core.Services
             return new Dictionary<string, string>();
         }
 
+        /// <summary>The text of <paramref name="key"/> in <paramref name="locale"/> itself: null when that locale is not
+        /// loaded or has no such key. Unlike <see cref="Translate"/> this never falls back to another locale or to the
+        /// "[key]" placeholder, which is what a check that "this key exists in German" or an index of every language
+        /// (the Preferences search) needs.</summary>
+        public string? GetStringIn(string locale, string key)
+        {
+            return _locales.TryGetValue(locale, out var dict) && dict.TryGetValue(key, out var text) ? text : null;
+        }
+
         // Directory-based loading via System.IO -- only valid when the JSON files exist as
         // real files on disk (running from source, or a test's temp directory). An exported
         // Godot build packs res://i18n/*.json into the .pck, where System.IO simply can't see

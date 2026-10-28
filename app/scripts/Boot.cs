@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.42-alpha";
+    public const string AppVersion = "v0.28.43-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -2058,7 +2058,7 @@ public partial class Boot : Control
         // FEAT-UI-79: seven categories, in this order, each a column of sections (docs/specs/FEAT-UI-79-preferences-rework.md
         // has the table of where every setting goes). Every category and section is made here, first, in the table's order,
         // so the list and the sections come out as planned whatever order the pages below are built in. Each page then
-        // fills the section(s) it is handed. Graphics and Keyboard are still embedded whole as one block.
+        // fills the section(s) it is handed. Only Keyboard is still one embedded block (its table has its own filter).
         var catGeneral = _preferencesWindow.AddCategory("general", "ui.preferences.cat_general");
         var secInterface = catGeneral.AddSection("interface", "ui.preferences.sec_general_interface");
         var secBottomBar = catGeneral.AddSection("bottom_bar", "ui.preferences.sec_general_bottom_bar");
@@ -2067,7 +2067,12 @@ public partial class Boot : Control
         var secBuilding = catGeneral.AddSection("building", "ui.preferences.sec_general_building");
 
         var catGraphics = _preferencesWindow.AddCategory("graphics", "ui.preferences.cat_graphics");
-        var secGraphics = catGraphics.AddSection("all", null);
+        var secQuality = catGraphics.AddSection("quality", null);
+        var secViewDetail = catGraphics.AddSection("view_detail", "ui.preferences.sec_graphics_view_detail");
+        var secShadows = catGraphics.AddSection("shadows", "ui.preferences.sec_graphics_shadows");
+        var secLightEffects = catGraphics.AddSection("light_effects", "ui.preferences.sec_graphics_light_effects");
+        var secDepthOfField = catGraphics.AddSection("depth_of_field", "ui.preferences.sec_graphics_depth_of_field");
+        var secPerformance = catGraphics.AddSection("performance", "ui.preferences.sec_graphics_performance");
 
         var catCamera = _preferencesWindow.AddCategory("camera_movement", "ui.preferences.cat_camera_movement");
         var secCamera = catCamera.AddSection("camera", "ui.preferences.sec_camera_movement_camera");
@@ -2164,11 +2169,11 @@ public partial class Boot : Control
             _topMenu.SetHeadFollowsCameraUI(on);
         };
 
-        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics") };
-        secGraphics.AddBlock("graphics.all.graphics_page", _graphicsPage);
-        _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings, _dofSettings,
-                                 () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0,
-                                 () => _gpuCache?.MaxSizeBytes ?? ((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024));
+        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage { Name = "GraphicsPreferencesPage" };
+        _graphicsPage.Build(secQuality, secViewDetail, secShadows, secLightEffects, secDepthOfField, secPerformance,
+                            _graphicsSettings, ApplyGraphicsSettings, _dofSettings,
+                            () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0,
+                            () => _gpuCache?.MaxSizeBytes ?? ((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024));
 
         _networkSettings = new SLNG.App.UI.NetworkSettings();
         _networkSettings.Load();
