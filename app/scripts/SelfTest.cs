@@ -324,6 +324,7 @@ public static partial class SelfTest
         results.Add(CheckChatLogPaths());
         results.Add(CheckLandmarkFavoritesStore());
         results.Add(CheckFavoritesService()); // FEAT-UI-72 phase 2
+        results.Add(CheckFavoritesBarDropStatus(tree));
         results.Add(CheckFriendCategoryStore());
         results.Add(CheckPerAvatarDataIsolation());
         results.AddRange(CheckKeyBindings(tree)); // FEAT-UI-43

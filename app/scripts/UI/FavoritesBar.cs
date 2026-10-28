@@ -21,6 +21,13 @@ public partial class FavoritesBar : PanelContainer
     private string? _agentId;
     private FavoritesService? _service;
 
+    /// <summary>The bar of this client, for the drag card (<see cref="LandmarkDragPreview"/>) to ask what a drop would do.</summary>
+    public static FavoritesBar? Current { get; private set; }
+
+    private StyleBoxFlat _normalStyle = null!;
+    private StyleBoxFlat _dropStyle = null!;
+    private bool _dropHover;
+
     private HBoxContainer _itemsHBox = null!;
     private ScrollContainer _scroll = null!;
     private Label _emptyLabel = null!;
@@ -41,7 +48,13 @@ public partial class FavoritesBar : PanelContainer
     {
         base._Ready();
 
-        AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        Current = this;
+        TreeExited += () =>
+        {
+            if (Current == this) Current = null;
+        };
+
+        _normalStyle = new StyleBoxFlat
         {
             BgColor = new Color(0.02f, 0.04f, 0.07f, 0.45f),
             BorderWidthBottom = 1,
@@ -50,7 +63,22 @@ public partial class FavoritesBar : PanelContainer
             ContentMarginRight = 6,
             ContentMarginTop = 1,
             ContentMarginBottom = 1
-        });
+        };
+        // While a landmark is dragged over the bar: a lit outline, so the bar itself says "drop here".
+        _dropStyle = new StyleBoxFlat
+        {
+            BgColor = new Color(0.05f, 0.18f, 0.12f, 0.8f),
+            BorderWidthLeft = 2,
+            BorderWidthTop = 2,
+            BorderWidthRight = 2,
+            BorderWidthBottom = 2,
+            BorderColor = new Color(0.25f, 0.85f, 0.4f, 0.9f),
+            ContentMarginLeft = 6,
+            ContentMarginRight = 6,
+            ContentMarginTop = 1,
+            ContentMarginBottom = 1
+        };
+        AddThemeStyleboxOverride("panel", _normalStyle);
 
         var mainHBox = new HBoxContainer();
         mainHBox.AddThemeConstantOverride("separation", 4);
@@ -164,6 +192,41 @@ public partial class FavoritesBar : PanelContainer
         };
 
         Reset();
+    }
+
+    /// <summary>What a drop of a landmark on the bar would do: the text and colours the drag card shows.</summary>
+    public readonly record struct DropStatus(string Text, Color TextColor, Color Border);
+
+    /// <summary>The answer for the drag card. <paramref name="assetId"/> is the landmark's asset when the drag source knows it.</summary>
+    public DropStatus DropStatusFor(Guid itemId, Guid assetId)
+    {
+        var good = (new Color(0.35f, 0.95f, 0.45f), new Color(0.25f, 0.85f, 0.4f, 0.9f));
+        var warn = (new Color(1.0f, 0.75f, 0.25f), new Color(0.9f, 0.65f, 0.2f, 0.9f));
+        var bad = (new Color(0.95f, 0.4f, 0.4f), new Color(0.85f, 0.3f, 0.3f, 0.9f));
+
+        var mode = _service?.Mode ?? FavoritesMode.Loading;
+        if (mode == FavoritesMode.NoFolder)
+            return new DropStatus(L10n.Tr("ui.favorites_bar.drop_no_folder"), bad.Item1, bad.Item2);
+        if (mode != FavoritesMode.Folder)
+            return new DropStatus(L10n.Tr("ui.favorites_bar.drop_not_ready"), warn.Item1, warn.Item2);
+
+        foreach (var favorite in _service!.Items)
+        {
+            if (favorite.Id == itemId || (assetId != Guid.Empty && favorite.AssetId == assetId))
+                return new DropStatus(L10n.Tr("ui.favorites_bar.drop_already"), warn.Item1, warn.Item2);
+        }
+        return new DropStatus(L10n.Tr("ui.favorites_bar.drop_add"), good.Item1, good.Item2);
+    }
+
+    public override void _Process(double delta)
+    {
+        var viewport = GetViewport();
+        bool want = Visible && viewport != null && viewport.GuiIsDragging()
+            && _CanDropData(Vector2.Zero, viewport.GuiGetDragData())
+            && GetGlobalRect().HasPoint(GetGlobalMousePosition());
+        if (want == _dropHover) return;
+        _dropHover = want;
+        AddThemeStyleboxOverride("panel", want ? _dropStyle : _normalStyle);
     }
 
     public void Initialize(FavoritesService service, string? gridSlug, string? agentId)

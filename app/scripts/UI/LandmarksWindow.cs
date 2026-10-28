@@ -60,8 +60,10 @@ public partial class LandmarksWindow : SLNGWindow
             string parentId = parts.Length > 3 ? parts[3] : "";
             string folderPath = parts.Length > 4 ? parts[4] : "";
 
-            var preview = new Label { Text = $"📍 {name}" };
-            SetDragPreview(preview);
+            // Payload order: slng_landmark|itemId|assetId|name -- the card needs both ids to say "already a favorite".
+            Guid.TryParse(parts[0], out var itemGuid);
+            Guid.TryParse(parts[1], out var assetGuid);
+            SetDragPreview(new LandmarkDragPreview(name, itemGuid, assetGuid));
             return $"slng_landmark|{parts[0]}|{parts[1]}|{name}|{parentId}|{folderPath}";
         }
 

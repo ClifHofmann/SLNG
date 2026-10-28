@@ -176,6 +176,60 @@ public static partial class SelfTest
         }
     }
 
+    /// <summary>FEAT-UI-72 phase 2: what the drag card says while a landmark is over the bar -- add, already a favorite (by item and by
+    /// place), and that nothing can be added without a folder or before the folder is read.</summary>
+    private static Check CheckFavoritesBarDropStatus(SceneTree tree)
+    {
+        const string Name = "favorites bar drop status";
+        var failures = new List<string>();
+        var service = new FavoritesService();
+        var bar = new FavoritesBar();
+        try
+        {
+            tree.Root.AddChild(service);
+            tree.Root.AddChild(bar);
+
+            var item = new LandmarkInventoryItem(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "Home", "Favorites", "Favorites", DateTime.UtcNow);
+            var source = new FakeFavoritesSource { Folder = true };
+            service.Initialize(source, Array.Empty<Guid>(), _ => { });
+            bar.Initialize(service, null, null);
+
+            string add = L10n.Tr("ui.favorites_bar.drop_add");
+            string already = L10n.Tr("ui.favorites_bar.drop_already");
+            string notReady = L10n.Tr("ui.favorites_bar.drop_not_ready");
+            string noFolder = L10n.Tr("ui.favorites_bar.drop_no_folder");
+            if (new[] { add, already, notReady, noFolder }.Any(t => t.StartsWith('['))) failures.Add("a drop text is missing from the locale files");
+
+            if (bar.DropStatusFor(Guid.NewGuid(), Guid.Empty).Text != notReady) failures.Add("before the folder was read the card does not say so");
+
+            service.ApplyForTest(new FavoritesSnapshot(true, new[] { item }));
+            if (bar.DropStatusFor(Guid.NewGuid(), Guid.NewGuid()).Text != add) failures.Add("a new landmark is not offered as an add");
+            if (bar.DropStatusFor(item.Id, Guid.Empty).Text != already) failures.Add("a landmark already in the folder is offered as an add");
+            if (bar.DropStatusFor(Guid.NewGuid(), item.AssetId).Text != already) failures.Add("a second landmark for the same place is offered as an add");
+
+            source.Folder = false;
+            service.ApplyForTest(new FavoritesSnapshot(false, Array.Empty<LandmarkInventoryItem>()));
+            if (bar.DropStatusFor(Guid.NewGuid(), Guid.NewGuid()).Text != noFolder) failures.Add("a grid without the folder is offered an add");
+
+            return failures.Count == 0
+                ? new Check(Name, true, "add, already a favorite (item and place), not read yet and no folder are told apart")
+                : new Check(Name, false, string.Join("; ", failures));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            foreach (var n in new Node[] { bar, service })
+            {
+                if (!GodotObject.IsInstanceValid(n)) continue;
+                n.GetParent()?.RemoveChild(n);
+                n.QueueFree();
+            }
+        }
+    }
+
     private sealed class FakeFavoritesSource : IFavoritesSource
     {
         public bool Folder { get; set; }
