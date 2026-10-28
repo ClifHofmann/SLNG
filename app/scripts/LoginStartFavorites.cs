@@ -35,7 +35,11 @@ internal sealed class GridSessionLoginStartSource : ILoginStartSource
 }
 
 /// <summary>A snapshot of the login-screen favorites, ready to be written to <c>logins.cfg</c> by the main thread.</summary>
-internal sealed record LoginStartFavoritesUpdate(IReadOnlyList<LoginFavorite> Favorites);
+internal sealed record LoginStartFavoritesUpdate(IReadOnlyList<LoginFavorite> Favorites)
+{
+    /// <summary>FEAT-UI-77: favorites whose region did not answer; listed greyed out on the login screen.</summary>
+    public IReadOnlyList<LoginOfflineFavorite> Offline { get; init; } = Array.Empty<LoginOfflineFavorite>();
+}
 
 /// <summary>
 /// FEAT-UI-72: keeps a profile's favorites cache current WHILE A SESSION RUNS, so the login screen -- which cannot read the
@@ -53,8 +57,12 @@ internal sealed record LoginStartFavoritesUpdate(IReadOnlyList<LoginFavorite> Fa
 internal sealed class LoginStartFavorites : IDisposable
 {
     /// <summary>Timings; a test shortens them.</summary>
-    internal sealed record Timing(TimeSpan Debounce, TimeSpan ResolveSpacing, TimeSpan Reread, TimeSpan PublishEvery)
+    internal sealed record Timing(TimeSpan Debounce, TimeSpan ResolveSpacing, TimeSpan Reread, TimeSpan PublishEvery,
+        TimeSpan? OfflineRecheck = null)
     {
+        /// <summary>How long a region that did not answer is believed to be down before it is asked again.</summary>
+        public TimeSpan Recheck => OfflineRecheck ?? TimeSpan.FromMinutes(5);
+
         public static Timing Default { get; } = new(
             Debounce: TimeSpan.FromMilliseconds(1500),
             ResolveSpacing: TimeSpan.FromMilliseconds(250),
@@ -71,6 +79,9 @@ internal sealed class LoginStartFavorites : IDisposable
     // Guarded by _gate.
     private readonly Dictionary<Guid, StartTarget> _known = new();
     private readonly HashSet<Guid> _failed = new();
+    private readonly Dictionary<Guid, DateTime> _offline = new();   // asset -> when its region last failed to answer
+    private int _offlineVersion;
+    private int _offlineTaken;
 
     private LoginStartFavoritesUpdate? _pending;     // swapped with Interlocked.Exchange
     private string _lastPublishedJson = "\0";        // "\0" = nothing published and nothing on disk yet; guarded by _publishGate
@@ -83,13 +94,37 @@ internal sealed class LoginStartFavorites : IDisposable
     /// <param name="populated">True when the profile's favorites key exists on disk (even holding an empty list). When it does
     /// not, the first confirmed pass is published even if it finds nothing, because that is what records "this folder was
     /// looked at and is empty" and stops the login screen promising favorites after the next login.</param>
-    public LoginStartFavorites(ILoginStartSource source, IReadOnlyList<LoginFavorite> cached, bool populated, Timing? timing = null)
+    /// <param name="cachedOffline">The favorites the disk cache lists as offline; they stay listed until a lookup says otherwise.</param>
+    public LoginStartFavorites(ILoginStartSource source, IReadOnlyList<LoginFavorite> cached, bool populated, Timing? timing = null,
+        IReadOnlyList<LoginOfflineFavorite>? cachedOffline = null)
     {
         _source = source;
         _timing = timing ?? Timing.Default;
         foreach (var f in cached) _known.TryAdd(f.AssetId, f.Target);
+        // Believed down until asked again, which the first pass does (the stamp is long past).
+        if (cachedOffline != null)
+            foreach (var o in cachedOffline) _offline.TryAdd(o.AssetId, DateTime.MinValue);
         // What is on disk is already published; do not write it back unchanged.
-        if (populated) _lastPublishedJson = LoginFavoriteBook.ToJson(cached);
+        if (populated) _lastPublishedJson = LoginFavoriteBook.ToJson(cached, cachedOffline);
+    }
+
+    /// <summary>
+    /// The set of favorites whose region did not answer, when it changed since the last call (main thread; for the favorites
+    /// bar, which greys them out). False when nothing changed.
+    /// </summary>
+    public bool TryTakeOfflineChange(out IReadOnlyCollection<Guid> offlineAssets)
+    {
+        lock (_gate)
+        {
+            if (_offlineVersion == _offlineTaken)
+            {
+                offlineAssets = Array.Empty<Guid>();
+                return false;
+            }
+            _offlineTaken = _offlineVersion;
+            offlineAssets = _offline.Keys.ToArray();
+            return true;
+        }
     }
 
     /// <summary>Asks for a pass (debounced). The first call starts the worker. Safe from any thread.</summary>
@@ -118,7 +153,7 @@ internal sealed class LoginStartFavorites : IDisposable
     {
         var snapshot = _source.ReadFavoritesFromStore();
         if (snapshot.Confirmed)
-            Publish(Reconcile(snapshot.Items).Favorites);
+            PublishState(snapshot.Items);
         return TryTakeUpdate(out update);
     }
 
@@ -137,10 +172,11 @@ internal sealed class LoginStartFavorites : IDisposable
         if (snapshot.Confirmed)
         {
             var reconciled = Reconcile(snapshot.Items);
-            Publish(reconciled.Favorites);
-            Console.WriteLine($"[LoginStart] flush: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {reconciled.Unresolved.Count} to resolve now");
+            PublishState(snapshot.Items);
+            var toProbe = reconciled.Unresolved.Where(ShouldProbe).ToList();
+            Console.WriteLine($"[LoginStart] flush: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {toProbe.Count} to resolve now");
 
-            if (reconciled.Unresolved.Count > 0)
+            if (toProbe.Count > 0)
             {
                 using var cts = new CancellationTokenSource(budget);
 
@@ -148,19 +184,9 @@ internal sealed class LoginStartFavorites : IDisposable
                 // not queue up behind the first one's wait.
                 async Task ResolveOne(LandmarkInventoryItem item)
                 {
-                    if (item.AssetId == Guid.Empty) return;
-                    lock (_gate)
-                    {
-                        if (_failed.Contains(item.AssetId)) return;
-                    }
-
                     var started = DateTime.UtcNow;
                     var lookup = await _source.LookupLandmarkTargetAsync(item.AssetId, cts.Token).ConfigureAwait(false);
-                    lock (_gate)
-                    {
-                        if (lookup.Target != null) _known[item.AssetId] = lookup.Target;
-                        else _failed.Add(item.AssetId);
-                    }
+                    Record(item, lookup);
                     Console.WriteLine(lookup.Target != null
                         ? $"[LoginStart] flush: resolved '{item.Name}' in {(DateTime.UtcNow - started).TotalMilliseconds:0} ms"
                         : $"[LoginStart] flush: could not resolve '{item.Name}': {lookup.Reason}");
@@ -168,14 +194,14 @@ internal sealed class LoginStartFavorites : IDisposable
 
                 try
                 {
-                    await Task.WhenAll(reconciled.Unresolved.Select(ResolveOne)).ConfigureAwait(false);
+                    await Task.WhenAll(toProbe.Select(ResolveOne)).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
                     // out of time: what was resolved so far is published below
                     Console.WriteLine($"[LoginStart] flush: out of time ({budget.TotalSeconds:0} s); the rest is left for the next session");
                 }
-                Publish(Reconcile(snapshot.Items).Favorites);
+                PublishState(snapshot.Items);
             }
         }
         return TryTakeUpdate(out var update) ? update : null;
@@ -232,26 +258,18 @@ internal sealed class LoginStartFavorites : IDisposable
         }
 
         var reconciled = Reconcile(snapshot.Items);
-        Publish(reconciled.Favorites);
-        Console.WriteLine($"[LoginStart] pass: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {reconciled.Unresolved.Count} to resolve");
+        PublishState(snapshot.Items);
+        var toProbe = reconciled.Unresolved.Where(ShouldProbe).ToList();
+        Console.WriteLine($"[LoginStart] pass: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {toProbe.Count} to resolve");
 
         var lastPublish = DateTime.UtcNow;
-        foreach (var item in reconciled.Unresolved)
+        foreach (var item in toProbe)
         {
             ct.ThrowIfCancellationRequested();
-            if (item.AssetId == Guid.Empty) continue;
-            lock (_gate)
-            {
-                if (_failed.Contains(item.AssetId)) continue;
-            }
 
             var started = DateTime.UtcNow;
             var lookup = await _source.LookupLandmarkTargetAsync(item.AssetId, ct).ConfigureAwait(false);
-            lock (_gate)
-            {
-                if (lookup.Target != null) _known[item.AssetId] = lookup.Target;
-                else _failed.Add(item.AssetId);
-            }
+            Record(item, lookup);
             if (lookup.Target == null)
                 Console.Error.WriteLine($"[LoginStart] could not resolve '{item.Name}': {lookup.Reason}");
             else
@@ -260,13 +278,68 @@ internal sealed class LoginStartFavorites : IDisposable
             if (DateTime.UtcNow - lastPublish >= _timing.PublishEvery)
             {
                 lastPublish = DateTime.UtcNow;
-                Publish(Reconcile(snapshot.Items).Favorites);
+                PublishState(snapshot.Items);
             }
 
             await Task.Delay(_timing.ResolveSpacing, ct).ConfigureAwait(false);
         }
 
-        Publish(Reconcile(snapshot.Items).Favorites);
+        PublishState(snapshot.Items);
+    }
+
+    /// <summary>Whether a landmark is worth asking about now: it has an asset, did not fail for good, and -- if its region was
+    /// found not to answer -- that was long enough ago for it to be back.</summary>
+    private bool ShouldProbe(LandmarkInventoryItem item)
+    {
+        if (item.AssetId == Guid.Empty) return false;
+        lock (_gate)
+        {
+            if (_failed.Contains(item.AssetId)) return false;
+            return !_offline.TryGetValue(item.AssetId, out var at) || DateTime.UtcNow - at >= _timing.Recheck;
+        }
+    }
+
+    /// <summary>Takes what one lookup found: a place, a region that is not answering, or a failure that is not worth repeating.</summary>
+    private void Record(LandmarkInventoryItem item, LandmarkTargetLookup lookup)
+    {
+        lock (_gate)
+        {
+            if (lookup.Target != null)
+            {
+                _known[item.AssetId] = lookup.Target;
+                if (_offline.Remove(item.AssetId)) _offlineVersion++;
+            }
+            else if (lookup.RegionOffline)
+            {
+                if (!_offline.ContainsKey(item.AssetId)) _offlineVersion++;
+                _offline[item.AssetId] = DateTime.UtcNow;
+            }
+            else
+            {
+                _failed.Add(item.AssetId);
+            }
+        }
+    }
+
+    /// <summary>Publishes the resolved favorites and, after them, the ones whose region is not answering (folder order).</summary>
+    private void PublishState(IReadOnlyList<LandmarkInventoryItem> items)
+    {
+        var resolved = Reconcile(items).Favorites;
+        var resolvedAssets = new HashSet<Guid>(resolved.Select(f => f.AssetId));
+        var offline = new List<LoginOfflineFavorite>();
+        lock (_gate)
+        {
+            foreach (var item in FavoritesOrder.Sort(items, Array.Empty<Guid>()))
+            {
+                if (offline.Count >= LoginFavoriteBook.MaxFavorites) break;
+                if (item.AssetId == Guid.Empty || !_offline.ContainsKey(item.AssetId) || resolvedAssets.Contains(item.AssetId)) continue;
+                string name = (item.Name ?? "").Trim();
+                if (name.Length == 0) continue;
+                if (offline.Any(o => o.AssetId == item.AssetId)) continue;
+                offline.Add(new LoginOfflineFavorite(item.AssetId, item.Id, name));
+            }
+        }
+        Publish(resolved, offline);
     }
 
     /// <summary>The folder's items in the viewer's default order, matched against what has been resolved.</summary>
@@ -288,14 +361,14 @@ internal sealed class LoginStartFavorites : IDisposable
     private readonly object _publishGate = new();
 
     /// <summary>Makes <paramref name="favorites"/> the snapshot the main thread will take, unless it is what was last published.</summary>
-    private void Publish(IReadOnlyList<LoginFavorite> favorites)
+    private void Publish(IReadOnlyList<LoginFavorite> favorites, IReadOnlyList<LoginOfflineFavorite> offline)
     {
-        string json = LoginFavoriteBook.ToJson(favorites);
+        string json = LoginFavoriteBook.ToJson(favorites, offline);
         lock (_publishGate)
         {
             if (json == _lastPublishedJson) return;
             _lastPublishedJson = json;
         }
-        Interlocked.Exchange(ref _pending, new LoginStartFavoritesUpdate(favorites));
+        Interlocked.Exchange(ref _pending, new LoginStartFavoritesUpdate(favorites) { Offline = offline });
     }
 }

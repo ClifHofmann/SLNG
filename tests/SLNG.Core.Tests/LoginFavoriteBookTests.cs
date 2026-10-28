@@ -32,6 +32,55 @@ public class LoginFavoriteBookTests
     }
 
     [Fact]
+    public void Offline_favorites_round_trip_beside_the_resolved_ones()
+    {
+        var up = Fav("Up");
+        var down = new LoginOfflineFavorite(Guid.NewGuid(), Guid.NewGuid(), "Down \"Under\"");
+
+        string json = LoginFavoriteBook.ToJson(new[] { up }, new[] { down });
+
+        Assert.Equal(new[] { up }, LoginFavoriteBook.FromJson(json));
+        Assert.Equal(new[] { down }, LoginFavoriteBook.OfflineFromJson(json));
+        Assert.DoesNotContain('\n', json);
+    }
+
+    [Fact]
+    public void No_offline_favorites_writes_no_array_so_old_readers_and_files_are_unchanged()
+    {
+        var list = new[] { Fav("Up") };
+
+        Assert.Equal(LoginFavoriteBook.ToJson(list), LoginFavoriteBook.ToJson(list, Array.Empty<LoginOfflineFavorite>()));
+        Assert.DoesNotContain("offline", LoginFavoriteBook.ToJson(list));
+        Assert.Empty(LoginFavoriteBook.OfflineFromJson(LoginFavoriteBook.ToJson(list)));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not json")]
+    [InlineData("{\"v\":2,\"offline\":[{\"asset\":\"11111111111111111111111111111111\",\"name\":\"x\"}]}")]
+    [InlineData("{\"v\":1,\"offline\":\"nope\"}")]
+    public void Unreadable_offline_json_is_an_empty_list(string? json) =>
+        Assert.Empty(LoginFavoriteBook.OfflineFromJson(json));
+
+    [Fact]
+    public void A_bad_offline_entry_is_skipped_and_an_asset_that_is_resolved_is_not_offline()
+    {
+        var up = Fav("Up");
+        var good = new LoginOfflineFavorite(Guid.NewGuid(), Guid.NewGuid(), "Good");
+        string json = LoginFavoriteBook.ToJson(new[] { up }, new[]
+        {
+            good,
+            new LoginOfflineFavorite(Guid.Empty, Guid.NewGuid(), "No asset"),
+            new LoginOfflineFavorite(Guid.NewGuid(), Guid.NewGuid(), "   "),
+            new LoginOfflineFavorite(up.AssetId, up.ItemId, "Also resolved"),
+            good,
+        });
+
+        Assert.Equal(new[] { good }, LoginFavoriteBook.OfflineFromJson(json));
+    }
+
+    [Fact]
     public void The_json_is_one_line_with_a_version()
     {
         string json = LoginFavoriteBook.ToJson(new[] { Fav("A") });

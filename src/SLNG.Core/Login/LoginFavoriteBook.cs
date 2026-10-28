@@ -36,8 +36,10 @@ public static class LoginFavoriteBook
     /// <summary>Format version written into the JSON.</summary>
     public const int Version = 1;
 
-    /// <summary>The one-line JSON for <paramref name="favorites"/> (at most <see cref="MaxFavorites"/>).</summary>
-    public static string ToJson(IReadOnlyList<LoginFavorite> favorites)
+    /// <summary>The one-line JSON for <paramref name="favorites"/> (at most <see cref="MaxFavorites"/>), plus -- when there are
+    /// any -- an <c>offline</c> array of the favorites whose region did not answer (<see cref="LoginOfflineFavorite"/>). A file
+    /// without the array reads as "none offline", so nothing written before FEAT-UI-77 changes meaning.</summary>
+    public static string ToJson(IReadOnlyList<LoginFavorite> favorites, IReadOnlyList<LoginOfflineFavorite>? offline = null)
     {
         using var stream = new MemoryStream();
         using (var w = new Utf8JsonWriter(stream))
@@ -61,9 +63,67 @@ public static class LoginFavoriteBook
                 written++;
             }
             w.WriteEndArray();
+            if (offline is { Count: > 0 })
+            {
+                w.WriteStartArray("offline");
+                int off = 0;
+                foreach (var o in offline)
+                {
+                    if (off >= MaxFavorites) break;
+                    w.WriteStartObject();
+                    w.WriteString("asset", o.AssetId.ToString("N", CultureInfo.InvariantCulture));
+                    w.WriteString("item", o.ItemId.ToString("N", CultureInfo.InvariantCulture));
+                    w.WriteString("name", o.Name);
+                    w.WriteEndObject();
+                    off++;
+                }
+                w.WriteEndArray();
+            }
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>
+    /// The <c>offline</c> entries <see cref="ToJson"/> wrote. Same tolerance as <see cref="FromJson"/>: bad JSON, another
+    /// version or a malformed entry gives fewer entries, never an exception; an asset that is also a resolved favorite in the
+    /// same file is dropped (a place that can be started at is not offline).
+    /// </summary>
+    public static IReadOnlyList<LoginOfflineFavorite> OfflineFromJson(string? json)
+    {
+        var result = new List<LoginOfflineFavorite>();
+        if (string.IsNullOrWhiteSpace(json)) return result;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 8 });
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return result;
+            if (!root.TryGetProperty("v", out var v) || v.ValueKind != JsonValueKind.Number
+                || !v.TryGetInt32(out int version) || version != Version) return result;
+            if (!root.TryGetProperty("offline", out var items) || items.ValueKind != JsonValueKind.Array) return result;
+
+            var resolved = new HashSet<Guid>(FromJson(json).Select(f => f.AssetId));
+            var seen = new HashSet<Guid>();
+            foreach (var e in items.EnumerateArray())
+            {
+                if (result.Count >= MaxFavorites) break;
+                if (e.ValueKind != JsonValueKind.Object) continue;
+                if (!TryGuid(e, "asset", out var asset) || asset == Guid.Empty) continue;
+                TryGuid(e, "item", out var item);
+                string? name = TryString(e, "name")?.Trim();
+                if (string.IsNullOrEmpty(name)) continue;
+                if (name.Length > MaxNameLength) name = name[..MaxNameLength];
+                if (resolved.Contains(asset) || !seen.Add(asset)) continue;
+
+                result.Add(new LoginOfflineFavorite(asset, item, name));
+            }
+        }
+        catch (JsonException)
+        {
+            result.Clear();
+        }
+        return result;
     }
 
     /// <summary>

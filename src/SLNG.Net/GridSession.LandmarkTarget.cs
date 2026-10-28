@@ -6,7 +6,9 @@ namespace SLNG.Net;
 /// <summary>FEAT-UI-72: the outcome of resolving a landmark to a place -- the place, or the reason there is none.</summary>
 /// <param name="Target">Where the landmark points, or null.</param>
 /// <param name="Reason">Why <paramref name="Target"/> is null (a short phrase for one log line); empty on success.</param>
-public sealed record LandmarkTargetLookup(StartTarget? Target, string Reason);
+/// <param name="RegionOffline">True when the landmark itself was read and names a region, but the grid has no handle or map
+/// entry for that region (the region is down, or does not exist any more). Never true on success.</param>
+public sealed record LandmarkTargetLookup(StartTarget? Target, string Reason, bool RegionOffline = false);
 
 // GridSession, landmark-target part (FEAT-UI-72).
 public sealed partial class GridSession
@@ -39,6 +41,7 @@ public sealed partial class GridSession
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(LandmarkTargetTimeout);
+        string step = "fetching the landmark";
         try
         {
             // The way the reference viewer asks for every asset type: the region's ViewerAsset capability, {cap}/?landmark_id=
@@ -62,11 +65,15 @@ public sealed partial class GridSession
             if (!landmark.Decode() || landmark.RegionID == UUID.Zero)
                 return Fail("the landmark asset names no region");
 
+            // From here on the landmark is known to be good, so a region the grid cannot place is a region that is not there:
+            // a down region answers neither the handle request nor the map block (the reference viewer draws it as "down").
+            step = "resolving the region";
             ulong? handle = await ResolveRegionHandleAsync(landmark.RegionID, timeout.Token).ConfigureAwait(false);
-            if (!handle.HasValue) return Fail("the region's handle is unknown");
+            if (!handle.HasValue) return new LandmarkTargetLookup(null, "the region did not answer (down?): its handle is unknown", RegionOffline: true);
 
             var region = await ResolveRegionByHandleAsync(handle.Value, timeout.Token).ConfigureAwait(false);
-            if (region == null || string.IsNullOrWhiteSpace(region.Name)) return Fail("the region's name is unknown");
+            if (region == null || string.IsNullOrWhiteSpace(region.Name))
+                return new LandmarkTargetLookup(null, "the region did not answer (down?): its name is unknown", RegionOffline: true);
 
             var pos = landmark.Position;
             // 4096: a landmark's own position is real, and a var-region on OpenSim can be larger than 256 m.
@@ -77,7 +84,8 @@ public sealed partial class GridSession
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Fail($"no answer within {LandmarkTargetTimeout.TotalSeconds:0} s");
+            // Only the time out of the step is certain; which region is down is not, so this is not flagged offline.
+            return Fail($"no answer within {LandmarkTargetTimeout.TotalSeconds:0} s while {step}");
         }
         catch (OperationCanceledException)
         {

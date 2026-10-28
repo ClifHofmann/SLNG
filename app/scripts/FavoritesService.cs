@@ -108,6 +108,25 @@ public partial class FavoritesService : Node
     /// <summary>Raised on the main thread whenever <see cref="Items"/> or <see cref="Mode"/> changed.</summary>
     public event Action? Changed;
 
+    // FEAT-UI-77: favorites whose region did not answer. Separate from Changed on purpose: Changed makes the login cache read the
+    // folder again, and this is the cache's own finding.
+    private HashSet<Guid> _offlineAssets = new();
+
+    /// <summary>Raised on the main thread when the set of favorites with an offline region changed.</summary>
+    public event Action? OfflineChanged;
+
+    /// <summary>Whether the region of the landmark <paramref name="assetId"/> did not answer when it was last looked up.</summary>
+    public bool IsOffline(Guid assetId) => assetId != Guid.Empty && _offlineAssets.Contains(assetId);
+
+    /// <summary>Takes the favorites whose region is not answering (main thread). The bar greys them out.</summary>
+    public void SetOfflineAssets(IReadOnlyCollection<Guid> assetIds)
+    {
+        var next = new HashSet<Guid>(assetIds);
+        if (next.SetEquals(_offlineAssets)) return;
+        _offlineAssets = next;
+        OfflineChanged?.Invoke();
+    }
+
     /// <summary>Item ids and landmark asset ids of every favorite: the "keep" hints of the duplicate cleaner.</summary>
     public HashSet<Guid> KnownIds()
     {
@@ -140,6 +159,7 @@ public partial class FavoritesService : Node
         _order = Array.Empty<Guid>();
         _saveOrder = null;
         _items = new List<LandmarkInventoryItem>();
+        _offlineAssets = new HashSet<Guid>();
         _fetched = false;
         _fetching = false;
         Interlocked.Exchange(ref _dirtySinceMs, 0);

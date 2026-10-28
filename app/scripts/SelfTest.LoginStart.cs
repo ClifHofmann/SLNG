@@ -234,6 +234,7 @@ public static partial class SelfTest
         public FavoritesSnapshot Remote = FavoritesSnapshot.Unconfirmed;
         public FavoritesSnapshot Local = FavoritesSnapshot.Unconfirmed;
         public readonly Dictionary<Guid, StartTarget> Targets = new();
+        public readonly HashSet<Guid> OfflineRegions = new();   // landmarks whose region does not answer
         public readonly List<Guid> Looked = new();
 
         public Task<FavoritesSnapshot> GetFavoritesAsync(CancellationToken ct)
@@ -251,6 +252,8 @@ public static partial class SelfTest
             lock (_gate)
             {
                 Looked.Add(landmarkAssetId);
+                if (OfflineRegions.Contains(landmarkAssetId))
+                    return Task.FromResult(new LandmarkTargetLookup(null, "selftest: region down", RegionOffline: true));
                 return Task.FromResult(Targets.TryGetValue(landmarkAssetId, out var t)
                     ? new LandmarkTargetLookup(t, "")
                     : new LandmarkTargetLookup(null, "selftest: no such landmark"));
@@ -297,6 +300,118 @@ public static partial class SelfTest
         catch (Exception ex)
         {
             return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// FEAT-UI-77: a favorite whose region does not answer is published as offline (not dropped, not retried at once), the bar is
+    /// told, it is asked again once the recheck time has passed, and when the region is back it becomes a normal favorite. The
+    /// login picker lists an offline favorite as a disabled line.
+    /// </summary>
+    private static Check CheckLoginStartOfflineRegions()
+    {
+        const string Name = "login start offline regions";
+        var fast = new LoginStartFavorites.Timing(
+            Debounce: TimeSpan.FromMilliseconds(20), ResolveSpacing: TimeSpan.FromMilliseconds(2),
+            Reread: TimeSpan.FromHours(1), PublishEvery: TimeSpan.FromMilliseconds(5), OfflineRecheck: TimeSpan.FromMilliseconds(150));
+
+        static LandmarkInventoryItem Item(string name, Guid asset, int ageDays) =>
+            new(Guid.NewGuid(), Guid.NewGuid(), asset, name, "Favorites", "Favorites", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(-ageDays));
+
+        static bool WaitFor(Func<bool> done)
+        {
+            var until = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < until)
+            {
+                if (done()) return true;
+                Thread.Sleep(5);
+            }
+            return false;
+        }
+
+        SLNG.App.UI.LoginStartPicker? picker = null;
+        try
+        {
+            var failures = new List<string>();
+            var up = Guid.NewGuid(); var down = Guid.NewGuid();
+            var itemUp = Item("Up", up, 1); var itemDown = Item("Down", down, 2);
+            StartTarget.TryCreate("Ahern", 1, 2, 3, StartTarget.OpenMaxXY, out var ahern);
+            StartTarget.TryCreate("Sunset", 4, 5, 6, StartTarget.OpenMaxXY, out var sunset);
+
+            var source = new FakeLoginStartSource { Remote = new FavoritesSnapshot(true, new[] { itemUp, itemDown }) };
+            source.Local = source.Remote;
+            source.Targets[up] = ahern!;
+            source.OfflineRegions.Add(down);
+
+            using var resolver = new LoginStartFavorites(source, Array.Empty<LoginFavorite>(), populated: false, fast);
+            resolver.Poke();
+
+            LoginStartFavoritesUpdate? latest = null;
+            bool published = WaitFor(() =>
+            {
+                if (resolver.TryTakeUpdate(out var u)) latest = u;
+                return latest != null && latest.Favorites.Count == 1 && latest.Offline.Count == 1;
+            });
+            if (!published) return new Check(Name, false, $"the resolver did not publish one favorite and one offline (got {latest?.Favorites.Count}/{latest?.Offline.Count})");
+            if (latest!.Favorites[0].Name != "Up") failures.Add("the resolved favorite is not 'Up'");
+            if (latest.Offline[0].Name != "Down") failures.Add("the offline favorite is not 'Down'");
+
+            if (!resolver.TryTakeOfflineChange(out var offlineSet) || !offlineSet.Contains(down) || offlineSet.Count != 1)
+                failures.Add("the bar was not told that 'Down' is offline");
+            if (resolver.TryTakeOfflineChange(out _)) failures.Add("the bar was told twice about the same change");
+
+            // Within the recheck time a repeat pass does not ask again; after it, it does.
+            int looked = source.LookedCount();
+            resolver.Poke();
+            Thread.Sleep(80);
+            if (source.LookedCount() != looked) failures.Add("an offline region was asked again before the recheck time");
+            Thread.Sleep(200);
+            resolver.Poke();
+            if (!WaitFor(() => source.LookedCount() > looked)) failures.Add("an offline region was never asked again after the recheck time");
+
+            // The region comes back: a normal favorite, no longer offline, and the bar is told.
+            source.OfflineRegions.Remove(down);
+            source.Targets[down] = sunset!;
+            Thread.Sleep(200);
+            resolver.Poke();
+            LoginStartFavoritesUpdate? back = null;
+            bool recovered = WaitFor(() =>
+            {
+                if (resolver.TryTakeUpdate(out var u)) back = u;
+                return back != null && back.Favorites.Count == 2 && back.Offline.Count == 0;
+            });
+            if (!recovered) failures.Add("a region that came back did not become a normal favorite");
+            if (!WaitFor(() => resolver.TryTakeOfflineChange(out var now) && now.Count == 0)) failures.Add("the bar was not told that the region is back");
+
+            // The login picker: an offline favorite is a disabled line between the favorites and "Region...".
+            picker = new SLNG.App.UI.LoginStartPicker();
+            var fav = LoginStartFavorite("Up", "Ahern", 1, 2, 3);
+            var gone = new LoginOfflineFavorite(Guid.NewGuid(), Guid.NewGuid(), "Down");
+            var lp = picker;
+            lp.SetFavorites(new[] { fav }, neverPopulated: false, offline: new[] { gone });
+            int offlineLine = -1;
+            for (int i = 0; i < lp.OptionCount; i++)
+                if (!lp.OptionIsSeparator(i) && lp.OptionText(i).Contains("Down", StringComparison.Ordinal)) offlineLine = i;
+            if (offlineLine < 0) failures.Add("the picker does not list the offline favorite");
+            else if (!lp.OptionIsDisabled(offlineLine)) failures.Add("the offline favorite can be picked");
+
+            lp.SetFavorites(Array.Empty<LoginFavorite>(), neverPopulated: true, offline: new[] { gone });
+            bool pendingLine = false;
+            for (int i = 0; i < lp.OptionCount; i++)
+                if (!lp.OptionIsSeparator(i) && lp.OptionIsDisabled(i) && !lp.OptionText(i).Contains("Down", StringComparison.Ordinal)) pendingLine = true;
+            if (pendingLine) failures.Add("the 'favorites appear after the next login' line shows although an offline favorite is known");
+
+            return failures.Count == 0
+                ? new Check(Name, true, "offline favorites are published and flagged, asked again after the recheck time, recovered when the region is back, and shown disabled on the login screen")
+                : new Check(Name, false, string.Join("; ", failures));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (picker != null && GodotObject.IsInstanceValid(picker)) picker.QueueFree();
         }
     }
 

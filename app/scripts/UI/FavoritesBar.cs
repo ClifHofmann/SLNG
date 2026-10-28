@@ -234,6 +234,7 @@ public partial class FavoritesBar : PanelContainer
         DetachService();
         _service = service;
         _service.Changed += OnServiceChanged;
+        _service.OfflineChanged += OnServiceChanged;
         _gridSlug = gridSlug;
         _agentId = agentId;
         Visible = !string.IsNullOrWhiteSpace(gridSlug) && !string.IsNullOrWhiteSpace(agentId)
@@ -252,7 +253,11 @@ public partial class FavoritesBar : PanelContainer
 
     private void DetachService()
     {
-        if (_service != null && IsInstanceValid(_service)) _service.Changed -= OnServiceChanged;
+        if (_service != null && IsInstanceValid(_service))
+        {
+            _service.Changed -= OnServiceChanged;
+            _service.OfflineChanged -= OnServiceChanged;
+        }
         _service = null;
     }
 
@@ -315,16 +320,20 @@ public partial class FavoritesBar : PanelContainer
     private Button CreateFavoriteButton(LandmarkInventoryItem item)
     {
         string labelText = item.Name.Length > 24 ? item.Name[..22] + "…" : item.Name;
+
+        // FEAT-UI-77: a favorite whose region did not answer is shown as such, so it is not a surprise after the teleport. It
+        // stays clickable: the region may be back, and the teleport says what happened.
+        bool offline = _service?.IsOffline(item.AssetId) ?? false;
         var btn = new Button
         {
-            Text = $"📍 {labelText}",
+            Text = $"{(offline ? "⚠" : "📍")} {labelText}",
             Flat = true,
             FocusMode = FocusModeEnum.None,
-            TooltipText = L10n.TrFormat("ui.favorites_bar.teleport_to", item.Name),
+            TooltipText = L10n.TrFormat(offline ? "ui.favorites_bar.offline_tooltip" : "ui.favorites_bar.teleport_to", item.Name),
             SizeFlagsVertical = SizeFlags.ShrinkCenter
         };
         btn.AddThemeFontSizeOverride("font_size", 11);
-        btn.AddThemeColorOverride("font_color", new Color(0.82f, 0.9f, 0.98f, 0.85f));
+        btn.AddThemeColorOverride("font_color", offline ? new Color(0.9f, 0.62f, 0.5f, 0.7f) : new Color(0.82f, 0.9f, 0.98f, 0.85f));
         btn.AddThemeColorOverride("font_hover_color", new Color(1.0f, 1.0f, 1.0f, 1.0f));
         btn.AddThemeColorOverride("font_pressed_color", new Color(0.4f, 0.8f, 1.0f, 1.0f));
 

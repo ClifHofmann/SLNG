@@ -72,12 +72,21 @@ internal static class LoginStartStore
         return json is null ? System.Array.Empty<LoginFavorite>() : LoginFavoriteBook.FromJson(json);
     }
 
+    /// <summary>FEAT-UI-77: the cached favorites whose region did not answer when they were last looked up; empty when there are
+    /// none or the value is unreadable.</summary>
+    public static IReadOnlyList<LoginOfflineFavorite> ReadOffline(ConfigFile config, string section)
+    {
+        string? json = ReadString(config, section, FavoritesKey, MaxFavoritesLength);
+        return json is null ? System.Array.Empty<LoginOfflineFavorite>() : LoginFavoriteBook.OfflineFromJson(json);
+    }
+
     /// <summary>Stores the favorites under <paramref name="section"/>. Returns true when the file's contents changed (so a
     /// save is needed). Writing an empty list is meaningful: it records a confirmed empty folder.</summary>
-    public static bool WriteFavorites(ConfigFile config, string section, IReadOnlyList<LoginFavorite> favorites)
+    public static bool WriteFavorites(ConfigFile config, string section, IReadOnlyList<LoginFavorite> favorites,
+        IReadOnlyList<LoginOfflineFavorite>? offline = null)
     {
         if (string.IsNullOrEmpty(section)) return false;
-        string json = LoginFavoriteBook.ToJson(favorites);
+        string json = LoginFavoriteBook.ToJson(favorites, offline);
         if (config.HasSectionKey(section, FavoritesKey) && ReadString(config, section, FavoritesKey, int.MaxValue) == json)
             return false;
         config.SetValue(section, FavoritesKey, json);

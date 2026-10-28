@@ -49,6 +49,7 @@ public partial class LoginStartPicker : VBoxContainer
     private readonly Label _hint = new();
 
     private IReadOnlyList<LoginFavorite> _favorites = Array.Empty<LoginFavorite>();
+    private IReadOnlyList<LoginOfflineFavorite> _offline = Array.Empty<LoginOfflineFavorite>();
     private bool _neverPopulated;
     private StartChoice _choice = StartChoice.Last;
     private string _typedRegion = "";
@@ -164,10 +165,12 @@ public partial class LoginStartPicker : VBoxContainer
     /// line saying they will appear after the next login. A choice that is a favorite no longer in the list becomes My last
     /// location (see <see cref="FallbackReason"/>).
     /// </summary>
-    public void SetFavorites(IReadOnlyList<LoginFavorite> favorites, bool neverPopulated)
+    public void SetFavorites(IReadOnlyList<LoginFavorite> favorites, bool neverPopulated,
+        IReadOnlyList<LoginOfflineFavorite>? offline = null)
     {
         _favorites = favorites ?? Array.Empty<LoginFavorite>();
-        _neverPopulated = neverPopulated && _favorites.Count == 0;
+        _offline = offline ?? Array.Empty<LoginOfflineFavorite>();
+        _neverPopulated = neverPopulated && _favorites.Count == 0 && _offline.Count == 0;
 
         var before = _choice;
         if (_choice.Kind == StartKind.Favorite && SelectedFavorite == null)
@@ -248,7 +251,7 @@ public partial class LoginStartPicker : VBoxContainer
             _combo.AddItem(L10n.Tr("ui.login.start_favorites_pending"));
             _combo.SetItemDisabled(pending, true);
         }
-        else if (_favorites.Count > 0)
+        else if (_favorites.Count > 0 || _offline.Count > 0)
         {
             _combo.AddSeparator(L10n.Tr("ui.login.start_favorites_heading"));
             foreach (var f in _favorites)
@@ -257,6 +260,16 @@ public partial class LoginStartPicker : VBoxContainer
                 AddOption(f.Name, MetaFavoritePrefix + f.AssetId.ToString("N"));
                 _combo.SetItemTooltip(index, L10n.TrFormat("ui.login.start_favorite_tooltip",
                     f.Name, f.Target.Region, f.Target.X, f.Target.Y, f.Target.Z));
+            }
+
+            // FEAT-UI-77: favorites whose region was not answering at the last session. Listed so they are not missed, greyed
+            // out because nothing says where they point (no region name), so there is nothing to start at.
+            foreach (var o in _offline)
+            {
+                int index = _combo.ItemCount;
+                _combo.AddItem(L10n.TrFormat("ui.login.start_favorite_offline", o.Name));
+                _combo.SetItemDisabled(index, true);
+                _combo.SetItemTooltip(index, L10n.TrFormat("ui.login.start_favorite_offline_tooltip", o.Name));
             }
         }
 

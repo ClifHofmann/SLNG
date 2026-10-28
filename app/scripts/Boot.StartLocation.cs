@@ -144,7 +144,8 @@ public partial class Boot
         {
             _startPicker.SetFavorites(
                 LoginStartStore.ReadFavorites(_loginsConfig, section),
-                neverPopulated: !LoginStartStore.FavoritesPopulated(_loginsConfig, section));
+                neverPopulated: !LoginStartStore.FavoritesPopulated(_loginsConfig, section),
+                offline: LoginStartStore.ReadOffline(_loginsConfig, section));
             _startPicker.SetChoice(LoginStartStore.ReadChoice(_loginsConfig, section));
         }
         else
@@ -240,17 +241,22 @@ public partial class Boot
         _startLandingPositionDeadlineMsec = 0;
     }
 
-    /// <summary>Starts keeping the profile's favorites cache current for this session, if the profile is being saved. Nothing is
+    /// <summary>Starts keeping the profile's favorites cache current for this session. It runs even when the profile is not being
+    /// saved (the favorites bar greys out the favorites whose region is down, FEAT-UI-77); it then writes nothing. Nothing is
     /// fetched until <see cref="PokeLoginStartFavorites"/> (after the loading screen clears).</summary>
     private void BeginLoginStartFavorites()
     {
         DisposeLoginStartFavorites();
         _loginFavoritesArmed = false;
-        if (_sessionStartCacheKey.Length == 0 || _session == null) return;
+        _loginListNotWrittenLogged = false;
+        _favoritesService.SetOfflineAssets(System.Array.Empty<Guid>());
+        if (_session == null) return;
+        bool saved = _sessionStartCacheKey.Length != 0;
         _loginStartFavorites = new LoginStartFavorites(
             new GridSessionLoginStartSource(_session),
-            LoginStartStore.ReadFavorites(_loginsConfig, _sessionStartCacheKey),
-            LoginStartStore.FavoritesPopulated(_loginsConfig, _sessionStartCacheKey));
+            saved ? LoginStartStore.ReadFavorites(_loginsConfig, _sessionStartCacheKey) : System.Array.Empty<LoginFavorite>(),
+            saved && LoginStartStore.FavoritesPopulated(_loginsConfig, _sessionStartCacheKey),
+            cachedOffline: saved ? LoginStartStore.ReadOffline(_loginsConfig, _sessionStartCacheKey) : null);
     }
 
     /// <summary>The loading screen has cleared: let the resolver start (after its own debounce), so it never competes with the
@@ -263,6 +269,9 @@ public partial class Boot
 
     // The loading screen has cleared at least once this session, so the login cache may start reading the grid.
     private bool _loginFavoritesArmed;
+
+    // One "not written" line per session is enough.
+    private bool _loginListNotWrittenLogged;
 
     /// <summary>The favorites changed (one dragged onto the bar, one removed, one added in another viewer): ask the login cache to
     /// read the folder again. Until this existed the cache was refreshed once per session, after the world loaded, so a landmark
@@ -305,13 +314,17 @@ public partial class Boot
     {
         if (_sessionStartCacheKey.Length == 0 || !_loginsConfig.HasSection(_sessionStartCacheKey))
         {
-            GD.Print("[LoginStart] the login list is not written: this login is not being saved (\"Save Login\" off)");
+            if (!_loginListNotWrittenLogged)
+            {
+                _loginListNotWrittenLogged = true;
+                GD.Print("[LoginStart] the login list is not written: this login is not being saved (\"Save Login\" off)");
+            }
             return;
         }
-        if (LoginStartStore.WriteFavorites(_loginsConfig, _sessionStartCacheKey, update.Favorites))
+        if (LoginStartStore.WriteFavorites(_loginsConfig, _sessionStartCacheKey, update.Favorites, update.Offline))
         {
             _loginsConfig.Save("user://logins.cfg");
-            GD.Print($"[LoginStart] the login list now holds {update.Favorites.Count} favorite(s)");
+            GD.Print($"[LoginStart] the login list now holds {update.Favorites.Count} favorite(s), {update.Offline.Count} not answering");
         }
     }
 
@@ -322,6 +335,8 @@ public partial class Boot
     {
         if (_loginStartFavorites != null && _loginStartFavorites.TryTakeUpdate(out var update))
             ApplyStartFavoritesUpdate(update);
+        if (_loginStartFavorites != null && _loginStartFavorites.TryTakeOfflineChange(out var offline))
+            _favoritesService.SetOfflineAssets(offline);
 
         if (_startLandingPending || _startNotice != null || _startRetryReadyAtMsec != 0)
             TickStartLanding();
