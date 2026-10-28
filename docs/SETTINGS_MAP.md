@@ -10,7 +10,10 @@ Dieses Dokument listet alle geplanten und bereits vorhandenen Viewer-Einstellung
 | | | Inhalts-Einstufung (G/M/A) | ⏸️ Pending | |
 | | Namen & Tags | Eigener Name / Gruppen-Titel | ⏸️ Pending | |
 | | | Namen anzeigen (Komplexität etc.) | ⏸️ Pending | |
-| | Abwesenheit | Zeit bis Away / Auto-Logout | ⏸️ Pending | |
+| | Abwesenheit | Zeit bis Away | ✅ Done | Tab „Abwesend & Auto-Antwort“ (FEAT-UI-75) |
+| | | Auto-Logout | ⏸️ Pending | |
+| | | Auto-Antwort-Texte, Abwesend bei Fokusverlust | ✅ Done | FEAT-UI-75 |
+| | Fehlersuche | Debug-Log (datenschutzkonform), Ordner/Datei öffnen | ✅ Done | Tab „Debug-Log“ (FEAT-UI-76) |
 | **Anzeige / UI** | Skalierung | UI-Skalierung (Slider) | ✅ Done | |
 | | Toolbars | Toolbar (Fest unten) | ✅ Done | Docking-Optionen entfernt, Toolbar ist jetzt permanent am unteren Rand verankert |
 | | Fenster | Transparenz / Hintergrund-Unschärfe | ⏸️ Pending | |

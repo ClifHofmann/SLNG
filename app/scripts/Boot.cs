@@ -362,6 +362,7 @@ public partial class Boot : Control
     // FEAT-UI-75: Away / Do Not Disturb / autorespond.
     private PresenceController _presenceController = null!;
     private SLNG.App.UI.AutoresponsePreferencesPage _autoresponsePage = null!;
+    private SLNG.App.UI.DebugLogPreferencesPage _debugLogPage = null!; // FEAT-UI-76
     private SLNG.App.UI.ToastOverlay _toastOverlay = null!;
 
     // M5-3 Tabbed Chat window
@@ -436,7 +437,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.23-alpha";
+    public const string AppVersion = "v0.28.24-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -507,6 +508,7 @@ public partial class Boot : Control
     {
         _engineWarningTap = new EngineWarningTap();
         OS.AddLogger(_engineWarningTap);
+        OS.AddLogger(new DebugLogTap()); // FEAT-UI-76: inert until the debug log is switched on
 
         // BEFORE anything else: --selftest boots the whole client and only then runs the checks
         // (this scene is the main scene, and SelfTest is invoked at the end of this method), so a
@@ -577,6 +579,9 @@ public partial class Boot : Control
         // Before the first asset fetch: SLNG.Net/SLNG.Assets log through Console, which does not
         // reach godot.log on its own. See ConsoleToGodotLog.
         ConsoleToGodotLog.Install();
+
+        // FEAT-UI-76: after Diagnostics.Initialize, which would otherwise reset the verbose switch it turns on.
+        if (DebugLogSettings.Enabled) DebugLog.Start();
 
         DisplayServer.WindowSetTitle($"Puris Viewer {AppVersion}");
         RenderingServer.FramePostDraw += ReassertWindowTitleOnce;
@@ -1005,6 +1010,7 @@ public partial class Boot : Control
             _graphicsPage?.Refresh();
             _maturityPage?.Refresh();
             _autoresponsePage?.Refresh();
+            _debugLogPage?.Refresh();
             _preferencesWindow.Unminimize();
             _preferencesWindow.Visible = true;
             _preferencesWindow.EnsureOnScreen();
@@ -2166,6 +2172,11 @@ public partial class Boot : Control
         _maturityPage = new SLNG.App.UI.MaturityPreferencesPage();
         _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_maturity"), _maturityPage);
         _maturityPage.Initialize();
+
+        // FEAT-UI-76: the opt-in, sanitized debug log and the way to its file.
+        _debugLogPage = new SLNG.App.UI.DebugLogPreferencesPage();
+        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_debuglog"), _debugLogPage);
+        _debugLogPage.Initialize();
 
         // Not optional: the Second Life viewer artwork we ship is CC BY-SA 3.0, which requires the
         // attribution notice to reach the user. See app/THIRD-PARTY-NOTICES.md.
@@ -4068,6 +4079,10 @@ public partial class Boot : Control
 
         var firstName = _firstInput.Text.Trim();
         var lastName = _lastInput.Text.Trim();
+
+        // FEAT-UI-76: the debug log must never see this account's name; register it before the first line that has it.
+        SLNG.Core.Logging.LogSanitizer.Shared.AddTerm($"{firstName} {lastName}");
+        SLNG.Core.Logging.LogSanitizer.Shared.AddTerm($"{firstName}.{lastName}");
 
         LogMessage($"Connecting to {_gridInput.Text} as {firstName} {lastName}...");
 

@@ -308,6 +308,7 @@ public static partial class SelfTest
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
         results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
         results.Add(CheckTextureViewerFit(tree));
+        results.Add(CheckDebugLogSanitizes()); // FEAT-UI-76
         results.Add(CheckWornItemMenuOffersProfile(tree));
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
@@ -1409,6 +1410,52 @@ public static partial class SelfTest
                 window.GetParent()?.RemoveChild(window);
                 window.QueueFree();
             }
+        }
+    }
+
+    /// <summary>FEAT-UI-76: with the debug log on, what the client prints (GD.Print and Console alike) lands in the file with
+    /// the identifying parts replaced, and with it off nothing is written. Runs under <c>logs/selftest/debug</c>.</summary>
+    private static Check CheckDebugLogSanitizes()
+    {
+        const string Name = "debug log sanitizes";
+        bool wasRunning = DebugLog.IsRunning;
+        try
+        {
+            DebugLog.Stop();
+            DebugLog.Start();
+            const string id = "3f2a9c1e-77b4-4d0a-9e5c-12ab34cd56ef";
+            GD.Print($"[SelfTestProbe] avatar {id} from 203.0.113.42 password=hunter2 https://sim.example.org/cap/abc");
+            System.Console.WriteLine($"[SelfTestProbe] console line for {id}");
+            string? file = DebugLog.CurrentFile;
+            DebugLog.Stop(); // waits for the queue to drain
+            if (file == null || !System.IO.File.Exists(file)) return new Check(Name, false, "no log file was written");
+
+            string text = System.IO.File.ReadAllText(file);
+            bool printed = text.Contains("[SelfTestProbe] avatar <id-");
+            bool console = text.Contains("[SelfTestProbe] console line for <id-");
+            bool clean = !text.Contains("3f2a9c1e") && !text.Contains("203.0.113.42") && !text.Contains("hunter2") && !text.Contains("/cap/abc");
+            bool header = text.Contains("[DebugLog] Puris Viewer");
+
+            DebugLog.Start();
+            GD.Print("[SelfTestProbe] written while on");
+            DebugLog.Stop();
+            string? afterOff = DebugLog.CurrentFile;
+            GD.Print("[SelfTestProbe] written while off");
+            bool offSilent = afterOff == null;
+
+            bool ok = printed && console && clean && header && offSilent;
+            return new Check(Name, ok, ok
+                ? "GD.Print and Console lines written, id/ip/password/url path replaced, header present, off writes nothing"
+                : $"print {printed}, console {console}, clean {clean}, header {header}, off silent {offSilent}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            DebugLog.Stop();
+            if (wasRunning) DebugLog.Start();
         }
     }
 

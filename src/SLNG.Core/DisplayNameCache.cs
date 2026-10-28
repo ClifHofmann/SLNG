@@ -44,6 +44,12 @@ public sealed class DisplayNameCache
         get { lock (_gate) return _entries.Count; }
     }
 
+    /// <summary>A snapshot of every Display Name remembered, for the debug log's sanitizer (FEAT-UI-76).</summary>
+    public IReadOnlyList<string> Names()
+    {
+        lock (_gate) return _entries.Values.Select(e => e.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+    }
+
     /// <summary>Looks an agent up. <paramref name="name"/> is empty for a miss AND for a
     /// remembered "no Display Name".</summary>
     public Freshness Lookup(Guid id, DateTime nowUtc, out string name)
