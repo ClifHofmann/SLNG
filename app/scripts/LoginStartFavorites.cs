@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using SLNG.Core.Landmarks;
@@ -131,35 +132,48 @@ internal sealed class LoginStartFavorites : IDisposable
     public async Task<LoginStartFavoritesUpdate?> FlushAsync(TimeSpan budget)
     {
         var snapshot = _source.ReadFavoritesFromStore();
+        if (!snapshot.Confirmed)
+            Console.WriteLine("[LoginStart] flush: the local store does not vouch for the Favorites folder; nothing to add");
         if (snapshot.Confirmed)
         {
             var reconciled = Reconcile(snapshot.Items);
             Publish(reconciled.Favorites);
+            Console.WriteLine($"[LoginStart] flush: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {reconciled.Unresolved.Count} to resolve now");
 
             if (reconciled.Unresolved.Count > 0)
             {
                 using var cts = new CancellationTokenSource(budget);
+
+                // All at once, not one after another: several favorites added shortly before the logout must share the budget,
+                // not queue up behind the first one's wait.
+                async Task ResolveOne(LandmarkInventoryItem item)
+                {
+                    if (item.AssetId == Guid.Empty) return;
+                    lock (_gate)
+                    {
+                        if (_failed.Contains(item.AssetId)) return;
+                    }
+
+                    var started = DateTime.UtcNow;
+                    var lookup = await _source.LookupLandmarkTargetAsync(item.AssetId, cts.Token).ConfigureAwait(false);
+                    lock (_gate)
+                    {
+                        if (lookup.Target != null) _known[item.AssetId] = lookup.Target;
+                        else _failed.Add(item.AssetId);
+                    }
+                    Console.WriteLine(lookup.Target != null
+                        ? $"[LoginStart] flush: resolved '{item.Name}' in {(DateTime.UtcNow - started).TotalMilliseconds:0} ms"
+                        : $"[LoginStart] flush: could not resolve '{item.Name}': {lookup.Reason}");
+                }
+
                 try
                 {
-                    foreach (var item in reconciled.Unresolved)
-                    {
-                        if (item.AssetId == Guid.Empty) continue;
-                        lock (_gate)
-                        {
-                            if (_failed.Contains(item.AssetId)) continue;
-                        }
-
-                        var lookup = await _source.LookupLandmarkTargetAsync(item.AssetId, cts.Token).ConfigureAwait(false);
-                        lock (_gate)
-                        {
-                            if (lookup.Target != null) _known[item.AssetId] = lookup.Target;
-                            else _failed.Add(item.AssetId);
-                        }
-                    }
+                    await Task.WhenAll(reconciled.Unresolved.Select(ResolveOne)).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
                     // out of time: what was resolved so far is published below
+                    Console.WriteLine($"[LoginStart] flush: out of time ({budget.TotalSeconds:0} s); the rest is left for the next session");
                 }
                 Publish(Reconcile(snapshot.Items).Favorites);
             }
@@ -219,6 +233,7 @@ internal sealed class LoginStartFavorites : IDisposable
 
         var reconciled = Reconcile(snapshot.Items);
         Publish(reconciled.Favorites);
+        Console.WriteLine($"[LoginStart] pass: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {reconciled.Unresolved.Count} to resolve");
 
         var lastPublish = DateTime.UtcNow;
         foreach (var item in reconciled.Unresolved)
@@ -230,6 +245,7 @@ internal sealed class LoginStartFavorites : IDisposable
                 if (_failed.Contains(item.AssetId)) continue;
             }
 
+            var started = DateTime.UtcNow;
             var lookup = await _source.LookupLandmarkTargetAsync(item.AssetId, ct).ConfigureAwait(false);
             lock (_gate)
             {
@@ -238,6 +254,8 @@ internal sealed class LoginStartFavorites : IDisposable
             }
             if (lookup.Target == null)
                 Console.Error.WriteLine($"[LoginStart] could not resolve '{item.Name}': {lookup.Reason}");
+            else
+                Console.WriteLine($"[LoginStart] resolved '{item.Name}' in {(DateTime.UtcNow - started).TotalMilliseconds:0} ms");
 
             if (DateTime.UtcNow - lastPublish >= _timing.PublishEvery)
             {

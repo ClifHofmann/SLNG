@@ -281,7 +281,7 @@ public partial class Boot
     }
 
     /// <summary>One last write of what is known, then stop. For just before the logout call, while the session is still connected:
-    /// the landmarks that were added since the last pass are resolved now (a few seconds at most) so they reach the login screen.</summary>
+    /// the landmarks that were added since the last pass are resolved now (8 seconds at most) so they reach the login screen.</summary>
     private async System.Threading.Tasks.Task FlushAndStopLoginStartFavoritesAsync()
     {
         var favorites = _loginStartFavorites;
@@ -289,7 +289,7 @@ public partial class Boot
         if (favorites == null) return;
         try
         {
-            var update = await favorites.FlushAsync(TimeSpan.FromSeconds(4));
+            var update = await favorites.FlushAsync(TimeSpan.FromSeconds(8));
             if (update != null) ApplyStartFavoritesUpdate(update);
         }
         catch (Exception ex)
@@ -303,9 +303,16 @@ public partial class Boot
     /// profile this session was saved under, and only while that profile still exists.</summary>
     private void ApplyStartFavoritesUpdate(LoginStartFavoritesUpdate update)
     {
-        if (_sessionStartCacheKey.Length == 0 || !_loginsConfig.HasSection(_sessionStartCacheKey)) return;
+        if (_sessionStartCacheKey.Length == 0 || !_loginsConfig.HasSection(_sessionStartCacheKey))
+        {
+            GD.Print("[LoginStart] the login list is not written: this login is not being saved (\"Save Login\" off)");
+            return;
+        }
         if (LoginStartStore.WriteFavorites(_loginsConfig, _sessionStartCacheKey, update.Favorites))
+        {
             _loginsConfig.Save("user://logins.cfg");
+            GD.Print($"[LoginStart] the login list now holds {update.Favorites.Count} favorite(s)");
+        }
     }
 
     // ---- per frame -------------------------------------------------------------------------------------------------------
