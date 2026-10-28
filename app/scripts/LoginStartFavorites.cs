@@ -20,6 +20,9 @@ internal interface ILoginStartSource
 
     /// <summary>Resolves a landmark asset to a place, or says why not.</summary>
     Task<LandmarkTargetLookup> LookupLandmarkTargetAsync(Guid landmarkAssetId, CancellationToken ct);
+
+    /// <summary>FEAT-UI-77: asks the grid whether the region called <paramref name="regionName"/> is up.</summary>
+    Task<RegionProbeResult> ProbeRegionAsync(string regionName, CancellationToken ct);
 }
 
 /// <summary>The real thing: a <see cref="GridSession"/>.</summary>
@@ -32,6 +35,8 @@ internal sealed class GridSessionLoginStartSource : ILoginStartSource
     public FavoritesSnapshot ReadFavoritesFromStore() => _session.ReadFavoritesFromStore();
     public Task<LandmarkTargetLookup> LookupLandmarkTargetAsync(Guid landmarkAssetId, CancellationToken ct)
         => _session.LookupLandmarkTargetAsync(landmarkAssetId, ct);
+    public Task<RegionProbeResult> ProbeRegionAsync(string regionName, CancellationToken ct)
+        => _session.ProbeRegionAsync(regionName, ct);
 }
 
 /// <summary>A snapshot of the login-screen favorites, ready to be written to <c>logins.cfg</c> by the main thread.</summary>
@@ -79,9 +84,11 @@ internal sealed class LoginStartFavorites : IDisposable
     // Guarded by _gate.
     private readonly Dictionary<Guid, StartTarget> _known = new();
     private readonly HashSet<Guid> _failed = new();
+    private readonly Dictionary<string, DateTime> _regionCheckedAt = new(StringComparer.OrdinalIgnoreCase); // region name -> last asked
     private readonly Dictionary<Guid, DateTime> _offline = new();   // asset -> when its region last failed to answer
     private int _offlineVersion;
     private int _offlineTaken;
+    private int _forceCheck;                                    // 1 = the next pass checks every region, whatever the clock says
 
     private LoginStartFavoritesUpdate? _pending;     // swapped with Interlocked.Exchange
     private string _lastPublishedJson = "\0";        // "\0" = nothing published and nothing on disk yet; guarded by _publishGate
@@ -94,6 +101,21 @@ internal sealed class LoginStartFavorites : IDisposable
     /// <param name="populated">True when the profile's favorites key exists on disk (even holding an empty list). When it does
     /// not, the first confirmed pass is published even if it finds nothing, because that is what records "this folder was
     /// looked at and is empty" and stops the login screen promising favorites after the next login.</param>
+    /// <summary>
+    /// FEAT-UI-77: whether the regions of the favorites are checked over and over (a preference, off by default). Asked at the start
+    /// of every pass, from the worker thread. Off: a region is judged once -- when its landmark is first looked up, or at the first
+    /// pass of a session for one the last session found down -- and never asked about again until the next login. On: every
+    /// <see cref="Timing.Reread"/> all of them are asked, so a region that goes down or comes back shows in the bar.
+    /// </summary>
+    public Func<bool> CheckRegions { get; set; } = static () => false;
+
+    /// <summary>Makes the next pass check every region now (the preference was just switched on). Safe from any thread.</summary>
+    public void RequestRegionCheck()
+    {
+        Interlocked.Exchange(ref _forceCheck, 1);
+        Poke();
+    }
+
     /// <param name="cachedOffline">The favorites the disk cache lists as offline; they stay listed until a lookup says otherwise.</param>
     public LoginStartFavorites(ILoginStartSource source, IReadOnlyList<LoginFavorite> cached, bool populated, Timing? timing = null,
         IReadOnlyList<LoginOfflineFavorite>? cachedOffline = null)
@@ -104,6 +126,9 @@ internal sealed class LoginStartFavorites : IDisposable
         // Believed down until asked again, which the first pass does (the stamp is long past).
         if (cachedOffline != null)
             foreach (var o in cachedOffline) _offline.TryAdd(o.AssetId, DateTime.MinValue);
+        // What the last session found is shown at once; the first pass confirms or corrects it. Without this the bar stayed
+        // silent for a region that was still down: re-probing a known-offline region changes nothing, so nothing was reported.
+        if (_offline.Count > 0) _offlineVersion++;
         // What is on disk is already published; do not write it back unchanged.
         if (populated) _lastPublishedJson = LoginFavoriteBook.ToJson(cached, cachedOffline);
     }
@@ -173,7 +198,7 @@ internal sealed class LoginStartFavorites : IDisposable
         {
             var reconciled = Reconcile(snapshot.Items);
             PublishState(snapshot.Items);
-            var toProbe = reconciled.Unresolved.Where(ShouldProbe).ToList();
+            var toProbe = reconciled.Unresolved.Where(i => ShouldProbe(i, CheckRegions(), all: false)).ToList();
             Console.WriteLine($"[LoginStart] flush: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {toProbe.Count} to resolve now");
 
             if (toProbe.Count > 0)
@@ -224,14 +249,16 @@ internal sealed class LoginStartFavorites : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 // The first pass runs on the poke that started the worker; after that, on the next poke or the periodic re-read
-                // (a favorite added in another viewer reaches the local store without any event of its own).
-                if (!first) await _signal.WaitAsync(_timing.Reread, ct).ConfigureAwait(false);
+                // (a favorite added in another viewer reaches the local store without any event of its own). A pass the clock
+                // started is the cycle of the region check.
+                bool periodic = false;
+                if (!first) periodic = !await _signal.WaitAsync(_timing.Reread, ct).ConfigureAwait(false);
                 first = false;
 
                 // Debounce: pokes arriving in a burst make one pass.
                 while (await _signal.WaitAsync(_timing.Debounce, ct).ConfigureAwait(false)) { }
 
-                await PassAsync(ct).ConfigureAwait(false);
+                await PassAsync(ct, periodic || Interlocked.Exchange(ref _forceCheck, 0) == 1).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -244,7 +271,7 @@ internal sealed class LoginStartFavorites : IDisposable
         }
     }
 
-    private async Task PassAsync(CancellationToken ct)
+    private async Task PassAsync(CancellationToken ct, bool checkAll)
     {
         var snapshot = await _source.GetFavoritesAsync(ct).ConfigureAwait(false);
         if (!snapshot.Confirmed)
@@ -257,9 +284,11 @@ internal sealed class LoginStartFavorites : IDisposable
             return;
         }
 
+        bool cyclic = CheckRegions();
+        PruneOffline(snapshot.Items);
         var reconciled = Reconcile(snapshot.Items);
         PublishState(snapshot.Items);
-        var toProbe = reconciled.Unresolved.Where(ShouldProbe).ToList();
+        var toProbe = reconciled.Unresolved.Where(i => ShouldProbe(i, cyclic, cyclic && checkAll)).ToList();
         Console.WriteLine($"[LoginStart] pass: {snapshot.Items.Count} favorite(s) in the folder, {reconciled.Favorites.Count} resolved, {toProbe.Count} to resolve");
 
         var lastPublish = DateTime.UtcNow;
@@ -285,17 +314,73 @@ internal sealed class LoginStartFavorites : IDisposable
         }
 
         PublishState(snapshot.Items);
+
+        if (cyclic) await CheckResolvedRegionsAsync(reconciled.Favorites, checkAll, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// FEAT-UI-77: asks the grid about the region of every favorite that has a place (one question per region, however many
+    /// favorites it holds) and marks the favorites of a down region. A pass the clock did not start leaves alone the regions it
+    /// asked about less than <see cref="Timing.Recheck"/> ago.
+    /// </summary>
+    private async Task CheckResolvedRegionsAsync(IReadOnlyList<LoginFavorite> favorites, bool checkAll, CancellationToken ct)
+    {
+        var byRegion = favorites.GroupBy(f => f.Target.Region, StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var group in byRegion)
+        {
+            ct.ThrowIfCancellationRequested();
+            lock (_gate)
+            {
+                if (!checkAll && _regionCheckedAt.TryGetValue(group.Key, out var at) && DateTime.UtcNow - at < _timing.Recheck) continue;
+            }
+
+            var result = await _source.ProbeRegionAsync(group.Key, ct).ConfigureAwait(false);
+            if (result == RegionProbeResult.Unknown) continue;
+
+            bool down = result == RegionProbeResult.Down;
+            lock (_gate)
+            {
+                _regionCheckedAt[group.Key] = DateTime.UtcNow;
+                foreach (var f in group)
+                {
+                    bool was = _offline.ContainsKey(f.AssetId);
+                    if (down && !was) { _offline[f.AssetId] = DateTime.UtcNow; _offlineVersion++; }
+                    else if (!down && was) { _offline.Remove(f.AssetId); _offlineVersion++; }
+                }
+            }
+            Console.WriteLine($"[LoginStart] region check: '{group.Key}' is {(down ? "not answering" : "up")}");
+
+            await Task.Delay(_timing.ResolveSpacing, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Forgets offline marks for assets the folder no longer holds (a removed favorite is not offline any more).</summary>
+    private void PruneOffline(IReadOnlyList<LandmarkInventoryItem> items)
+    {
+        var present = new HashSet<Guid>(items.Select(i => i.AssetId));
+        lock (_gate)
+        {
+            foreach (var asset in _offline.Keys.Where(a => !present.Contains(a)).ToList())
+            {
+                _offline.Remove(asset);
+                _offlineVersion++;
+            }
+        }
     }
 
     /// <summary>Whether a landmark is worth asking about now: it has an asset, did not fail for good, and -- if its region was
-    /// found not to answer -- that was long enough ago for it to be back.</summary>
-    private bool ShouldProbe(LandmarkInventoryItem item)
+    /// found not to answer -- it is asked again only when the region check is on (<paramref name="cyclic"/>) and either the clock
+    /// started this pass (<paramref name="all"/>) or long enough has passed, or the mark came from the last session and has not
+    /// been confirmed yet (that one first look happens whether the check is on or not).</summary>
+    private bool ShouldProbe(LandmarkInventoryItem item, bool cyclic, bool all)
     {
         if (item.AssetId == Guid.Empty) return false;
         lock (_gate)
         {
             if (_failed.Contains(item.AssetId)) return false;
-            return !_offline.TryGetValue(item.AssetId, out var at) || DateTime.UtcNow - at >= _timing.Recheck;
+            if (!_offline.TryGetValue(item.AssetId, out var at)) return true;
+            if (at == DateTime.MinValue) return true;
+            return cyclic && (all || DateTime.UtcNow - at >= _timing.Recheck);
         }
     }
 

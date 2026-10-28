@@ -2112,9 +2112,11 @@ public sealed partial class GridSession
         int total = byItem.Count + byRawUuid.Count;
         if (total == 0) return 0;
 
-        Console.Error.WriteLine(
-            $"[Appearance] {total} Current-Outfit attachment(s) the sim did not rez on login — re-attaching: " +
-            string.Join(", ", byItem.Select(m => $"'{m.Name}'").Concat(byRawUuid.Select(u => "?" + u.ToString()[..8]))));
+        // What the viewer does about it is the news; the names are for the debug log.
+        if (Diag.Verbose)
+            Diag.Write(
+                $"[Appearance] {total} Current-Outfit attachment(s) the sim did not rez on login — re-attaching: " +
+                string.Join(", ", byItem.Select(m => $"'{m.Name}'").Concat(byRawUuid.Select(u => "?" + u.ToString()[..8]))));
 
         foreach (var m in byItem)
         {

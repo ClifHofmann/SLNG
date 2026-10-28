@@ -22,4 +22,19 @@ public static class Diag
     /// <summary>True when the client was started with <c>--diag</c>. False in a normal run, which
     /// is what keeps the log readable.</summary>
     public static bool Verbose { get; set; }
+
+    /// <summary>
+    /// Where a verbose line goes. <c>app/</c> sets it: with <c>--diag</c> to the console, otherwise (the debug log switched
+    /// <see cref="Verbose"/> on) to the debug file alone, so a person who only wants the debug log does not also get every
+    /// per-object line in the console and <c>godot.log</c>. Null (a test, or before startup) means the console.
+    /// </summary>
+    public static Action<string>? Sink { get; set; }
+
+    /// <summary>Writes one verbose line. Call it behind <c>if (Diag.Verbose)</c>, so the string is not built when the switch is off.</summary>
+    public static void Write(string line)
+    {
+        var sink = Sink;
+        if (sink != null) sink(line);
+        else Console.Error.WriteLine(line);
+    }
 }

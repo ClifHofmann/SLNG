@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.33-alpha";
+    public const string AppVersion = "v0.28.40-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1956,7 +1956,7 @@ public partial class Boot : Control
         {
             if (!result.Success && !string.IsNullOrEmpty(result.Message))
             {
-                ShowToast(SLNG.App.UI.L10n.TrFormat("ui.landmarks.teleport_failed", result.Message));
+                ShowToast(SLNG.App.UI.L10n.TrFormat("ui.landmarks.teleport_failed", SLNG.App.UI.TeleportFailureText.For(result.Message)));
             }
             else if (result.Success)
             {
@@ -1984,7 +1984,7 @@ public partial class Boot : Control
         {
             if (!result.Success && !string.IsNullOrEmpty(result.Message))
             {
-                ShowToast($"Teleport failed: {result.Message}");
+                ShowToast($"Teleport failed: {SLNG.App.UI.TeleportFailureText.For(result.Message)}");
             }
             else if (result.Success)
             {
@@ -2148,7 +2148,8 @@ public partial class Boot : Control
             GridData.AllObjectCacheDirectories, // BUG-GRID-01: one object cache per grid, plus the old shared one
             () => _session?.ClearObjectCache(), // FEAT-NET-04: one button clears both caches
             enabled => { if (_assetService != null) _assetService.DecodedCache.Enabled = enabled; },
-            () => _assetService?.DecodedCache.Clear());
+            () => _assetService?.DecodedCache.Clear(),
+            enabled => { if (enabled) _loginStartFavorites?.RequestRegionCheck(); }); // FEAT-UI-77: asks now, not in 5 minutes
 
         // FEAT-UI-41: where chat logs are kept and the import of older SLNG logs. The page asks for the
         // running session's folder each time it needs it -- there is none before a login.
@@ -4028,16 +4029,24 @@ public partial class Boot : Control
                 break;
             case SLNG.Core.TeleportStage.Finished:
                 _teleportActive = false;
+                _startRetryFailurePlace = null;
                 _teleportOverlay.Finish(true, SLNG.App.UI.L10n.Tr("ui.teleport.arrived"));
                 _teleportCameraResetPending = true;
                 _teleportCameraResetDeadlineMsec = Time.GetTicksMsec() + 4000; // fire anyway if the avatar never confirms
                 break;
             case SLNG.Core.TeleportStage.Failed:
+            {
                 _teleportActive = false;
-                _teleportOverlay.Finish(false, string.IsNullOrWhiteSpace(e.Message)
+                string reason = string.IsNullOrWhiteSpace(e.Message)
                     ? SLNG.App.UI.L10n.Tr("ui.teleport.failed")
-                    : e.Message);
+                    : SLNG.App.UI.TeleportFailureText.For(e.Message);
+                // The one teleport made after a login that landed elsewhere: say that too, in the message the person is looking at.
+                if (_startRetryFailurePlace != null && _session != null)
+                    reason = SLNG.App.UI.L10n.TrFormat("ui.login.start_retry_failed", reason, _startRetryFailurePlace, _session.CurrentRegionName);
+                _startRetryFailurePlace = null;
+                _teleportOverlay.Finish(false, reason);
                 break;
+            }
             case SLNG.Core.TeleportStage.Cancelled:
                 _teleportActive = false;
                 _teleportOverlay.Finish(false, SLNG.App.UI.L10n.Tr("ui.teleport.cancelled"));
@@ -5786,8 +5795,10 @@ public partial class Boot : Control
         if (_world == null || _session == null) return;
         int entities = _world.GetAllEntities().Count(e => e.RegionHandle == regionHandle);
         var nodes = (long)Performance.GetMonitor(Performance.Monitor.ObjectNodeCount);
-        GD.Print($"[RegionLoad] +{secondsAfterArrival}s region {regionHandle}: world holds {entities} entities for it, " +
-                 $"{nodes} scene nodes | {_session.DescribeRegionStream(regionHandle)}");
+        // A summary for whoever is chasing a slow region load: the debug log has it, the console does not need it.
+        if (SLNG.Core.Diag.Verbose)
+            SLNG.Core.Diag.Write($"[RegionLoad] +{secondsAfterArrival}s region {regionHandle}: world holds {entities} entities for it, " +
+                                 $"{nodes} scene nodes | {_session.DescribeRegionStream(regionHandle)}");
     }
 
     // Deferred target for GridSession.RegionCapabilitiesReady -- see that event's doc comment for

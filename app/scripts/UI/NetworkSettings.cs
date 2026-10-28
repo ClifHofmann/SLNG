@@ -35,10 +35,25 @@ public sealed class NetworkSettings
     // BUG-PERF-20: 4 GB held about one region's decoded textures (RGBA + BC copies share it), so a region hop evicted the last one.
     public int DecodedCacheSizeMb { get; private set; } = 16384;
 
+    /// <summary>FEAT-UI-77: whether the regions of the favorites are checked every few minutes while playing. Off by default: it
+    /// is a question to the grid per region that nobody asked for.</summary>
+    public bool CheckFavoriteRegions { get; private set; }
+
+    public void SetCheckFavoriteRegions(bool enabled)
+    {
+        CheckFavoriteRegions = enabled;
+
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "check_favorite_regions", enabled);
+        cfg.Save(ConfigPath);
+    }
+
     public void Load()
     {
         var cfg = new ConfigFile();
         if (cfg.Load(ConfigPath) != Error.Ok) return;
+        CheckFavoriteRegions = (bool)cfg.GetValue(Section, "check_favorite_regions", false);
         MaxBandwidthKbps = Sanitize((float)cfg.GetValue(Section, "max_bandwidth_kbps", DefaultBandwidthKbps));
         DecodedCacheEnabled = (bool)cfg.GetValue(Section, "decoded_cache_enabled", true);
         DecodedCacheSizeMb = Mathf.Max(256, (int)cfg.GetValue(Section, "decoded_cache_size_mb", 16384));

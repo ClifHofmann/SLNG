@@ -384,7 +384,7 @@ namespace SLNG.App
                 || before.IsMesh != e.IsMesh
                 || before.MeshId != e.MeshId;
 
-            GD.Print($"[SelectDiagnostic] LocalID={e.LocalId} Region={e.RegionHandle} ShapeChanged={shapeChanged}\n" +
+            SLNG.Core.Diag.Write($"[SelectDiagnostic] LocalID={e.LocalId} Region={e.RegionHandle} ShapeChanged={shapeChanged}\n" +
                      $"  Before: Profile=0x{before.Shape.ProfileCurve:X2} (PrimData=0x{before.ProfileCurve:X2}) Path={before.Shape.PathCurve} " +
                      $"ProfCut=({before.Shape.ProfileBegin:F3}..{before.Shape.ProfileEnd:F3}) PathCut=({before.Shape.PathBegin:F3}..{before.Shape.PathEnd:F3}) " +
                      $"Hollow={before.Shape.ProfileHollow:F3} Twist=({before.Shape.PathTwistBegin:F2}..{before.Shape.PathTwist:F2}) Taper=({before.Shape.PathTaperX:F2},{before.Shape.PathTaperY:F2}) " +

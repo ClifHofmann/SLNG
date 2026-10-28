@@ -269,7 +269,7 @@ public partial class RegionRestartWindow : SLNGWindow
         }
 
         _teleport.Disabled = false;
-        ShowStatus(L10n.TrFormat("ui.region_restart.teleport_failed", failure), Urgent);
+        ShowStatus(L10n.TrFormat("ui.region_restart.teleport_failed", TeleportFailureText.For(failure)), Urgent);
     }
 
     private void ShowStatus(string text, Color colour)

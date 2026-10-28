@@ -38,7 +38,8 @@ public partial class NetworkPreferencesPage : VBoxContainer
         System.Func<IReadOnlyList<string>>? objectCacheDirs = null,
         System.Action? clearObjectCache = null,
         System.Action<bool>? onDecodedCacheToggled = null,
-        System.Action? clearDecodedCache = null)
+        System.Action? clearDecodedCache = null,
+        System.Action<bool>? onCheckFavoriteRegionsToggled = null)
     {
         _cacheDir = cacheDir;
         _networkSettings = networkSettings;
@@ -74,6 +75,28 @@ public partial class NetworkPreferencesPage : VBoxContainer
             _onDecodedCacheToggled?.Invoke(toggled);
         };
         AddChild(decodedCheck);
+
+        // FEAT-UI-77: a checkbox takes effect at once, like the others on this page.
+        var regionsCheck = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.check_favorite_regions"),
+            ButtonPressed = _networkSettings.CheckFavoriteRegions,
+        };
+        regionsCheck.Toggled += toggled =>
+        {
+            _networkSettings.SetCheckFavoriteRegions(toggled);
+            onCheckFavoriteRegionsToggled?.Invoke(toggled);
+        };
+        AddChild(regionsCheck);
+
+        var regionsHint = new Label
+        {
+            Text = L10n.Tr("ui.preferences.check_favorite_regions_hint"),
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        };
+        regionsHint.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+        regionsHint.AddThemeFontSizeOverride("font_size", 12);
+        AddChild(regionsHint);
 
         AddMaxBandwidthRow();
     }

@@ -10,6 +10,17 @@ namespace SLNG.Net;
 /// entry for that region (the region is down, or does not exist any more). Never true on success.</param>
 public sealed record LandmarkTargetLookup(StartTarget? Target, string Reason, bool RegionOffline = false);
 
+/// <summary>FEAT-UI-77: what the grid says about a region that is asked for by name.</summary>
+public enum RegionProbeResult
+{
+    /// <summary>The grid answered with a map entry that is not marked down.</summary>
+    Up,
+    /// <summary>The grid marked it down, or did not answer twice in a row.</summary>
+    Down,
+    /// <summary>Not asked: no connection, or no name.</summary>
+    Unknown,
+}
+
 // GridSession, landmark-target part (FEAT-UI-72).
 public sealed partial class GridSession
 {
@@ -95,5 +106,54 @@ public sealed partial class GridSession
         {
             return Fail(ex.Message);
         }
+    }
+    /// <summary>How long one asking of the map for a region may take before it counts as no answer.</summary>
+    private static readonly TimeSpan RegionProbeTimeout = TimeSpan.FromSeconds(6);
+
+    /// <summary>
+    /// FEAT-UI-77: is the region <paramref name="regionName"/> up? Asks the grid's map by name and reads the access byte of the
+    /// answer (the reference viewer draws <c>SIM_ACCESS_DOWN</c> as a down region). Always asks the grid -- never LibreMetaverse's
+    /// region cache, which would repeat a stale answer forever. A missing answer is tried once more before the region counts as
+    /// down, so one lost packet does not mark a region that is fine. READ-ONLY; takes no part in a teleport.
+    /// </summary>
+    public async Task<RegionProbeResult> ProbeRegionAsync(string regionName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(regionName) || !_client.Network.Connected) return RegionProbeResult.Unknown;
+
+        var current = _client.Network.CurrentSim;
+        if (current != null && string.Equals(current.Name, regionName, StringComparison.OrdinalIgnoreCase))
+            return RegionProbeResult.Up;
+
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var answer = new TaskCompletionSource<SimAccess>(TaskCreationOptions.RunContinuationsAsynchronously);
+            void OnRegion(object? sender, GridRegionEventArgs e)
+            {
+                if (string.Equals(e.Region.Name, regionName, StringComparison.OrdinalIgnoreCase))
+                    answer.TrySetResult(e.Region.Access);
+            }
+
+            _client.Grid.GridRegion += OnRegion;
+            try
+            {
+                _client.Grid.RequestMapRegion(regionName, GridLayerType.Objects);
+
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                wait.CancelAfter(RegionProbeTimeout);
+                var done = await Task.WhenAny(answer.Task, Task.Delay(Timeout.InfiniteTimeSpan, wait.Token)).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+
+                if (done == answer.Task)
+                {
+                    var access = answer.Task.Result;
+                    return access == SimAccess.Down || access == SimAccess.NonExistent ? RegionProbeResult.Down : RegionProbeResult.Up;
+                }
+            }
+            finally
+            {
+                _client.Grid.GridRegion -= OnRegion;
+            }
+        }
+        return RegionProbeResult.Down;
     }
 }

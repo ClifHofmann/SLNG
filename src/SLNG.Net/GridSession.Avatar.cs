@@ -340,7 +340,7 @@ public sealed partial class GridSession
             var vp = _client.Appearance.MyVisualParameters;
             if (vp == null || vp.Length == 0)
             {
-                if (Diag.Verbose) Console.Error.WriteLine("[VisualParams] LibreMetaverse holds NO visual parameters — " +
+                if (Diag.Verbose) Diag.Write("[VisualParams] LibreMetaverse holds NO visual parameters — " +
                     "an appearance send would have replaced the stored shape with defaults");
                 return;
             }
@@ -355,7 +355,7 @@ public sealed partial class GridSession
             // 218 is the modern parameter count; a much shorter array means an incomplete set.
             // All-zero or all-128 is the tell-tale of a never-populated (default) array rather
             // than a real shape.
-            if (Diag.Verbose) Console.Error.WriteLine($"[VisualParams] {vp.Length} params, {zero} zero, {mid} at 128 " +
+            if (Diag.Verbose) Diag.Write($"[VisualParams] {vp.Length} params, {zero} zero, {mid} at 128 " +
                 $"(mid), first 12: {string.Join(",", vp.Take(12))}" +
                 ((zero + mid == vp.Length) ? "  <-- ALL DEFAULT: sending this would flatten the avatar" : ""));
         }
@@ -404,7 +404,7 @@ public sealed partial class GridSession
 
         _client.Appearance.MyVisualParameters = arr!;
         _visualParamsSeeded = true;
-        if (Diag.Verbose) Console.Error.WriteLine($"[VisualParams] seeded {arr!.Length} params from {source} (diagnostic only)");
+        if (Diag.Verbose) Diag.Write($"[VisualParams] seeded {arr!.Length} params from {source} (diagnostic only)");
     }
 
     /// <summary>Whether a "Wear" / "Detach" on an inventory item targets a system wearable
@@ -521,7 +521,7 @@ public sealed partial class GridSession
             int count = _client.Appearance.GetWearables().Count();
             if (Diag.Verbose)
             {
-                Console.Error.WriteLine(count > 0
+                Diag.Write(count > 0
                     ? $"[Appearance] worn wearables resolved: {count}"
                     : "[Appearance] no worn wearables returned -- the Worn tab will show layers as inactive");
             }
@@ -2475,7 +2475,7 @@ public sealed partial class GridSession
                 .ToList();
             if (wearableParams.Count == 0)
             {
-                Console.Error.WriteLine("[ShapeSource] cannot compare: no worn wearable assets decoded");
+                Diag.Write("[ShapeSource] cannot compare: no worn wearable assets decoded");
                 return false;
             }
 

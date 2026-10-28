@@ -14,7 +14,9 @@ namespace SLNG.App;
 /// FEAT-UI-76: the opt-in debug log. While it is on, every line the client prints -- its own, the libraries' (they log
 /// through <c>Console</c>, which <see cref="ConsoleToGodotLog"/> turns into engine output), and the engine's warnings
 /// and errors -- is run through <see cref="LogSanitizer"/> and appended to <c>logs/debug/slng-debug.log</c>, and the
-/// verbose per-object diagnostics (<see cref="Diag.Verbose"/>, normally <c>--diag</c> only) are switched on too.
+/// verbose per-object diagnostics (<see cref="Diag.Verbose"/>, normally <c>--diag</c> only) are switched on too. Those
+/// verbose lines go to this file ALONE (<see cref="Diag.Sink"/>), so the console and <c>godot.log</c> stay as readable as with the
+/// log off; only <c>--diag</c> sends them to the console as well.
 ///
 /// <para>The engine's own <c>godot.log</c> is not changed and is not sanitized; this file is the one meant to be
 /// handed to somebody. It is rotated like the other logs (ten sessions are kept) and capped at

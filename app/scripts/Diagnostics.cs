@@ -50,6 +50,12 @@ public static class Diagnostics
         // Same switch on the other side of the engine boundary: src/ cannot see this class, so
         // it reads SLNG.Core.Diag instead. One flag, two readers -- never two flags.
         SLNG.Core.Diag.Verbose = Enabled;
+        // Verbose lines reach the console only under --diag; when the debug log alone switched them on they go to its file.
+        SLNG.Core.Diag.Sink = line =>
+        {
+            if (Enabled) System.Console.Error.WriteLine(line);
+            else DebugLog.Write("DIAG", line);
+        };
 
         // --no-reattach: suppress the login attachment reconcile (GridSession's
         // ReattachMissingCofAttachments). That pass is the ONE thing this client does to a live

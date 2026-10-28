@@ -256,7 +256,10 @@ public partial class Boot
             new GridSessionLoginStartSource(_session),
             saved ? LoginStartStore.ReadFavorites(_loginsConfig, _sessionStartCacheKey) : System.Array.Empty<LoginFavorite>(),
             saved && LoginStartStore.FavoritesPopulated(_loginsConfig, _sessionStartCacheKey),
-            cachedOffline: saved ? LoginStartStore.ReadOffline(_loginsConfig, _sessionStartCacheKey) : null);
+            cachedOffline: saved ? LoginStartStore.ReadOffline(_loginsConfig, _sessionStartCacheKey) : null)
+        {
+            CheckRegions = () => _networkSettings.CheckFavoriteRegions,
+        };
     }
 
     /// <summary>The loading screen has cleared: let the resolver start (after its own debounce), so it never competes with the
@@ -342,8 +345,12 @@ public partial class Boot
             TickStartLanding();
     }
 
+    // Set while the one start-place teleport is under way; the next teleport result clears it.
+    private string? _startRetryFailurePlace;
+
     private void ResetStartLanding()
     {
+        _startRetryFailurePlace = null;
         _startLandingPending = false;
         _startNotice = null;
         _startRetryWanted = false;
@@ -485,6 +492,9 @@ public partial class Boot
             }
 
             GD.Print($"[LoginStart] one attempt to teleport to {target.Region} ({target.X}, {target.Y}, {target.Z})");
+            // If it fails, the teleport overlay's failure text carries the whole story (see ApplyTeleportProgress): a bare "no access"
+            // would not tell the person they were put somewhere else because of the place they asked for.
+            _startRetryFailurePlace = _sessionStartPlace;
             var result = await _session.TeleportToAsync(
                 region.RegionHandle, new System.Numerics.Vector3(target.X, target.Y, target.Z));
             // The outcome is the ordinary teleport UI (progress overlay, failure text); nothing more is said here.

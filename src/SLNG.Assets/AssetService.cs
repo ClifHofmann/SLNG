@@ -206,7 +206,7 @@ public class AssetService
         // the throttle capacities aren't otherwise visible anywhere at runtime. Printed once here
         // so a live client log can be checked against the values in this file's source directly,
         // instead of trusting a rebuild happened.
-        if (SLNG.Core.Diag.Verbose) Console.WriteLine($"[AssetService] decorative fetch slots={_textureFetchThrottle.Capacity} sculpt fetch slots={_sculptFetchThrottle.Capacity}");
+        if (SLNG.Core.Diag.Verbose) SLNG.Core.Diag.Write($"[AssetService] decorative fetch slots={_textureFetchThrottle.Capacity} sculpt fetch slots={_sculptFetchThrottle.Capacity}");
     }
 
     /// <summary>
@@ -1077,8 +1077,8 @@ public class AssetService
                     {
                         // Permission denial -- stop now, and remember it for the session so no
                         // later caller re-runs the fetch (or its LMV pipeline fallback).
-                        if (_goneTextures.TryAdd(textureId, 0))
-                            Console.Error.WriteLine($"[TextureGiveUp] {textureId}: sim denied it (403/401) -- not retrying this session");
+                        if (_goneTextures.TryAdd(textureId, 0) && SLNG.Core.Diag.Verbose)
+                            SLNG.Core.Diag.Write($"[TextureGiveUp] {textureId}: sim denied it (403/401) -- not retrying this session");
                         return null;
                     }
                 }

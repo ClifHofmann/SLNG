@@ -89,7 +89,7 @@ public sealed partial class GridSession
                     Volatile.Write(ref _displayNameRetryDelaySeconds, 1);
                 }
                 if (Diag.Verbose)
-                    Console.Error.WriteLine(
+                    Diag.Write(
                         $"[DisplayName] asked for {ids.Count}: success={success} names={names?.Length ?? 0} " +
                         $"default={names?.Count(x => x?.IsDefaultDisplayName == true) ?? 0} " +
                         $"capability={_client.Avatars.DisplayNamesAvailable()}");
@@ -113,7 +113,7 @@ public sealed partial class GridSession
             {
                 // Optional capability -- absent on most OpenSim grids, so not an error by default.
                 if (Diag.Verbose)
-                    Console.Error.WriteLine($"[DisplayName] lookup threw {ex.GetType().Name}: {ex.Message}");
+                    Diag.Write($"[DisplayName] lookup threw {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
@@ -295,7 +295,7 @@ public sealed partial class GridSession
             }
 
             if (Diag.Verbose)
-                Console.Error.WriteLine($"[DisplayName] cache: {_displayNameCache.Count} remembered, {replayed} replayed to avatars already in view");
+                Diag.Write($"[DisplayName] cache: {_displayNameCache.Count} remembered, {replayed} replayed to avatars already in view");
         }
         catch (Exception ex)
         {
@@ -364,7 +364,7 @@ public sealed partial class GridSession
             var name = string.IsNullOrEmpty(kvp.Value) ? GroupChatSessionLogic.UnknownGroupName : kvp.Value;
             _nameCache[id] = name;
             if (_pendingGroupNameRequests.TryRemove(id, out _) && Diag.Verbose)
-                Console.Error.WriteLine($"[GroupChat] name reply for {id}: \"{kvp.Value}\"");
+                Diag.Write($"[GroupChat] name reply for {id}: \"{kvp.Value}\"");
             NameResolved?.Invoke(this, new NameResolvedEvent(id, name));
         }
     }
@@ -465,7 +465,7 @@ public sealed partial class GridSession
 
         Guid to = _conferencePeers.TryGetValue(sessionId, out var peer) ? peer : sessionId;
         if (Diag.Verbose)
-            Console.Error.WriteLine($"[Conference] send session={sessionId} to={to} len={message.Length}");
+            Diag.Write($"[Conference] send session={sessionId} to={to} len={message.Length}");
         SendSessionPacket(to, sessionId, message, InstantMessageDialog.SessionSend);
         return true;
     }
@@ -506,7 +506,7 @@ public sealed partial class GridSession
         if (sent)
         {
             Guid to = _conferencePeers.TryGetValue(sessionId, out var peer) ? peer : sessionId;
-            if (Diag.Verbose) Console.Error.WriteLine($"[Conference] leave session={sessionId} to={to}");
+            if (Diag.Verbose) Diag.Write($"[Conference] leave session={sessionId} to={to}");
             SendSessionPacket(to, sessionId, string.Empty, InstantMessageDialog.SessionDrop);
         }
         _client.Self.GroupChatSessions.TryRemove(new UUID(sessionId), out _);
@@ -582,7 +582,7 @@ public sealed partial class GridSession
         string nameSource = muted ? "skipped(muted)"
             : source == GroupNameSource.None ? "none(name requested)"
             : source.ToString().ToLowerInvariant();
-        Console.Error.WriteLine(
+        Diag.Write(
             $"[GroupChat] new session {im.IMSessionID.Guid} dialog={im.Dialog} groupFlag={im.GroupIM}" +
             $" membership={(!membershipLoaded ? "not-loaded" : inMembership ? "member" : "not-in-list")}" +
             $" nameSource={nameSource} name=\"{name}\" muted={(muted ? "yes" : "no")}");

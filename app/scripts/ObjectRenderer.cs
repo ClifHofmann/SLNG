@@ -601,7 +601,7 @@ public partial class ObjectRenderer : Node3D
         string matStr = matId.ToString()[..Math.Min(8, matId.ToString().Length)];
         string line = $"mat={matStr} bc={bc} rf={rf} mf={mf} am={am} tex={texCount} ti={ti}";
         if (_pbrOverrideLogged.TryAdd($"{matId:N}:{line}", 0))
-            Console.Error.WriteLine($"[PbrOverride] {line}");
+            Diag.Write($"[PbrOverride] {line}");
     }
 
     private readonly HashSet<Guid> _sculptFallbacksLogged = new();
@@ -4677,7 +4677,7 @@ public partial class ObjectRenderer : Node3D
                     // rendered flat AlbedoColor forever with zero diagnostic trail. One line per
                     // failed id (not per attempt) so this doesn't itself become log spam.
                     if (SLNG.Core.Diag.Verbose)
-                        GD.PrintErr($"[FaceTex] object texture {ft.TextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null -- face renders untextured (see [TextureFetch] for the HTTP reason)");
+                        SLNG.Core.Diag.Write($"[FaceTex] object texture {ft.TextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null -- face renders untextured (see [TextureFetch] for the HTTP reason)");
                 }
             });
         }

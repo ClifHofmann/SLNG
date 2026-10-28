@@ -450,7 +450,7 @@ public sealed partial class GridSession
     private void OnObjectAnimation(object? sender, ObjectAnimationEventArgs e)
     {
         var evt = ObjectAnimationConverter.FromWire(e.Simulator.Handle, e.ObjectID, e.Animations);
-        if (Diag.Verbose) Console.Error.WriteLine(ObjectAnimationConverter.Describe(evt));
+        if (Diag.Verbose) Diag.Write(ObjectAnimationConverter.Describe(evt));
         ObjectAnimationReceived?.Invoke(this, evt);
     }
 
@@ -1243,7 +1243,7 @@ public sealed partial class GridSession
         }
 
         if (SLNG.Core.Diag.Verbose)
-            Console.WriteLine(
+            SLNG.Core.Diag.Write(
                 $"[Region] {what} for {localId}: object is in {sim.Name}, not the current region " +
                 $"{current?.Name ?? "?"} -- addressed {sim.Name}");
         return sim;
@@ -1272,7 +1272,7 @@ public sealed partial class GridSession
         if (sim == null)
         {
             if (SLNG.Core.Diag.Verbose)
-                Console.WriteLine($"[Touch] {localId}: no simulator to send to -- nothing sent");
+                SLNG.Core.Diag.Write($"[Touch] {localId}: no simulator to send to -- nothing sent");
             return;
         }
 
@@ -1288,7 +1288,7 @@ public sealed partial class GridSession
                 ToOmv(position), ToOmv(normal), ToOmv(binormal));
 
             if (SLNG.Core.Diag.Verbose)
-                Console.WriteLine($"[Touch] grab+release sent for {localId} to {sim.Name}");
+                SLNG.Core.Diag.Write($"[Touch] grab+release sent for {localId} to {sim.Name}");
         }
         catch (Exception ex)
         {

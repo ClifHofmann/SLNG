@@ -128,7 +128,7 @@ public static class AvatarBodyMeshService
                     b1Names, b1Weights, b2Names, b2Weights,
                     morphTargets.Count > 0 ? morphTargets : null));
 
-                if (SLNG.Core.Diag.Verbose) Console.WriteLine($"[AvatarBodyMeshService] Loaded {partName}: {n} verts, {lmesh.NumFaces} tris, {morphTargets.Count} morphs");
+                if (SLNG.Core.Diag.Verbose) SLNG.Core.Diag.Write($"[AvatarBodyMeshService] Loaded {partName}: {n} verts, {lmesh.NumFaces} tris, {morphTargets.Count} morphs");
             }
             catch (Exception ex)
             {

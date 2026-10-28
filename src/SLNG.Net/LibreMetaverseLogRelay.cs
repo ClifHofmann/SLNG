@@ -41,6 +41,9 @@ internal sealed class LibreMetaverseLogRelay : ILoggerProvider
 
     public ILogger CreateLogger(string categoryName) => new Relay(_category, _shouldWrite);
 
+    /// <summary>Whether a library message of this level is printed on the console in a normal run (errors and worse).</summary>
+    internal static bool PrintsOnConsole(LogLevel level) => Relay.GoesToConsole(level);
+
     public void Dispose() { }
 
     private sealed class Relay : ILogger
@@ -80,8 +83,16 @@ internal sealed class LibreMetaverseLogRelay : ILoggerProvider
 
             var text = $"{ShortName(logLevel)}: {_category}[{eventId.Id}] {message}";
             if (exception != null) text += Environment.NewLine + exception;
-            Console.Error.WriteLine(text);
+
+            // Errors stay where they were. A warning is information about the grid (a refused texture, an offline-message format
+            // the library has to decode the old way), not a fault of the viewer, and a console that prints one at every login
+            // hides the lines that matter: it goes to the verbose sink (the debug log's file, or the console under --diag).
+            if (GoesToConsole(logLevel)) Console.Error.WriteLine(text);
+            else if (Core.Diag.Verbose) Core.Diag.Write(text);
         }
+
+        /// <summary>Whether a library message of this level is printed on the console in a normal run.</summary>
+        internal static bool GoesToConsole(LogLevel level) => level >= LogLevel.Error;
 
         /// <summary>The four-letter level names the console logger used, kept so a log from before
         /// this change and one from after are the same text.</summary>
