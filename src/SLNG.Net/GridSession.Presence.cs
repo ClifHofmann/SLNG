@@ -37,6 +37,7 @@ public sealed partial class GridSession
         if (!_client.Network.Connected) return;
         if (away == _awaySent) return;
         _awaySent = away;
+        Console.WriteLine($"[Presence] telling the sim: away {(away ? "on" : "off")}");
 
         _client.Self.Movement.Away = away;
         // Reliable, so a lost datagram cannot leave the sim showing the opposite of what the menu says.

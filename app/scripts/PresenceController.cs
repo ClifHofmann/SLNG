@@ -22,12 +22,14 @@ public partial class PresenceController : Node
     private readonly AwayTracker _away = new();
     private PresenceConfig _config = new();
     private int _timeoutSeconds = PresenceSettings.DefaultAwayTimeoutSeconds;
+    private bool _awayOnFocusLoss;
 
     /// <summary>Raised on the main thread whenever the configuration changed, for any reason.</summary>
     public event Action<PresenceConfig>? Changed;
 
     public PresenceConfig Config => _config;
     public int AwayTimeoutSeconds => _timeoutSeconds;
+    public bool AwayOnFocusLoss => _awayOnFocusLoss;
 
     private static double Now => Time.GetTicksMsec() / 1000.0;
 
@@ -37,6 +39,7 @@ public partial class PresenceController : Node
         _session = session;
         _config = PresenceSettings.Load();
         _timeoutSeconds = PresenceSettings.AwayTimeoutSeconds;
+        _awayOnFocusLoss = PresenceSettings.AwayOnFocusLoss;
         _away.ClearAway(Now); // also starts the quiet spell from now, not from the clock's zero
         Push(persist: false);
     }
@@ -44,7 +47,7 @@ public partial class PresenceController : Node
     public void SetAway(bool away)
     {
         bool changed = away ? _away.SetAway(Now) : _away.ClearAway(Now);
-        if (changed) Sync();
+        if (changed) Sync("menu");
     }
 
     public void SetDoNotDisturb(bool on)
@@ -68,8 +71,8 @@ public partial class PresenceController : Node
         Push(persist: true);
     }
 
-    /// <summary>The settings window's Apply: texts, the "answer when Away" switch and the timeout.</summary>
-    public void Apply(PresenceConfig edited, int timeoutSeconds)
+    /// <summary>The settings page's Apply: texts, the "answer when Away" switch, the timeout and the focus-loss switch.</summary>
+    public void Apply(PresenceConfig edited, int timeoutSeconds, bool awayOnFocusLoss)
     {
         _config = _config with
         {
@@ -82,6 +85,7 @@ public partial class PresenceController : Node
             AutorespondNonFriends = edited.AutorespondNonFriends,
         };
         _timeoutSeconds = timeoutSeconds;
+        _awayOnFocusLoss = awayOnFocusLoss;
         Push(persist: true);
     }
 
@@ -90,6 +94,7 @@ public partial class PresenceController : Node
     {
         _away.ClearAway(Now);
         _config = _config with { Away = false, DoNotDisturb = false };
+        GD.Print("[Presence] away off (status readout)");
         Push(persist: false);
     }
 
@@ -99,12 +104,12 @@ public partial class PresenceController : Node
         bool sign = @event is InputEventMouseMotion
             || @event is InputEventKey { Pressed: true }
             || @event is InputEventMouseButton { Pressed: true };
-        if (sign && _away.OnActivity(Now)) Sync();
+        if (sign && _away.OnActivity(Now)) Sync("input");
     }
 
     public override void _Process(double delta)
     {
-        if (_session != null && _away.Tick(Now, _timeoutSeconds)) Sync();
+        if (_session != null && _away.Tick(Now, _timeoutSeconds)) Sync("idle");
     }
 
     public override void _Notification(int what)
@@ -112,27 +117,30 @@ public partial class PresenceController : Node
         if (_session == null) return;
         if (what == NotificationApplicationFocusOut)
         {
-            // The reference viewer goes Away when it loses focus, but only when the idle timeout is on.
-            if (_timeoutSeconds > 0 && _away.SetAway(Now)) Sync();
+            // The reference viewer goes Away when it loses focus, but only when the idle timeout is on. Here it is
+            // a separate, default-off choice (see PresenceSettings.AwayOnFocusLoss).
+            if (_awayOnFocusLoss && _timeoutSeconds > 0 && _away.SetAway(Now)) Sync("focus lost");
         }
         else if (what == NotificationApplicationFocusIn)
         {
-            if (_away.ClearAway(Now)) Sync();
+            if (_away.ClearAway(Now)) Sync("focus regained");
         }
     }
 
-    /// <summary>The tracker changed Away: copy it into the configuration.</summary>
-    private void Sync()
+    /// <summary>The tracker changed Away: copy it into the configuration. The reason is logged: an avatar that
+    /// shows Away "by itself" is otherwise impossible to account for.</summary>
+    private void Sync(string reason)
     {
         if (_config.Away == _away.IsAway) return;
         _config = _config with { Away = _away.IsAway };
+        GD.Print($"[Presence] away {(_away.IsAway ? "on" : "off")} ({reason})");
         Push(persist: false);
     }
 
     private void Push(bool persist)
     {
         if (_session != null) _session.Presence = _config;
-        if (persist) PresenceSettings.Save(_config, _timeoutSeconds);
+        if (persist) PresenceSettings.Save(_config, _timeoutSeconds, _awayOnFocusLoss);
         Changed?.Invoke(_config);
     }
 }

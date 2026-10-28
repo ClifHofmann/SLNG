@@ -14,6 +14,7 @@ public partial class AutoresponsePreferencesPage : VBoxContainer
 {
     private PresenceController? _presence;
     private OptionButton _timeout = null!;
+    private CheckBox _awayOnFocusLoss = null!;
     private CheckBox _sendAway = null!;
     private CheckBox _autorespond = null!;
     private CheckBox _nonFriends = null!;
@@ -42,6 +43,9 @@ public partial class AutoresponsePreferencesPage : VBoxContainer
         AddChild(timeoutRow);
 
         AddChild(Hint(L10n.Tr("ui.presence.timeout_hint")));
+
+        _awayOnFocusLoss = new CheckBox { Text = L10n.Tr("ui.presence.away_on_focus_loss"), FocusMode = FocusModeEnum.None };
+        AddChild(_awayOnFocusLoss);
 
         _sendAway = AddSection(L10n.Tr("ui.presence.send_away"), out _awayText, withSwitch: true);
         AddSection(L10n.Tr("ui.presence.busy_heading"), out _busyText, withSwitch: false);
@@ -106,6 +110,7 @@ public partial class AutoresponsePreferencesPage : VBoxContainer
     {
         if (_presence == null) return;
         var c = _presence.Config;
+        _awayOnFocusLoss.ButtonPressed = _presence.AwayOnFocusLoss;
         _sendAway.ButtonPressed = c.SendAwayResponse;
         _autorespond.ButtonPressed = c.Autorespond;
         _nonFriends.ButtonPressed = c.AutorespondNonFriends;
@@ -133,7 +138,7 @@ public partial class AutoresponsePreferencesPage : VBoxContainer
             AutorespondMessage = Or(_autorespondText, PresenceConfig.DefaultAutorespondMessage),
             NonFriendsMessage = Or(_nonFriendsText, PresenceConfig.DefaultAutorespondMessage),
         };
-        _presence.Apply(edited, PresenceSettings.AwayTimeoutChoices[_timeout.Selected]);
+        _presence.Apply(edited, PresenceSettings.AwayTimeoutChoices[_timeout.Selected], _awayOnFocusLoss.ButtonPressed);
     }
 
     private void DefaultsPressed()
