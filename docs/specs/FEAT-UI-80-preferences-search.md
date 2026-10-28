@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-80`
 - **Track:** `ui` / `core`
-- **Status:** 🧪 Review
+- **Status:** ✅ Done
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 - **Depends on:** [FEAT-UI-79](FEAT-UI-79-preferences-rework.md) (rows registered with L10n keys and `DependsOn`)
@@ -76,7 +76,7 @@ The preferences search came from Firestorm into the Linden viewer (`<FS:ND/>` at
 - The Keyboard page implements `IPrefsSearchTarget`; its own filter now uses the same matcher (accents, several words,
   English), a superset of what it matched before.
 - Extra keywords: `RenderDeferredSSAO` (in `settings.xml`), "AO", "VRAM".
-- Still open: in-world check by the maintainer.
+- Confirmed in-world by the maintainer 2026-10-28; released in v0.28.45-alpha.
 
 ## Tests
 - xUnit `SettingsSearchTests`: case and diacritic folding (`schärfe` / `scharfe`), ß, several words (AND), substring,

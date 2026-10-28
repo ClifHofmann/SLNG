@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-79`
 - **Track:** `ui`
-- **Status:** 🧪 Review
+- **Status:** ✅ Done
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
@@ -138,7 +138,7 @@ semantics; only the UI changes.
 - The render-thread row keeps its hint and shows a separate "restart" notice only while a change is pending.
 - `LocalizationManager.GetStringIn(locale, key)` (no fallback) added for the selftest and for FEAT-UI-80.
 - 41 unused keys removed from both language files; none is left unused under `ui.preferences.`.
-- Still open: in-world check by the maintainer.
+- Confirmed in-world by the maintainer 2026-10-28; released in v0.28.45-alpha.
 
 ## Out of scope
 The search (FEAT-UI-80). New settings. Changed defaults.
