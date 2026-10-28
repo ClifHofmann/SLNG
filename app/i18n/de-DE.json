@@ -119,7 +119,7 @@
       "autorespond": "Allen automatisch antworten",
       "autorespond_non_friends": "Nicht-Freunden automatisch antworten",
       "apply": "Übernehmen",
-      "defaults": "Standardtexte",
+      "revert": "Verwerfen",
       "chat_notice": "[Automatische Antwort] {0}"
     },
     "avatar_hover": {

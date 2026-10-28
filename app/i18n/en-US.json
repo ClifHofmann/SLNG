@@ -119,7 +119,7 @@
       "autorespond": "Autorespond to everyone",
       "autorespond_non_friends": "Autorespond to non-friends",
       "apply": "Apply",
-      "defaults": "Default texts",
+      "revert": "Revert",
       "chat_notice": "[Auto-response] {0}"
     },
     "avatar_hover": {

@@ -71,21 +71,39 @@ public partial class PresenceController : Node
         Push(persist: true);
     }
 
-    /// <summary>The settings page's Apply: texts, the "answer when Away" switch, the timeout and the focus-loss switch.</summary>
-    public void Apply(PresenceConfig edited, int timeoutSeconds, bool awayOnFocusLoss)
+    /// <summary>"Answer instant messages while Away" -- takes effect at once, like every switch on the page.</summary>
+    public void SetSendAwayResponse(bool on)
+    {
+        if (_config.SendAwayResponse == on) return;
+        _config = _config with { SendAwayResponse = on };
+        Push(persist: true);
+    }
+
+    public void SetAwayOnFocusLoss(bool on)
+    {
+        if (_awayOnFocusLoss == on) return;
+        _awayOnFocusLoss = on;
+        Push(persist: true);
+    }
+
+    /// <summary>Seconds of quiet before going Away by itself; 0 = never.</summary>
+    public void SetTimeoutSeconds(int seconds)
+    {
+        if (_timeoutSeconds == seconds) return;
+        _timeoutSeconds = seconds;
+        Push(persist: true);
+    }
+
+    /// <summary>The four response texts, applied together by the page's Apply button.</summary>
+    public void SetTexts(string away, string busy, string autorespond, string nonFriends)
     {
         _config = _config with
         {
-            SendAwayResponse = edited.SendAwayResponse,
-            AwayMessage = edited.AwayMessage,
-            BusyMessage = edited.BusyMessage,
-            AutorespondMessage = edited.AutorespondMessage,
-            NonFriendsMessage = edited.NonFriendsMessage,
-            Autorespond = edited.Autorespond,
-            AutorespondNonFriends = edited.AutorespondNonFriends,
+            AwayMessage = away,
+            BusyMessage = busy,
+            AutorespondMessage = autorespond,
+            NonFriendsMessage = nonFriends,
         };
-        _timeoutSeconds = timeoutSeconds;
-        _awayOnFocusLoss = awayOnFocusLoss;
         Push(persist: true);
     }
 
