@@ -84,7 +84,7 @@ semantics; only the UI changes.
 - The builder takes **L10n keys**, not translated strings, so FEAT-UI-80 can index every language from the key.
 - Every row registers with the window: category, section, key, control, a visibility check, and `DependsOn(row)` for a
   row that depends on another one (shadow controls, DoF controls, the mirror probe).
-- **A dependent row is disabled (dimmed), never hidden, while its switch is off** (decided during the build): the
+- **A dependent row is disabled (dimmed), never hidden, while its switch is off** (decided during the build, confirmed by the maintainer 2026-10-28): the
   person sees what the switch unlocks, and nothing moves when it is flipped.
 - One checkbox type, `CheckBox`. The `CheckButton` for small-object shadows goes.
 - The graphics reset ↺ gets its own tooltip key instead of borrowing `camera_speed_reset`.
