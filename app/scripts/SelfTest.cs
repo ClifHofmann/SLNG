@@ -305,6 +305,7 @@ public static partial class SelfTest
         results.Add(CheckLoginStartResolver());
         results.Add(CheckLoginStartFlushResolves()); // FEAT-UI-72 // FEAT-UI-72
         results.Add(CheckLoginStartOfflineRegions()); // FEAT-UI-77
+        results.Add(CheckLoginStartRegionCheck()); // FEAT-UI-77
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75

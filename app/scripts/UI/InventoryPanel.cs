@@ -2981,7 +2981,7 @@ public partial class InventoryPanel : SLNGWindow
             if (!IsInstanceValid(this)) return;
             _status.Text = result.Success
                 ? string.Empty
-                : $"Teleport failed{(string.IsNullOrEmpty(result.Message) ? "." : $": {result.Message}")}";
+                : $"Teleport failed{(string.IsNullOrEmpty(result.Message) ? "." : $": {TeleportFailureText.For(result.Message)}")}";
                 
             // If teleport was successful, release focus from the inventory panel so the user can immediately move with WASD
             if (result.Success)

@@ -68,7 +68,7 @@ public sealed partial class GridSession
         // ~165 lines in a single session, which is most of what is left in a quiet log. The
         // failure branches below stay unconditional: those say why something is missing.
         if (Diag.Verbose)
-            Console.Error.WriteLine($"[LegacyMat] requested {materialIds.Count} -> resolved {result.Count} " +
+            Diag.Write($"[LegacyMat] requested {materialIds.Count} -> resolved {result.Count} " +
                 $"(RenderMaterials cap {(capUri == null ? "MISSING on this region" : "present")})");
 
         return result;
@@ -137,7 +137,7 @@ public sealed partial class GridSession
                 catch (Exception ex) { Console.Error.WriteLine($"[LegacyMat] entry parse failed: {ex.Message}"); }
             }
             if (Diag.Verbose)
-                Console.Error.WriteLine($"[LegacyMat] POST {status}: {ids.Count} ids -> {into.Count - before} materials");
+                Diag.Write($"[LegacyMat] POST {status}: {ids.Count} ids -> {into.Count - before} materials");
         }
         catch (Exception ex)
         {
@@ -316,8 +316,9 @@ public sealed partial class GridSession
         TextureFetchResult UdpGaveNothing(byte[]? data)
         {
             if (data is { Length: > 0 }) return new TextureFetchResult { Data = data, IsReliable = false };
-            if (deniedByCaps && _permanentlyDeniedTextures.TryAdd(textureId, 0))
-                Console.Error.WriteLine($"[TextureFetch] {textureId}: 403 on HTTP and nothing over UDP -- giving up for this session");
+            // The region refused it: nothing the viewer can do, so it is a debug-log line, not a console one.
+            if (deniedByCaps && _permanentlyDeniedTextures.TryAdd(textureId, 0) && SLNG.Core.Diag.Verbose)
+                SLNG.Core.Diag.Write($"[TextureFetch] {textureId}: 403 on HTTP and nothing over UDP -- giving up for this session");
             return new TextureFetchResult { Data = null, IsReliable = deniedByCaps, Gone = deniedByCaps };
         }
 
@@ -471,8 +472,8 @@ public sealed partial class GridSession
 
     private static byte[]? UdpFailed(Guid textureId, string reason)
     {
-        if (_udpFailureLogged.TryAdd(textureId, 0))
-            Console.Error.WriteLine($"[TextureFetch] {textureId}: UDP fallback failed: {reason}");
+        if (_udpFailureLogged.TryAdd(textureId, 0) && SLNG.Core.Diag.Verbose)
+            SLNG.Core.Diag.Write($"[TextureFetch] {textureId}: UDP fallback failed: {reason}");
         return null;
     }
 
@@ -535,7 +536,7 @@ public sealed partial class GridSession
                             if (fetchUrl == null && denied)
                                 _httpDeniedTextures.TryAdd(textureId, 0);
                             if (denied && SLNG.Core.Diag.Verbose && _deniedBodyLogged.TryAdd(textureId, 0))
-                                Console.Error.WriteLine($"[TextureFetch] {textureId} HTTP {(int)response.StatusCode} from " +
+                                SLNG.Core.Diag.Write($"[TextureFetch] {textureId} HTTP {(int)response.StatusCode} from " +
                                     $"{url.Host}{url.AbsolutePath}: {await DescribeRefusalAsync(response).ConfigureAwait(false)}");
                             // Host in the message: a 403 could be the wrong URL class (see
                             // BUG-AVATAR-02 -- bakes needed bake-texture.glb..., not the generic

@@ -30,7 +30,7 @@ public sealed partial class GridSession
 
         Interlocked.Increment(ref _gltfOverrideMessages);
         if (Diag.Verbose)
-            Console.Error.WriteLine($"[GltfOverride] region={e.Simulator.Handle} local={message!.LocalId} faces={message.Faces.Count}" +
+            Diag.Write($"[GltfOverride] region={e.Simulator.Handle} local={message!.LocalId} faces={message.Faces.Count}" +
                                     (message.Faces.Count == 0 ? " (clear)" : ""));
         RaiseGltfMaterialOverride(new GltfMaterialOverrideEvent(e.Simulator.Handle, message!.LocalId, message.Faces));
     }

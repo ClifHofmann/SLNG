@@ -92,7 +92,7 @@ public partial class GridSession
 
         if (SLNG.Core.Diag.Verbose)
         {
-            Console.Error.WriteLine($"[Money] reply tx={e.TransactionID} ok={e.Success} " +
+            SLNG.Core.Diag.Write($"[Money] reply tx={e.TransactionID} ok={e.Success} " +
                 $"balance={e.Balance} source={source} dest={dest} amount={info?.Amount ?? 0} " +
                 $"type={info?.TransactionType ?? 0} item='{itemDescription}' desc='{replyDescription}'");
         }

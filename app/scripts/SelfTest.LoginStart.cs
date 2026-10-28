@@ -236,6 +236,8 @@ public static partial class SelfTest
         public readonly Dictionary<Guid, StartTarget> Targets = new();
         public readonly HashSet<Guid> OfflineRegions = new();   // landmarks whose region does not answer
         public readonly List<Guid> Looked = new();
+        public readonly HashSet<string> DownRegions = new(StringComparer.OrdinalIgnoreCase);   // regions the grid says are down
+        public readonly List<string> Probed = new();
 
         public Task<FavoritesSnapshot> GetFavoritesAsync(CancellationToken ct)
         {
@@ -260,7 +262,18 @@ public static partial class SelfTest
             }
         }
 
+        public Task<RegionProbeResult> ProbeRegionAsync(string regionName, CancellationToken ct)
+        {
+            lock (_gate)
+            {
+                Probed.Add(regionName);
+                return Task.FromResult(DownRegions.Contains(regionName) ? RegionProbeResult.Down : RegionProbeResult.Up);
+            }
+        }
+
         public int LookedCount() { lock (_gate) return Looked.Count; }
+        public int ProbedCount() { lock (_gate) return Probed.Count; }
+        public int ProbedOf(string region) { lock (_gate) return Probed.Count(r => string.Equals(r, region, StringComparison.OrdinalIgnoreCase)); }
     }
 
     /// <summary>FEAT-UI-72: the flush before a logout resolves the landmarks nobody has resolved yet, so a favorite added shortly
@@ -344,6 +357,7 @@ public static partial class SelfTest
             source.OfflineRegions.Add(down);
 
             using var resolver = new LoginStartFavorites(source, Array.Empty<LoginFavorite>(), populated: false, fast);
+            resolver.CheckRegions = () => true;
             resolver.Poke();
 
             LoginStartFavoritesUpdate? latest = null;
@@ -383,6 +397,14 @@ public static partial class SelfTest
             if (!recovered) failures.Add("a region that came back did not become a normal favorite");
             if (!WaitFor(() => resolver.TryTakeOfflineChange(out var now) && now.Count == 0)) failures.Add("the bar was not told that the region is back");
 
+            // What the last session found offline reaches the bar at once, before any pass has asked again.
+            using (var seeded = new LoginStartFavorites(source, Array.Empty<LoginFavorite>(), populated: false, fast,
+                       new[] { new LoginOfflineFavorite(down, itemDown.Id, "Down") }))
+            {
+                if (!seeded.TryTakeOfflineChange(out var seededSet) || !seededSet.Contains(down))
+                    failures.Add("a region found offline by the last session is not reported before the first pass");
+            }
+
             // The login picker: an offline favorite is a disabled line between the favorites and "Region...".
             picker = new SLNG.App.UI.LoginStartPicker();
             var fav = LoginStartFavorite("Up", "Ahern", 1, 2, 3);
@@ -412,6 +434,102 @@ public static partial class SelfTest
         finally
         {
             if (picker != null && GodotObject.IsInstanceValid(picker)) picker.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-UI-77: the cyclic region check. Off (the default) nothing is asked about a favorite whose place is known, and a region
+    /// the last session found down is looked at once, not again; on, every region is asked once per round (however many favorites it
+    /// holds), a region that goes down is reported to the bar, one that comes back is cleared, and a plain poke right after does not
+    /// ask again.
+    /// </summary>
+    private static Check CheckLoginStartRegionCheck()
+    {
+        const string Name = "login start region check";
+        var fast = new LoginStartFavorites.Timing(
+            Debounce: TimeSpan.FromMilliseconds(20), ResolveSpacing: TimeSpan.FromMilliseconds(2),
+            Reread: TimeSpan.FromHours(1), PublishEvery: TimeSpan.FromMilliseconds(5));
+
+        static LandmarkInventoryItem Item(string name, Guid asset, int ageDays) =>
+            new(Guid.NewGuid(), Guid.NewGuid(), asset, name, "Favorites", "Favorites", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(-ageDays));
+
+        static bool WaitFor(Func<bool> done)
+        {
+            var until = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < until)
+            {
+                if (done()) return true;
+                Thread.Sleep(5);
+            }
+            return false;
+        }
+
+        try
+        {
+            var failures = new List<string>();
+            var a = Guid.NewGuid(); var b = Guid.NewGuid(); var c = Guid.NewGuid();
+            StartTarget.TryCreate("Ahern", 1, 2, 3, StartTarget.OpenMaxXY, out var ahern);
+            StartTarget.TryCreate("Sunset", 4, 5, 6, StartTarget.OpenMaxXY, out var sunset);
+            var items = new[] { Item("A", a, 3), Item("B", b, 2), Item("C", c, 1) };   // A and C share a region
+            var cached = new[]
+            {
+                new LoginFavorite(a, items[0].Id, "A", ahern!),
+                new LoginFavorite(b, items[1].Id, "B", sunset!),
+                new LoginFavorite(c, items[2].Id, "C", ahern!),
+            };
+
+            var source = new FakeLoginStartSource { Remote = new FavoritesSnapshot(true, items) };
+            source.Local = source.Remote;
+            source.DownRegions.Add("Sunset");
+
+            using var resolver = new LoginStartFavorites(source, cached, populated: true, fast);
+
+            // Off: a known place is never asked about.
+            resolver.Poke();
+            Thread.Sleep(200);
+            if (source.ProbedCount() != 0) failures.Add($"{source.ProbedCount()} region(s) asked about while the check is off");
+            if (resolver.TryTakeOfflineChange(out _)) failures.Add("the bar was told something while the check is off");
+
+            // On: one question per region, Sunset's favorite is marked.
+            resolver.CheckRegions = () => true;
+            resolver.RequestRegionCheck();
+            if (!WaitFor(() => source.ProbedOf("Sunset") == 1 && source.ProbedOf("Ahern") == 1)) failures.Add("the check did not ask once per region");
+            if (!WaitFor(() => resolver.TryTakeOfflineChange(out var set) && set.Count == 1 && set.Contains(b))) failures.Add("the favorite of the down region was not reported");
+
+            // A plain poke right after does not ask again (the clock did not start it).
+            int asked = source.ProbedCount();
+            resolver.Poke();
+            Thread.Sleep(200);
+            if (source.ProbedCount() != asked) failures.Add("a poke asked about the regions again");
+
+            // Sunset comes back; the next round clears it.
+            source.DownRegions.Clear();
+            resolver.RequestRegionCheck();
+            if (!WaitFor(() => resolver.TryTakeOfflineChange(out var set) && set.Count == 0)) failures.Add("a region that came back was not cleared");
+
+            // Off again: a known-offline region of the last session that cannot be placed is looked at once and then left alone.
+            var d = Guid.NewGuid();
+            var itemD = Item("D", d, 4);
+            var source2 = new FakeLoginStartSource { Remote = new FavoritesSnapshot(true, new[] { itemD }) };
+            source2.Local = source2.Remote;
+            source2.OfflineRegions.Add(d);
+            using (var second = new LoginStartFavorites(source2, Array.Empty<LoginFavorite>(), populated: false, fast,
+                       new[] { new LoginOfflineFavorite(d, itemD.Id, "D") }))
+            {
+                second.Poke();
+                WaitFor(() => source2.LookedCount() >= 1);
+                second.Poke();
+                Thread.Sleep(200);
+                if (source2.LookedCount() != 1) failures.Add($"a seeded offline landmark was looked up {source2.LookedCount()} times with the check off, wanted 1");
+            }
+
+            return failures.Count == 0
+                ? new Check(Name, true, "off: nothing is asked; on: one question per region, down is reported, back is cleared, a poke does not repeat it")
+                : new Check(Name, false, string.Join("; ", failures));
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
         }
     }
 

@@ -303,7 +303,7 @@ public partial class WorldMapWindow : SLNGWindow
 
         var result = await _session.TeleportToAsync(_selectedRegionHandle.Value, _selectedLocal).ConfigureAwait(false);
         GD.Print($"[WorldMap] Teleport result: success={result.Success} message=\"{result.Message}\"");
-        _pendingTeleportMessage = result.Success ? "" : $"{L10n.Tr("ui.worldmap.teleport_failed")}: {result.Message}";
+        _pendingTeleportMessage = result.Success ? "" : $"{L10n.Tr("ui.worldmap.teleport_failed")}: {TeleportFailureText.For(result.Message)}";
         CallDeferred(MethodName.ApplyTeleportResult);
     }
 

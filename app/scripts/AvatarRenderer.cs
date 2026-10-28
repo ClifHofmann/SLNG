@@ -4297,7 +4297,7 @@ public partial class AvatarRenderer : Node3D
             // whole diagnostic round on the HUD-texture investigation. One line per failed id.
             if (SLNG.Core.Diag.Verbose)
             {
-                GD.PrintErr($"[FaceTex] texture {texId} fetch/decode returned null -- face renders untextured" +
+                SLNG.Core.Diag.Write($"[FaceTex] texture {texId} fetch/decode returned null -- face renders untextured" +
                     (rejectDegraded ? " (degraded decodes refused for this surface)" : ""));
             }
             LogHudFace(surface, meshId, faceIndex, ft, tint, $"NULL from fetch/decode (tex {texId})");
@@ -4521,7 +4521,7 @@ public partial class AvatarRenderer : Node3D
         catch (Exception ex)
         {
             // A map that cannot be had must never cost the face its base colour.
-            if (SLNG.Core.Diag.Verbose) GD.PrintErr($"[FaceTex] PBR map {textureId} failed: {ex.Message}");
+            if (SLNG.Core.Diag.Verbose) SLNG.Core.Diag.Write($"[FaceTex] PBR map {textureId} failed: {ex.Message}");
             return null;
         }
         if (avatarVisual != null)
