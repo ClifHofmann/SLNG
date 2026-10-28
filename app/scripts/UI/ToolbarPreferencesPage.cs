@@ -1,51 +1,38 @@
-using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
+using SLNG.App.UI.Prefs;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// "Toolbar" tab content for <see cref="PreferencesWindow"/>: one checkbox per registered
-/// <see cref="ToolbarItemDefinition"/>, bound to <see cref="ToolbarSettings"/>. Kept as its own
-/// reusable Control component (rather than inline code in PreferencesWindow) so the window
-/// itself stays generic -- see PreferencesWindow.AddTab.
+/// The "Bottom bar" section of the General category (FEAT-UI-79): one checkbox per registered
+/// <see cref="ToolbarItemDefinition"/>, bound to <see cref="ToolbarSettings"/>. The items' labels are not L10n keys (they
+/// are names handed over by Boot.SetupHud), so the checkboxes are one block rather than one row each; the search finds
+/// them through the block's literal texts.
 /// </summary>
-public partial class ToolbarPreferencesPage : VBoxContainer
+public sealed class ToolbarPreferencesPage
 {
-    private IReadOnlyList<ToolbarItemDefinition> _items = Array.Empty<ToolbarItemDefinition>();
-    private ToolbarSettings _settings = null!;
-
-    public override void _Ready()
+    /// <summary>Fills <paramref name="section"/> (General, "bottom_bar"), which Boot has already put in its place. Call
+    /// once, after the section is in the window's tree.</summary>
+    public void Build(PrefsSection section, IReadOnlyList<ToolbarItemDefinition> items, ToolbarSettings settings)
     {
-        AddThemeConstantOverride("separation", 10);
-    }
-
-    /// <summary>Builds one checkbox per registered item. Call once, right after this page has
-    /// been added via PreferencesWindow.AddTab (mirrors ItemPropertiesWindow's
-    /// construct-then-Initialize pattern used elsewhere in this codebase).</summary>
-    public void Initialize(IReadOnlyList<ToolbarItemDefinition> items, ToolbarSettings settings)
-    {
-        _items = items;
-        _settings = settings;
-
-        var heading = new Label { Text = L10n.Tr("ui.preferences.toolbar_heading") };
-        heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        AddChild(heading);
+        string prefix = $"{section.CategoryId}.{section.Id}";
+        section.AddNote($"{prefix}.intro", "ui.preferences.toolbar_heading");
 
         var list = new VBoxContainer();
-        list.AddThemeConstantOverride("separation", 4);
-        AddChild(list);
-
-        foreach (var def in _items)
+        list.AddThemeConstantOverride("separation", PrefsStyle.RowSeparation / 2);
+        foreach (var def in items)
         {
             var check = new CheckBox
             {
                 Text = def.Label,
-                ButtonPressed = _settings.IsEnabled(def.Id),
+                ButtonPressed = settings.IsEnabled(def.Id),
                 FocusMode = Control.FocusModeEnum.None,
             };
-            check.Toggled += pressed => _settings.SetEnabled(def.Id, pressed);
+            check.Toggled += pressed => settings.SetEnabled(def.Id, pressed);
             list.AddChild(check);
         }
+        section.AddBlock($"{prefix}.items", list).WithLiteralTexts(items.Select(i => i.Label).ToArray());
     }
 }

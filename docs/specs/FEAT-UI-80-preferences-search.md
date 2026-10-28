@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-UI-80`
 - **Track:** `ui` / `core`
-- **Status:** ⏸️ Pending
-- **Owner:**
+- **Status:** 🧪 Review
+- **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 - **Depends on:** [FEAT-UI-79](FEAT-UI-79-preferences-rework.md) (rows registered with L10n keys and `DependsOn`)
 
@@ -31,8 +31,9 @@ The preferences search came from Firestorm into the Linden viewer (`<FS:ND/>` at
 - **Two improvements over the viewer:**
   1. A hit inside a collapsed Advanced fold-out opens it while the filter is on. It folds back when the filter is cleared,
      unless the user had opened it.
-  2. A hit on a row hidden by its switch (shadow distance with shadows off, the DoF controls, the mirror probe) is not
-     lost. Its controlling row (`DependsOn`, FEAT-UI-79) is highlighted, with a short note naming the hidden setting.
+  2. A hit on a row that is disabled by its switch (shadow distance with shadows off, the DoF controls, the mirror
+     probe) is found, and its switch (`DependsOn`, FEAT-UI-79) is highlighted too, so it is clear what to turn on.
+     FEAT-UI-79 dims such rows instead of hiding them, so the viewer's "invisible never matches" gap does not arise.
 - **Keyboard:** its action names are searched too. When it has a hit, its own filter box (`ui.keys.search_placeholder`)
   is set to the term.
 - **No hit anywhere:** one line, "No setting matches".
@@ -55,15 +56,27 @@ The preferences search came from Firestorm into the Linden viewer (`<FS:ND/>` at
 - The index is built when the window first opens and rebuilt on `LanguageChanged`.
 
 ## Acceptance Criteria
-- [ ] "schatten" shows only Graphics › Shadows. Its rows are highlighted, and Advanced is open because cascades and
-      softness match.
-- [ ] "RenderFarClip" finds draw distance, "fps" finds the FPS limit, "bandwidth" finds max bandwidth while the UI is
+- [x] "schatten" shows Graphics › Shadows with its rows highlighted and Advanced open because cascades and softness
+      match. (It also hits Graphics › Performance, whose German low-VRAM hint mentions Schatten, and the Keyboard action
+      "Avatar-Schatten an / aus": a substring search finds them, and the selftest asserts exactly these sets.)
+- [x] "RenderFarClip" finds draw distance, "fps" finds the FPS limit, "bandwidth" finds max bandwidth while the UI is
       German.
-- [ ] A search for shadow distance with shadows off highlights the Shadows switch with the note.
-- [ ] A term that matches a key action fills the Keyboard page's own filter.
-- [ ] Esc clears the field; clearing restores everything and keeps the selected category.
-- [ ] Filtering on every keystroke causes no visible hitch.
-- [ ] `AppVersion` bumped; `/slng-verify` clean.
+- [x] A search for shadow distance with shadows off highlights that row and the Shadows switch.
+- [x] A term that matches a key action fills the Keyboard page's own filter.
+- [x] Esc clears the field; clearing restores everything and keeps the selected category.
+- [x] Filtering on every keystroke causes no visible hitch (0.15 ms average, 0.29 ms worst for the search itself).
+- [x] `AppVersion` bumped; `/slng-verify` clean.
+
+## Built (v0.28.44-alpha)
+- `SLNG.Core.Settings`: `SettingsSearch` (normalize, parse, match), `SettingsQuery`, `SettingsSearchEntry`; 14 xUnit tests.
+- `PreferencesWindow.Search.cs` and `PrefsSearchIndex`: the index holds the current language, en-US and the language the
+  window was built in (labels on screen do not retranslate until windows are reopened).
+- A disabled dependent row tints its switch only while it is disabled.
+- Hiding the window ends the search and restores everything. Esc in an empty field gives the keyboard back to the world.
+- The Keyboard page implements `IPrefsSearchTarget`; its own filter now uses the same matcher (accents, several words,
+  English), a superset of what it matched before.
+- Extra keywords: `RenderDeferredSSAO` (in `settings.xml`), "AO", "VRAM".
+- Still open: in-world check by the maintainer.
 
 ## Tests
 - xUnit `SettingsSearchTests`: case and diacritic folding (`schärfe` / `scharfe`), ß, several words (AND), substring,

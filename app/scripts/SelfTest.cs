@@ -309,6 +309,12 @@ public static partial class SelfTest
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
+        results.Add(CheckPreferencesBuilder(tree)); // FEAT-UI-79
+        results.Add(CheckPreferencesWindowWiring(tree)); // FEAT-UI-79
+        results.Add(CheckPreferencesComplete(tree)); // FEAT-UI-79
+        results.Add(CheckPreferencesDependents(tree)); // FEAT-UI-79
+        results.Add(CheckPreferencesRoundTrips(tree)); // FEAT-UI-79 follow-up
+        results.Add(CheckPreferencesSearch(tree)); // FEAT-UI-80
         results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
         results.Add(CheckTextureViewerFit(tree));
         results.Add(CheckDebugLogSanitizes()); // FEAT-UI-76
@@ -1537,7 +1543,12 @@ public static partial class SelfTest
             W<UI.InventoryOfferWindow>(w => w.Initialize(session, new InventoryOfferEvent(id(), id(), "Someone", "Hat", id(), 6, false))),
             W<UI.NotificationWindow>(w => w.Initialize(new NotificationStore())), W<UI.ObjectEditWindow>(w => w.Initialize(session, new SLNG.Core.ECS.World())),
             W<UI.PayAvatarWindow>(w => w.Initialize(session, id(), "Someone")), W<UI.PayObjectWindow>(w => w.Initialize(session, 0, 1, id(), "Vendor")),
-            W<UI.PreferencesWindow>(w => w.AddTab("Test", new Label { Text = "Test" })), W<UI.RegionRestartWindow>(w => w.Initialize(session, new RegionRestartEvent("Testland", 120))),
+            W<UI.PreferencesWindow>(w =>
+            {
+                var section = w.AddCategory("test", "ui.preferences.cat_general").AddSection("test", "ui.preferences.sec_general_interface");
+                section.AddCheck("test.test.check", "ui.preferences.advanced", false, _ => { });
+                section.AddNote("test.test.note", "ui.preferences.apply_reopen");
+            }), W<UI.RegionRestartWindow>(w => w.Initialize(session, new RegionRestartEvent("Testland", 120))),
             W<UI.ScriptDialogWindow>(w => w.Initialize(session, new ScriptDialogEvent(id(), "Object", id(), "Owner", "Pick", 1, new[] { "Yes", "No" }))),
             W<UI.ScriptPermissionWindow>(w => w.Initialize(session, new ScriptPermissionRequestEvent(id(), id(), "Object", "Owner", 4))),
             W<UI.FriendshipOfferWindow>(w => w.Initialize(
@@ -1667,28 +1678,32 @@ public static partial class SelfTest
     }
 
     /// <summary>
-    /// FEAT-UI-75: the Auto-response Preferences page builds, takes the controller's configuration and lays its four
-    /// text boxes out with a real height. Nothing is applied, so the real preferences.cfg is left alone.
+    /// FEAT-UI-75: the Auto-response section of Preferences builds, takes the controller's configuration and lays its four
+    /// text boxes out with a real height. Nothing is applied, so the real preferences.cfg is left alone. Since FEAT-UI-79 the
+    /// page fills a PrefsSection; the check puts one in a category of its own, the way Boot does.
     /// </summary>
     private static Check CheckAutoresponseWindow(SceneTree tree)
     {
         const string Name = "autoresponse preferences page";
         var presence = new PresenceController();
-        var window = new UI.AutoresponsePreferencesPage();
+        var page = new UI.AutoresponsePreferencesPage();
+        var host = new Control { Size = new Vector2(480, 600) };
         try
         {
             tree.Root.AddChild(presence);
-            tree.Root.AddChild(window);
-            window.Initialize(presence);
-            window.Size = new Vector2(480, 600);
-            window.Refresh();
+            tree.Root.AddChild(host);
+            var category = new UI.Prefs.PrefsCategory("chat_im", "ui.preferences.cat_chat_im") { Size = new Vector2(480, 600) };
+            host.AddChild(category);
+            var section = category.AddSection("away", "ui.preferences.sec_chat_im_away");
+            page.Build(section, presence);
+            page.Refresh();
 
             static void Layout(Control c)
             {
                 if (c is Container) c.Notification((int)Container.NotificationSortChildren);
                 foreach (var k in c.GetChildren()) if (k is Control kc) Layout(kc);
             }
-            for (int pass = 0; pass < 3; pass++) Layout(window);
+            for (int pass = 0; pass < 3; pass++) Layout(host);
 
             var boxes = new List<TextEdit>();
             void Collect(Node n)
@@ -1696,7 +1711,7 @@ public static partial class SelfTest
                 if (n is TextEdit t) boxes.Add(t);
                 foreach (var k in n.GetChildren()) Collect(k);
             }
-            Collect(window);
+            Collect(host);
 
             bool fourBoxes = boxes.Count == 4;
             bool tall = boxes.TrueForAll(b => b.Size.Y >= 40);
@@ -1712,7 +1727,7 @@ public static partial class SelfTest
         }
         finally
         {
-            foreach (var n in new Node[] { window, presence })
+            foreach (var n in new Node[] { host, presence })
             {
                 if (!GodotObject.IsInstanceValid(n)) continue;
                 n.GetParent()?.RemoveChild(n);

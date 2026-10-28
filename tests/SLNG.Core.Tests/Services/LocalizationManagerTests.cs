@@ -52,5 +52,52 @@ namespace SLNG.Core.Tests.Services
                     Directory.Delete(testDir, true);
             }
         }
+
+        private static LocalizationManager TwoLanguages()
+        {
+            var manager = new LocalizationManager();
+            manager.LoadLocaleFromJson("en-US", """{ "ui": { "button": "Save", "only_english": "English only" } }""");
+            manager.LoadLocaleFromJson("de-DE", """{ "ui": { "button": "Speichern" } }""");
+            return manager;
+        }
+
+        [Fact]
+        public void GetStringIn_ReturnsTheTextOfThatLocale()
+        {
+            var manager = TwoLanguages();
+            manager.CurrentLocale = "en-US"; // the current language does not decide which text comes back
+
+            Assert.Equal("Speichern", manager.GetStringIn("de-DE", "ui.button"));
+            Assert.Equal("Save", manager.GetStringIn("en-US", "ui.button"));
+        }
+
+        [Fact]
+        public void GetStringIn_MissingKey_IsNull()
+        {
+            var manager = TwoLanguages();
+
+            Assert.Null(manager.GetStringIn("en-US", "ui.nope"));
+            Assert.Null(manager.GetStringIn("de-DE", "ui.nope"));
+        }
+
+        [Fact]
+        public void GetStringIn_MissingLocale_IsNull()
+        {
+            var manager = TwoLanguages();
+
+            Assert.Null(manager.GetStringIn("fr-FR", "ui.button"));
+        }
+
+        [Fact]
+        public void GetStringIn_DoesNotFallBackToTheFallbackLocale()
+        {
+            var manager = TwoLanguages();
+            Assert.Equal("English only", manager.GetStringIn("en-US", "ui.only_english"));
+
+            // Translate() answers this from en-US while German is current; GetStringIn must say the German text does not exist.
+            manager.CurrentLocale = "de-DE";
+            Assert.Equal("English only", manager.Translate("ui.only_english"));
+            Assert.Null(manager.GetStringIn("de-DE", "ui.only_english"));
+        }
     }
 }

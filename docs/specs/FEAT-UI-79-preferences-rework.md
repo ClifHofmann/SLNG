@@ -2,8 +2,8 @@
 
 - **Feature ID:** `FEAT-UI-79`
 - **Track:** `ui`
-- **Status:** ⏸️ Pending
-- **Owner:**
+- **Status:** 🧪 Review
+- **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
 ## Overview & Goal
@@ -50,7 +50,7 @@ restarts (`preferences.cfg`).
 | | View & detail | Draw distance, object detail, max fully rendered avatars | Hide tiny objects | General sub-tab |
 | | Shadows | Shadows, shadow resolution | Cascades, softness, distance, darkness, small-object shadows | General + Hardware |
 | | Light & effects | Ambient occlusion, glow, mirrors | SSIL, environment reflections, probe ambient, SSR, real-time mirror probe | General |
-| | Depth of field | Enable, its controls while on | | DoF sub-tab |
+| | Depth of field | Enable, its controls | | DoF sub-tab |
 | | Performance | FPS limit, V-Sync, anti-aliasing, texture memory (auto + slider + usage) | Render thread, compress textures, low-VRAM caps, merge other avatars' meshes | Hardware |
 | **Camera & movement** | Camera | Field of view, rear view distance, focus height, disable camera constraints, reset | Pad speeds (orbit, pan, zoom) | Camera |
 | | Movement | Always run | | Animation |
@@ -83,7 +83,9 @@ semantics; only the UI changes.
   need confirming (auto-response) keep their Apply / Revert buttons.
 - The builder takes **L10n keys**, not translated strings, so FEAT-UI-80 can index every language from the key.
 - Every row registers with the window: category, section, key, control, a visibility check, and `DependsOn(row)` for a
-  row that is hidden or disabled by another one (shadow controls, DoF controls, the mirror probe).
+  row that depends on another one (shadow controls, DoF controls, the mirror probe).
+- **A dependent row is disabled (dimmed), never hidden, while its switch is off** (decided during the build, confirmed by the maintainer 2026-10-28): the
+  person sees what the switch unlocks, and nothing moves when it is flipped.
 - One checkbox type, `CheckBox`. The `CheckButton` for small-object shadows goes.
 - The graphics reset ↺ gets its own tooltip key instead of borrowing `camera_speed_reset`.
 - Colours and sizes come from one place, not from each page.
@@ -95,16 +97,16 @@ semantics; only the UI changes.
   from both language files. Grep `app/` and `src/` before deleting each one.
 
 ## Acceptance Criteria
-- [ ] Seven categories in the order of the table. The category list fits the default window without scrolling.
-- [ ] Every setting reachable at v0.28.33-alpha is reachable in exactly one place, as in the table.
-- [ ] Every page is built from `PrefsSection` / `PrefsRow`. No page-local `AddHeading` / `AddCheck` / `AddHint` left.
-- [ ] Advanced is collapsed by default in each section that has one, and its state is remembered.
-- [ ] Rows that do not apply at once show their badge.
-- [ ] The real-time mirror probe row is disabled while Mirrors is off.
-- [ ] The last category is remembered across a restart. Default size 760 × 520.
-- [ ] Both language files have every new key, and no key that nothing uses.
-- [ ] No setting changes value, default or storage (`preferences.cfg` sections unchanged, no migration).
-- [ ] `AppVersion` bumped; `/slng-verify` clean.
+- [x] Seven categories in the order of the table. The category list fits the default window without scrolling.
+- [x] Every setting reachable at v0.28.33-alpha is reachable in exactly one place, as in the table.
+- [x] Every page is built from `PrefsSection` / `PrefsRow`. No page-local `AddHeading` / `AddCheck` / `AddHint` left.
+- [x] Advanced is collapsed by default in each section that has one, and its state is remembered.
+- [x] Rows that do not apply at once show their badge.
+- [x] The real-time mirror probe row is disabled while Mirrors is off.
+- [x] The last category is remembered across a restart. Default size 760 × 520.
+- [x] Both language files have every new key, and no key that nothing uses.
+- [x] No setting changes value, default or storage (`preferences.cfg` sections unchanged, no migration).
+- [x] `AppVersion` bumped; `/slng-verify` clean.
 
 ## Tests
 - Selftest "preferences complete": the expected inventory (every setting id from the table) against the rows the window
@@ -123,9 +125,20 @@ semantics; only the UI changes.
 - `app/scripts/SelfTest*.cs`.
 
 ## Sub-tasks / Progress
-- [ ] Builder and window shell (categories + sections), Camera migrated as the proof.
-- [ ] Migrate the other pages, move rows as in the table, one mirror switch, profiles menu.
-- [ ] Dead pages and keys removed, selftests, `AppVersion`.
+- [x] Builder and window shell (categories + sections), Camera migrated as the proof.
+- [x] Migrate the other pages, move rows as in the table, one mirror switch, profiles menu.
+- [x] Dead pages and keys removed, selftests, `AppVersion`.
+
+## Built (v0.28.41 – v0.28.43-alpha)
+- Steps A/B/C as above, 107 rows in 23 sections. Only the Keyboard table and the licence text are embedded blocks.
+- Graphics header: quality slider, reset with its own tooltip, a Profiles menu (click a profile to load it, "Save current
+  as…", Delete submenu) in place of the dropdown + Load/Save/Delete buttons.
+- Every Graphics callback now respects the refresh guard. Before, opening Preferences could switch DoF auto-focus off and
+  write quantised shadow/DoF slider values back into the settings.
+- The render-thread row keeps its hint and shows a separate "restart" notice only while a change is pending.
+- `LocalizationManager.GetStringIn(locale, key)` (no fallback) added for the selftest and for FEAT-UI-80.
+- 41 unused keys removed from both language files; none is left unused under `ui.preferences.`.
+- Still open: in-world check by the maintainer.
 
 ## Out of scope
 The search (FEAT-UI-80). New settings. Changed defaults.

@@ -1,36 +1,29 @@
 using Godot;
+using SLNG.App.UI.Prefs;
 
 namespace SLNG.App.UI;
 
 /// <summary>
-/// Shows THIRD-PARTY-NOTICES.md inside the client.
+/// The "Licences" section of the Help &amp; info category (FEAT-UI-79): shows THIRD-PARTY-NOTICES.md inside the client.
 ///
 /// This is not decoration. We ship Second Life viewer artwork (the terrain blend ramp and the
 /// Windlight cloud texture) under Creative Commons Attribution-Share Alike 3.0, and that licence
 /// requires the notice to reach the user — "in a text file distributed with your program, in your
-/// application's About window, or on a credits page". This page is that credits page, and the
+/// application's About window, or on a credits page". This section is that credits page, and the
 /// notice file ships inside the project directory so an export includes it.
 ///
 /// It renders the file as-is rather than a curated summary, so adding a dependency to the notice
-/// file is all anyone has to remember.
+/// file is all anyone has to remember. One long text, so it is a single block rather than rows.
 /// </summary>
-public partial class LicensesPreferencesPage : VBoxContainer
+public sealed class LicensesPreferencesPage
 {
     /// <summary>Path is res://-relative because the notice must come from the exported project,
     /// not from a repository checkout that will not exist on a user's machine.</summary>
     public const string NoticePath = "res://THIRD-PARTY-NOTICES.md";
 
-    public override void _Ready()
+    /// <summary>Fills <paramref name="section"/> (Help &amp; info, "licences"), which Boot has already put in its place.</summary>
+    public void Build(PrefsSection section)
     {
-        AddThemeConstantOverride("separation", 10);
-    }
-
-    public void Initialize()
-    {
-        var heading = new Label { Text = L10n.Tr("ui.preferences.licenses_heading") };
-        heading.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 0.8f));
-        AddChild(heading);
-
         var body = new RichTextLabel
         {
             BbcodeEnabled = false,
@@ -38,10 +31,12 @@ public partial class LicensesPreferencesPage : VBoxContainer
             SelectionEnabled = true,
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
             CustomMinimumSize = new Vector2(0, 320),
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
         };
         body.Text = ReadNotice();
-        AddChild(body);
+        // No heading of its own under the section's: "Licences" already says what this is. The old heading's words stay
+        // searchable (third-party, attribution) as a search key.
+        section.AddBlock($"{section.CategoryId}.{section.Id}.notices", body, null, false, "ui.preferences.licenses_heading");
     }
 
     private static string ReadNotice()

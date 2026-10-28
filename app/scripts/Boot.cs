@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.40-alpha";
+    public const string AppVersion = "v0.28.45-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1000,7 +1000,8 @@ public partial class Boot : Control
         };
 
 
-        _topMenu.OnOpenPreferences = () =>
+        // categoryId: the category to open on (the Graphics menu's "Graphics..." entry); null opens the one that was last open.
+        void OpenPreferences(string? categoryId)
         {
             // Re-read on open: F3/F4 change quality/design settings from outside the
             // dialog, so controls built once at startup would otherwise show stale values.
@@ -1016,7 +1017,13 @@ public partial class Boot : Control
             _preferencesWindow.Visible = true;
             _preferencesWindow.EnsureOnScreen();
             _preferencesWindow.BringToFront();
-        };
+            // After Visible: a first show restores the remembered category, and this choice is the newer word. It is
+            // remembered like a click on the category.
+            if (categoryId != null) _preferencesWindow.SelectCategory(categoryId);
+        }
+
+        _topMenu.OnOpenPreferences = () => OpenPreferences(null);
+        _topMenu.OnOpenGraphicsPreferences = () => OpenPreferences("graphics");
 
         _topMenu.OnOpenAbout = ShowAboutWindow;
 
@@ -2054,24 +2061,63 @@ public partial class Boot : Control
 
         _preferencesWindow = new SLNG.App.UI.PreferencesWindow { Name = "PreferencesWindow" };
         hudLayer.AddChild(_preferencesWindow);
-        var toolbarPage = new SLNG.App.UI.ToolbarPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_toolbar"), toolbarPage);
-        toolbarPage.Initialize(toolbarItems, _toolbarSettings);
 
-        var displayPage = new SLNG.App.UI.DisplayPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_display"), displayPage);
-        displayPage.Initialize(_uiSettings, _localizationManager);
+        // FEAT-UI-79: seven categories, in this order, each a column of sections (docs/specs/FEAT-UI-79-preferences-rework.md
+        // has the table of where every setting goes). Every category and section is made here, first, in the table's order,
+        // so the list and the sections come out as planned whatever order the pages below are built in. Each page then
+        // fills the section(s) it is handed. Only Keyboard is still one embedded block (its table has its own filter).
+        var catGeneral = _preferencesWindow.AddCategory("general", "ui.preferences.cat_general");
+        var secInterface = catGeneral.AddSection("interface", "ui.preferences.sec_general_interface");
+        var secBottomBar = catGeneral.AddSection("bottom_bar", "ui.preferences.sec_general_bottom_bar");
+        var secNames = catGeneral.AddSection("names", "ui.preferences.sec_general_names");
+        var secContentRating = catGeneral.AddSection("content_rating", "ui.preferences.sec_general_content_rating");
+        var secBuilding = catGeneral.AddSection("building", "ui.preferences.sec_general_building");
+
+        var catGraphics = _preferencesWindow.AddCategory("graphics", "ui.preferences.cat_graphics");
+        var secQuality = catGraphics.AddSection("quality", null);
+        var secViewDetail = catGraphics.AddSection("view_detail", "ui.preferences.sec_graphics_view_detail");
+        var secShadows = catGraphics.AddSection("shadows", "ui.preferences.sec_graphics_shadows");
+        var secLightEffects = catGraphics.AddSection("light_effects", "ui.preferences.sec_graphics_light_effects");
+        var secDepthOfField = catGraphics.AddSection("depth_of_field", "ui.preferences.sec_graphics_depth_of_field");
+        var secPerformance = catGraphics.AddSection("performance", "ui.preferences.sec_graphics_performance");
+
+        var catCamera = _preferencesWindow.AddCategory("camera_movement", "ui.preferences.cat_camera_movement");
+        var secCamera = catCamera.AddSection("camera", "ui.preferences.sec_camera_movement_camera");
+        var secMovement = catCamera.AddSection("movement", "ui.preferences.sec_camera_movement_movement");
+        var secAvatar = catCamera.AddSection("avatar", "ui.preferences.sec_camera_movement_avatar");
+
+        var catChat = _preferencesWindow.AddCategory("chat_im", "ui.preferences.cat_chat_im");
+        var secConversations = catChat.AddSection("conversations", "ui.preferences.sec_chat_im_conversations");
+        var secFriendsOnline = catChat.AddSection("friends_online", "ui.preferences.sec_chat_im_friends_online");
+        var secAway = catChat.AddSection("away", "ui.preferences.sec_chat_im_away");
+        var secChatLogs = catChat.AddSection("chat_logs", "ui.preferences.sec_chat_im_chat_logs");
+
+        var catKeyboard = _preferencesWindow.AddCategory("keyboard", "ui.preferences.cat_keyboard");
+        var secKeyboard = catKeyboard.AddSection("all", null);
+
+        var catNetwork = _preferencesWindow.AddCategory("network_cache", "ui.preferences.cat_network_cache");
+        var secNetwork = catNetwork.AddSection("network", "ui.preferences.sec_network_cache_network");
+        var secCache = catNetwork.AddSection("cache", "ui.preferences.sec_network_cache_cache");
+
+        var catHelp = _preferencesWindow.AddCategory("help_info", "ui.preferences.cat_help_info");
+        var secDebugLog = catHelp.AddSection("debug_log", "ui.preferences.sec_help_info_debug_log");
+        var secLicences = catHelp.AddSection("licences", "ui.preferences.sec_help_info_licences");
+
+        new SLNG.App.UI.ToolbarPreferencesPage().Build(secBottomBar, toolbarItems, _toolbarSettings);
+
+        new SLNG.App.UI.InterfacePreferencesPage().Build(secInterface, _uiSettings, _localizationManager);
+        new SLNG.App.UI.NamesPreferencesPage().Build(secNames, _uiSettings);
+        new SLNG.App.UI.BuildingPreferencesPage().Build(secBuilding, _uiSettings);
+        new SLNG.App.UI.ChatPreferencesPage().Build(secConversations, secFriendsOnline, _uiSettings);
 
         _cameraSettings = new SLNG.App.UI.CameraSettings();
         _cameraSettings.Load();
         cameraHud.SetCameraSettings(_cameraSettings);
-        var cameraPage = new SLNG.App.UI.CameraPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_camera"), cameraPage);
-        cameraPage.Initialize(_cameraSettings);
+        new SLNG.App.UI.CameraPreferencesPage().Build(secCamera, _cameraSettings);
 
         // FEAT-UI-43: every key shortcut in one place, rebindable. Changes are saved when made (never at boot).
         var keyboardPage = new SLNG.App.UI.KeyboardPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_keyboard"), keyboardPage);
+        secKeyboard.AddBlock("keyboard.all.keyboard_page", keyboardPage);
         keyboardPage.Initialize(KeyBindings.Table, KeyBindings.Save, _keyDispatcher);
 
         // FEAT-ANIM-03: the seat-pose-over-AO switch. Applied to the renderer here and on every
@@ -2104,8 +2150,7 @@ public partial class Boot : Control
             if (_session != null) _session.HideOwnGroupTitle = hide;
         };
         var animationPage = new SLNG.App.UI.AnimationPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_animation"), animationPage);
-        animationPage.Initialize(_animationSettings);
+        animationPage.Build(secMovement, secAvatar, _animationSettings);
         animationPage.SeatPoseOverridesAoChanged += on =>
         {
             if (_avatarRenderer != null) _avatarRenderer.SeatPoseOverridesAo = on;
@@ -2131,17 +2176,17 @@ public partial class Boot : Control
             _topMenu.SetHeadFollowsCameraUI(on);
         };
 
-        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage { Name = SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics") };
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_graphics"), _graphicsPage);
-        _graphicsPage.Initialize(_graphicsSettings, ApplyGraphicsSettings, _dofSettings,
-                                 () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0,
-                                 () => _gpuCache?.MaxSizeBytes ?? ((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024));
+        _graphicsPage = new SLNG.App.UI.GraphicsPreferencesPage { Name = "GraphicsPreferencesPage" };
+        _graphicsPage.Build(secQuality, secViewDetail, secShadows, secLightEffects, secDepthOfField, secPerformance,
+                            _graphicsSettings, ApplyGraphicsSettings, _dofSettings,
+                            () => _dofController?.Apply(), () => _gpuCache?.CurrentSizeBytes ?? 0,
+                            () => _gpuCache?.MaxSizeBytes ?? ((long)_graphicsSettings.TextureMemoryMb * 1024 * 1024));
 
         _networkSettings = new SLNG.App.UI.NetworkSettings();
         _networkSettings.Load();
-        var networkPage = new SLNG.App.UI.NetworkPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_network"), networkPage);
-        networkPage.Initialize(
+        new SLNG.App.UI.NetworkPreferencesPage().Build(
+            secNetwork,
+            secCache,
             ProjectSettings.GlobalizePath("user://cache/assets"),
             _networkSettings,
             kbps => { if (_session != null) _session.MaxBandwidthKbps = kbps; }, // FEAT-NET-05: resends the throttle to every simulator
@@ -2154,8 +2199,8 @@ public partial class Boot : Control
         // FEAT-UI-41: where chat logs are kept and the import of older SLNG logs. The page asks for the
         // running session's folder each time it needs it -- there is none before a login.
         var chatLogPage = new SLNG.App.UI.ChatLogPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_chat_logs"), chatLogPage);
-        chatLogPage.Initialize(
+        chatLogPage.Build(
+            secChatLogs,
             ChatLogAccounts,
             () => _chatTarget != null ? SLNG.Core.ChatLogs.ChatLogAccountKey.Of(_sessionGridUri, _sessionFirstName, _sessionLastName) : null,
             () => _chatTarget,
@@ -2166,27 +2211,22 @@ public partial class Boot : Control
 
         // FEAT-UI-75: Away timeout and the texts of the automatic IM responses.
         _autoresponsePage = new SLNG.App.UI.AutoresponsePreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_autoresponse"), _autoresponsePage);
-        _autoresponsePage.Initialize(_presenceController);
+        _autoresponsePage.Build(secAway, _presenceController);
 
         // "Age settings" -- Second Life's content-rating preference (General/Moderate/Adult).
         // Rebound to the live session per login in BindSession, once a session exists to read
         // GridSession.AccountMaturityMax/PreferredMaturity from -- see _maturityPage's own class
         // doc and the OnLoginPressed call site below.
         _maturityPage = new SLNG.App.UI.MaturityPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_maturity"), _maturityPage);
-        _maturityPage.Initialize();
+        _maturityPage.Build(secContentRating);
 
         // FEAT-UI-76: the opt-in, sanitized debug log and the way to its file.
         _debugLogPage = new SLNG.App.UI.DebugLogPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_debuglog"), _debugLogPage);
-        _debugLogPage.Initialize();
+        _debugLogPage.Build(secDebugLog);
 
         // Not optional: the Second Life viewer artwork we ship is CC BY-SA 3.0, which requires the
         // attribution notice to reach the user. See app/THIRD-PARTY-NOTICES.md.
-        var licensesPage = new SLNG.App.UI.LicensesPreferencesPage();
-        _preferencesWindow.AddTab(SLNG.App.UI.L10n.Tr("ui.preferences.tab_licenses"), licensesPage);
-        licensesPage.Initialize();
+        new SLNG.App.UI.LicensesPreferencesPage().Build(secLicences);
     }
 
     /// <summary>Bottom-bar / quick-menu entry point for a launcher window (BUG-UI-07). A window
