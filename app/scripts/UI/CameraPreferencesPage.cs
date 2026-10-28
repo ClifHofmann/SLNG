@@ -24,6 +24,7 @@ public partial class CameraPreferencesPage : VBoxContainer
     // True while the field-of-view slider's range is being moved: changing a bound clamps the value and raises
     // ValueChanged, which must not be written back to the settings as if the person had moved the slider.
     private bool _syncingFovRange;
+    private CheckBox _constraintsBox = null!;
 
     public override void _Ready()
     {
@@ -72,6 +73,17 @@ public partial class CameraPreferencesPage : VBoxContainer
             FormatMetres, v => _settings.SetFocusHeight(v));
 
         AddHint(L10n.Tr("ui.preferences.camera_view_hint"));
+
+        // Firestorm's "Disable camera constraints": takes effect at once, like every switch on a Preferences page.
+        _constraintsBox = new CheckBox
+        {
+            Text = L10n.Tr("ui.preferences.camera_disable_constraints"),
+            ButtonPressed = _settings.DisableConstraints,
+            FocusMode = Control.FocusModeEnum.None,
+        };
+        _constraintsBox.Toggled += on => _settings.SetDisableConstraints(on);
+        AddChild(_constraintsBox);
+        AddHint(L10n.Tr("ui.preferences.camera_disable_constraints_hint"));
 
         var resetButton = new Button
         {

@@ -719,6 +719,8 @@
       "camera_fov": "Field of view",
       "camera_rear_distance": "Rear view distance",
       "camera_focus_height": "Focus height",
+      "camera_disable_constraints": "Disable camera constraints",
+      "camera_disable_constraints_hint": "Lets the mouse wheel take the camera all the way to the point you focused on, on a person into the body, as in Firestorm. Off keeps the reference viewer's minimum distances.",
       "camera_view_hint": "FOV and focus height apply live; the rear view distance takes effect on the next camera reset (Esc). A small FOV zooms in (down to 5°); the widest allowed shrinks in a wide window, as in the reference viewer.",
       "camera_speed_reset": "Reset to defaults",
       "tab_quality": "Hardware / Quality",

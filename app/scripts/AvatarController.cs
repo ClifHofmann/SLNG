@@ -60,7 +60,7 @@ public partial class AvatarController : Camera3D
     /// <summary>The nearest the camera may sit to its pivot right now: 0.02 m on an object, 0.15 m on the
     /// ground, 0.5 m on a person or while following one's own avatar (the viewer's own numbers, see
     /// <see cref="CameraZoomLimits"/>).</summary>
-    private float MinZoom => CameraZoomLimits.MinDistance(_focusKind);
+    private float MinZoom => CameraZoomLimits.MinDistance(_focusKind, _cameraSettings?.DisableConstraints ?? false);
 
     // FEAT-UI-73: the near plane last given to the camera, so the property is only written when it changes.
     private float _appliedNear = CameraZoomLimits.DefaultNearPlane;
@@ -577,7 +577,8 @@ public partial class AvatarController : Camera3D
         if (_avatarRenderer != null
             && _avatarRenderer.TryPickAvatar(rayOrigin, rayDir, avatarMax, out var avatarBody, out var avatarPoint, out _))
         {
-            point = avatarPoint;
+            // The pick shapes are wider than the skin (so a click always lands); the focus belongs on the skin.
+            point = avatarPoint + rayDir.Normalized() * CameraZoomLimits.AvatarFocusInset;
             body = avatarBody;
             return true;
         }

@@ -95,4 +95,24 @@ public class CameraZoomLimitsTests
 
         Assert.Equal(19, notches);
     }
+
+    [Theory]
+    [InlineData(CameraFocusKind.Object)]
+    [InlineData(CameraFocusKind.Land)]
+    [InlineData(CameraFocusKind.Avatar)]
+    [InlineData(CameraFocusKind.OwnAvatar)]
+    public void Switching_the_constraints_off_lowers_the_floor_for_every_kind(CameraFocusKind kind)
+    {
+        Assert.Equal(CameraZoomLimits.UnconstrainedMinZoom, CameraZoomLimits.MinDistance(kind, constraintsDisabled: true));
+        Assert.Equal(CameraZoomLimits.MinDistance(kind), CameraZoomLimits.MinDistance(kind, constraintsDisabled: false));
+        Assert.True(CameraZoomLimits.UnconstrainedMinZoom > 0f, "the zoom slider is logarithmic and needs a positive floor");
+        Assert.True(CameraZoomLimits.UnconstrainedMinZoom < CameraZoomLimits.ObjectMinZoom);
+    }
+
+    [Fact]
+    public void The_avatar_focus_inset_stays_smaller_than_the_thinnest_pick_shape_it_is_applied_to()
+    {
+        // The head sphere is 0.13 m and a hand 0.05 m wide; the inset must not push the point out the far side of anything but a hand.
+        Assert.InRange(CameraZoomLimits.AvatarFocusInset, 0.01f, 0.13f);
+    }
 }

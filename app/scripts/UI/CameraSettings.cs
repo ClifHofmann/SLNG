@@ -85,6 +85,10 @@ public sealed class CameraSettings
     /// <summary>Height above the avatar origin the camera looks at / orbits around (was a hardcoded 1.8).</summary>
     public float FocusHeight { get; private set; } = DefaultFocusHeight;
 
+    /// <summary>Firestorm's "Disable camera constraints" (the viewer's <c>DisableCameraConstraints</c>): the wheel may take the camera
+    /// all the way to its focus point, on a person into the body. Off by default, as there.</summary>
+    public bool DisableConstraints { get; private set; }
+
     /// <summary>Width / height of the 3D view, which is what the field-of-view limits depend on. A viewport that is
     /// missing or has no size yet (a minimised window) reports 16:9.</summary>
     public static float ViewAspect(Viewport? viewport)
@@ -112,6 +116,7 @@ public sealed class CameraSettings
         }
         RearDistance = Mathf.Clamp((float)cfg.GetValue(Section, "rear_distance", DefaultDistance), MinDistance, MaxDistance);
         FocusHeight = Mathf.Clamp((float)cfg.GetValue(Section, "focus_height", DefaultFocusHeight), MinFocusHeight, MaxFocusHeight);
+        DisableConstraints = (bool)cfg.GetValue(Section, "disable_constraints", false);
     }
 
     public void SetOrbitSpeed(float value) => Persist("orbit_speed", ClampMul(value), v => OrbitSpeed = v);
@@ -120,6 +125,15 @@ public sealed class CameraSettings
     public void SetFov(float value) => Persist("fov", Mathf.Clamp(value, MinFov, MaxFov), v => Fov = v);
     public void SetRearDistance(float value) => Persist("rear_distance", Mathf.Clamp(value, MinDistance, MaxDistance), v => RearDistance = v);
     public void SetFocusHeight(float value) => Persist("focus_height", Mathf.Clamp(value, MinFocusHeight, MaxFocusHeight), v => FocusHeight = v);
+
+    public void SetDisableConstraints(bool value)
+    {
+        DisableConstraints = value;
+        var cfg = new ConfigFile();
+        cfg.Load(ConfigPath);
+        cfg.SetValue(Section, "disable_constraints", value);
+        cfg.Save(ConfigPath);
+    }
 
     private static void Persist(string key, float clamped, Action<float> assign)
     {

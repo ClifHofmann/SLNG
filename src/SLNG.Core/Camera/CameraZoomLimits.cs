@@ -44,6 +44,16 @@ public static class CameraZoomLimits
     /// <summary>Smallest near plane ever used: half of the smallest minimum distance.</summary>
     public const float MinNearPlane = ObjectMinZoom * NearToFocusRatio;
 
+    /// <summary>The floor while the camera constraints are switched off (the viewer's <c>DisableCameraConstraints</c>): not
+    /// zero, because the zoom slider is logarithmic, but a millimetre, which puts the camera on its focus point.</summary>
+    public const float UnconstrainedMinZoom = 0.001f;
+
+    /// <summary>How far an Alt+Click on a person is moved INTO the body along the click ray. The pick shapes
+    /// (<c>AvatarRenderer.PickLimbs</c>) are deliberately wider than the skin so a click always lands, which put the
+    /// focus point about 7 cm in front of the surface the person pointed at; the reference viewer's collision volumes
+    /// hug the body, so there the point is on it.</summary>
+    public const float AvatarFocusInset = 0.07f;
+
     /// <summary>The nearest the camera may get to its focus point, in metres.</summary>
     public static float MinDistance(CameraFocusKind kind) => kind switch
     {
@@ -51,6 +61,12 @@ public static class CameraZoomLimits
         CameraFocusKind.Object => ObjectMinZoom,
         _ => AvatarMinZoom,
     };
+
+    /// <summary><see cref="MinDistance(CameraFocusKind)"/>, or the near-zero floor when the person has switched the camera
+    /// constraints off -- Firestorm's "Disable camera constraints", which lets the wheel take the camera all the way to the
+    /// focus point (on a person, into the body).</summary>
+    public static float MinDistance(CameraFocusKind kind, bool constraintsDisabled)
+        => constraintsDisabled ? UnconstrainedMinZoom : MinDistance(kind);
 
     /// <summary>
     /// The near plane for a camera <paramref name="focusDistance"/> metres from its focus point: the default
