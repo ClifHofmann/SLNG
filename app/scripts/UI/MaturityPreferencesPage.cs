@@ -63,7 +63,7 @@ public partial class MaturityPreferencesPage : Node
 
         var labels = new string[Levels.Length];
         for (int i = 0; i < Levels.Length; i++) labels[i] = LabelFor(Levels[i]);
-        _dropdownRow = section.AddOption($"{prefix}.rating", "ui.preferences.maturity_heading", labels, 0,
+        _dropdownRow = section.AddOption($"{prefix}.rating", "ui.preferences.maturity_show_up_to", labels, 0,
             OnItemSelected, optionKeys: LevelKeys);
         _dropdown = _dropdownRow.ControlAs<OptionButton>()!;
         _dropdownRow.Visible = false;

@@ -239,6 +239,9 @@ public partial class PrefsRow : VBoxContainer
             MaxValue = max,
             Step = step,
             Value = value,
+            // The wheel over a slider scrolls the page. Left on, a person scrolling down a long category changes every
+            // slider the pointer passes over, silently.
+            Scrollable = false,
             FocusMode = FocusModeEnum.None,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ShrinkCenter,

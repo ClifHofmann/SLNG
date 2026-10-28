@@ -313,6 +313,7 @@ public static partial class SelfTest
         results.Add(CheckPreferencesWindowWiring(tree)); // FEAT-UI-79
         results.Add(CheckPreferencesComplete(tree)); // FEAT-UI-79
         results.Add(CheckPreferencesDependents(tree)); // FEAT-UI-79
+        results.Add(CheckPreferencesRoundTrips(tree)); // FEAT-UI-79 follow-up
         results.Add(CheckPreferencesSearch(tree)); // FEAT-UI-80
         results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
         results.Add(CheckTextureViewerFit(tree));

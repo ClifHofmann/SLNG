@@ -644,6 +644,9 @@ public partial class GraphicsPreferencesPage : Node
 
     private long CurrentBudgetMb() => (_budgetBytes?.Invoke() ?? ((long)_settings.TextureMemoryMb << 20)) >> 20;
 
+    /// <summary>Shows the slider and its readout for the current mode: the budget the viewer worked out while "automatic" is
+    /// on, the person's own number while it is off. The slider moves without raising its signal: its handler stores the
+    /// value as the manual size, and the budget shown under "automatic" must never replace the number the person chose.</summary>
     private void UpdateTextureMemControls()
     {
         var slider = _textureMemRow.ControlAs<HSlider>()!;
@@ -652,13 +655,13 @@ public partial class GraphicsPreferencesPage : Node
         {
             _textureMemRow.SetEnabled(false);
             long currentBudgetMb = CurrentBudgetMb();
-            slider.Value = currentBudgetMb;
+            slider.SetValueNoSignal(currentBudgetMb);
             label.Text = AutoBudgetText(currentBudgetMb);
         }
         else
         {
             _textureMemRow.SetEnabled(true);
-            slider.Value = _settings.TextureMemoryMb;
+            slider.SetValueNoSignal(_settings.TextureMemoryMb);
             label.Text = $"{_settings.TextureMemoryMb} MB";
         }
     }
@@ -703,7 +706,7 @@ public partial class GraphicsPreferencesPage : Node
         {
             long currentBudgetMb = CurrentBudgetMb();
             _textureMemRow.ValueLabel!.Text = AutoBudgetText(currentBudgetMb);
-            _textureMemRow.ControlAs<HSlider>()!.Value = currentBudgetMb;
+            _textureMemRow.ControlAs<HSlider>()!.SetValueNoSignal(currentBudgetMb); // see UpdateTextureMemControls
         }
     }
 

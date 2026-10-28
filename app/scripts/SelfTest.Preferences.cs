@@ -404,6 +404,8 @@ public static partial class SelfTest
                 if (Row(row)?.Controller?.Id != controller) problems.Add($"{row} does not declare DependsOn({controller})");
             }
             Depends("graphics.light_effects.hero_probe", "graphics.light_effects.mirrors");
+            Depends("general.interface.ui_scale", "general.interface.ui_scale_auto");
+            Depends("graphics.performance.texture_memory", "graphics.performance.texture_memory_auto");
             foreach (string name in new[] { "shadow_resolution", "shadow_splits", "shadow_softness", "shadow_distance", "shadow_opacity", "small_object_shadows" })
                 Depends("graphics.shadows." + name, "graphics.shadows.shadows");
             foreach (string name in new[] { "auto_focus", "focus_distance", "focus_range", "falloff", "blur", "near_blur", "show_marker", "reset" })
@@ -550,6 +552,168 @@ public static partial class SelfTest
             UI.DofSettings.ConfigPath = savedDof;
             PrefsState.ConfigPath = savedPrefs;
             if (GodotObject.IsInstanceValid(host)) { host.GetParent()?.RemoveChild(host); host.QueueFree(); }
+            try { File.Delete(temp); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>The public value-type and string properties of a settings object, as text: what "the settings object is
+    /// unchanged" compares.</summary>
+    private static Dictionary<string, string> SnapshotSettings(object settings)
+    {
+        var snapshot = new Dictionary<string, string>();
+        foreach (var property in settings.GetType().GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!property.CanRead || property.GetIndexParameters().Length > 0) continue;
+            if (!property.PropertyType.IsValueType && property.PropertyType != typeof(string)) continue;
+            snapshot[property.Name] = Convert.ToString(property.GetValue(settings), System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        }
+        return snapshot;
+    }
+
+    /// <summary>Looking at the Graphics page must not change a setting. Opening Preferences refreshes the page and
+    /// the window shows and hides; with the auto-focus on and off, and with values off the sliders' steps (a slider cannot
+    /// show them, and writing its rounded value back used to change them), none of that may touch the settings objects or
+    /// the file. Also: "Automatic" for the texture memory on and off again leaves the manual size as it was (the slider
+    /// showing the budget used to store it), and one trip through the Profiles menu -- save as, load, delete -- works
+    /// against the file and leaves it as it found it. Settings write to a temp file meanwhile.</summary>
+    private static Check CheckPreferencesRoundTrips(SceneTree tree)
+    {
+        const string Name = "preferences round trips";
+        string temp = Path.Combine(Path.GetTempPath(), "slng-selftest-roundtrip-" + Guid.NewGuid().ToString("N") + ".cfg");
+        string savedGraphics = UI.GraphicsSettings.ConfigPath, savedDof = UI.DofSettings.ConfigPath, savedPrefs = PrefsState.ConfigPath;
+        int savedAvatars = RenderConfig.MaxFullyRenderedAvatars; // loading a profile sets it
+        UI.PreferencesWindow? window = null;
+        try
+        {
+            UI.GraphicsSettings.ConfigPath = UI.DofSettings.ConfigPath = PrefsState.ConfigPath = temp;
+            window = new UI.PreferencesWindow();
+            tree.Root.AddChild(window);
+            var category = window.AddCategory("graphics", "ui.preferences.cat_graphics");
+            var quality = category.AddSection("quality", null);
+            var viewDetail = category.AddSection("view_detail", "ui.preferences.sec_graphics_view_detail");
+            var shadows = category.AddSection("shadows", "ui.preferences.sec_graphics_shadows");
+            var light = category.AddSection("light_effects", "ui.preferences.sec_graphics_light_effects");
+            var depth = category.AddSection("depth_of_field", "ui.preferences.sec_graphics_depth_of_field");
+            var perf = category.AddSection("performance", "ui.preferences.sec_graphics_performance");
+
+            var settings = new UI.GraphicsSettings();
+            var dof = new UI.DofSettings();
+            var page = new UI.GraphicsPreferencesPage();
+            page.Build(quality, viewDetail, shadows, light, depth, perf, settings, () => { }, dof, () => { }, () => 0, () => 1000L << 20);
+
+            var problems = new List<string>();
+            void Expect(bool ok, string what) { if (!ok) problems.Add(what); }
+            PrefsRow Row(string id) => category.Rows.First(r => r.Id == id);
+            string Text() => File.Exists(temp) ? File.ReadAllText(temp) : "";
+            bool Same(Dictionary<string, string> a, Dictionary<string, string> b) => a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var v) && v == p.Value);
+
+            // Values a slider cannot show: its steps are 16 m, 0.1, 0.05, 0.125, 128 MB and so on.
+            settings.SetDrawDistance(100f);
+            settings.SetVolumeLodFactor(2.3f);
+            settings.SetShadows(true);
+            settings.SetShadowDistance(100f);
+            settings.SetShadowBlur(1.37f);
+            settings.SetShadowOpacity(0.77f);
+            settings.SetTextureMemoryAuto(false);
+            settings.SetTextureMemoryMb(3000);
+            dof.SetEnabled(true);
+            dof.SetFocusDistance(7.33f);
+            dof.SetFocusRange(2.57f);
+            dof.SetFalloff(0.333f);
+            dof.SetBlurAmount(0.137f);
+
+            // --- looking changes nothing ----------------------------------------------------------------------------------
+            foreach (bool autoFocus in new[] { true, false })
+            {
+                dof.SetAutoFocus(autoFocus);
+                var graphicsBefore = SnapshotSettings(settings);
+                var dofBefore = SnapshotSettings(dof);
+                File.Delete(temp); // any Save from here on brings it back
+
+                page.Refresh();
+                window.Visible = true; // as Boot's OnOpenPreferences: refresh, then show
+                page.Refresh();
+                page._Process(1.0); // the readouts, including the texture memory slider under "automatic"
+                page._Process(1.0);
+                window.Visible = false;
+                page.Refresh();
+
+                string what = $"auto-focus {(autoFocus ? "on" : "off")}";
+                Expect(Same(graphicsBefore, SnapshotSettings(settings)), $"{what}: the graphics settings changed");
+                Expect(Same(dofBefore, SnapshotSettings(dof)), $"{what}: the depth-of-field settings changed (auto-focus now {dof.AutoFocus})");
+                Expect(!File.Exists(temp), $"{what}: something was saved");
+            }
+
+            // --- Automatic on and off again --------------------------------------------------------------------------------
+            dof.SetAutoFocus(true);
+            settings.SetTextureMemoryAuto(false);
+            settings.SetTextureMemoryMb(3000);
+            page.Refresh();
+            string beforeAuto = Text();
+            var autoBox = Row("graphics.performance.texture_memory_auto").ControlAs<CheckBox>()!;
+            window.Visible = true;
+            autoBox.ButtonPressed = true;
+            page._Process(1.0);
+            Expect(settings.TextureMemoryAuto && settings.TextureMemoryMb == 3000, $"Automatic on: manual size is {settings.TextureMemoryMb} MB, expected 3000");
+            autoBox.ButtonPressed = false;
+            Expect(!settings.TextureMemoryAuto && settings.TextureMemoryMb == 3000, $"Automatic off again: manual size is {settings.TextureMemoryMb} MB, expected 3000");
+            Expect(Text() == beforeAuto, "Automatic on and off again left the file different");
+            window.Visible = false;
+
+            // --- the Profiles menu ------------------------------------------------------------------------------------------
+            const string ProfileName = "selftest-roundtrip-profile";
+            var popup = DescendantNodes(Row("graphics.quality.profiles")).OfType<MenuButton>().First().GetPopup();
+            var deleteMenu = popup.GetNode<PopupMenu>("DeleteProfileMenu");
+            int IdOf(PopupMenu menu, string text)
+            {
+                for (int i = 0; i < menu.ItemCount; i++)
+                {
+                    if (menu.GetItemText(i) == text) return menu.GetItemId(i);
+                }
+                return -1;
+            }
+
+            string beforeProfile = Text();
+            var stateAtSave = SnapshotSettings(settings);
+            int saveAs = IdOf(popup, UI.L10n.Tr("ui.preferences.profile_save_as"));
+            Expect(saveAs >= 0, "the Profiles menu has no 'Save current as' entry");
+            popup.EmitSignal(PopupMenu.SignalName.IdPressed, (long)saveAs);
+            var nameField = DescendantNodes(Row("graphics.quality.profile_save")).OfType<LineEdit>().First();
+            Expect(Row("graphics.quality.profile_save").Visible, "'Save current as' did not show the name field");
+            nameField.Text = ProfileName;
+            nameField.EmitSignal(LineEdit.SignalName.TextSubmitted, ProfileName);
+            Expect(UI.GraphicsSettings.GetProfileNames().Contains(ProfileName) && settings.CurrentProfileName == ProfileName, "the profile was not saved");
+            Expect(IdOf(popup, ProfileName) >= 0, "the saved profile is not in the Profiles menu");
+
+            settings.SetDrawDistance(300f);
+            settings.SetShadowDistance(48f);
+            int load = IdOf(popup, ProfileName);
+            popup.EmitSignal(PopupMenu.SignalName.IdPressed, (long)load);
+            var afterLoad = SnapshotSettings(settings);
+            afterLoad.Remove(nameof(UI.GraphicsSettings.CurrentProfileName));
+            var expectedAfterLoad = new Dictionary<string, string>(stateAtSave);
+            expectedAfterLoad.Remove(nameof(UI.GraphicsSettings.CurrentProfileName));
+            Expect(Same(expectedAfterLoad, afterLoad) && settings.CurrentProfileName == ProfileName, "loading the profile did not bring the saved values back");
+
+            int delete = IdOf(deleteMenu, ProfileName);
+            Expect(delete >= 0, "the Delete submenu does not list the profile");
+            deleteMenu.EmitSignal(PopupMenu.SignalName.IdPressed, (long)delete);
+            Expect(!UI.GraphicsSettings.GetProfileNames().Contains(ProfileName) && IdOf(popup, ProfileName) < 0, "the profile was not deleted");
+            // Loading the profile saved the settings once more, at the values the profile held: the file reads as it did before.
+            Expect(Text() == beforeProfile, "saving, loading and deleting a profile left the file different");
+
+            return problems.Count == 0
+                ? new Check(Name, true, "Refresh / _Process / open and close leave the settings and the file alone (auto-focus on and off, off-step values), Automatic on and off keeps 3000 MB, Profiles menu: save as, load, delete")
+                : new Check(Name, false, string.Join("; ", problems.Take(10)));
+        }
+        catch (Exception ex) { return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}"); }
+        finally
+        {
+            UI.GraphicsSettings.ConfigPath = savedGraphics;
+            UI.DofSettings.ConfigPath = savedDof;
+            PrefsState.ConfigPath = savedPrefs;
+            RenderConfig.MaxFullyRenderedAvatars = savedAvatars;
+            if (window != null && GodotObject.IsInstanceValid(window)) { window.GetParent()?.RemoveChild(window); window.QueueFree(); }
             try { File.Delete(temp); } catch (IOException) { }
         }
     }

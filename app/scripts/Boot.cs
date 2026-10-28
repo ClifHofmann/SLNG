@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.44-alpha";
+    public const string AppVersion = "v0.28.45-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1000,7 +1000,8 @@ public partial class Boot : Control
         };
 
 
-        _topMenu.OnOpenPreferences = () =>
+        // categoryId: the category to open on (the Graphics menu's "Graphics..." entry); null opens the one that was last open.
+        void OpenPreferences(string? categoryId)
         {
             // Re-read on open: F3/F4 change quality/design settings from outside the
             // dialog, so controls built once at startup would otherwise show stale values.
@@ -1016,7 +1017,13 @@ public partial class Boot : Control
             _preferencesWindow.Visible = true;
             _preferencesWindow.EnsureOnScreen();
             _preferencesWindow.BringToFront();
-        };
+            // After Visible: a first show restores the remembered category, and this choice is the newer word. It is
+            // remembered like a click on the category.
+            if (categoryId != null) _preferencesWindow.SelectCategory(categoryId);
+        }
+
+        _topMenu.OnOpenPreferences = () => OpenPreferences(null);
+        _topMenu.OnOpenGraphicsPreferences = () => OpenPreferences("graphics");
 
         _topMenu.OnOpenAbout = ShowAboutWindow;
 

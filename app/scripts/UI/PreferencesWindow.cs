@@ -77,7 +77,9 @@ public partial class PreferencesWindow : SLNGWindow
 
     public override void _Ready()
     {
-        PersistId = "preferences";
+        // "_v2": the old window was 600 x 420 and a size saved for it would be applied again, clamped to the 640 x 420
+        // minimum instead of opening at the 760 x 520 default of the seven-category layout.
+        PersistId = "preferences_v2";
         base._Ready(); // SLNGWindow styling
         _builtLocale = L10n.CurrentLocale; // the language the rows' texts are in, whatever the person switches to later
 

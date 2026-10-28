@@ -39,7 +39,8 @@ public sealed class InterfacePreferencesPage
 
         // --- Scale ---
         // FEAT-UI-42: automatic (follows the display) or a chosen number. The slider shows the scale
-        // in force either way; it is only editable while automatic is off.
+        // in force either way; while automatic is on it is dimmed and cannot be moved (SetEnabled), like every
+        // other row that waits for its switch.
         PrefsRow? sliderRow = null;
         var detected = PrefsStyle.MakeInfo("");
         void ShowDetected() => detected.Text = L10n.TrFormat("ui.preferences.ui_scale_detected", FormatPercent(UiScale.OsScale));
@@ -49,11 +50,11 @@ public sealed class InterfacePreferencesPage
         bool dragging = false;
         bool syncing = false; // true while the code, not the user, moves the slider
 
-        section.AddCheck($"{prefix}.ui_scale_auto", "ui.preferences.ui_scale_auto", settings.ScaleAutomatic, on =>
+        var autoRow = section.AddCheck($"{prefix}.ui_scale_auto", "ui.preferences.ui_scale_auto", settings.ScaleAutomatic, on =>
             {
                 settings.SetScaleAutomatic(on);
                 var slider = sliderRow!.ControlAs<HSlider>()!;
-                slider.Editable = !on;
+                sliderRow.SetEnabled(!on);
                 syncing = true;
                 slider.Value = settings.Scale; // automatic: the display's; off: the scale just in force
                 syncing = false;
@@ -73,9 +74,10 @@ public sealed class InterfacePreferencesPage
                     if (!dragging && !syncing) settings.SetScale((float)v); // keyboard / click on the track
                 },
                 hintKey: "ui.preferences.ui_scale_hint")
+            .DependsOn(autoRow)
             .WithKeywords("UIScaleFactor");
+        sliderRow.SetEnabled(!settings.ScaleAutomatic);
         var scaleSlider = sliderRow.ControlAs<HSlider>()!;
-        scaleSlider.Editable = !settings.ScaleAutomatic;
         scaleSlider.DragStarted += () => dragging = true;
         scaleSlider.DragEnded += changed =>
         {

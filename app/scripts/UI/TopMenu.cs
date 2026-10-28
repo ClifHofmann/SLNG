@@ -17,6 +17,9 @@ namespace SLNG.App.UI
         public Action? OnToggleStats;
         public Action? OnMeasureRenderBaseline;
         public Action? OnOpenPreferences;
+        /// <summary>Opens Preferences on the Graphics category (the Graphics menu's "Graphics..." entry), whichever category
+        /// was open last.</summary>
+        public Action? OnOpenGraphicsPreferences;
         /// <summary>FEAT-SL-01: opens the About window the TPV Policy §1.g requires.</summary>
         public Action? OnOpenAbout;
         public Action? OnCreateLandmark;
@@ -910,7 +913,7 @@ namespace SLNG.App.UI
             }
 
             menu.AddSeparator();
-            menu.AddItem(L10n.Tr("ui.preferences.tab_graphics") + "...", 900);
+            menu.AddItem(L10n.Tr("ui.preferences.cat_graphics") + "...", 900);
         }
 
         private void OnProfileMenuItemSelected(int id)
@@ -941,7 +944,7 @@ namespace SLNG.App.UI
             }
             else if (id == 900)
             {
-                OnOpenPreferences?.Invoke();
+                OnOpenGraphicsPreferences?.Invoke();
             }
         }
     }

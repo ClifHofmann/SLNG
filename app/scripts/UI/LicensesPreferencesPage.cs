@@ -34,7 +34,9 @@ public sealed class LicensesPreferencesPage
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
         };
         body.Text = ReadNotice();
-        section.AddBlock($"{section.CategoryId}.{section.Id}.notices", body, "ui.preferences.licenses_heading");
+        // No heading of its own under the section's: "Licences" already says what this is. The old heading's words stay
+        // searchable (third-party, attribution) as a search key.
+        section.AddBlock($"{section.CategoryId}.{section.Id}.notices", body, null, false, "ui.preferences.licenses_heading");
     }
 
     private static string ReadNotice()
