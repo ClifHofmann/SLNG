@@ -436,7 +436,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.22-alpha";
+    public const string AppVersion = "v0.28.23-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1310,6 +1310,14 @@ public partial class Boot : Control
         };
         // FEAT-UI-13: right-click an avatar -> Profile / IM.
         _inWorldContextMenu.OnAvatarProfileClicked = (agentId, name) => OpenUserProfileWindow(hudLayer, agentId, name);
+        // A worn item's menu also offers its wearer's entries (Profile for yourself).
+        _inWorldContextMenu.ResolveWearer = avatarEntityId =>
+        {
+            var av = _world?.GetEntity(avatarEntityId)?.GetComponent<SLNG.Core.Components.AvatarComponent>();
+            if (av == null) return null;
+            string name = !string.IsNullOrEmpty(av.DisplayName) ? av.DisplayName : $"{av.FirstName} {av.LastName}".Trim();
+            return (av.AgentId, name, av.IsLocalAgent);
+        };
         if (_avatarRenderer != null)
         {
             _avatarRenderer.NameTagContextRequested = (agentId, name, isSelf, screenPos) =>

@@ -308,6 +308,7 @@ public static partial class SelfTest
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
         results.Add(CheckScriptDialogButtonWidths(tree)); // M5-4
         results.Add(CheckTextureViewerFit(tree));
+        results.Add(CheckWornItemMenuOffersProfile(tree));
         results.Add(CheckInventoryTrashMenus(tree));
         results.Add(CheckWornListKeepsSelection(tree));
         results.Add(CheckWindowInsets(tree));
@@ -1764,6 +1765,66 @@ public static partial class SelfTest
             {
                 chat.GetParent()?.RemoveChild(chat);
                 chat.QueueFree();
+            }
+        }
+    }
+
+    /// <summary>Right-clicking a worn item offers its wearer's Profile above the item's own entries; a loose object
+    /// offers no avatar entries at all, and Profile is the only avatar entry for yourself.</summary>
+    private static Check CheckWornItemMenuOffersProfile(SceneTree tree)
+    {
+        const string Name = "worn item menu offers the wearer's profile";
+        var world = new World();
+        var worn = world.GetOrCreateEntity(2001, 100);
+        worn.SetComponent(new TransformComponent());
+        worn.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0));
+        worn.SetComponent(new AttachmentComponent(System.Guid.NewGuid(), 1));
+        var loose = world.GetOrCreateEntity(2002, 100);
+        loose.SetComponent(new TransformComponent());
+        loose.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, profileCurve: 0));
+
+        var menu = new UI.InWorldContextMenu();
+        try
+        {
+            tree.Root.AddChild(menu);
+            menu.ResolveWearer = _ => (System.Guid.NewGuid(), "Me Resident", true);
+
+            static List<string> Visible(Node n)
+            {
+                var found = new List<string>();
+                void Walk(Node k)
+                {
+                    if (k is Button b && b.IsVisibleInTree()) found.Add(b.Text);
+                    foreach (var c in k.GetChildren()) Walk(c);
+                }
+                Walk(n);
+                return found;
+            }
+
+            menu.ShowMenu(Vector2.Zero, worn, worn.LocalId, Vector3.Zero);
+            var wornButtons = Visible(menu);
+            menu.ShowMenu(Vector2.Zero, loose, loose.LocalId, Vector3.Zero);
+            var looseButtons = Visible(menu);
+
+            bool profile = wornButtons.Exists(t => t.Contains("Profile"));
+            bool noOthers = !wornButtons.Exists(t => t.Contains("IM") || t.Contains("Mute") || t.Contains("Teleport"));
+            bool detach = wornButtons.Exists(t => t.Contains("Detach"));
+            bool looseClean = !looseButtons.Exists(t => t.Contains("Profile"));
+            bool ok = profile && noOthers && detach && looseClean;
+            return new Check(Name, ok, ok
+                ? "worn: Profile + Detach, no IM/Mute/Teleport for yourself; loose object: no Profile"
+                : $"profile {profile}, no other avatar entries {noOthers}, detach {detach}, loose clean {looseClean}");
+        }
+        catch (Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (GodotObject.IsInstanceValid(menu))
+            {
+                menu.GetParent()?.RemoveChild(menu);
+                menu.QueueFree();
             }
         }
     }
