@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-UI-72`
 - **Track:** `ui` (with `core` and `net` parts; phase 2 writes to the SL inventory)
-- **Status:** `🧪 Review` (phase 1 built v0.27.99-alpha; phase 2 built v0.28.26-alpha, no migration)
+- **Status:** `✅ Done` (phase 1 v0.27.99-alpha; phase 2 v0.28.26 to v0.28.29-alpha, no migration; confirmed in-world 2026-10-28)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md)
 
