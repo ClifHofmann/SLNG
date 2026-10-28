@@ -245,6 +245,7 @@ public partial class Boot
     private void BeginLoginStartFavorites()
     {
         DisposeLoginStartFavorites();
+        _loginFavoritesArmed = false;
         if (_sessionStartCacheKey.Length == 0 || _session == null) return;
         _loginStartFavorites = new LoginStartFavorites(
             new GridSessionLoginStartSource(_session),
@@ -254,7 +255,24 @@ public partial class Boot
 
     /// <summary>The loading screen has cleared: let the resolver start (after its own debounce), so it never competes with the
     /// initial region load.</summary>
-    private void PokeLoginStartFavorites() => _loginStartFavorites?.Poke();
+    private void PokeLoginStartFavorites()
+    {
+        _loginFavoritesArmed = true;
+        _loginStartFavorites?.Poke();
+    }
+
+    // The loading screen has cleared at least once this session, so the login cache may start reading the grid.
+    private bool _loginFavoritesArmed;
+
+    /// <summary>The favorites changed (one dragged onto the bar, one removed, one added in another viewer): ask the login cache to
+    /// read the folder again. Until this existed the cache was refreshed once per session, after the world loaded, so a landmark
+    /// added during the session was missing from the login screen's "Start at" list until the session after next. Not before the
+    /// loading screen has cleared: the cache must never compete with the first region load.</summary>
+    private void OnFavoritesChangedForLoginCache()
+    {
+        if (_loginFavoritesArmed && _favoritesService.Mode == FavoritesMode.Folder)
+            _loginStartFavorites?.Poke();
+    }
 
     private void DisposeLoginStartFavorites()
     {

@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.26-alpha";
+    public const string AppVersion = "v0.28.27-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1390,6 +1390,7 @@ public partial class Boot : Control
         // FEAT-UI-72 phase 2: the one list behind the favorites bar (the inventory's Favorites folder).
         _favoritesService = new FavoritesService { Name = "FavoritesService" };
         AddChild(_favoritesService);
+        _favoritesService.Changed += OnFavoritesChangedForLoginCache; // the login screen's list follows the bar
 
         // FEAT-AVATAR-03: hover height. OnHoverChanged applies the local self-avatar render offset
         // immediately (not only after the sim echoes AvatarAppearance back) and sends the new value
