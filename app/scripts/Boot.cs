@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.29-alpha";
+    public const string AppVersion = "v0.28.30-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -4380,6 +4380,16 @@ public partial class Boot : Control
             _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, text,
                 detail: SLNG.App.UI.L10n.TrFormat("ui.eventqueue.stalled_detail", where, e.FailureCount));
         };
+        // BUG-NET-36: the region we moved into never answered over UDP -- sky and water, nothing
+        // else. Said at once rather than only in the dialog the timeout brings half a minute later,
+        // because what the user sees looks like a region that is merely slow.
+        _session.RegionNotAnswering += (s, regionHandle) =>
+        {
+            string text = SLNG.App.UI.L10n.Tr("ui.region_no_answer.text");
+            CallDeferred(MethodName.LogMessage, $"[color=orange][Region] {text}[/color]");
+            _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, text,
+                detail: SLNG.App.UI.L10n.Tr("ui.region_no_answer.detail"));
+        };
         // BUG-NET-22: the session ended and is not coming back. Every path converges on this one
         // event -- the grid kicked us, the simulator went down, the network timed out, or the
         // region we are standing in stopped answering (BUG-NET-20).
@@ -5998,6 +6008,8 @@ public partial class Boot : Control
                 SLNG.App.UI.L10n.Tr("ui.session_ended.sim_shutdown"),
             SLNG.Core.SessionEndReason.NetworkTimeout =>
                 SLNG.App.UI.L10n.Tr("ui.session_ended.timeout"),
+            SLNG.Core.SessionEndReason.RegionNeverAnswered =>
+                SLNG.App.UI.L10n.Tr("ui.session_ended.no_answer"),
             // The grid's own wording when it gave one -- it knows more about why than we do.
             _ => string.IsNullOrWhiteSpace(detail)
                 ? SLNG.App.UI.L10n.Tr("ui.session_ended.server")

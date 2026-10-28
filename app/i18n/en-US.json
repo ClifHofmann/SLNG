@@ -1145,7 +1145,12 @@
       "capabilities": "Region “{0}” did not answer its capability request, so inventory, textures and events would not work. The session has been ended — please log in again.",
       "sim_shutdown": "The simulator shut down — a region restart does that. The session has been ended.",
       "timeout": "The connection to the grid timed out. The session has been ended.",
+      "no_answer": "The region never answered, so the session has been ended. A firewall or security program on this computer is probably blocking the viewer’s UDP traffic: allow PurisViewer.exe in the Windows firewall and in any security program, then log in again.",
       "server": "The grid ended the session."
+    },
+    "region_no_answer": {
+      "text": "The region is not answering — nothing has arrived from it, so you only see sky and water. A firewall or security program on this computer is probably blocking the viewer.",
+      "detail": "Login and inventory go over HTTP and worked; the world itself comes over UDP, and not a single packet of it arrived. Allow PurisViewer.exe in the Windows firewall (Windows Security → Firewall & network protection → Allow an app through firewall, for private and public networks) and in any other security program, then log in again. If another viewer fails on this network too, the network itself (VPN, router) is blocking it."
     },
     "eventqueue": {
       "stalled": "Region “{0}” has stopped delivering events — until you reconnect, group chat, teleport progress, object media and environment changes will not arrive from it.",
