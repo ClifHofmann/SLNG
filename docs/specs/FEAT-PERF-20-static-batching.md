@@ -371,6 +371,25 @@ almost nothing on top, because what remains is unique meshes. Two further levers
 - [x] Phase A1: shared-material cache with copy-on-write (v0.27.62-alpha)
 - [ ] Phase B per the plan (closed based on Sirens results, re-evaluate after FEAT-PERF-24)
 
+### 2026-10-29: first in-world look at A1 (`--share-materials`), v0.28.54-alpha
+
+Sirens Beach, Vulkan, separate render thread, 2 shadow cascades, 8 windows of 5 s, against the run of 08:48 without the flag:
+
+| | off | `--share-materials` |
+|---|---|---|
+| draws, total (scene / shadow) | 19.7k (~14.4k / ~5.3k; 22.3k in the first run) | 15.4-16.5k (12.1-12.9k / 3.0-3.2k) |
+| fps | 27-28 | 24-31, median about 27 |
+| render CPU | ~22 ms | 18-22 ms |
+
+Draws fall by roughly 16-25 % (predicted 27 %); fps does not follow, because the frame is now limited by the main 
+thread as much as by the render thread. The camera was not pinned, so this is a rough comparison.
+
+**A visual regression: the palm fronds near the beach were plain white** (no albedo, the surface relief still shaded) 
+with `--share-materials`; the same palm looked normal, green, without it. The cause is not found. Phase A1 therefore 
+stays off by default and Phase A2 ("default on") is blocked until the palm is right. Suspects, unchecked: a shared 
+entry built before its texture was in, or an alpha-kind shader swap applied only to the first face that asked 
+(`BuildFaceMaterialAsync` hands later faces the entry's material without re-running anything).
+
 ## Sub-tasks / Progress
 
 - [x] Phase 0 measurement (v0.27.54-alpha)
