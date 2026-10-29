@@ -890,6 +890,7 @@ public partial class ObjectRenderer : Node3D
             using (MainThreadPhase.Enter("obj-ticks.alpha-census")) TickAlphaSortCensus();
             using (MainThreadPhase.Enter("obj-ticks.alpha-hyst")) TickAlphaSortHysteresis();
             using (MainThreadPhase.Enter("obj-ticks.trace")) TickTraceObject(delta);
+            using (MainThreadPhase.Enter("obj-ticks.matAudit")) TickMaterialAudit(delta);
         }
 
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
@@ -4568,8 +4569,12 @@ public partial class ObjectRenderer : Node3D
                         {
                             if (IsInstanceValid(t.Result))
                             {
-                                material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, t.Result);
-                                material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+                                var baseColor = t.Result;
+                                ApplyToMaterialAndCopies(material, m =>
+                                {
+                                    m.SetShaderParameter(PrimShaderFamily.AlbedoTexture, baseColor);
+                                    m.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+                                });
                             }
                             else GD.PrintErr($"[FaceTex] object PBR baseColor {eff.BaseColorTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }, label: "prim.pbr_basecolor")));
@@ -4582,8 +4587,12 @@ public partial class ObjectRenderer : Node3D
                         {
                             if (IsInstanceValid(t.Result))
                             {
-                                material.SetShaderParameter(PrimShaderFamily.NormalTexture, t.Result);
-                                material.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
+                                var normalTex = t.Result;
+                                ApplyToMaterialAndCopies(material, m =>
+                                {
+                                    m.SetShaderParameter(PrimShaderFamily.NormalTexture, normalTex);
+                                    m.SetShaderParameter(PrimShaderFamily.HasNormalTexture, true);
+                                });
                             }
                             else GD.PrintErr($"[FaceTex] object PBR normal {eff.NormalTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }, label: "prim.pbr_normal")));
@@ -4605,8 +4614,12 @@ public partial class ObjectRenderer : Node3D
                                 // because it makes the Phase-1 "visually identical" comparison
                                 // ambiguous otherwise: if the scene looks different, this line
                                 // tells you whether an ORM face was even involved.
-                                material.SetShaderParameter(PrimShaderFamily.OrmTexture, t.Result);
-                                material.SetShaderParameter(PrimShaderFamily.HasOrmTexture, true);
+                                var ormTex = t.Result;
+                                ApplyToMaterialAndCopies(material, m =>
+                                {
+                                    m.SetShaderParameter(PrimShaderFamily.OrmTexture, ormTex);
+                                    m.SetShaderParameter(PrimShaderFamily.HasOrmTexture, true);
+                                });
                                 // Info, not Debug: Logger's default level is Info, so a Debug line
                                 // here would never print and this note would be worthless exactly
                                 // when it's needed. Once per texture id (this callback is
@@ -4626,8 +4639,12 @@ public partial class ObjectRenderer : Node3D
                         {
                             if (IsInstanceValid(t.Result))
                             {
-                                material.SetShaderParameter(PrimShaderFamily.EmissionTexture, t.Result);
-                                material.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
+                                var emissiveTex = t.Result;
+                                ApplyToMaterialAndCopies(material, m =>
+                                {
+                                    m.SetShaderParameter(PrimShaderFamily.EmissionTexture, emissiveTex);
+                                    m.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
+                                });
                             }
                             else GD.PrintErr($"[FaceTex] object PBR emissive {eff.EmissiveTextureId} pixelArea={screenPixelArea:F0} fetch/decode returned null");
                         }, label: "prim.pbr_emissive")));
@@ -4663,13 +4680,7 @@ public partial class ObjectRenderer : Node3D
                         // Checked here (inside the deferred callback, not before scheduling it) so
                         // there's no gap left for a same-frame eviction to invalidate the check.
                         if (!IsInstanceValid(tex)) return;
-                        material.SetShaderParameter(PrimShaderFamily.AlbedoTexture, tex);
-                        material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
-                        // FEAT-RENDER-04 phase 5: a legacy material's DiffuseAlphaMode (unless
-                        // DEFAULT) has already decided this face's transparency — don't let the
-                        // DetectAlpha() pixel guess second-guess it.
-                        if (!legacyAlphaModeResolved)
-                            ApplyAlphaCutout(material, tex, tintIsTranslucent, ft.TextureId, ft.Fullbright);
+                        BindLegacyFaceTexture(material, tex, legacyAlphaModeResolved, tintIsTranslucent, ft.TextureId, ft.Fullbright);
                     }, label: "prim.legacy_default_face");
                 }
                 else
@@ -5023,6 +5034,22 @@ public partial class ObjectRenderer : Node3D
     /// <see cref="ApplyAnimatedPlacement"/> forwards the animated UV uniforms.</para>
     ///
     /// <para>Main thread only (Godot resource mutation), like everything else in ApplyAlphaCutout.</para></summary>
+    /// <summary>Binds a legacy face's decoded texture and (unless the legacy material already decided the face's
+    /// transparency, FEAT-RENDER-04 phase 5 -- DetectAlpha() must not second-guess it) runs the alpha-cutout
+    /// choice. Goes to the shared material AND to any private copy cut from it before the texture arrived
+    /// (BUG-RENDER-53); a copy that is a planar mirror keeps its mirror shader.</summary>
+    private void BindLegacyFaceTexture(ShaderMaterial material, ImageTexture tex, bool alphaModeResolved,
+        bool tintIsTranslucent, Guid textureId, bool fullbright)
+    {
+        ApplyToMaterialAndCopies(material, m =>
+        {
+            m.SetShaderParameter(PrimShaderFamily.AlbedoTexture, tex);
+            m.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, true);
+            if (!alphaModeResolved && !ReferenceEquals(m.Shader, PrimShaderFamily.Mirror))
+                ApplyAlphaCutout(m, tex, tintIsTranslucent, textureId, fullbright);
+        });
+    }
+
     private static void AttachDepthCore(ShaderMaterial material)
     {
         if (material.NextPass is ShaderMaterial existing && ReferenceEquals(existing.Shader, PrimShaderFamily.DepthCore))

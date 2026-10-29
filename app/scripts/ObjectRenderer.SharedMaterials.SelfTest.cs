@@ -123,6 +123,48 @@ public partial class ObjectRenderer
             var returnedAnim = mi1.GetSurfaceOverrideMaterial(0) as ShaderMaterial;
             Expect(ReferenceEquals(returnedAnim, mat1), "texanim returns surface to shared material when animation turns off");
 
+            // 5b. BUG-RENDER-53: a surface detached BEFORE the shared material's texture arrives must still get
+            // the texture (the palm fronds that stayed white). No GpuCache here, so the face is built bare and
+            // the texture is handed in through the same call the real closure makes.
+            var lateFace = new FaceTexture(Guid.NewGuid(), Guid.Empty, Guid.Empty, System.Numerics.Vector4.One, 1f, 1f, 0f, 0f, 0f);
+            var lateKey = PrimMaterialKey.Create(lateFace, scale, 0);
+            var lateTask = BuildFaceMaterialAsync(lateFace, scale, 1000f, 1f);
+            lateTask.Wait();
+            var lateShared = lateTask.Result.Material;
+            var e3 = world.GetOrCreateEntity(1, 1003);
+            e3.SetComponent(new TransformComponent(System.Numerics.Vector3.Zero, System.Numerics.Quaternion.Identity));
+            var mi3 = new MeshInstance3D();
+            AddChild(mi3);
+            mi3.Mesh = mesh1;
+            mi3.SetSurfaceOverrideMaterial(0, lateShared);
+            var state3 = new VisualState
+            {
+                EntityId = e3.Id,
+                MeshInstance = mi3,
+                SurfaceMaterialKeys = new PrimMaterialKey[] { lateKey },
+                SurfaceDetached = new byte[1]
+            };
+            _visuals[state3.EntityId] = state3;
+
+            ApplyTexAnimUniforms(state3, animState);
+            var lateCopy = mi3.GetSurfaceOverrideMaterial(0) as ShaderMaterial;
+            Expect(lateCopy != null && !ReferenceEquals(lateCopy, lateShared), "texanim before the texture arrived still detaches");
+
+            var lateTex = ImageTexture.CreateFromImage(Image.CreateEmpty(4, 4, false, Image.Format.Rgba8));
+            BindLegacyFaceTexture(lateShared, lateTex, alphaModeResolved: true, tintIsTranslucent: false, lateFace.TextureId, fullbright: false);
+            Expect(lateCopy != null && lateCopy.GetShaderParameter(PrimShaderFamily.HasAlbedoTexture).AsBool()
+                   && ReferenceEquals(lateCopy.GetShaderParameter(PrimShaderFamily.AlbedoTexture).As<Texture2D>(), lateTex),
+                "a late texture reaches the surface that detached before it arrived");
+            Expect(lateShared.GetShaderParameter(PrimShaderFamily.HasAlbedoTexture).AsBool(), "a late texture reaches the shared material");
+
+            ApplyTexAnimUniforms(state3, null);
+            Expect(ReferenceEquals(mi3.GetSurfaceOverrideMaterial(0), lateShared), "texanim ends: surface returns to the shared material");
+            ReleaseSurfaceMaterials(state3);
+            _visuals.Remove(state3.EntityId);
+            world.RemoveEntity(1, 1003);
+            mi3.QueueFree();
+            lateTex.Dispose();
+
             // 6. Nothing leaks after removal
             ReleaseSurfaceMaterials(state1);
             Expect(_materialCache.Count == 1, $"after releasing state1, entry still alive (count={_materialCache.Count})");

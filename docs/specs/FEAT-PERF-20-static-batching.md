@@ -385,15 +385,23 @@ Draws fall by roughly 16-25 % (predicted 27 %); fps does not follow, because the
 thread as much as by the render thread. The camera was not pinned, so this is a rough comparison.
 
 **A visual regression: the palm fronds near the beach were plain white** (no albedo, the surface relief still shaded) 
-with `--share-materials`; the same palm looked normal, green, without it. The cause is not found. Phase A1 therefore 
-stays off by default and Phase A2 ("default on") is blocked until the palm is right. Suspects, unchecked: a shared 
-entry built before its texture was in, or an alpha-kind shader swap applied only to the first face that asked 
-(`BuildFaceMaterialAsync` hands later faces the entry's material without re-running anything).
+with `--share-materials`; the same palm looked normal, green, without it. Phase A1 stays off by default and Phase A2 
+("default on") stays blocked until the palm is confirmed right in-world (BUG-RENDER-53).
+
+**Cause (BUG-RENDER-53, v0.28.56-alpha):** a surface that detaches (texture animation, selection, mirror, media) 
+while the shared material is still waiting for its texture is handed a `Duplicate()` cut before the texture exists. 
+The texture and the alpha-cutout shader choice then land on the SHARED material only (the build closure holds that 
+one), so the private copy stays white for good. Found with the `--diag` `[MatAudit]` line: ~1236 palm-frond surfaces 
+`detached`, `has=false`, `entryMat=OTHER`, while the entry held the texture. Fix: the copies cut from a material that 
+has no albedo yet are remembered (weak on the shared material) and every late texture write, plus the alpha-cutout 
+choice, goes to them too (`ApplyToMaterialAndCopies`, `BindLegacyFaceTexture`). Regression check: selftest "shared 
+materials cache", step 5b (fails without the fix, passes with it).
 
 ## Sub-tasks / Progress
 
 - [x] Phase 0 measurement (v0.27.54-alpha)
 - [x] Sirens measurement (user, needs a login) — 2026-10-15: A1 cuts ~27% draws, B adds 1-2%, Phase A1 decided
 - [x] Phase A1 shared-material cache (v0.27.62-alpha)
+- [x] BUG-RENDER-53 white palm: late texture reaches copies detached before it arrived (v0.28.56-alpha; in-world check pending)
 - [ ] Phase B0 gate measurements
 - [ ] Phase B1/B2 merged cells (after FEAT-PERF-24 Phase 2, if the gate passes)
