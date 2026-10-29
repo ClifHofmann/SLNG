@@ -379,7 +379,43 @@ plausible, but it needs one in-world leave/teleport read at Sirens. Criterion 1 
 open. Criterion 3 is off (FEAT-PERF-20 Phase B is closed). Caveats: headless dummy renderer (no `frame_pre_draw`,
 ~7 ms of client loop time sits in every tail), and S6 (windowed, equal draws for A and B) is not built. The bench
 confirms the spec's premise: RIDs win on load, leave, sweeps and memory, not on idle or move cost, and not on draws.
-**Decision: not yet taken.** Next: P0-b and a Sirens leave/teleport read.
+**Decision: not yet taken.** Next: a Sirens leave/teleport read (P0-b is done, below).
+
+### P0-b result (2026-10-29, v0.28.48-alpha, Sirens, `rt=main`, `--diag`, 20 windows of 5 s, 07:10:30-07:12:11)
+
+The project default is the single-thread safe model, so `rt=main` is the Safe-mode run. ~18 fps, 59.1k nodes,
+16.4k draws (median). Median / min / max, ms: `scriptsMs` 20.8 / 17.3 / 25.6, **`postFlushMs` 9.4 / 7.1 / 14.3,
+`flushMs` 8.5 / 6.6 / 12.6**, `tailMs` 0.7, `renderCpuMs` 14.7, `renderGpuMs` 16.9.
+
+- Criterion 1, first half: the flush is real, 8.5 ms >= 3 ms.
+- Second half: not prim nodes. The bench puts 93k idle nodes at 0.4 ms flush and 300 moved prims per frame at
+  0.6-0.9 ms, so prim nodes explain at most ~1 ms of the 8.5. The same window has `skinWritesPerFrame=6355`,
+  `skelUpdatesPerFrame=26`, 35 avatars, 784 skinned meshes (`[AvatarCost]`). Attributing the flush to avatar skins
+  is an inference from those counters; no run isolated it. **Criterion 1 fails.**
+- Criterion 3 is off (FEAT-PERF-20 Phase B is closed). Criterion 2: see the next block.
+
+### Leave/teleport read (2026-10-29, same session, 07:13:06-07:13:21)
+
+Teleport out of Sirens: nodes 59.2k -> 22.3k within one 5 s window, ~37k nodes (~12k prims) freed. The window
+averaged 30 fps (worst 141 ms, 5 hitches); the next window was back at 91 fps. The log has 5 s resolution, so
+there is no per-frame trace.
+
+- The free is already budgeted. `OnEntityRemoved` hides the visual in the frame the removal arrives and
+  `ProcessPendingRemovals` frees the nodes under a budget (BUG-NET-34). There was no 100+ ms delete-queue frame
+  like the bench's unbudgeted 123 ms: the worst frame (141 ms) is within the pre-leave range (105-129 ms), and
+  `workqueue` was 277 ms per second for that one window, spread over frames.
+- The one big item is the drain: `RegionDisconnected` 62 ms in a single frame (`[WorldDrain]`). That is
+  `World.RemoveRegion` plus `HideForRemoval` for ~12k entities, not `RemoveVisual` or the delete queue. How much of
+  it is node work (which RIDs would shrink) was not split.
+- Criterion 2's second half (>= 50 ms of `RemoveVisual` plus delete queue per leave frame) is **not met**.
+
+### Decision (2026-10-29): No-go for Phase 2
+
+No criterion holds: the flush is avatar skins, not prim nodes (1); the leave cost is budgeted and not in node
+frees (2); FEAT-PERF-20 Phase B is closed (3). The RID backend still wins on load (5x), sweeps and memory, but
+none of that is a frame-rate lever, which the spec said from the start. Parked, not deleted: reopen it if the
+62 ms `RegionDisconnected` drain turns out to be mostly node work, or if the region-load time matters. The levers
+for frame time are the draw count (shadow casters and cascades) and the avatar skin writes (FEAT-PERF-23).
 
 ## What hangs on a prim node today, and what it becomes
 
