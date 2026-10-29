@@ -411,11 +411,48 @@ there is no per-frame trace.
 
 ### Decision (2026-10-29): No-go for Phase 2
 
-No criterion holds: the flush is avatar skins, not prim nodes (1); the leave cost is budgeted and not in node
-frees (2); FEAT-PERF-20 Phase B is closed (3). The RID backend still wins on load (5x), sweeps and memory, but
-none of that is a frame-rate lever, which the spec said from the start. Parked, not deleted: reopen it if the
-62 ms `RegionDisconnected` drain turns out to be mostly node work, or if the region-load time matters. The levers
-for frame time are the draw count (shadow casters and cascades) and the avatar skin writes (FEAT-PERF-23).
+No criterion holds: the flush is not prim nodes (1; avatar animation is ~3 ms of it, see the next section); the
+leave cost is budgeted and not in node frees (2); FEAT-PERF-20 Phase B is closed (3). The RID backend still wins
+on load (5x), sweeps and memory, but none of that is a frame-rate lever, which the spec said from the start.
+Parked, not deleted: reopen it if the 62 ms `RegionDisconnected` drain turns out to be mostly node work, or if the
+region-load time matters. The levers for frame time are the draw count (shadow cascades) and the render-thread mode.
+
+### 2026-10-29 findings: what the Sirens frame is made of
+
+All at the same spot (Sirens Beach, `--diag`, 5 s windows, medians, v0.28.48-alpha).
+
+**1. Render-thread mode, not a node cost, was the 2x.** The BUG-PERF-22 fallback had switched the saved choice back
+to `main` after a 10 s stall (godot.log: `fallback marker detected`; `engine_overrides.cfg` gone). Same scene:
+`rt=main` 14 fps (scripts 23 + flush 10.5 + render CPU 20 ms in series), `rt=separate` 27 fps (main thread
+scripts 19.3 + flush 8.9 + tail 7.5 ms, overlapped). 25.4k draws, 60k nodes.
+
+**2. What the main-thread flush holds** (`flushMs` ~8-9 ms in `separate`):
+
+| Test | `flushMs` | Reading |
+|---|---|---|
+| baseline | ~8.3-10 | |
+| avatar cap 16 -> 1 (skin writes 6.9k -> 1.65k per frame) | 11.8 -> 8.0 (main mode) | full avatars' skins ~3.8 ms |
+| F8 (all avatars frozen, 0 skeleton updates, 0 skin writes) | 8.3 -> 5.3 | avatar animation ~3 ms |
+| Hide UI (Ctrl+Shift+U) | 8.6 -> 9.0 | UI is not it |
+| `xform=` counters (v0.28.48, `--diag`) | ~900 writes/frame: `obj` ~270, `spin` ~520, `avRoot` ~71, other ~34 | ~1.5 ms by the bench rate (inference) |
+
+Reduced avatars keep animating at 10 Hz by design (`ReducedAnimationIntervalSeconds`, 22 skeleton updates per
+frame with 39 of 41 reduced); that costs little. **About 4 ms of flush is still unexplained.** The `spin` count is
+260 turning prims (2 writes each), where `ObjectRenderer.TargetOmega.cs` expects "a few dozen"; each is written
+every frame, whatever its distance.
+
+**3. At this view the frame is render-thread bound**, so none of the main-thread flush matters until that falls:
+`drawCallMs` 44.6 ms, `tailMs` 17 ms (main waits). 29.7k draws, **13.0k of them shadow** (44 %).
+
+**4. Shadow cascades are the lever.** The saved `shadow_splits=2` means FOUR cascades (0 off, 1 = 2 cascades,
+2 = 4). Four -> two: shadow draws 13,050 -> 4,400, draws 29.9k -> 21.1k, `drawCallMs` 42 -> 35, 22 -> 27 fps
+(11 and 5 windows). `shadow_distance` 120 -> 64 changed nothing: casters are cut at `ShadowCasterDistance`
+(56 m), so they stay in the near cascades whatever the maximum distance. Whether 2 cascades at 120 m looks
+acceptable is the maintainer's call; the presets Medium and High still use 4.
+
+**5. Two other things the day turned up:** a planar mirror 84 m away and edge-on rendered a second scene for 7.5
+minutes (BUG-PERF-23, fixed in v0.28.49-alpha); Firestorm held 4+ GB of VRAM next to the client (not ours, but
+`osBudgetMB` followed it down to 3.3 GB).
 
 ## What hangs on a prim node today, and what it becomes
 
