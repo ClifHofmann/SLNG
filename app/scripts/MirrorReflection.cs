@@ -98,6 +98,19 @@ public partial class MirrorReflection : Node
         _camera.Current = true;
     }
 
+    /// <summary>Whether a sphere of <paramref name="radius"/> around <paramref name="local"/> (a point in
+    /// the main camera's space, looking down -Z) touches the view frustum. <paramref name="tanX"/> and
+    /// <paramref name="tanY"/> are the tangents of the half field of view. Conservative: it errs towards
+    /// "in view", the plane margin grows with the radius.</summary>
+    internal static bool InView(Vector3 local, float tanX, float tanY, float radius)
+    {
+        float depth = -local.Z;
+        if (depth + radius <= 0f) return false;
+        float forward = Mathf.Max(depth, 0f);
+        return Mathf.Abs(local.X) <= forward * tanX + radius * Mathf.Sqrt(1f + tanX * tanX)
+            && Mathf.Abs(local.Y) <= forward * tanY + radius * Mathf.Sqrt(1f + tanY * tanY);
+    }
+
     /// <summary>Aims the reflection camera for this frame. <paramref name="normal"/> must point
     /// out of the mirror's front face; <paramref name="point"/> is any point on its plane.
     /// Returns false when there is nothing to render, in which case the caller should leave the
@@ -120,6 +133,16 @@ public partial class MirrorReflection : Node
         // and does not deserve a scene render of its own.
         float fraction = mirrorRadius / Mathf.Max(eye.DistanceTo(point), 0.1f);
         if (fraction < MinScreenFraction) return false;
+
+        // BUG-PERF-23: a mirror the camera is not looking at costs a whole second scene render for nothing
+        // (one 84 m away and edge-on drew 34k instead of 17k draws for minutes).
+        var viewport = main.GetViewport().GetVisibleRect().Size;
+        float tanHalf = Mathf.Tan(Mathf.DegToRad(main.Fov) * 0.5f);
+        float aspect = viewport.Y > 0f ? viewport.X / viewport.Y : 1f;
+        bool fovIsVertical = main.KeepAspect == Camera3D.KeepAspectEnum.Height;
+        float tanX = fovIsVertical ? tanHalf * aspect : tanHalf;
+        float tanY = fovIsVertical ? tanHalf : tanHalf / aspect;
+        if (!InView(main.GlobalTransform.AffineInverse() * point, tanX, tanY, mirrorRadius)) return false;
 
         // The render resolution, not the visible rect: the rect is in UI units (physical / UI scale,
         // FEAT-UI-42) and a mirror sized from it would be blurrier than the world it reflects.
