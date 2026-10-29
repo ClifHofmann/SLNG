@@ -34,6 +34,16 @@ device limit and nobody noticed: the effective filtering was and is 16x. D3D12 v
 `anisotropic_filtering_level=4` (16x). Same result on Vulkan, a valid sampler on D3D12. Self test `project: anisotropic
 filtering level is an index (0-4)` keeps the value in range.
 
+## Second finding: the descriptor heap
+
+With the sampler fixed (v0.28.52) D3D12 stays up, enters a region and bakes the reflection probe. Then, as the region fills, 
+the log carries ~37,000 `Uniforms were never supplied for set (0|1)` and `Cannot create uniform set because there's not enough 
+room in the RESOURCES descriptor heap. Please increase ... rendering/rendering_device/d3d12/max_resource_descriptors` 
+(default 65,536; the sampler heap, `max_sampler_descriptors`, is 1,024). Our scenes build many materials and textures, 
+so the heap runs out and draws lose their bindings. v0.28.53 sets `max_resource_descriptors=1000000` (about 32 MB of 
+heap; Vulkan ignores the key). Unknown: how many descriptors a loaded Sirens needs; 1,000,000 is the D3D12 tier 1/2 
+shader-visible limit, so if that is still too few D3D12 is out of reach for this renderer.
+
 ## Acceptance Criteria
 
 - [x] `project.godot` carries 4; self test added, headless `--selftest` 184 ok.
