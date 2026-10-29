@@ -279,6 +279,7 @@ public static partial class SelfTest
         results.Add(CheckRenderThreadFallback()); // BUG-PERF-22
         results.Add(CheckSharedRiggedSkins(tree)); // FEAT-PERF-24
         results.Add(CheckMirrorInView()); // BUG-PERF-23
+        results.Add(CheckAnisotropyLevel()); // BUG-RENDER-52
         results.Add(CheckGraphicsFirstRun()); // FEAT-PERF-26
         results.Add(CheckOutfitProbe(tree)); // FEAT-PERF-23 Phase 0
         results.Add(CheckOutfitMerge(tree)); // FEAT-PERF-23 Phase 1
