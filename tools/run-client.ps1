@@ -81,9 +81,10 @@ param(
     # Passes --batch-potential.
     [switch]$BatchPotential,
 
-    # FEAT-PERF-20 Phase A1: share identical prim materials. Cuts draw calls by merging consecutive draws.
-    # Passes --share-materials.
-    [switch]$ShareMaterials,
+    # FEAT-PERF-20 Phase A1: turn OFF shared prim materials (on by default). With them on, identical faces
+    # share one material and Forward+ merges consecutive draws. The A/B: same spot with and without.
+    # Passes --no-share-materials.
+    [switch]$NoShareMaterials,
 
     # FEAT-PERF-24: turn OFF shared skins (on by default). With it on, an avatar's worn rigged meshes
     # whose skins are identical share one, so the skeleton writes those bone matrices once per frame
@@ -227,9 +228,9 @@ if ($BatchPotential) {
     Write-Host "      [BatchPotential] tally ON (--batch-potential)" -ForegroundColor Cyan
     $userArgs += '--batch-potential'
 }
-if ($ShareMaterials) {
-    Write-Host "      shared prim materials ON (--share-materials)" -ForegroundColor Cyan
-    $userArgs += '--share-materials'
+if ($NoShareMaterials) {
+    Write-Host "      shared prim materials OFF (--no-share-materials)" -ForegroundColor Yellow
+    $userArgs += '--no-share-materials'
 }
 if ($NoShareSkins) {
     Write-Host "      shared skins OFF (--no-share-skins)" -ForegroundColor Yellow

@@ -76,9 +76,10 @@ public static class RenderConfig
     /// <summary>
     /// FEAT-PERF-20 Phase A1: share identical prim materials. Faces with equal <see cref="SLNG.Core.PrimMaterialKey"/>
     /// share a single ShaderMaterial object, allowing Godot's Forward+ to merge draws into instanced calls.
-    /// Copy-on-write detaches a face when mutated (texanim, mirror, selection, MOAP). Default off.
+    /// Copy-on-write detaches a face when mutated (texanim, mirror, selection, MOAP). On by default since v0.28.58
+    /// (same-spot A/B at a crowded region: draws -17 %, renderCpuMs -3.4 ms, +15 % fps); <c>--no-share-materials</c> turns it off.
     /// </summary>
-    public static bool ShareMaterials { get; set; } = false;
+    public static bool ShareMaterials { get; set; } = true;
 
     /// <summary>
     /// FEAT-PERF-24: worn rigged meshes of one avatar whose skins are identical (same bone and

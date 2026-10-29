@@ -163,10 +163,10 @@ public static class Diagnostics
             || HasFlag(OS.GetCmdlineUserArgs(), "--batch-potential"))
             RenderConfig.BatchPotential = true;
 
-        // FEAT-PERF-20 Phase A1: --share-materials turns on shared prim materials across identical keys.
-        if (HasFlag(OS.GetCmdlineArgs(), "--share-materials")
-            || HasFlag(OS.GetCmdlineUserArgs(), "--share-materials"))
-            RenderConfig.ShareMaterials = true;
+        // FEAT-PERF-20 Phase A1: shared prim materials are on by default; --no-share-materials gives every face its own again (the A/B).
+        if (HasFlag(OS.GetCmdlineArgs(), "--no-share-materials")
+            || HasFlag(OS.GetCmdlineUserArgs(), "--no-share-materials"))
+            RenderConfig.ShareMaterials = false;
 
         // FEAT-PERF-24: --no-share-skins gives every rigged mesh its own Skin again (the A/B).
         if (HasFlag(OS.GetCmdlineArgs(), "--no-share-skins")
@@ -183,7 +183,7 @@ public static class Diagnostics
                  $" (BUG-RENDER-16)");
 
         GD.Print($"[Diagnostics] instancing = {(RenderConfig.EnableInstancing ? "on" : "off (--no-instancing)")} (FEAT-PERF-06)");
-        GD.Print($"[Diagnostics] share-materials = {(RenderConfig.ShareMaterials ? "on (--share-materials)" : "off")} (FEAT-PERF-20)");
+        GD.Print($"[Diagnostics] share-materials = {(RenderConfig.ShareMaterials ? "on" : "off (--no-share-materials)")} (FEAT-PERF-20)");
         GD.Print($"[Diagnostics] share-skins = {(RenderConfig.ShareSkins ? "on" : "off (--no-share-skins)")} (FEAT-PERF-24)");
         GD.Print($"[Diagnostics] worn alpha depth = {(RenderConfig.WornAlphaDepth > 0f ? RenderConfig.WornAlphaDepth.ToString(System.Globalization.CultureInfo.InvariantCulture) : "off")} (--worn-alpha-depth, BUG-RENDER-50)");
 
