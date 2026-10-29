@@ -357,6 +357,30 @@ restore it afterwards.
 **No-go:** ship Phase 1, do FEAT-PERF-14/20/21 on nodes (each works there, see below), and park
 Phase 2+. Record the decision in this spec.
 
+### P0-c result (2026-10-29, headless, `SelfTest.PrimBench.cs`, reproduced in a second run)
+
+`godot --headless --path app --log-file user://logs/selftest/primbench.log -- --selftest --prim-bench`,
+30k prims, 6 own `ShaderMaterial`s each (built before timing). A = nodes, B = RIDs. Ray parity 1000/1000, 0 mismatches.
+
+| Scenario | A (nodes) | B (RIDs) |
+|---|---|---|
+| S0 idle | scripts 0.04 ms | 0.04 ms (same) |
+| S1 move 300/frame | scripts 0.3-0.4, flush 0.6-0.9 | scripts 0.5, flush 0.4 (about even) |
+| S2 toggle `Visible` 2000/frame | scripts 2.3-2.5 ms | 0.3 ms |
+| S3 mesh swap + 6 overrides, 200/frame | scripts 1.2 ms | 0.45 ms |
+| S4 create 30k @ 2 ms/frame | 4.8-5.3 s, 613-675 frames | 0.8-1.0 s, 103-123 frames |
+| S5 remove 30k + delete queue | 628 ms, one 123 ms tail frame | 358 ms, scripts p99 43 ms |
+| static memory over baseline | +213 MB | +102 MB |
+
+**Gate, as far as the bench reaches.** Criterion 2 first half holds: create + remove is ~5x cheaper with RIDs
+(5.9 s against 1.1 s; the rule asks for 3x). Its second half (region-leave/teleport frames at the spot carry
+>= 50 ms of `RemoveVisual` plus delete queue) is **open**: the bench's 123 ms delete-queue frame says it is
+plausible, but it needs one in-world leave/teleport read at Sirens. Criterion 1 needs P0-b (Safe-mode run), also
+open. Criterion 3 is off (FEAT-PERF-20 Phase B is closed). Caveats: headless dummy renderer (no `frame_pre_draw`,
+~7 ms of client loop time sits in every tail), and S6 (windowed, equal draws for A and B) is not built. The bench
+confirms the spec's premise: RIDs win on load, leave, sweeps and memory, not on idle or move cost, and not on draws.
+**Decision: not yet taken.** Next: P0-b and a Sirens leave/teleport read.
+
 ## What hangs on a prim node today, and what it becomes
 
 Line numbers are `app/scripts/ObjectRenderer.cs` unless another file is named.

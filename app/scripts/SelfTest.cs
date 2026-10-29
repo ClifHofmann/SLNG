@@ -215,6 +215,13 @@ public static partial class SelfTest
     /// </summary>
     public static void Run(SceneTree tree)
     {
+        // FEAT-PERF-24 P0-c: opt-in synthetic bench, runs instead of the checks (SelfTest.PrimBench.cs).
+        if (PrimBenchRequested)
+        {
+            RunPrimBench(tree);
+            return;
+        }
+
         var results = new List<Check>();
         results.Add(CheckLogsIsolated());
         results.AddRange(CheckShaders());
