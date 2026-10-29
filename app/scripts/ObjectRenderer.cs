@@ -890,6 +890,7 @@ public partial class ObjectRenderer : Node3D
             using (MainThreadPhase.Enter("obj-ticks.alpha-census")) TickAlphaSortCensus();
             using (MainThreadPhase.Enter("obj-ticks.alpha-hyst")) TickAlphaSortHysteresis();
             using (MainThreadPhase.Enter("obj-ticks.trace")) TickTraceObject(delta);
+            using (MainThreadPhase.Enter("obj-ticks.matAudit")) TickMaterialAudit(delta);
         }
 
         if (!RenderConfig.TryGetLocalAgentGodotPos(_world, out var agentPos)) return;
