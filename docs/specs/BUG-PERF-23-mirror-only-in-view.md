@@ -27,6 +27,15 @@ field of view, so a mirror to the side of, or behind, the view that was merely i
 
 ## Fix
 
+**Second attempt (v0.28.50-alpha), the one that matters.** The first fix (v0.28.49) was a frustum test and did not
+help: in-world, with it, the mirror view stayed on (9 of 18 windows, 30k draws, 18-19 fps). The mirror was *in*
+the frustum: the camera looked along the wall (`cos=0.05`), so the mirror sat dead ahead at ~82 m, seen edge-on.
+Edge-on, it has no width. `MirrorReflection.ScreenFraction` now measures the narrow side:
+`radius * (planeDistance / lineOfSight) / lineOfSight`, i.e. the radius times how squarely the line of sight meets
+the glass. 1.82 m at 84 m, plane 4.2 m from the eye: 0.0011, under `MinScreenFraction` (0.01), so no render.
+Head-on at 84 m is 0.0217 and still renders; that is a quality call for the maintainer.
+
+**First attempt (v0.28.49-alpha), kept because it is correct for a mirror behind or beside the view:**
 `UpdateFor` returns false (the caller idles the mirror viewport) when a sphere of the mirror's radius around its
 centre does not touch the view frustum: `MirrorReflection.InView`, a pure function in camera space
 (`depth + radius <= 0`, or `|x|`/`|y|` beyond `depth * tan(fov/2) + radius * sqrt(1 + tan^2)`). The half-FOV
@@ -39,12 +48,13 @@ higher threshold is a quality call for the maintainer.
 
 - [x] `InView` self test: ahead, behind, far to the side, far below, edge touching, clear of the frustum, radius
       reaching in front of the camera, wholly behind (`planar mirror: only rendered while in view`).
-- [x] `dotnet build app/SLNG.App.csproj` clean, headless `--selftest` 182 ok.
+- [x] `dotnet build app/SLNG.App.csproj` clean, headless `--selftest` 182 ok (the check now also covers 6 sizes, among them the Sirens case).
 - [ ] In-world, at the spot above with `-Diag`: no `views=mirror` while the mirror is out of view; the mirror still
       works when it is in view (look at it from 3 m and from 15 m, then turn away and back).
 
 ## Sub-tasks / Progress
 
 - [x] `InView` and the gate in `UpdateFor` (v0.28.49-alpha)
+- [x] `ScreenFraction`, edge-on mirrors (v0.28.50-alpha)
 - [x] Self test
 - [ ] In-world check

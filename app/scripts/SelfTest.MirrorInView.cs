@@ -28,6 +28,23 @@ public static partial class SelfTest
             bool got = MirrorReflection.InView(c.Local, Tan, Tan, c.Radius);
             if (got != c.Expected) return new Check(Name, false, $"{c.What}: expected {c.Expected}, got {got}");
         }
-        return new Check(Name, true, $"{cases.Length} placements");
+
+        // The Sirens case: a 1.82 m mirror 84 m away whose plane lies 4.2 m from the eye, dead ahead but edge-on.
+        const float Min = 0.01f;
+        var sizes = new (float PlaneDistance, float LineOfSight, float Radius, bool Renders, string What)[]
+        {
+            (4.2f, 84f, 1.82f, false, "84 m away, edge-on"),
+            (84f, 84f, 1.82f, true, "84 m away, head-on (still rendered)"),
+            (5f, 5f, 1f, true, "5 m, head-on"),
+            (3.5f, 5f, 1f, true, "5 m at 45 degrees"),
+            (0.5f, 3f, 1f, true, "3 m, grazing but close"),
+            (0.1f, 60f, 2f, false, "60 m, nearly flat"),
+        };
+        foreach (var s in sizes)
+        {
+            bool renders = MirrorReflection.ScreenFraction(s.PlaneDistance, s.LineOfSight, s.Radius) >= Min;
+            if (renders != s.Renders) return new Check(Name, false, $"{s.What}: expected renders={s.Renders}, got {renders}");
+        }
+        return new Check(Name, true, $"{cases.Length} placements, {sizes.Length} sizes");
     }
 }
