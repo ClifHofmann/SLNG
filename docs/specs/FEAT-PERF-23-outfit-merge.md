@@ -607,6 +607,36 @@ separate, switched at runtime; `slng-perf.log` 17:24-17:28):
   changed from `outfit_merge` to `outfit_merge_v2`: `GraphicsSettings.Save` writes every value, so almost every
   existing config held the old default `false` without anyone having chosen it.
 
+### 2026-10-29: what Phase 3 (direct merge) would buy, measured at a cold start
+
+Sirens Beach, a cold start (`[WorkCost]`, the 60 s from login, v0.28.51, 34-55 avatars, 17 fully rendered):
+
+| Main-thread item | ms in 60 s | n | avg ms |
+|---|---|---|---|
+| `avatar.rig` (the staging commit, whole item) | 4,270 | 5,257 | 0.81 |
+| parts: `.scene` / `.commit` / `.bom` / `.pick` | 1,100 / 940 / 890 / 900 | 1,765 / 1,765 / 1,765 / 242 | 0.62 / 0.53 / 0.50 / 3.72 |
+| `avatar.face_material`, `avatar.attach`, `avatar.split_sorted` | 420, 440, 225 | 4,279, 1,902, 2,942 | 0.10, 0.23, 0.08 |
+| `avatar.merge.upload` + `.swap` + `.binds` | 76 + 50 + 9 | 111 / 61 / 61 | 0.68 / 0.83 / 0.14 |
+
+The merge itself is cheap on the main thread (~0.14 s). The staging commit is the cost the spec called "double
+work while loading" (+30 % at arrival). Workers do the heavy part (`rig.prepare` 7.2 s, `rig.tangents` 5.7 s,
+`attach.prepare` 3.0 s of CPU; 3,351 prepares for ~1,423 distinct meshes in the `[RiggedMesh]` log).
+
+Direct merge would drop the staging instance's `.scene`, `.commit`, `.bind` and `.materials` (about 2.4 s of the 60),
+not `.bom` (the item still needs its bake) and not `.pick`. Against a work queue of 14 s and a minute of 60 s, that is
+roughly 4 % of the main thread and a better-looking but later arrival of each item (it would draw nothing until its
+textures are in). **Estimate: 2-3 sessions plus an in-world A/B, with risk 8 in the list below (a missed
+`_riggedAttachments` reader leaves a stale bucket or a missing outline).** Not recommended before cheaper items:
+
+| Candidate | Main thread in 60 s | Risk |
+|---|---|---|
+| Rigged pick bodies built on demand (`avatar.rig.pick`, 3.7 ms each, max 55 ms) | ~0.9 s | low: the click path asks for them |
+| Collision shapes only near the avatar (`collision.shape`, 3,760 in 70 s) | ~2.1 s | low-medium: `coll-urgent` exists |
+| Prepared-geometry reuse across avatars (worker CPU, not main thread) | 0 on main, ~60 % of 13 s of worker CPU | medium: cache key and memory |
+| Phase 3 direct merge | ~2.4 s | high |
+
+Phase 3 stays open as written under *Phased plan*; this section is the estimate it will be started from.
+
 ## Risks
 
 1. **Materials dedupe less than hoped.** Each garment has its own textures, so draws barely drop.
