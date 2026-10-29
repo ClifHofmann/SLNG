@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Godot;
 using SLNG.App.UI.Prefs;
+using SLNG.Core;
 
 namespace SLNG.App.UI;
 
@@ -62,6 +64,8 @@ public partial class GraphicsPreferencesPage : Node
     private PrefsRow _textureMemRow = null!;
     private Label _textureMemUsage = null!;
     private PrefsRow _renderThreadNotice = null!;
+    private PrefsRow _renderThreadFellBack = null!;
+    private Label _renderThreadFellBackText = null!;
     private PrefsRow _lowVramStateRow = null!;
     private Label _lowVramCapsState = null!;
     private CheckBox _dofAutoFocusBox = null!;
@@ -571,6 +575,7 @@ public partial class GraphicsPreferencesPage : Node
                 {
                     if (_refreshing) return;
                     RenderThread.SavePreference(idx == 1);
+                    if (idx == 1) RenderThreadFallback.ClearKept(KeptFallbackPath());
                     UpdateRenderThreadNotice();
                 },
                 hintKey: "ui.preferences.render_thread_hint", advanced: true,
@@ -578,6 +583,23 @@ public partial class GraphicsPreferencesPage : Node
             .WithApply(PrefsApply.Restart);
         _renderThreadNotice = s.AddBlock(Id(s, "render_thread_pending"), PrefsStyle.MakeNotice(L10n.Tr("ui.preferences.render_thread_restart")),
             null, true, "ui.preferences.render_thread_restart");
+
+        // FEAT-UI-81: the start after a freeze switches the separate thread off and says so once, in a toast that a long
+        // load hides. This keeps saying it, outside Advanced, with the way back, until the thread is switched on again.
+        _renderThreadFellBackText = PrefsStyle.MakeNotice("");
+        _renderThreadFellBackText.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        var reenable = new Button { Text = L10n.Tr("ui.preferences.render_thread_reenable"), FocusMode = Control.FocusModeEnum.None };
+        reenable.Pressed += () =>
+        {
+            RenderThread.SavePreference(true);
+            RenderThreadFallback.ClearKept(KeptFallbackPath());
+            Refresh();
+        };
+        var fellBackBox = new HBoxContainer();
+        fellBackBox.AddChild(_renderThreadFellBackText);
+        fellBackBox.AddChild(reenable);
+        _renderThreadFellBack = s.AddBlock(Id(s, "render_thread_fellback"), fellBackBox, null, false,
+            "ui.preferences.render_thread_fellback", "ui.preferences.render_thread_reenable");
         UpdateRenderThreadNotice();
 
         // FEAT-PERF-17: block-compressed (BC1/BC3) world textures. Not part of the presets.
@@ -670,7 +692,20 @@ public partial class GraphicsPreferencesPage : Node
     private void UpdateRenderThreadNotice()
     {
         _renderThreadNotice.Visible = RenderThread.SavedPreferenceIsSeparate() != RenderThread.IsSeparate;
+
+        var kept = RenderThreadFallback.ReadKept(KeptFallbackPath());
+        bool fellBack = kept != null && !RenderThread.SavedPreferenceIsSeparate();
+        _renderThreadFellBack.Visible = fellBack;
+        if (fellBack)
+        {
+            string when = DateTime.TryParse(kept!.Timestamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+                ? at.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
+                : kept.Timestamp;
+            _renderThreadFellBackText.Text = L10n.TrFormat("ui.preferences.render_thread_fellback", when, kept.StalledSeconds.ToString("0.#", CultureInfo.CurrentCulture));
+        }
     }
+
+    private static string KeptFallbackPath() => ProjectSettings.GlobalizePath(RenderThread.FallbackKeptPath);
 
     // --- Process & Refresh ------------------------------------------------------------------
 
@@ -721,6 +756,7 @@ public partial class GraphicsPreferencesPage : Node
             UpdateShadowDependents(_settings.Shadows);
             UpdateHeroProbeEnabled(_settings.Mirrors);
             UpdateTextureMemControls();
+            UpdateRenderThreadNotice();
 
             RefreshDof();
 

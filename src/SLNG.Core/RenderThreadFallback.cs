@@ -39,7 +39,9 @@ public static class RenderThreadFallback
         }
     }
 
-    public static bool TryConsumeMarker(string markerFilePath, out RenderThreadFallbackMarker? marker)
+    /// <summary>Reads and deletes the marker. FEAT-UI-81: with <paramref name="keepCopyPath"/> the marker is also written
+    /// there first, so the Preferences page can keep saying why the render thread is off after the one-time toast.</summary>
+    public static bool TryConsumeMarker(string markerFilePath, out RenderThreadFallbackMarker? marker, string? keepCopyPath = null)
     {
         marker = null;
         if (!File.Exists(markerFilePath)) return false;
@@ -48,6 +50,7 @@ public static class RenderThreadFallback
         {
             string json = File.ReadAllText(markerFilePath);
             marker = JsonSerializer.Deserialize<RenderThreadFallbackMarker>(json);
+            if (keepCopyPath != null && marker != null) File.WriteAllText(keepCopyPath, json);
             File.Delete(markerFilePath);
             return true;
         }
@@ -57,6 +60,27 @@ public static class RenderThreadFallback
             try { File.Delete(markerFilePath); } catch { }
             return false;
         }
+    }
+
+    /// <summary>The copy <see cref="TryConsumeMarker"/> kept, or null when there is none or it cannot be read.</summary>
+    public static RenderThreadFallbackMarker? ReadKept(string keepCopyPath)
+    {
+        try
+        {
+            return File.Exists(keepCopyPath)
+                ? JsonSerializer.Deserialize<RenderThreadFallbackMarker>(File.ReadAllText(keepCopyPath))
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Removes the kept copy (the person switched the separate thread back on). No error when there is none.</summary>
+    public static void ClearKept(string keepCopyPath)
+    {
+        try { File.Delete(keepCopyPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 }
 

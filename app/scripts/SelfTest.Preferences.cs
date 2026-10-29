@@ -285,7 +285,7 @@ public static partial class SelfTest
         "graphics.depth_of_field.reset",
         "graphics.performance.fps_limit", "graphics.performance.vsync", "graphics.performance.msaa", "graphics.performance.texture_memory_auto",
         "graphics.performance.texture_memory", "graphics.performance.texture_memory_usage", "graphics.performance.render_thread",
-        "graphics.performance.render_thread_pending", "graphics.performance.compress_textures", "graphics.performance.low_vram_caps",
+        "graphics.performance.render_thread_pending", "graphics.performance.render_thread_fellback", "graphics.performance.compress_textures", "graphics.performance.low_vram_caps",
         "graphics.performance.low_vram_state", "graphics.performance.outfit_merge",
         // Camera & movement
         "camera_movement.camera.fov", "camera_movement.camera.rear_distance", "camera_movement.camera.focus_height",
