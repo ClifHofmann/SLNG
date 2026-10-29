@@ -50,6 +50,21 @@ shader-visible limit, so if that is still too few D3D12 is out of reach for this
 - [ ] `godot --path app --rendering-driver d3d12 -- --diag` stays up in a region (no `0x887a0005`).
 - [ ] With D3D12 and the separate render thread: fps at Sirens against Vulkan's 27, and a longer run for the freeze.
 
+## Decision (2026-10-29): D3D12 stays an opt-in experiment, Vulkan stays the default
+
+With both fixes D3D12 runs at Sirens (no `0x887a0005`, no heap errors) but costs more than it gives:
+
+| | Vulkan | D3D12 |
+|---|---|---|
+| fps (same spot, 2 cascades, no mirror) | 27-28 at 19.7k draws | 24-25 at 20.5k draws |
+| Godot "video" memory | 2.9-3.1 GB | 6.2-6.4 GB (textures + buffers only ~1.9 GB: ~4.3 GB unexplained) |
+| texture cache budget | 2.1 GB | 1.1 GB (the card is 11.3 of 12 GB full) |
+
+Its only possible value, avoiding the separate-render-thread freeze of Vulkan on NVIDIA, is unproven and needs days of 
+use. So: both fixes stay (the anisotropy one is a plain project bug; the heap size is inert on Vulkan and keeps 
+`--rendering-driver d3d12` usable), the default stays Vulkan, and D3D12 is tried again only if the Vulkan freeze 
+comes back. Not tested: whether `max_resource_descriptors` or the allocator explains the extra memory.
+
 ## Not covered
 
 D3D12 may have more problems behind this one (the debug layer also warned about barrier-only command lists, harmless).
