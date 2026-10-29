@@ -25,7 +25,9 @@ namespace SLNG.Core.Logging;
 /// </summary>
 public sealed class LogSanitizer
 {
-    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
+    // The first match of a compiled regex pays its JIT inside the timeout; 100 ms was missed on a cold CI runner
+    // (368 ms), which withheld a line the test expected sanitized. Still a ReDoS guard, only not a cold-start one.
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(1000);
     private const RegexOptions Options = RegexOptions.CultureInvariant | RegexOptions.Compiled;
 
     private static readonly Regex Secret = new(
