@@ -42,6 +42,7 @@ public partial class AvatarRenderer
         root.Position = position;
         visual.GodotPos = position;
         root.Quaternion = (godotTurn * root.Quaternion).Normalized();
+        FrameTimeline.CountXform(FrameTimeline.XformSource.TargetOmega, 2);
 
         if (Diagnostics.Enabled && _carriedSittersLogged.Add((visual.AgentId, avatar.SittingOnLocalId)))
         {

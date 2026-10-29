@@ -145,6 +145,28 @@ public partial class FrameTimeline : Node
     /// <summary>Counts one prim node handed to the delete queue (ObjectRenderer.RemoveVisual).</summary>
     public static void CountFree() => _frees++;
 
+    /// <summary>Which of our systems wrote a Node3D transform or <c>Visible</c> (each queues a transform
+    /// notification for Godot's flush). Diagnostic only; main thread.</summary>
+    public enum XformSource { ObjectUpdate, Extrapolate, Spin, TargetOmega, AvatarRoot, AvatarAttach, Visibility, Other }
+
+    private static readonly int[] _xform = new int[8];
+    private static readonly double[] _xformPerFrame = new double[8];
+
+    /// <summary>Counts one Node3D transform/visibility write from <paramref name="s"/> (main thread only).</summary>
+    public static void CountXform(XformSource s) => _xform[(int)s]++;
+
+    /// <summary>Counts <paramref name="n"/> such writes.</summary>
+    public static void CountXform(XformSource s, int n) => _xform[(int)s] += n;
+
+    /// <summary>The window's writes per frame, "xform=obj:..,extrap:.." (--diag only, else empty).</summary>
+    public static string DescribeXform()
+    {
+        if (!Diagnostics.Enabled) return "";
+        static string F(double v) => v.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+        var x = _xformPerFrame;
+        return $"xform=obj:{F(x[0])},extrap:{F(x[1])},spin:{F(x[2])},omega:{F(x[3])},avRoot:{F(x[4])},avAtt:{F(x[5])},vis:{F(x[6])},other:{F(x[7])} ";
+    }
+
     /// <summary>Adds the two process markers under <paramref name="parent"/> (where they sit does
     /// not matter, only their priority) and hooks the frame signals once.</summary>
     public static void Install(Node parent)
@@ -323,6 +345,7 @@ public partial class FrameTimeline : Node
         FrameMs = _frameSum / _frames;
         OtherMs = System.Math.Max(0, FrameMs - PreFlushMs - ScriptsMs - PostFlushMs - DrawMs);
         FreesPerFrame = (double)_frees / _frames;
+        for (int i = 0; i < _xform.Length; i++) { _xformPerFrame[i] = (double)_xform[i] / _frames; _xform[i] = 0; }
         _preFlushSum = _scriptsSum = _postFlushSum = _drawSum = _frameSum = 0;
         _frames = _frees = 0;
 

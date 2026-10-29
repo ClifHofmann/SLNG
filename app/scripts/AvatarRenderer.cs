@@ -1663,6 +1663,7 @@ public partial class AvatarRenderer : Node3D
             // (seated: HoverOffsetZ is already folded into rootPos.Y above, per llvoavatar.cpp:4729)
 
             visual.Root.Position = rootPos;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarRoot);
             visual.GodotPos = rootPos;
             visual.ScreenPixelArea = visual.IsSelf ? 0f : ComputeAvatarScreenPixelArea(visual);
 
@@ -1686,6 +1687,7 @@ public partial class AvatarRenderer : Node3D
             }
 
             visual.Root.Quaternion = ToGodotRotation(transform.Rotation);
+            FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarRoot);
 
             // Keep raycast collision capsule aligned with avatar height / sitting posture
             if (visual.CapsuleShape?.Shape is CapsuleShape3D cap)
@@ -1699,6 +1701,7 @@ public partial class AvatarRenderer : Node3D
                     cap.Height = targetHeight;
                     cap.Radius = targetRadius;
                     visual.CapsuleShape.Position = new Godot.Vector3(0, targetHeight * 0.5f, 0);
+                    FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarRoot);
                 }
             }
 
@@ -2670,6 +2673,7 @@ public partial class AvatarRenderer : Node3D
             // skull by that much and the scalp comes through at the crown. The error grows with
             // head size, which is why it reads as "the head is too big for the hair".
             pointNode.Transform = AttachPointOffset(apPoint, avatarVisual, boneName);
+            FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarAttach);
         }
         boneAttach.AddChild(pointNode);
         
@@ -2766,6 +2770,7 @@ public partial class AvatarRenderer : Node3D
         if (mi == null || !IsInstanceValid(mi)) return;
         mi.Position = new Godot.Vector3(pose.Position.X, pose.Position.Z, -pose.Position.Y);
         mi.Quaternion = new Godot.Quaternion(pose.Rotation.X, pose.Rotation.Z, -pose.Rotation.Y, pose.Rotation.W);
+        FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarAttach, 2);
     }
 
     /// <summary>FEAT-PERF-09: asks again for more detail once the camera has come closer.</summary>
@@ -3837,7 +3842,7 @@ public partial class AvatarRenderer : Node3D
         // parked avatar: the stand-in is the jelly doll alone.
         if (_mergeHeld.Contains(mi) || owner is { IsReduced: true })
         {
-            if (mi.Visible) mi.Visible = false;
+            if (mi.Visible) { mi.Visible = false; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
             DetachSkeleton(mi);
             return;
         }
@@ -3851,7 +3856,7 @@ public partial class AvatarRenderer : Node3D
             var material = split != null ? split.GetSurfaceOverrideMaterial(0) : mi.GetSurfaceOverrideMaterial(s);
             anyDrawn = !IsHiddenFaceMaterial(material);
         }
-        if (mi.Visible != anyDrawn) mi.Visible = anyDrawn;
+        if (mi.Visible != anyDrawn) { mi.Visible = anyDrawn; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
         if (!anyDrawn) DetachSkeleton(mi);
     }
 
@@ -4877,7 +4882,10 @@ public partial class AvatarRenderer : Node3D
         void SetPartVisible(string part, bool visible)
         {
             if (avatarVisual.Parts.TryGetValue(part, out var pmi) && IsInstanceValid(pmi))
+            {
                 pmi.Visible = visible;
+                FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
+            }
         }
 
         if (avatarVisual.IsReduced)
@@ -5180,8 +5188,11 @@ public partial class AvatarRenderer : Node3D
         _hudPlacements[entityId] = (attachment.AttachmentPoint, slOffset);
         PositionHudNode(entityId);
         if (transform != null)
+        {
             hudNode.Quaternion = new Godot.Quaternion(
                 transform.Rotation.X, transform.Rotation.Z, -transform.Rotation.Y, transform.Rotation.W);
+            FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarAttach);
+        }
 
         if (prim == null) return;
 
@@ -5255,6 +5266,7 @@ public partial class AvatarRenderer : Node3D
             a.X + p.SlOffset.X,
             a.Z + p.SlOffset.Z,
             -(a.Y * aspect) - p.SlOffset.Y);
+        FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarAttach);
     }
 
     private async System.Threading.Tasks.Task LoadHudContentAsync(
@@ -5902,6 +5914,7 @@ public partial class AvatarRenderer : Node3D
                 if (pointNode != null && AttachmentPointMap.GetPoint(apByte) is { } apPoint)
                 {
                     pointNode.Transform = AttachPointOffset(apPoint, visual, bName);
+                    FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarAttach);
                 }
             }
         }
@@ -7308,6 +7321,7 @@ void fragment() {
                 {
                     DetachSkeleton(rMi);
                     rMi.Visible = false;
+                    FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
                 }
             }
             // FEAT-PERF-23: the merged outfit parks as a few instances on one skin.
@@ -7318,12 +7332,13 @@ void fragment() {
                 if (_attachmentNodes.TryGetValue(attId, out var attachNode) && GodotObject.IsInstanceValid(attachNode))
                 {
                     attachNode.Visible = false;
+                    FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
                     attachNode.ProcessMode = Node.ProcessModeEnum.Disabled;
                 }
                 if (_riggedPickBodies.TryGetValue(attId, out var bodies))
                 {
                     foreach (var body in bodies)
-                        if (GodotObject.IsInstanceValid(body)) body.Visible = false;
+                        if (GodotObject.IsInstanceValid(body)) { body.Visible = false; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
                 }
             }
         }
@@ -7369,6 +7384,7 @@ void fragment() {
                 {
                     ReattachSkeleton(rMi);
                     rMi.Visible = true;
+                    FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
                     UpdateWornMeshVisibility(rMi, visual); // keeps a held one (FEAT-PERF-23) hidden
                 }
             }
@@ -7382,11 +7398,12 @@ void fragment() {
                 {
                     attachNode.ProcessMode = Node.ProcessModeEnum.Inherit;
                     attachNode.Visible = true;
+                    FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
                 }
                 if (_riggedPickBodies.TryGetValue(attId, out var bodies))
                 {
                     foreach (var body in bodies)
-                        if (GodotObject.IsInstanceValid(body)) body.Visible = true;
+                        if (GodotObject.IsInstanceValid(body)) { body.Visible = true; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
                 }
             }
 
@@ -7792,7 +7809,7 @@ void fragment() {
             if (doCull && haveAgent)
             {
                 bool visible = visual.Root.Position.DistanceSquaredTo(agentPos) <= maxSq;
-                if (visual.Root.Visible != visible) visual.Root.Visible = visible;
+                if (visual.Root.Visible != visible) { visual.Root.Visible = visible; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
                 visual.Shown = visible;
                 if (visible) visual.HiddenSince = double.PositiveInfinity;
                 else if (double.IsPositiveInfinity(visual.HiddenSince)) visual.HiddenSince = NowSeconds;

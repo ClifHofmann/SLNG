@@ -308,7 +308,7 @@ public partial class StatsOverlay : PanelContainer
             // FEAT-PERF-24: the render thread's cycle: inside _draw vs executing queued commands, and
             // _draw cut at the viewport timestamps (same --diag / separate-mode condition).
             $"{FrameTimeline.DescribeRenderThread()} " +
-            $"frees={FrameTimeline.FreesPerFrame:F1} drawMs={FrameTimeline.DrawMs:F1} " +
+            $"frees={FrameTimeline.FreesPerFrame:F1} {FrameTimeline.DescribeXform()}drawMs={FrameTimeline.DrawMs:F1} " +
             $"renderCpuMs={RenderTimes.CpuMs:F1} renderGpuMs={RenderTimes.GpuMs:F1} setupMs={RenderTimes.SetupCpuMs:F1} " +
             $"views={RenderTimes.Describe(compact: true)} draws={_lastDrawCalls:F0} drawsScene={RenderTimes.MainVisibleDraws} drawsShadow={RenderTimes.MainShadowDraws} " +
             $"drawsCanvas={RenderTimes.MainCanvasDraws} tris={_lastPrimitives / 1000.0:F0}k " +

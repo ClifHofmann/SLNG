@@ -1310,6 +1310,7 @@ public partial class AvatarController : Camera3D
                 // Camera rotation = avatar facing (_yaw/_pitch) plus the orbit offset.
                 // The orbit offset moves the camera around the avatar without turning it.
                 Rotation = new Vector3(_pitch + _orbitPitch, _yaw + _orbitYaw, 0);
+                FrameTimeline.CountXform(FrameTimeline.XformSource.Other);
 
                 // Horizontal (X/Y) movement is NOT client-predicted here. It used to be (WASD dead
                 // reckoning added directly to transform.Position), but that fought the sim's own
@@ -1656,6 +1657,7 @@ public partial class AvatarController : Camera3D
 
                 // Third-person camera: pull back along the camera's Z axis
                 Position = targetPos + Transform.Basis.Z * _zoom;
+                FrameTimeline.CountXform(FrameTimeline.XformSource.Other);
                 ApplyNearPlane();
 
                 // BUG-NET-01: tell the sim where the render camera actually is. Its interest list

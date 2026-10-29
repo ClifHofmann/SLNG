@@ -157,7 +157,10 @@ public partial class AvatarRenderer
 
         if (ca.Placed && world == ca.LastAttachedTransform) return true;
         if (IsInstanceValid(ca.Visual.Root) && ca.Visual.Root.IsInsideTree())
+        {
             ca.Visual.Root.GlobalTransform = world;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarAttach);
+        }
         ca.LastAttachedTransform = world;
         ca.Placed = true;
         return true;
@@ -187,7 +190,7 @@ public partial class AvatarRenderer
         // gone with it (and stops animating -- AdvanceControlAvatarAnimations skips hidden parts).
         bool shown = placed && wearer!.Root.Visible;
         foreach (var part in ca.Parts.Values) SetPartVisible(part, shown);
-        if (ca.Visual.Root.Visible != shown) ca.Visual.Root.Visible = shown;
+        if (ca.Visual.Root.Visible != shown) { ca.Visual.Root.Visible = shown; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
         return true;
     }
 

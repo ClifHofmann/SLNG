@@ -357,6 +357,103 @@ restore it afterwards.
 **No-go:** ship Phase 1, do FEAT-PERF-14/20/21 on nodes (each works there, see below), and park
 Phase 2+. Record the decision in this spec.
 
+### P0-c result (2026-10-29, headless, `SelfTest.PrimBench.cs`, reproduced in a second run)
+
+`godot --headless --path app --log-file user://logs/selftest/primbench.log -- --selftest --prim-bench`,
+30k prims, 6 own `ShaderMaterial`s each (built before timing). A = nodes, B = RIDs. Ray parity 1000/1000, 0 mismatches.
+
+| Scenario | A (nodes) | B (RIDs) |
+|---|---|---|
+| S0 idle | scripts 0.04 ms | 0.04 ms (same) |
+| S1 move 300/frame | scripts 0.3-0.4, flush 0.6-0.9 | scripts 0.5, flush 0.4 (about even) |
+| S2 toggle `Visible` 2000/frame | scripts 2.3-2.5 ms | 0.3 ms |
+| S3 mesh swap + 6 overrides, 200/frame | scripts 1.2 ms | 0.45 ms |
+| S4 create 30k @ 2 ms/frame | 4.8-5.3 s, 613-675 frames | 0.8-1.0 s, 103-123 frames |
+| S5 remove 30k + delete queue | 628 ms, one 123 ms tail frame | 358 ms, scripts p99 43 ms |
+| static memory over baseline | +213 MB | +102 MB |
+
+**Gate, as far as the bench reaches.** Criterion 2 first half holds: create + remove is ~5x cheaper with RIDs
+(5.9 s against 1.1 s; the rule asks for 3x). Its second half (region-leave/teleport frames at the spot carry
+>= 50 ms of `RemoveVisual` plus delete queue) is **open**: the bench's 123 ms delete-queue frame says it is
+plausible, but it needs one in-world leave/teleport read at Sirens. Criterion 1 needs P0-b (Safe-mode run), also
+open. Criterion 3 is off (FEAT-PERF-20 Phase B is closed). Caveats: headless dummy renderer (no `frame_pre_draw`,
+~7 ms of client loop time sits in every tail), and S6 (windowed, equal draws for A and B) is not built. The bench
+confirms the spec's premise: RIDs win on load, leave, sweeps and memory, not on idle or move cost, and not on draws.
+**Decision: not yet taken.** Next: a Sirens leave/teleport read (P0-b is done, below).
+
+### P0-b result (2026-10-29, v0.28.48-alpha, Sirens, `rt=main`, `--diag`, 20 windows of 5 s, 07:10:30-07:12:11)
+
+The project default is the single-thread safe model, so `rt=main` is the Safe-mode run. ~18 fps, 59.1k nodes,
+16.4k draws (median). Median / min / max, ms: `scriptsMs` 20.8 / 17.3 / 25.6, **`postFlushMs` 9.4 / 7.1 / 14.3,
+`flushMs` 8.5 / 6.6 / 12.6**, `tailMs` 0.7, `renderCpuMs` 14.7, `renderGpuMs` 16.9.
+
+- Criterion 1, first half: the flush is real, 8.5 ms >= 3 ms.
+- Second half: not prim nodes. The bench puts 93k idle nodes at 0.4 ms flush and 300 moved prims per frame at
+  0.6-0.9 ms, so prim nodes explain at most ~1 ms of the 8.5. The same window has `skinWritesPerFrame=6355`,
+  `skelUpdatesPerFrame=26`, 35 avatars, 784 skinned meshes (`[AvatarCost]`). Attributing the flush to avatar skins
+  is an inference from those counters; no run isolated it. **Criterion 1 fails.**
+- Criterion 3 is off (FEAT-PERF-20 Phase B is closed). Criterion 2: see the next block.
+
+### Leave/teleport read (2026-10-29, same session, 07:13:06-07:13:21)
+
+Teleport out of Sirens: nodes 59.2k -> 22.3k within one 5 s window, ~37k nodes (~12k prims) freed. The window
+averaged 30 fps (worst 141 ms, 5 hitches); the next window was back at 91 fps. The log has 5 s resolution, so
+there is no per-frame trace.
+
+- The free is already budgeted. `OnEntityRemoved` hides the visual in the frame the removal arrives and
+  `ProcessPendingRemovals` frees the nodes under a budget (BUG-NET-34). There was no 100+ ms delete-queue frame
+  like the bench's unbudgeted 123 ms: the worst frame (141 ms) is within the pre-leave range (105-129 ms), and
+  `workqueue` was 277 ms per second for that one window, spread over frames.
+- The one big item is the drain: `RegionDisconnected` 62 ms in a single frame (`[WorldDrain]`). That is
+  `World.RemoveRegion` plus `HideForRemoval` for ~12k entities, not `RemoveVisual` or the delete queue. How much of
+  it is node work (which RIDs would shrink) was not split.
+- Criterion 2's second half (>= 50 ms of `RemoveVisual` plus delete queue per leave frame) is **not met**.
+
+### Decision (2026-10-29): No-go for Phase 2
+
+No criterion holds: the flush is not prim nodes (1; avatar animation is ~3 ms of it, see the next section); the
+leave cost is budgeted and not in node frees (2); FEAT-PERF-20 Phase B is closed (3). The RID backend still wins
+on load (5x), sweeps and memory, but none of that is a frame-rate lever, which the spec said from the start.
+Parked, not deleted: reopen it if the 62 ms `RegionDisconnected` drain turns out to be mostly node work, or if the
+region-load time matters. The levers for frame time are the draw count (shadow cascades) and the render-thread mode.
+
+### 2026-10-29 findings: what the Sirens frame is made of
+
+All at the same spot (Sirens Beach, `--diag`, 5 s windows, medians, v0.28.48-alpha).
+
+**1. Render-thread mode, not a node cost, was the 2x.** The BUG-PERF-22 fallback had switched the saved choice back
+to `main` after a 10 s stall (godot.log: `fallback marker detected`; `engine_overrides.cfg` gone). Same scene:
+`rt=main` 14 fps (scripts 23 + flush 10.5 + render CPU 20 ms in series), `rt=separate` 27 fps (main thread
+scripts 19.3 + flush 8.9 + tail 7.5 ms, overlapped). 25.4k draws, 60k nodes.
+
+**2. What the main-thread flush holds** (`flushMs` ~8-9 ms in `separate`):
+
+| Test | `flushMs` | Reading |
+|---|---|---|
+| baseline | ~8.3-10 | |
+| avatar cap 16 -> 1 (skin writes 6.9k -> 1.65k per frame) | 11.8 -> 8.0 (main mode) | full avatars' skins ~3.8 ms |
+| F8 (all avatars frozen, 0 skeleton updates, 0 skin writes) | 8.3 -> 5.3 | avatar animation ~3 ms |
+| Hide UI (Ctrl+Shift+U) | 8.6 -> 9.0 | UI is not it |
+| `xform=` counters (v0.28.48, `--diag`) | ~900 writes/frame: `obj` ~270, `spin` ~520, `avRoot` ~71, other ~34 | ~1.5 ms by the bench rate (inference) |
+
+Reduced avatars keep animating at 10 Hz by design (`ReducedAnimationIntervalSeconds`, 22 skeleton updates per
+frame with 39 of 41 reduced); that costs little. **About 4 ms of flush is still unexplained.** The `spin` count is
+260 turning prims (2 writes each), where `ObjectRenderer.TargetOmega.cs` expects "a few dozen"; each is written
+every frame, whatever its distance.
+
+**3. At this view the frame is render-thread bound**, so none of the main-thread flush matters until that falls:
+`drawCallMs` 44.6 ms, `tailMs` 17 ms (main waits). 29.7k draws, **13.0k of them shadow** (44 %).
+
+**4. Shadow cascades are the lever.** The saved `shadow_splits=2` means FOUR cascades (0 off, 1 = 2 cascades,
+2 = 4). Four -> two: shadow draws 13,050 -> 4,400, draws 29.9k -> 21.1k, `drawCallMs` 42 -> 35, 22 -> 27 fps
+(11 and 5 windows). `shadow_distance` 120 -> 64 changed nothing: casters are cut at `ShadowCasterDistance`
+(56 m), so they stay in the near cascades whatever the maximum distance. Whether 2 cascades at 120 m looks
+acceptable is the maintainer's call; the presets Medium and High still use 4.
+
+**5. Two other things the day turned up:** a planar mirror 84 m away and edge-on rendered a second scene for 7.5
+minutes (BUG-PERF-23, fixed in v0.28.49-alpha); Firestorm held 4+ GB of VRAM next to the client (not ours, but
+`osBudgetMB` followed it down to 3.3 GB).
+
 ## What hangs on a prim node today, and what it becomes
 
 Line numbers are `app/scripts/ObjectRenderer.cs` unless another file is named.

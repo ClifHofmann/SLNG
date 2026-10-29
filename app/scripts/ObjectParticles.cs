@@ -445,6 +445,7 @@ public partial class ObjectParticles : CpuParticles3D
         {
             _hiddenByUs = Visible;
             Visible = false;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
             if (!_degenerateLogged)
             {
                 _degenerateLogged = true;
@@ -455,6 +456,7 @@ public partial class ObjectParticles : CpuParticles3D
         else if (_hiddenByUs)
         {
             Visible = true;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
             _hiddenByUs = false;
         }
         return degenerate;
@@ -485,6 +487,7 @@ public partial class ObjectParticles : CpuParticles3D
             1f / Mathf.Max(MinParentScale, Mathf.Abs(parentScale.Z)));
 
         Transform = new Transform3D(new Basis(_omegaRotation).Scaled(counterScale), Vector3.Zero);
+        FrameTimeline.CountXform(FrameTimeline.XformSource.Other);
 
         // Gravity is applied in the space the particles are simulated in: world when they are
         // left behind, emitter-local when they follow the source.
