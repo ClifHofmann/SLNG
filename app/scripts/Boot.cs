@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.56-alpha";
+    public const string AppVersion = "v0.28.57-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1178,7 +1178,7 @@ public partial class Boot : Control
         // correctly following the saved value while the controls still showed the defaults --
         // shadows genuinely off after login, with the checkbox ticked.
         _graphicsSettings.Load();
-        PickFirstRunGraphics(); // FEAT-PERF-26
+        if (!IsSelfTest) PickFirstRunGraphics(); // FEAT-PERF-26: it saves preferences.cfg, which a smoke test must not create
         _dofSettings.Load();
         _avatarHoverSettings.Load();
         _snapshotSettings.Load();
