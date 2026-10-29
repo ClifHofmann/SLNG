@@ -41,6 +41,10 @@ public static class RenderThread
     /// main thread due to a freeze.</summary>
     public const string FallbackMarkerPath = "user://render_thread_fallback.json";
 
+    /// <summary>FEAT-UI-81: the copy of the marker the start keeps after its one-time toast, so Graphics preferences can
+    /// say why the separate thread is off and offer to switch it on again. Removed when it is.</summary>
+    public const string FallbackKeptPath = "user://render_thread_fallback_last.json";
+
     private const string OverrideSection = "rendering";
     private const string OverrideKey = "driver/threads/thread_model";
     private const string SettingPath = "rendering/driver/threads/thread_model";

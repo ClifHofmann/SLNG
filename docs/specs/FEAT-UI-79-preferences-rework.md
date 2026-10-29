@@ -51,7 +51,7 @@ restarts (`preferences.cfg`).
 | | Shadows | Shadows, shadow resolution | Cascades, softness, distance, darkness, small-object shadows | General + Hardware |
 | | Light & effects | Ambient occlusion, glow, mirrors | SSIL, environment reflections, probe ambient, SSR, real-time mirror probe | General |
 | | Depth of field | Enable, its controls | | DoF sub-tab |
-| | Performance | FPS limit, V-Sync, anti-aliasing, texture memory (auto + slider + usage) | Render thread, compress textures, low-VRAM caps, merge other avatars' meshes | Hardware |
+| | Performance | FPS limit, V-Sync, anti-aliasing, texture memory (auto + slider + usage), the "render thread switched off after a freeze" notice with its switch-on button (shown only after a fallback, FEAT-UI-81) | Render thread, compress textures, low-VRAM caps, merge other avatars' meshes | Hardware |
 | **Camera & movement** | Camera | Field of view, rear view distance, focus height, disable camera constraints, reset | Pad speeds (orbit, pan, zoom) | Camera |
 | | Movement | Always run | | Animation |
 | | Avatar | Head follows camera, typing animation, furniture poses override the AO | | Animation |

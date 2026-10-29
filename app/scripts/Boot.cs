@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.53-alpha";
+    public const string AppVersion = "v0.28.54-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -1513,12 +1513,14 @@ public partial class Boot : Control
 
     private void CheckRenderThreadFallback(string markerPath)
     {
-        if (SLNG.Core.RenderThreadFallback.TryConsumeMarker(markerPath, out var marker))
+        string keptPath = ProjectSettings.GlobalizePath(RenderThread.FallbackKeptPath);
+        if (SLNG.Core.RenderThreadFallback.TryConsumeMarker(markerPath, out var marker, keptPath))
         {
             string notice = SLNG.App.UI.L10n.Tr("ui.graphics.render_thread_fallback_notice");
             GD.Print($"[RenderThread] fallback marker detected (stalled {marker?.StalledSeconds:0.0}s at {marker?.Timestamp}): {notice}");
             _notifications.Add(SLNG.Core.NotificationKind.System, System.Guid.Empty, notice);
-            ShowToast(notice, 8.0f);
+            // FEAT-UI-81: 8 s was missed in a long load; the Graphics page keeps saying it until it is switched back on.
+            ShowToast(notice, 20.0f);
         }
     }
 
