@@ -58,6 +58,7 @@ public partial class ObjectRenderer
 
         var copy = (ShaderMaterial)current.Duplicate();
         if (copy.NextPass is ShaderMaterial nextPass) copy.NextPass = (Material)nextPass.Duplicate();
+        NoteDetachedCopy(current, copy);
         if (state.MeshInstance.MaterialOverride != null)
         {
             state.MeshInstance.MaterialOverride = copy;
@@ -95,6 +96,7 @@ public partial class ObjectRenderer
             return;
         }
 
+        ForgetDetachedCopy(entry.Material, SurfaceMaterial(state, surface));
         if (state.MeshInstance.MaterialOverride != null)
         {
             state.MeshInstance.MaterialOverride = entry.Material;
@@ -102,6 +104,37 @@ public partial class ObjectRenderer
         else
         {
             state.MeshInstance.SetSurfaceOverrideMaterial(surface, entry.Material);
+        }
+    }
+
+    // BUG-RENDER-53: a surface can be detached (texture animation, selection, ...) while the shared material is
+    // still waiting for its texture. The texture then lands on the SHARED material only, and the private copy,
+    // cut before it arrived, stays plain white for good. The copies made from a shared material are remembered
+    // here (weak on the shared material, so the list dies with it) and every late write is applied to them too.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, List<ShaderMaterial>> _detachedCopies = new();
+
+    private void NoteDetachedCopy(ShaderMaterial shared, ShaderMaterial copy)
+    {
+        // A shared material that already wears its texture needs no follow-up: the copy was cut from it complete.
+        if (shared.GetShaderParameter(PrimShaderFamily.HasAlbedoTexture) is { VariantType: Variant.Type.Bool } has && has.AsBool()) return;
+        _detachedCopies.GetOrCreateValue(shared).Add(copy);
+    }
+
+    private void ForgetDetachedCopy(ShaderMaterial shared, ShaderMaterial? copy)
+    {
+        if (copy != null && _detachedCopies.TryGetValue(shared, out var copies)) copies.Remove(copy);
+    }
+
+    /// <summary>Runs <paramref name="apply"/> on the shared material and on every private copy cut from it while it
+    /// was still waiting for a texture. Main thread.</summary>
+    private void ApplyToMaterialAndCopies(ShaderMaterial shared, Action<ShaderMaterial> apply)
+    {
+        apply(shared);
+        if (!_detachedCopies.TryGetValue(shared, out var copies)) return;
+        for (int i = copies.Count - 1; i >= 0; i--)
+        {
+            if (!IsInstanceValid(copies[i])) { copies.RemoveAt(i); continue; }
+            apply(copies[i]);
         }
     }
 
