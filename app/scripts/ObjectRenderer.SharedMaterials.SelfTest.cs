@@ -15,6 +15,7 @@ public partial class ObjectRenderer
         void Expect(bool ok, string what) { if (!ok) failures.Add(what); }
 
         bool prevShare = RenderConfig.ShareMaterials;
+        Expect(prevShare, "shared prim materials are on by default (FEAT-PERF-20 A1, v0.28.58)");
         RenderConfig.ShareMaterials = true;
 
         try

@@ -238,7 +238,7 @@ with the same material. Shared materials also make the cell key cheap, because i
 | Phase | Work | Measurable acceptance |
 |---|---|---|
 | **0** (this task, v0.27.54) | `[BatchPotential]` line; `PrimMaterialKey` and `BatchPotentialTally` in Core with tests; selftests (hand-counted scene + cost bench). No render change. | Line printed at Sirens (table below). Cost ≤ 0.5 ms/frame: the line's own `avgMs`/`worstMs` and `diag.batch` in [WorkCost] (headless: worst slice 0.421 ms). `keyCheck` ≥ 95 % equal; otherwise fix the key before Phase A. |
-| **A1** | `PrimMaterialCache` with copy on write for texture animation, mirror and MOAP. Behind `RenderConfig.ShareMaterials` / `--share-materials`, default off. | Same spot, A/B: `drawsScene + drawsShadow` within ±10 % of what Phase 0 predicted; `renderCpuMs` down. No visual difference on the known-answer set (texanim board, mirror, MOAP face, Blendable Trails path, a selected and edited prim, blended foliage). New selftests: equal faces share one material; a texanim face detaches and returns. |
+| **A1** | `PrimMaterialCache` with copy on write for texture animation, mirror and MOAP. `RenderConfig.ShareMaterials`; **on by default since v0.28.58-alpha**, `--no-share-materials` turns it off (see the second A/B below). | Same spot, A/B: `drawsScene + drawsShadow` within ±10 % of what Phase 0 predicted; `renderCpuMs` down. No visual difference on the known-answer set (texanim board, mirror, MOAP face, Blendable Trails path, a selected and edited prim, blended foliage). New selftests: equal faces share one material; a texanim face detaches and returns. |
 | **A2** | Default on; FEAT-PERF-06 groups key on the entry instead of `MaterialFingerprint`. | A week of `[Perf]` logs without a regression report; instancing join cost down in [WorkCost]. |
 | **B0** (gate for B) | Extend the line: vertex bytes per cell configuration, prims excluded by FEAT-PERF-14 ranges, member churn (moves and retextures per minute per cell). Measure at Sirens plus one prim-heavy older build. | The decision rule above, written into this spec with the numbers. |
 | **B1** | Cell builder on a worker; time-sliced commit; collapse-on-leave; debounced rebuild. On FEAT-PERF-24's RID instances. Behind a setting. | Draws within ±10 % of the `both` prediction. Commit ≤ 1 ms main-thread slice. Worker rebuild p95 reported. Picking, selection and edit selftests unchanged. VRAM delta reported. |
@@ -397,11 +397,31 @@ has no albedo yet are remembered (weak on the shared material) and every late te
 choice, goes to them too (`ApplyToMaterialAndCopies`, `BindLegacyFaceTexture`). Regression check: selftest "shared 
 materials cache", step 5b (fails without the fix, passes with it).
 
+### Second A/B (v0.28.57-alpha, palm fixed) and A2: default on
+
+Same spot, same view, 56 avatars, steady state after the load, `rt=separate`; three runs (A = off, B = on):
+
+| | A (off, run 2) | B (on) |
+|---|---|---|
+| fps | ~26 | ~29.8 (+15 %) |
+| `draws` | ~20,750 | ~17,150 (-17 %) |
+| `renderCpuMs` | ~21.3 | ~17.7 (-3.6 ms) |
+| `rtBusyMs` | ~14 | ~10 |
+| `scriptsMs` | ~19.5 | ~18.5 |
+| `nodes` | ~60,100 | ~60,900 |
+
+The first off run had ~3,300 more nodes (a different amount loaded) and showed ~25.6 fps; the second, with comparable
+nodes and scripts time, confirms the gain. The earlier "fps does not follow" came from the white-palm run being
+unclean. With the render thread draw-bound (~1.6 us per draw) the saved draws show up as render-thread time.
+**Phase A2 done in v0.28.58-alpha: `ShareMaterials` is on by default; `--no-share-materials` (and
+`run-client.ps1 -NoShareMaterials`) is the A/B. Open: 3 opaque faces stay without their texture (`entryMat=same`).**
+
 ## Sub-tasks / Progress
 
 - [x] Phase 0 measurement (v0.27.54-alpha)
 - [x] Sirens measurement (user, needs a login) — 2026-10-15: A1 cuts ~27% draws, B adds 1-2%, Phase A1 decided
 - [x] Phase A1 shared-material cache (v0.27.62-alpha)
 - [x] BUG-RENDER-53 white palm: late texture reaches copies detached before it arrived (v0.28.56-alpha; in-world check pending)
+- [x] Phase A2: shared materials on by default (v0.28.58-alpha), second A/B above
 - [ ] Phase B0 gate measurements
 - [ ] Phase B1/B2 merged cells (after FEAT-PERF-24 Phase 2, if the gate passes)
