@@ -161,7 +161,9 @@ public sealed class GraphicsSettings
     public int ShadowResolution { get; private set; } = 4096;
     public float ShadowDistance { get; private set; } = 90.0f; // FEAT-PERF-06: was 150; see Boot's DirectionalShadowMaxDistance note
     public float ShadowOpacity { get; private set; } = 0.90f;
-    public int ShadowSplits { get; private set; } = 2;
+    /// <summary>0 one cascade (orthogonal), 1 two cascades, 2 four cascades. FEAT-PERF-26: only Ultra uses four; at
+    /// Sirens four cascades drew 13.0k shadow draws against 4.4k for two, 22 against 27 fps.</summary>
+    public int ShadowSplits { get; private set; } = 1;
     public bool SmallObjectShadows { get; private set; } = false;
 
     /// <summary>FEAT-PERF-07: the viewer's <c>RenderVolumeLODFactor</c> ("Object Detail"), which
@@ -181,10 +183,17 @@ public sealed class GraphicsSettings
     /// Low: 3, Mid: 7, High: 11, Ultra: 16 (featuretable.txt:98, 185, 269, 351). 0 means unlimited.</summary>
     public int MaxFullyRenderedAvatars { get; private set; } = RenderConfig.MaxFullyRenderedAvatars;
 
+    /// <summary>FEAT-PERF-26: the last <see cref="Load"/> found no saved graphics settings -- a new install
+    /// (or a preferences file that never held any), so the defaults are the machine's to pick. Boot reads
+    /// it once, right after Load, and calls <see cref="ApplyRecommended"/>.</summary>
+    public bool IsFirstRun { get; private set; }
+
     public void Load()
     {
         var cfg = new ConfigFile();
-        if (cfg.Load(ConfigPath) != Error.Ok) return;
+        var error = cfg.Load(ConfigPath);
+        IsFirstRun = error == Error.FileNotFound || (error == Error.Ok && !cfg.HasSection(Section));
+        if (error != Error.Ok) return;
 
         VSyncMode = (int)cfg.GetValue(Section, "vsync_mode", VSyncMode);
         MaxFps = (int)cfg.GetValue(Section, "max_fps", MaxFps);
@@ -284,6 +293,20 @@ public sealed class GraphicsSettings
         AvatarRenderer.NotifySettingsChanged();
     }
 
+    /// <summary>FEAT-PERF-26: starts a new install on the preset <see cref="GraphicsRecommendation"/> picked for
+    /// this machine, and saves it.</summary>
+    public void ApplyRecommended(RecommendedGraphics tier)
+    {
+        ApplyPreset(tier switch
+        {
+            RecommendedGraphics.Low => GraphicsPreset.Low,
+            RecommendedGraphics.Medium => GraphicsPreset.Medium,
+            RecommendedGraphics.High => GraphicsPreset.High,
+            _ => GraphicsPreset.Ultra,
+        });
+        IsFirstRun = false;
+    }
+
     public void ApplyPreset(GraphicsPreset preset)
     {
         switch (preset)
@@ -332,7 +355,7 @@ public sealed class GraphicsSettings
                 DrawDistance = 176f;
                 Msaa = (int)Viewport.Msaa.Msaa4X;
                 Shadows = true;
-                ShadowSplits = 2;
+                ShadowSplits = 1;
                 ShadowResolution = 4096;
                 ShadowDistance = 90f;
                 SmallObjectShadows = false;
@@ -422,7 +445,7 @@ public sealed class GraphicsSettings
                 Math.Abs(DrawDistance - 176f) < 1f &&
                 Msaa == (int)Viewport.Msaa.Msaa4X &&
                 Shadows &&
-                ShadowSplits == 2 &&
+                ShadowSplits == 1 &&
                 PostFxSsao &&
                 !PostFxSsil &&
                 PostFxGlow &&
