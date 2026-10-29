@@ -49,12 +49,15 @@ higher threshold is a quality call for the maintainer.
 - [x] `InView` self test: ahead, behind, far to the side, far below, edge touching, clear of the frustum, radius
       reaching in front of the camera, wholly behind (`planar mirror: only rendered while in view`).
 - [x] `dotnet build app/SLNG.App.csproj` clean, headless `--selftest` 182 ok (the check now also covers 6 sizes, among them the Sirens case).
-- [ ] In-world, at the spot above with `-Diag`: no `views=mirror` while the mirror is out of view; the mirror still
-      works when it is in view (look at it from 3 m and from 15 m, then turn away and back).
+- [x] In-world (2026-10-29, v0.28.50-alpha, Sirens, Mirrors on, `-Diag`): no `views=mirror` in 25 windows, 19.7k
+      draws and 27-28 fps, against `mirror:13.2/5.4`, 30.2k draws and 18 fps on v0.28.48 at the same spot and view.
+- [ ] The mirror still works when it is in view (look at it from 3 m and from 15 m, then turn away and back).
+      Not tried in-world; only the self test covers it.
 
 ## Sub-tasks / Progress
 
 - [x] `InView` and the gate in `UpdateFor` (v0.28.49-alpha)
 - [x] `ScreenFraction`, edge-on mirrors (v0.28.50-alpha)
 - [x] Self test
-- [ ] In-world check
+- [x] In-world check, mirror out of view
+- [ ] In-world check, mirror in view
