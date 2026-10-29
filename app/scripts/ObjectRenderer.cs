@@ -715,10 +715,10 @@ public partial class ObjectRenderer : Node3D
         // so it must run before that node is hidden, not after.
         _instanceGroups?.Leave(id);
 
-        if (IsInstanceValid(state.MeshInstance)) state.MeshInstance.Visible = false;
+        if (IsInstanceValid(state.MeshInstance)) { state.MeshInstance.Visible = false; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
         state.Shown = false;
         if (IsInstanceValid(state.StaticBody)) state.StaticBody.CollisionLayer = 0;
-        if (state.LightNode != null && IsInstanceValid(state.LightNode)) state.LightNode.Visible = false;
+        if (state.LightNode != null && IsInstanceValid(state.LightNode)) { state.LightNode.Visible = false; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
         // An animesh object's rigged body is not a child of this node: it lives in AvatarRenderer's
         // control avatar, so hiding the prim would leave it standing at the old place. Release it now;
         // RemoveVisual's own call is then a no-op (ReleaseControlAvatar clears ControlAvatarOwned).
@@ -1038,8 +1038,8 @@ public partial class ObjectRenderer : Node3D
                 // Visibility with hysteresis: show within draw distance, hide only past 1.15x, so
                 // objects sitting near the edge don't flicker on/off every tick while moving.
                 bool shown = state.Shown;
-                if (viewDSq <= showSq && !shown && !state.PendingRemoval) { state.MeshInstance.Visible = true; state.Shown = shown = true; }
-                else if (viewDSq > hideSq && shown) { state.MeshInstance.Visible = false; state.Shown = shown = false; }
+                if (viewDSq <= showSq && !shown && !state.PendingRemoval) { state.MeshInstance.Visible = true; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); state.Shown = shown = true; }
+                else if (viewDSq > hideSq && shown) { state.MeshInstance.Visible = false; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); state.Shown = shown = false; }
 
                 // FEAT-PERF-14: a setting, the viewport or the field of view changed since this object's
                 // visibility range was set. Cheap enough to do for the whole pass: it reads managed data
@@ -3273,6 +3273,7 @@ public partial class ObjectRenderer : Node3D
                 var sz = float.IsNaN(prim.Scale.Z) ? 1f : Mathf.Clamp(prim.Scale.Z, 0.001f, 1000f);
                 state.Scl = new Godot.Vector3(sx, sz, sy);
                 state.MeshInstance.Scale = state.Scl;
+                FrameTimeline.CountXform(FrameTimeline.XformSource.ObjectUpdate);
                 // BUG-PERF-11: a resized object's on-screen size changed: offer it again at the next visit.
                 state.LastOfferAt = double.NegativeInfinity;
 
@@ -3385,10 +3386,12 @@ public partial class ObjectRenderer : Node3D
             state.PlacedRotation = drawnRotation;
             state.Pos = newPos;
             state.MeshInstance.Position = state.Pos;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.ObjectUpdate);
             state.DormantUntilTravel = double.NegativeInfinity;   // moved: its distance margin no longer holds
 
             var slQuat = new Godot.Quaternion(drawnRotation.X, drawnRotation.Z, -drawnRotation.Y, drawnRotation.W);
             state.MeshInstance.Quaternion = slQuat;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.ObjectUpdate);
 
             // FEAT-PERF-06: if this prim is drawn by a MultiMesh, its own node moving does nothing
             // on screen -- push the new transform into the instance buffer. No-op when it is not

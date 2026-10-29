@@ -282,7 +282,11 @@ public partial class AvatarRenderer
     private static void SetPartVisible(ControlAvatarPart part, bool visible)
     {
         part.Visible = visible;
-        if (part.Mi != null && IsInstanceValid(part.Mi) && part.Mi.Visible != visible) part.Mi.Visible = visible;
+        if (part.Mi != null && IsInstanceValid(part.Mi) && part.Mi.Visible != visible)
+        {
+            part.Mi.Visible = visible;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
+        }
     }
 
     private void BuildPendingControlPart(Guid primId)
@@ -401,7 +405,7 @@ public partial class AvatarRenderer
         };
         // Nothing to follow until the first placement: a worn skeleton at the origin for a frame is a
         // creature in the middle of the region.
-        if (ca.IsAttached) visual.Root.Visible = false;
+        if (ca.IsAttached) { visual.Root.Visible = false; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
         _controlAvatars[rootId] = ca;
         return ca;
     }
@@ -452,6 +456,7 @@ public partial class AvatarRenderer
         }
         mi.CustomAabb = box;
         mi.Visible = visible;
+        FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
 
         // Replace, never add: a LOD change (or an edited face) arrives as a second rig for the
         // same prim, and a stacked duplicate would draw twice for as long as the object lives.
@@ -660,6 +665,7 @@ public partial class AvatarRenderer
 
         ca.Visual.Root.Position = position;
         ca.Visual.Root.Quaternion = ca.GodotRotation;
+        FrameTimeline.CountXform(FrameTimeline.XformSource.AvatarRoot, 2);
         ca.LastPosition = position;
         ca.LastWrittenRotation = ca.GodotRotation;
         ca.Placed = true;

@@ -302,6 +302,7 @@ public partial class AvatarRenderer
             item.Held = true;
             _mergeHeld.Add(mi);
             mi.Visible = false;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
             DetachSkeleton(mi);
         }
     }
@@ -391,6 +392,7 @@ public partial class AvatarRenderer
         if (item.Held)
         {
             mi.Visible = false;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
             DetachSkeleton(mi);
         }
         item.StagingSettled = AllMaterialsIn(mi);
@@ -1286,6 +1288,7 @@ public partial class AvatarRenderer
         _mergeHeld.Remove(staging);
         ReattachSkeleton(staging);
         staging.Visible = true;
+        FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
         UpdateWornMeshVisibility(staging, item.Visual);
     }
 
@@ -1533,6 +1536,7 @@ public partial class AvatarRenderer
             if (!IsInstanceValid(node)) return;
             DetachSkeleton(node);
             node.Visible = false;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
         }
     }
 
@@ -1551,6 +1555,7 @@ public partial class AvatarRenderer
             if (!IsInstanceValid(node)) return;
             ReattachSkeleton(node);
             node.Visible = true;
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility);
         }
     }
 

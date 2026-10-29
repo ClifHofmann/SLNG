@@ -58,6 +58,7 @@ public partial class ObjectRenderer
             state.PlacedRotation = rotation;
             state.MeshInstance.Position = state.Pos;
             state.MeshInstance.Quaternion = new Godot.Quaternion(rotation.X, rotation.Z, -rotation.Y, rotation.W);
+            FrameTimeline.CountXform(FrameTimeline.XformSource.Spin, 2);
             // A child turning round its root covers ground: its dormant margin no longer holds.
             state.DormantUntilTravel = double.NegativeInfinity;
         }
