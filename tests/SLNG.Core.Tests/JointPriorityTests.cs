@@ -25,17 +25,19 @@ public class JointPriorityTests
     {
         // A priority-2 pose that sets one joint at priority 4 beats a priority-3 animation there,
         // and loses every joint it did not raise.
-        var table = new JointPriorityTable<string>();
+        var table = new JointBlendTable<float>();
         const int Hip = 1, Knee = 2;
+        const float Walk = 1f, Pose = 2f;
+        static float Pick(float t, float below, float above) => t >= 0.5f ? above : below;
 
-        table.Offer(Hip, JointPriority.Effective(false, 6, -1, 3), "walk");
-        table.Offer(Knee, JointPriority.Effective(false, 6, -1, 3), "walk");
-        table.Offer(Hip, JointPriority.Effective(false, 6, 4, 2), "pose");
-        table.Offer(Knee, JointPriority.Effective(false, 6, -1, 2), "pose");
+        table.Offer(Hip, JointPriority.Effective(false, 6, 4, 2), 1f, Pose);
+        table.Offer(Knee, JointPriority.Effective(false, 6, -1, 2), 1f, Pose);
+        table.Offer(Hip, JointPriority.Effective(false, 6, -1, 3), 1f, Walk);
+        table.Offer(Knee, JointPriority.Effective(false, 6, -1, 3), 1f, Walk);
 
-        Assert.True(table.TryGet(Hip, out string hip));
-        Assert.True(table.TryGet(Knee, out string knee));
-        Assert.Equal("pose", hip);
-        Assert.Equal("walk", knee);
+        Assert.True(table.TryResolve(Hip, Pick, out float hip));
+        Assert.True(table.TryResolve(Knee, Pick, out float knee));
+        Assert.Equal(Pose, hip);
+        Assert.Equal(Walk, knee);
     }
 }

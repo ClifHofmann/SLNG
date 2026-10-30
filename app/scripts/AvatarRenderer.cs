@@ -2070,6 +2070,7 @@ public partial class AvatarRenderer : Node3D
                          $"dropped=[{dropped}] sources=[{sources}]");
             }
 
+            visual.AnimPlayer.TraceLabel = avatar.IsLocalAgent ? "SELF" : avatar.AgentId.ToString()[..8]; // names the [AnimBlend] trace
             GD.Print($"[AnimPlayer] {(avatar.IsLocalAgent ? "SELF" : avatar.AgentId.ToString()[..8])} " +
                      $"anim set -> [{string.Join(" ", desired.Select(d => d.ToString()[..8]))}]" +
                      $" (predicted={_selfPredictedLocomotion?.ToString()[..8] ?? "none"}," +

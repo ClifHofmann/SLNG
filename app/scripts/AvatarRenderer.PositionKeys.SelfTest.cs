@@ -11,7 +11,7 @@ public partial class AvatarRenderer
     /// BUG-ANIM-07: an animation's POSITION key drives any joint, not only the pelvis.
     ///
     /// <para>The unit tests pin the arithmetic (<c>AnimatedJointPosition</c>) and the priority rule
-    /// (<c>JointPriorityTable</c>); this runs the rest of the chain on a real avatar skeleton through
+    /// (<c>JointBlendTable</c>); this runs the rest of the chain on a real avatar skeleton through
     /// the real player: the key, the parent's scale <c>ApplyShape</c> hands over, the rest a worn
     /// mesh's joint override lives in, and the way back when the animation stops. The failure it
     /// exists for does not throw and does not log: an add-on HUD's shape pose that is simply not

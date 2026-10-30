@@ -306,6 +306,7 @@ public static partial class SelfTest
         results.Add(CheckAvatarHoldMode());
         results.Add(CheckAvatarAnimationFreeze());
         results.Add(CheckAvatarAnimationLocalOverlay());
+        results.Add(CheckAvatarAnimationCrossfade());
         results.Add(CheckRegionRestartWindow(tree));
         results.Add(CheckLandInfoWindow(tree));
         results.Add(CheckTeleportOfferWindow(tree));
@@ -3012,6 +3013,92 @@ public static partial class SelfTest
 
         return new Check("avatar animation freeze", problems.Count == 0,
             problems.Count == 0 ? "Freeze halts time, stepFrame nudges time, updates buffer cleanly" : string.Join("; ", problems));
+    }
+
+    /// <summary>
+    /// BUG-ANIM-08: changing from one loop to another is a crossfade over the ease durations, not a cut.
+    /// The sim swaps the whole animation set in one packet; before the fix the old loop vanished and the
+    /// new one took the body at full weight on the very next frame -- the jolt. The pose is read after each
+    /// frame: the first frames must still be (almost) the old loop, the middle strictly between the two,
+    /// the end the new loop, and the old one must be dropped once it has faded.
+    /// </summary>
+    private static Check CheckAvatarAnimationCrossfade()
+    {
+        var problems = new List<string>();
+        var player = new AvatarAnimationPlayer();
+        var skeleton = new Skeleton3D();
+        skeleton.AddBone("mPelvis");
+        skeleton.SetBoneRest(0, new Transform3D(Basis.Identity, new Vector3(0, 1, 0)));
+        skeleton.ResetBonePoses();
+        player.SetSkeleton(skeleton);
+
+        AnimationData Loop(float roll, float ease) => new()
+        {
+            Length = 2.0f,
+            InPoint = 0f,
+            OutPoint = 2.0f,
+            Loop = true,
+            Priority = 3,
+            EaseInTime = ease,
+            EaseOutTime = ease,
+            Joints = new[]
+            {
+                new AnimationJointData
+                {
+                    JointName = "mPelvis",
+                    Priority = 3,
+                    RotationKeys = new[] { new RotationKeyframe { Time = 0f, Rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0, 0, roll) } },
+                    PositionKeys = Array.Empty<PositionKeyframe>()
+                }
+            }
+        };
+
+        var idA = Guid.NewGuid();
+        var idB = Guid.NewGuid();
+        var dataA = Loop(0.2f, 0.5f);
+        var dataB = Loop(1.2f, 0.5f);
+
+        // Known answers, measured by playing each alone to full weight.
+        player.SetActiveAnimations(new[] { (idA, dataA) });
+        player.Advance(1.0f);
+        var poseA = skeleton.GetBonePoseRotation(0);
+        player.Stop();
+        player.SetActiveAnimations(new[] { (idB, dataB) });
+        player.Advance(1.0f);
+        var poseB = skeleton.GetBonePoseRotation(0);
+        player.Stop();
+        float total = poseA.AngleTo(poseB);
+        if (total < 0.5f) problems.Add($"the two loops do not differ enough to tell (angle {total:0.000})");
+
+        // A plays; the sim then sends [B] alone.
+        player.SetActiveAnimations(new[] { (idA, dataA) });
+        player.Advance(1.0f);
+        player.SetActiveAnimations(new[] { (idB, dataB) });
+
+        const float Frame = 1f / 30f;
+        player.Advance(Frame);
+        float toB = skeleton.GetBonePoseRotation(0).AngleTo(poseB);
+        if (toB < total * 0.9f)
+            problems.Add($"first frame after the change already jumped to the new loop ({toB / total:P0} of the way left)");
+
+        for (int i = 0; i < 6; i++) player.Advance(Frame); // 0.233 s of a 0.5 s fade
+        var mid = skeleton.GetBonePoseRotation(0);
+        float midToA = mid.AngleTo(poseA);
+        float midToB = mid.AngleTo(poseB);
+        if (midToA < total * 0.05f || midToB < total * 0.05f)
+            problems.Add($"mid-fade pose is not between the loops (to old {midToA / total:P0}, to new {midToB / total:P0})");
+        if (!player.IsPlaying) problems.Add("player stopped playing mid-fade");
+
+        for (int i = 0; i < 30; i++) player.Advance(Frame); // well past the fade
+        if (skeleton.GetBonePoseRotation(0).AngleTo(poseB) > total * 0.01f)
+            problems.Add("after the fade the pose is not the new loop");
+        if (player.GetAnimationTime(idA).HasValue) problems.Add("the old loop is still playing after it faded out");
+
+        player.Stop();
+        skeleton.Free();
+
+        return new Check("animation crossfade", problems.Count == 0,
+            problems.Count == 0 ? "a loop change fades old out and new in over the ease durations" : string.Join("; ", problems));
     }
 
     private static Check CheckAvatarAnimationLocalOverlay()
