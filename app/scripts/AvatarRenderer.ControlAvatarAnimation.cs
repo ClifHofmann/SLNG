@@ -702,8 +702,10 @@ public partial class AvatarRenderer
                            && SelfTestAtRest(sk, "mHipLeft"),
                         "a second mesh that resets the skeleton's poses must not wipe the held pose");
 
-                    // The same sequence on an ordinary avatar's player: rest + key, and everything the
-                    // playing animation does not drive snaps back to rest.
+                    // The same sequence on an ordinary avatar's player: rest + key, and a joint the playing
+                    // animation does not drive any more keeps its last pose (BUG-ANIM-09, as in the viewer) --
+                    // except the joints the viewer's default motions keep driving (the pelvis here), which
+                    // SLNG has no motion for and which snap back to rest.
                     var plainSkeleton = SkeletonBuilder.Build(_avatarSkeleton);
                     AddChild(plainSkeleton);
                     plainSkeleton.ResetBonePoses();
@@ -721,12 +723,17 @@ public partial class AvatarRenderer
                     plainPlayer.SetActiveAnimations(new List<(Guid, AnimationData)> { (idHB, animHB) });
                     plainPlayer.Advance(0.1f);
                     Expect(SelfTestAtKey(plainSkeleton, "mElbowLeft", keyB)
-                           && SelfTestAtRest(plainSkeleton, Shoulder) && SelfTestAtRest(plainSkeleton, "mPelvis")
-                           && SelfTestAtRestPosition(plainSkeleton, "mPelvis"),
-                        "an ordinary avatar must still snap every bone its animations do not drive back to rest");
+                           && SelfTestAtKey(plainSkeleton, Shoulder, keyA)
+                           && SelfTestAtRest(plainSkeleton, "mPelvis") && SelfTestAtRestPosition(plainSkeleton, "mPelvis"),
+                        "an ordinary avatar must keep the pose of a joint its animations stopped driving, but put back the pelvis, which a default motion drives");
 
                     plainPlayer.SetActiveAnimations(new List<(Guid, AnimationData)>());
-                    Expect(Nothing(plainSkeleton), "an ordinary avatar whose last animation stops must still return to rest");
+                    Expect(SelfTestAtKey(plainSkeleton, "mElbowLeft", keyB) && SelfTestAtKey(plainSkeleton, Shoulder, keyA)
+                           && SelfTestAtRest(plainSkeleton, "mPelvis"),
+                        "an ordinary avatar whose last animation stops must keep the held joints");
+
+                    plainPlayer.Stop();
+                    Expect(Nothing(plainSkeleton), "an ordinary avatar whose player is stopped (a skeleton reset) must return to rest");
                     plainSkeleton.QueueFree();
                 }
                 FreeControlAvatar(holdRoot);

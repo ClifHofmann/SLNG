@@ -137,6 +137,46 @@ public sealed class AvatarAnimationPlayer
     // reapply: the parent's scale may have changed in between (that is why the reset happened).
     private readonly Dictionary<int, System.Numerics.Vector3> _heldKeys = new();
 
+    // BUG-ANIM-09: an ORDINARY avatar puts every bone back to rest each frame, but the viewer leaves a
+    // joint where its last animation put it once nothing drives it any more (llpose.cpp:242-246), so a
+    // joint an animation stopped keying keeps its last rotation / position key here, until something
+    // keys it again, the player is stopped, or the skeleton is reset (Stop). The joints the viewer's
+    // default motions keep driving are left out: SLNG has no such motions (DefaultMotionJoints).
+    // A control avatar holds EVERY bone already (HoldUndrivenBones) and bypasses this.
+    private JointHold<Quaternion>? _holdRot;
+    private JointHold<System.Numerics.Vector3>? _holdPos;
+
+    private bool HoldsReleased => _holdRot != null && !HoldUndrivenBones;
+
+    /// <summary>Gives the released joints no more history and no hold: they are at rest from the next
+    /// reset on.</summary>
+    private void ClearReleased()
+    {
+        _holdRot?.Clear();
+        _holdPos?.Clear();
+    }
+
+    /// <summary>Notes that nothing drives any joint now (every joint driven last frame is released),
+    /// and writes the held ones over the pose a reset has just given the skeleton.</summary>
+    private void ReleaseAndWriteHeld()
+    {
+        if (!HoldsReleased) return;
+
+        _holdRot!.BeginFrame();
+        _holdPos!.BeginFrame();
+        _holdRot.EndFrame();
+        _holdPos.EndFrame();
+        WriteHeldReleased();
+    }
+
+    private void WriteHeldReleased()
+    {
+        for (int i = 0; i < _holdRot!.HeldCount; i++)
+            _skeleton!.SetBonePoseRotation(_holdRot.HeldJoint(i), _holdRot.HeldValue(i));
+        for (int i = 0; i < _holdPos!.HeldCount; i++)
+            _skeleton!.SetBonePosePosition(_holdPos.HeldJoint(i), KeyToPosePosition(_holdPos.HeldJoint(i), _holdPos.HeldValue(i)));
+    }
+
     /// <summary>Writes the held pose back onto the skeleton. For a caller that has just reset the
     /// skeleton's poses for a reason of its own (<c>Skeleton3D.ResetBonePoses</c> after a joint
     /// override changed) and must not lose what the animations had left there. Only the bones the
@@ -229,6 +269,7 @@ public sealed class AvatarAnimationPlayer
         if (_active.Count == 0)
         {
             ResetToRestPose();
+            ReleaseAndWriteHeld();
         }
     }
 
@@ -264,6 +305,8 @@ public sealed class AvatarAnimationPlayer
         {
             if (_isFrozen) return;
             _holdMode = value;
+            // The bind pose is the rest pose, whole.
+            if (value == AvatarHoldMode.BindPose) ClearReleased();
         }
     }
 
@@ -277,6 +320,7 @@ public sealed class AvatarAnimationPlayer
         _heldRotations.Clear();
         _heldPositions.Clear();
         _heldKeys.Clear();
+        CreateReleasedHolds(skeleton);
         _neckBoneIdx = skeleton.FindBone("mNeck");
         _headBoneIdx = skeleton.FindBone("mHead");
         _pelvisBoneIdx = skeleton.FindBone(AnimatedJointPosition.PelvisJointName);
@@ -366,6 +410,7 @@ public sealed class AvatarAnimationPlayer
         {
             if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
             ResetToRestPose();
+            ReleaseAndWriteHeld();
         }
     }
 
@@ -402,6 +447,7 @@ public sealed class AvatarAnimationPlayer
         _heldRotations.Clear();
         _heldPositions.Clear();
         _heldKeys.Clear();
+        ClearReleased();
         ResetToRestPose();
     }
 
@@ -553,6 +599,7 @@ public sealed class AvatarAnimationPlayer
         {
             if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
             ResetToRestPose();
+            ReleaseAndWriteHeld();
             return;
         }
 
@@ -574,6 +621,13 @@ public sealed class AvatarAnimationPlayer
         if (!_isFrozen && HoldMode == AvatarHoldMode.BindPose)
         {
             return;
+        }
+
+        bool holds = HoldsReleased;
+        if (holds)
+        {
+            _holdRot!.BeginFrame();
+            _holdPos!.BeginFrame();
         }
 
         // For each bone in the skeleton, the animations that affect it are layered by priority and each
@@ -644,6 +698,7 @@ public sealed class AvatarAnimationPlayer
 
             _skeleton!.SetBonePoseRotation(boneIdx, rotation);
             if (HoldUndrivenBones) _heldRotations[boneIdx] = rotation;
+            if (holds) _holdRot!.Driven(boneIdx, rotation);
         }
 
         // Apply position channels. In Godot's Skeleton3D, SetBonePosePosition replaces the bone's local
@@ -668,8 +723,43 @@ public sealed class AvatarAnimationPlayer
                 if (boneIdx == _pelvisBoneIdx) _heldPositions[boneIdx] = written;
                 else _heldKeys[boneIdx] = key;
             }
+            if (holds) _holdPos!.Driven(boneIdx, key);
+        }
+
+        // What an animation drove last frame and none drives now stays where it was (BUG-ANIM-09).
+        if (holds)
+        {
+            _holdRot!.EndFrame();
+            _holdPos!.EndFrame();
+            WriteHeldReleased();
         }
     }
+
+    private void CreateReleasedHolds(Skeleton3D skeleton)
+    {
+        int count = skeleton.GetBoneCount();
+        string Name(int joint) => skeleton.GetBoneName(joint);
+        bool Holdable(int joint) => !DefaultMotionJoints.Drives(Name(joint));
+
+        Action<int, JointHoldEvent>? rotLog = null;
+        Action<int, JointHoldEvent>? posLog = null;
+        if (Diagnostics.Enabled)
+        {
+            string Who() => TraceLabel ?? "sk#" + skeleton.GetInstanceId();
+            rotLog = (joint, e) => GD.Print($"[AnimHold] {Who()} {Name(joint)} rotation {Describe(e)}");
+            posLog = (joint, e) => GD.Print($"[AnimHold] {Who()} {Name(joint)} position {Describe(e)}");
+        }
+
+        _holdRot = new JointHold<Quaternion>(count, Holdable, rotLog);
+        _holdPos = new JointHold<System.Numerics.Vector3>(count, Holdable, posLog);
+    }
+
+    private static string Describe(JointHoldEvent e) => e switch
+    {
+        JointHoldEvent.Held => "held at its last animated value (no animation drives it any more)",
+        JointHoldEvent.Replaced => "hold dropped (an animation keys it again)",
+        _ => "hold dropped (stop / skeleton reset)",
+    };
 
     // The viewer blends a lower layer UNDER what is accumulated: nlerp(t, layer, accumulated) for
     // rotations, lerp for positions (llpose.cpp:322, 360). Cached, so a frame allocates no delegate.

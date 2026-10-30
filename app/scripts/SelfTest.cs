@@ -307,6 +307,7 @@ public static partial class SelfTest
         results.Add(CheckAvatarAnimationFreeze());
         results.Add(CheckAvatarAnimationLocalOverlay());
         results.Add(CheckAvatarAnimationCrossfade());
+        results.Add(CheckAvatarAnimationHeldJoints());
         results.Add(CheckRegionRestartWindow(tree));
         results.Add(CheckLandInfoWindow(tree));
         results.Add(CheckTeleportOfferWindow(tree));
@@ -3099,6 +3100,90 @@ public static partial class SelfTest
 
         return new Check("animation crossfade", problems.Count == 0,
             problems.Count == 0 ? "a loop change fades old out and new in over the ease durations" : string.Join("; ", problems));
+    }
+
+    /// <summary>
+    /// BUG-ANIM-09: a joint an animation keyed and nothing keys any more keeps its last pose, as in the
+    /// viewer (llpose.cpp:242-246) -- the eBody Waifu deformer is a pulse that keys only LEFT_PEC for a
+    /// quarter second, and the pec used to snap back to rest the frame after. A joint the viewer's default
+    /// motions keep driving (the eyes) is NOT held: SLNG has no such motion. A new key replaces the hold,
+    /// and Stop (the skeleton reset) lets go.
+    /// </summary>
+    private static Check CheckAvatarAnimationHeldJoints()
+    {
+        var problems = new List<string>();
+        var player = new AvatarAnimationPlayer();
+        var skeleton = new Skeleton3D();
+        skeleton.AddBone("mPelvis");
+        skeleton.AddBone("LEFT_PEC");
+        skeleton.AddBone("mEyeLeft");
+        skeleton.SetBoneParent(1, 0);
+        skeleton.SetBoneParent(2, 0);
+        for (int i = 0; i < 3; i++) skeleton.SetBoneRest(i, new Transform3D(Basis.Identity, new Vector3(0, 1, 0)));
+        skeleton.ResetBonePoses();
+        player.SetSkeleton(skeleton);
+
+        AnimationData Keys(float easeOut, params (string joint, float roll)[] joints) => new()
+        {
+            Length = 2.0f,
+            OutPoint = 2.0f,
+            Loop = true,
+            Priority = 3,
+            EaseOutTime = easeOut,
+            Joints = joints.Select(j => new AnimationJointData
+            {
+                JointName = j.joint,
+                Priority = 3,
+                RotationKeys = new[] { new RotationKeyframe { Time = 0f, Rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0, 0, j.roll) } },
+                PositionKeys = Array.Empty<PositionKeyframe>()
+            }).ToArray()
+        };
+
+        var stand = Guid.NewGuid();
+        var pulse = Guid.NewGuid();
+        var standData = Keys(0f, ("mPelvis", 0.1f));
+        var pulseData = Keys(0.4f, ("LEFT_PEC", 0.6f), ("mEyeLeft", 0.6f));
+        const float Frame = 1f / 30f;
+
+        player.SetActiveAnimations(new[] { (stand, standData), (pulse, pulseData) });
+        for (int i = 0; i < 6; i++) player.Advance(Frame);
+        var pecPulsed = skeleton.GetBonePoseRotation(1);
+        if (pecPulsed.AngleTo(Quaternion.Identity) < 0.1f) problems.Add("the pulse did not pose the pec (nothing to hold)");
+
+        // The pulse leaves the set; its 0.4 s fade-out, then it is gone.
+        player.SetActiveAnimations(new[] { (stand, standData) });
+        for (int i = 0; i < 30; i++) player.Advance(Frame);
+        if (player.GetAnimationTime(pulse).HasValue) problems.Add("the pulse is still playing");
+        if (skeleton.GetBonePoseRotation(1).AngleTo(pecPulsed) > 0.001f)
+            problems.Add($"the pec did not keep its last pose after the animation ended (now {skeleton.GetBonePoseRotation(1).AngleTo(pecPulsed):0.000} rad off)");
+        if (skeleton.GetBonePoseRotation(2).AngleTo(Quaternion.Identity) > 0.001f)
+            problems.Add("the eye is held after the animation ended, but a default motion drives it in the viewer");
+
+        // Another pulse keys it again: the hold is replaced, then held at the new value.
+        var pulse2 = Guid.NewGuid();
+        var pulse2Data = Keys(0f, ("LEFT_PEC", 1.1f));
+        player.SetActiveAnimations(new[] { (stand, standData), (pulse2, pulse2Data) });
+        player.Advance(Frame);
+        var pecSecond = skeleton.GetBonePoseRotation(1);
+        if (pecSecond.AngleTo(pecPulsed) < 0.1f) problems.Add("a new key on a held joint did not replace the hold");
+        player.SetActiveAnimations(new[] { (stand, standData) });
+        player.Advance(Frame);
+        player.Advance(Frame);
+        if (skeleton.GetBonePoseRotation(1).AngleTo(pecSecond) > 0.001f) problems.Add("the second pulse was not held either");
+
+        // A skeleton reset / stop lets go.
+        player.Stop();
+        if (skeleton.GetBonePoseRotation(1).AngleTo(Quaternion.Identity) > 0.001f) problems.Add("Stop did not put the pec back at rest");
+        player.SetActiveAnimations(new[] { (stand, standData) });
+        player.Advance(Frame);
+        player.Advance(Frame);
+        if (skeleton.GetBonePoseRotation(1).AngleTo(Quaternion.Identity) > 0.001f) problems.Add("the hold survived a Stop");
+
+        player.Stop();
+        skeleton.Free();
+
+        return new Check("animation held joints", problems.Count == 0,
+            problems.Count == 0 ? "a joint no animation drives any more keeps its last pose; default-motion joints do not; Stop lets go" : string.Join("; ", problems));
     }
 
     private static Check CheckAvatarAnimationLocalOverlay()

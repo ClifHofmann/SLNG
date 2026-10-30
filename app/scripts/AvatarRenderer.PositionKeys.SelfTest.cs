@@ -138,8 +138,12 @@ public partial class AvatarRenderer
             bool followsShape = Near(Pose(jointIdx), Expected(key, parentName))
                                 && !Near(Pose(jointIdx), drivenPose);
 
-            // 3c. Stopped: the joint is back at its rest.
+            // 3c. The animation ends: the joint STAYS at the key's position, as in the viewer, which leaves a
+            // joint nothing drives any more where it was (llpose.cpp:242-246; BUG-ANIM-09). The player being
+            // stopped (a skeleton reset) puts it back at its rest.
             player.SetActiveAnimations(Array.Empty<(Guid, AnimationData)>());
+            bool heldAfterEnd = Near(Pose(jointIdx), Expected(key, parentName));
+            player.Stop();
             bool backAtRest = Near(Pose(jointIdx), Rest(jointIdx));
 
             // 4. A worn mesh's joint-position override lives in the rest. While the pose drives the
@@ -158,7 +162,7 @@ public partial class AvatarRenderer
             player.Advance(0.05f);
             bool keyBeatsOverride = Near(Pose(jointIdx), Expected(key, parentName))
                                     && !Near(Pose(jointIdx), restOverridden);
-            player.SetActiveAnimations(Array.Empty<(Guid, AnimationData)>());
+            player.Stop();
             bool overrideBack = Near(Pose(jointIdx), restOverridden);
 
             // 5. Per joint, the higher priority wins -- whichever was offered last at equal priority.
@@ -201,17 +205,17 @@ public partial class AvatarRenderer
             player.Stop();
 
             bool ok = tongueStays && pelvisRestPlusKey && pelvisAbsolute && pelvisBack && parentIsScaled && movesToKey
-                      && actuallyMoved && followsShape && backAtRest && overrideInRest && keyBeatsOverride
+                      && actuallyMoved && followsShape && heldAfterEnd && backAtRest && overrideInRest && keyBeatsOverride
                       && overrideBack && higherWins && higherWinsOtherOrder && rotationLeavesPosition;
             return (ok, ok
                 ? $"a position key on {Joint} puts it at the key scaled by its parent's scale {parentScale.X:0.##}/{parentScale.Y:0.##}/{parentScale.Z:0.##} " +
-                  $"(rest {Mm(restPlain)} -> {Mm(drivenPose)}), follows a shape change on the next frame, beats a worn mesh's override and gives the joint back when it stops; " +
+                  $"(rest {Mm(restPlain)} -> {Mm(drivenPose)}), follows a shape change on the next frame, beats a worn mesh's override, stays where it was when the animation ends and goes back to rest on a reset; " +
                   "the higher priority wins whatever the order; a tongue key equal to the default stays put; the pelvis is still rest + key (absolute for a control avatar)"
                 : $"tongue key equal to its default stays put {(tongueStays ? "ok" : $"WRONG (rest {Mm(tongueRest)}, pose {Mm(tonguePose)})")}; " +
                   $"pelvis rest+key {(pelvisRestPlusKey ? "ok" : $"WRONG (pose {Mm(pelvisPose)}, rest {Mm(pelvisRest)})")} / absolute {(pelvisAbsolute ? "ok" : "WRONG")} / back {(pelvisBack ? "ok" : "WRONG")}; " +
                   $"parent scaled {(parentIsScaled ? "ok" : "WRONG (the check's shape did not scale it)")}; " +
                   $"{Joint} moves to the scaled key {(movesToKey ? "ok" : $"WRONG (pose {Mm(drivenPose)}, expected {Mm(Expected(key, parentName))})")} " +
-                  $"and really moved {(actuallyMoved ? "ok" : "WRONG")}; follows a shape change {(followsShape ? "ok" : "WRONG")}; back at rest when stopped {(backAtRest ? "ok" : "WRONG")}; " +
+                  $"and really moved {(actuallyMoved ? "ok" : "WRONG")}; follows a shape change {(followsShape ? "ok" : "WRONG")}; held when the animation ends {(heldAfterEnd ? "ok" : "WRONG")}; back at rest on a reset {(backAtRest ? "ok" : "WRONG")}; " +
                   $"override sits in the rest {(overrideInRest ? "ok" : "WRONG")}, key beats it {(keyBeatsOverride ? "ok" : "WRONG")}, override back {(overrideBack ? "ok" : "WRONG")}; " +
                   $"higher priority wins {(higherWins ? "ok" : "WRONG")} / other order {(higherWinsOtherOrder ? "ok" : "WRONG")}; " +
                   $"rotation-only leaves the position {(rotationLeavesPosition ? "ok" : "WRONG")}");
