@@ -2,7 +2,7 @@ namespace SLNG.Core;
 
 /// <summary>
 /// BUG-ANIM-07: the priority one animation's key on one joint competes at in a
-/// <see cref="JointPriorityTable{T}"/>.
+/// <see cref="JointBlendTable{T}"/>.
 /// </summary>
 public static class JointPriority
 {

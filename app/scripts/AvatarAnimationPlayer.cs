@@ -25,26 +25,35 @@ public sealed class AvatarAnimationPlayer
     private sealed class PlayingAnimation
     {
         public AnimationData Data;
-        public float CurrentTime;
+        public readonly MotionState Motion;
         public Guid AnimationId;
         public string? Name;
+
+        /// <summary>Time inside the clip the keys are read at.</summary>
+        public float CurrentTime => Motion.PoseTime;
 
         public PlayingAnimation(AnimationData data, Guid animId, string? name = null)
         {
             Data = data;
             AnimationId = animId;
             Name = name;
-            CurrentTime = data.InPoint; // start at InPoint
+            Motion = new MotionState(TimingOf(data));
         }
     }
 
+    /// <summary>What an animation says about its loop and fades, as the motion clock wants it. The
+    /// out point of a clip that does not give one is its end.</summary>
+    private static MotionTiming TimingOf(AnimationData data)
+        => new(data.Length, data.Loop, data.InPoint, data.OutPoint > 0f ? data.OutPoint : data.Length, data.EaseInTime, data.EaseOutTime);
+
     private readonly List<PlayingAnimation> _active = new();
-    // Per-joint highest-priority-wins tables, one per channel (BUG-ANIM-07: the rule lives in
-    // SLNG.Core so it can be tested). Rotations are held as Godot quaternions; position keys as the
+    // Per-joint weighted layer tables, one per channel (BUG-ANIM-07 / BUG-ANIM-08: the rule lives in
+    // SLNG.Core so it can be tested -- the highest priority takes the joint, a motion that is fading
+    // in or out shares it with the layers below). Rotations are held as Godot quaternions; position keys as the
     // SL-space value the animation gave, because how a key becomes a bone position depends on the
     // joint (the pelvis adds the rest, every other joint takes it absolutely, scaled by its parent).
-    private readonly JointPriorityTable<Quaternion> _boneRots = new();
-    private readonly JointPriorityTable<System.Numerics.Vector3> _bonePositions = new();
+    private readonly JointBlendTable<Quaternion> _boneRots = new();
+    private readonly JointBlendTable<System.Numerics.Vector3> _bonePositions = new();
     // FEAT-ANIM-06: local inventory / machinima animation overlay, independent of sim network updates
     private readonly List<PlayingAnimation> _localOverlay = new();
     private Skeleton3D? _skeleton;
@@ -185,24 +194,32 @@ public sealed class AvatarAnimationPlayer
         {
             if (_localOverlay[i].AnimationId == animId)
             {
-                _localOverlay[i].CurrentTime = data.InPoint;
-                _localOverlay[i].Data = data;
-                if (!string.IsNullOrEmpty(name)) _localOverlay[i].Name = name;
+                var again = _localOverlay[i];
+                again.Data = data;
+                again.Motion.Timing = TimingOf(data);
+                again.Motion.Activate();
+                if (!string.IsNullOrEmpty(name)) again.Name = name;
+                // Started again, so the newest: the end of the list.
+                _localOverlay.RemoveAt(i);
+                _localOverlay.Add(again);
                 return;
             }
         }
         _localOverlay.Add(new PlayingAnimation(data, animId, name));
     }
 
-    /// <summary>FEAT-ANIM-06: Stops a specific local overlay animation.</summary>
+    /// <summary>FEAT-ANIM-06: Stops a specific local overlay animation. It fades out over its ease-out
+    /// (BUG-ANIM-08) and is gone from <see cref="GetLocalAnimationInfos"/> at once.</summary>
     public bool StopLocal(Guid animId)
     {
-        int removed = _localOverlay.RemoveAll(a => a.AnimationId == animId);
-        if (removed > 0 && _active.Count == 0 && _localOverlay.Count == 0)
+        bool stopped = false;
+        foreach (var anim in _localOverlay)
         {
-            ResetToRestPose();
+            if (anim.AnimationId != animId || anim.Motion.Stopped) continue;
+            anim.Motion.Stop();
+            stopped = true;
         }
-        return removed > 0;
+        return stopped;
     }
 
     /// <summary>FEAT-ANIM-06: Clears all local overlay animations.</summary>
@@ -218,7 +235,8 @@ public sealed class AvatarAnimationPlayer
     /// <summary>FEAT-ANIM-06: Returns info on all currently active local overlay animations.</summary>
     public IReadOnlyList<(Guid id, string name, int priority)> GetLocalAnimationInfos()
     {
-        return _localOverlay.Select(a => (a.AnimationId, a.Name ?? a.AnimationId.ToString()[..8], a.Data.Priority)).ToList();
+        return _localOverlay.Where(a => !a.Motion.Stopped)
+            .Select(a => (a.AnimationId, a.Name ?? a.AnimationId.ToString()[..8], a.Data.Priority)).ToList();
     }
 
     /// <summary>FEAT-ANIM-09: True if animation playback is frozen at its current frame.</summary>
@@ -298,37 +316,79 @@ public sealed class AvatarAnimationPlayer
             return;
         }
 
-        // Remove animations no longer active.
-        int removed = _active.RemoveAll(p =>
+        // BUG-ANIM-08: an animation that left the set is STOPPED, not dropped -- it fades out over its
+        // ease-out under whatever replaced it, and Advance drops it once it has (the viewer's
+        // LLMotionController::stopMotionInstance -> setStopTime, then deactivate after the ease-out). One
+        // that comes back while it is still fading is started again from its current weight.
+        bool changed = false;
+        foreach (var p in _active)
         {
+            bool wanted = false;
             foreach (var (id, _) in animations)
             {
-                if (p.AnimationId == id) return false;
+                if (p.AnimationId == id) { wanted = true; break; }
             }
-            if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Removing animation {p.AnimationId}");
-            return true;
-        });
 
-        // (A holding player keeps the last pose when the last animation stops: see HoldUndrivenBones.)
-        if (_active.Count == 0 && _localOverlay.Count == 0 && removed > 0 && !HoldUndrivenBones)
-        {
-            if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
-            ResetToRestPose();
+            if (!wanted && !p.Motion.Stopped)
+            {
+                p.Motion.Stop();
+                changed = true;
+                if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Stopping animation {p.AnimationId} (ease out {p.Data.EaseOutTime:0.##} s, weight {p.Motion.Weight:0.##})");
+            }
         }
 
         // Add new ones.
         foreach (var (id, data) in animations)
         {
-            bool found = false;
-            foreach (var p in _active)
-            {
-                if (p.AnimationId == id) { found = true; break; }
-            }
-            if (!found)
+            int at = _active.FindIndex(p => p.AnimationId == id);
+            if (at < 0)
             {
                 _active.Add(new PlayingAnimation(data, id));
+                changed = true;
+                if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Starting animation {id} (ease in {data.EaseInTime:0.##} s, priority {data.Priority}, loop {data.Loop})");
+            }
+            else if (_active[at].Motion.Stopped)
+            {
+                // Newest again: the end of the list.
+                var back = _active[at];
+                back.Motion.Activate();
+                _active.RemoveAt(at);
+                _active.Add(back);
+                changed = true;
+                if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Restarting animation {id} from weight {back.Motion.Weight:0.##}");
             }
         }
+
+        if (changed) _traceFramesLeft = TraceFramesPerChange;
+
+        // One with no ease-out is gone at once, with nothing left to fade.
+        if (RemoveFinished() && _active.Count == 0 && _localOverlay.Count == 0 && !HoldUndrivenBones)
+        {
+            if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
+            ResetToRestPose();
+        }
+    }
+
+    /// <summary>Drops every motion that has faded all the way out. True when it dropped any.</summary>
+    private bool RemoveFinished()
+    {
+        bool droppedAny = false;
+        for (int i = _active.Count - 1; i >= 0; i--)
+        {
+            if (!_active[i].Motion.IsFinished) continue;
+
+            if (Diagnostics.Enabled) GD.Print($"[AnimPlayer] Animation {_active[i].AnimationId} finished fading out");
+            _active.RemoveAt(i);
+            droppedAny = true;
+        }
+
+        for (int i = _localOverlay.Count - 1; i >= 0; i--)
+        {
+            if (!_localOverlay[i].Motion.IsFinished) continue;
+            _localOverlay.RemoveAt(i);
+            droppedAny = true;
+        }
+        return droppedAny;
     }
 
     /// <summary>Clear all playing animations and reset the skeleton to rest pose.</summary>
@@ -346,8 +406,9 @@ public sealed class AvatarAnimationPlayer
     }
 
     /// <summary>
-    /// FEAT-ANIM-04: Resynchronizes all active animations by resetting their playback
-    /// time to InPoint in the same frame. No-op while in a sustained hold mode or frozen.
+    /// FEAT-ANIM-04: Resynchronizes all active animations by starting their clocks again from 0 in
+    /// the same frame (each keeps the weight it has, so none dips). No-op while in a sustained hold
+    /// mode or frozen.
     /// </summary>
     public void Resync()
     {
@@ -355,7 +416,7 @@ public sealed class AvatarAnimationPlayer
 
         foreach (var anim in _active)
         {
-            anim.CurrentTime = anim.Data.InPoint;
+            if (!anim.Motion.Stopped) anim.Motion.Activate();
         }
         ApplyBonePoses();
     }
@@ -374,23 +435,25 @@ public sealed class AvatarAnimationPlayer
             float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
             float loopStart = anim.Data.InPoint;
 
-            anim.CurrentTime += dir * stepSeconds;
+            float time = anim.CurrentTime + dir * stepSeconds;
 
             if (anim.Data.Loop && loopEnd > loopStart)
             {
-                while (anim.CurrentTime > loopEnd) anim.CurrentTime -= (loopEnd - loopStart);
-                while (anim.CurrentTime < loopStart) anim.CurrentTime += (loopEnd - loopStart);
+                while (time > loopEnd) time -= (loopEnd - loopStart);
+                while (time < loopStart) time += (loopEnd - loopStart);
             }
             else
             {
-                anim.CurrentTime = Mathf.Clamp(anim.CurrentTime, loopStart, loopEnd);
+                time = Mathf.Clamp(time, 0f, loopEnd);
             }
+
+            anim.Motion.Seek(time);
         }
 
         ApplyBonePoses();
     }
 
-    /// <summary>FEAT-ANIMESH-02: starts one active animation again from its in-point, leaving every
+    /// <summary>FEAT-ANIMESH-02: starts one active animation again from the beginning, leaving every
     /// other animation alone. <see cref="SetActiveAnimations"/> keys on the animation id alone, so
     /// an id that is already playing is never touched by it -- this is how a changed sequence id
     /// reaches a running animation. False when <paramref name="animId"/> is not playing.</summary>
@@ -399,7 +462,7 @@ public sealed class AvatarAnimationPlayer
         foreach (var anim in _active)
         {
             if (anim.AnimationId != animId) continue;
-            anim.CurrentTime = anim.Data.InPoint;
+            anim.Motion.Activate();
             return true;
         }
         return false;
@@ -423,13 +486,14 @@ public sealed class AvatarAnimationPlayer
     }
 
     /// <summary>
-    /// Returns the current playback time of the specified animation, or null if not playing.
+    /// Returns the current playback time of the specified animation, or null if not playing (one that
+    /// has been stopped and is only fading out no longer counts as playing).
     /// </summary>
     public float? GetAnimationTime(Guid animId)
     {
         foreach (var anim in _active)
         {
-            if (anim.AnimationId == animId) return anim.CurrentTime;
+            if (anim.AnimationId == animId && !anim.Motion.Stopped) return anim.CurrentTime;
         }
         return null;
     }
@@ -467,53 +531,34 @@ public sealed class AvatarAnimationPlayer
 
         if (_locomotionBoostId != System.Guid.Empty) _locomotionBoostElapsed += delta;
 
-        // Advance time for each playing animation.
-        foreach (var anim in _active)
-        {
-            AdvanceAnimTime(anim, delta);
-        }
+        // Advance the clock and the fade of each playing animation, and drop the ones that have
+        // finished fading out (BUG-ANIM-08).
+        foreach (var anim in _active) anim.Motion.Advance(delta);
 
-        // FEAT-ANIM-06: Advance time for each local overlay animation. Remove non-looping ones once complete.
+        // FEAT-ANIM-06: the same for each local overlay animation. A non-looping one that has run to its
+        // end stops itself, as the viewer's motions do, and fades out.
         for (int i = _localOverlay.Count - 1; i >= 0; i--)
         {
             var anim = _localOverlay[i];
-            AdvanceAnimTime(anim, delta);
+            anim.Motion.Advance(delta);
 
             float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
-            if (!anim.Data.Loop && anim.CurrentTime >= loopEnd)
-            {
-                _localOverlay.RemoveAt(i);
-                if (_active.Count == 0 && _localOverlay.Count == 0)
-                {
-                    ResetToRestPose();
-                }
-            }
+            if (!anim.Data.Loop && !anim.Motion.Stopped && anim.CurrentTime >= loopEnd) anim.Motion.Stop();
         }
 
-        // Evaluate and apply per-bone, highest-priority-wins blending.
+        bool droppedAny = RemoveFinished();
+
+        // (A holding player keeps the last pose when the last animation stops: see HoldUndrivenBones.)
+        if (droppedAny && _active.Count == 0 && _localOverlay.Count == 0 && !HoldUndrivenBones)
+        {
+            if (Diagnostics.Enabled) GD.Print("[AnimPlayer] Active count is 0, resetting to rest pose");
+            ResetToRestPose();
+            return;
+        }
+
+        // Evaluate and apply the per-bone, weighted priority blend.
         ApplyBonePoses();
-    }
-
-    private static void AdvanceAnimTime(PlayingAnimation anim, float delta)
-    {
-        anim.CurrentTime += delta;
-
-        float loopEnd = anim.Data.OutPoint > 0 ? anim.Data.OutPoint : anim.Data.Length;
-        float loopStart = anim.Data.InPoint;
-
-        if (anim.Data.Loop && loopEnd > loopStart)
-        {
-            while (anim.CurrentTime > loopEnd)
-            {
-                anim.CurrentTime -= (loopEnd - loopStart);
-            }
-        }
-        else
-        {
-            // Clamp non-looping animations.
-            if (anim.CurrentTime > loopEnd)
-                anim.CurrentTime = loopEnd;
-        }
+        if (Diagnostics.Enabled) TraceBlend(delta);
     }
 
     private void ApplyBonePoses()
@@ -531,8 +576,11 @@ public sealed class AvatarAnimationPlayer
             return;
         }
 
-        // For each bone in the skeleton, find the highest-priority animation that
-        // affects it and apply that animation's value.
+        // For each bone in the skeleton, the animations that affect it are layered by priority and each
+        // counts by its fade weight (BUG-ANIM-08): the highest priority takes the bone once it is fully
+        // in, while one that is fading in or out shares it with the layers below. They are offered
+        // NEWEST first -- the viewer lists its motions that way, so a newer motion of equal priority
+        // is on top -- which also lets a layer that cannot show be skipped unevaluated.
         // Rotation and position tracks are tracked separately so a rotation-only gesture
         // does not wipe out an underlying furniture pose's pelvis position track.
         // The two work tables are reused: this runs every frame for every animating avatar, and a
@@ -547,22 +595,24 @@ public sealed class AvatarAnimationPlayer
         {
             if (StandAnimation != null)
             {
-                ApplyAnimationToBones(StandAnimation, StandAnimation.InPoint, StandAnimation.Priority, false, boneRots, bonePositions);
+                ApplyAnimationToBones(StandAnimation, StandAnimation.InPoint, StandAnimation.Priority, false, 1f, boneRots, bonePositions);
             }
         }
         else
         {
-            foreach (var anim in _active)
+            // FEAT-ANIM-06: the local overlay is the newest, so it goes first.
+            for (int i = _localOverlay.Count - 1; i >= 0; i--)
             {
-                bool boosted = BoostActive(anim.AnimationId);
-                int animPriority = boosted ? LocomotionBoostPriority : anim.Data.Priority;
-                ApplyAnimationToBones(anim.Data, anim.CurrentTime, animPriority, boosted, boneRots, bonePositions);
+                var anim = _localOverlay[i];
+                ApplyAnimationToBones(anim.Data, anim.CurrentTime, anim.Data.Priority, false, anim.Motion.Weight, boneRots, bonePositions);
             }
 
-            // FEAT-ANIM-06: Apply local overlay animations into the bone priority blend
-            foreach (var anim in _localOverlay)
+            for (int i = _active.Count - 1; i >= 0; i--)
             {
-                ApplyAnimationToBones(anim.Data, anim.CurrentTime, anim.Data.Priority, false, boneRots, bonePositions);
+                var anim = _active[i];
+                bool boosted = BoostActive(anim.AnimationId);
+                int animPriority = boosted ? LocomotionBoostPriority : anim.Data.Priority;
+                ApplyAnimationToBones(anim.Data, anim.CurrentTime, animPriority, boosted, anim.Motion.Weight, boneRots, bonePositions);
             }
         }
 
@@ -575,22 +625,25 @@ public sealed class AvatarAnimationPlayer
             if (_neckBoneIdx >= 0)
             {
                 var neckGaze = Quaternion.FromEuler(new Vector3(HeadGazePitch * 0.3f, HeadGazeYaw * 0.3f, 0));
-                var existing = boneRots.TryGet(_neckBoneIdx, out var r) ? r : Quaternion.Identity;
-                boneRots.Set(_neckBoneIdx, 99, neckGaze * existing);
+                var existing = boneRots.TryResolve(_neckBoneIdx, BlendRotation, out var r) ? r : Quaternion.Identity;
+                boneRots.Offer(_neckBoneIdx, 99, 1f, neckGaze * existing);
             }
             if (_headBoneIdx >= 0)
             {
                 var headGaze = Quaternion.FromEuler(new Vector3(HeadGazePitch * 0.7f, HeadGazeYaw * 0.7f, 0));
-                var existing = boneRots.TryGet(_headBoneIdx, out var r) ? r : Quaternion.Identity;
-                boneRots.Set(_headBoneIdx, 99, headGaze * existing);
+                var existing = boneRots.TryResolve(_headBoneIdx, BlendRotation, out var r) ? r : Quaternion.Identity;
+                boneRots.Offer(_headBoneIdx, 99, 1f, headGaze * existing);
             }
         }
 
         // Apply blended poses to skeleton.
-        foreach (var (boneIdx, pose) in boneRots)
+        for (int i = 0; i < boneRots.TouchedCount; i++)
         {
-            _skeleton!.SetBonePoseRotation(boneIdx, pose.Value);
-            if (HoldUndrivenBones) _heldRotations[boneIdx] = pose.Value;
+            int boneIdx = boneRots.TouchedJoint(i);
+            if (!boneRots.TryResolve(boneIdx, BlendRotation, out var rotation)) continue;
+
+            _skeleton!.SetBonePoseRotation(boneIdx, rotation);
+            if (HoldUndrivenBones) _heldRotations[boneIdx] = rotation;
         }
 
         // Apply position channels. In Godot's Skeleton3D, SetBonePosePosition replaces the bone's local
@@ -603,23 +656,32 @@ public sealed class AvatarAnimationPlayer
         // skeleton root (rest + key, or the bare key for a control avatar), every other joint is
         // absolute and scaled by its parent. A bone no longer driven goes back to its rest on the
         // next frame's reset, i.e. back to its override / default.
-        foreach (var (boneIdx, pose) in bonePositions)
+        for (int i = 0; i < bonePositions.TouchedCount; i++)
         {
-            var written = KeyToPosePosition(boneIdx, pose.Value);
+            int boneIdx = bonePositions.TouchedJoint(i);
+            if (!bonePositions.TryResolve(boneIdx, BlendPosition, out var key)) continue;
+
+            var written = KeyToPosePosition(boneIdx, key);
             _skeleton!.SetBonePosePosition(boneIdx, written);
             if (HoldUndrivenBones)
             {
                 if (boneIdx == _pelvisBoneIdx) _heldPositions[boneIdx] = written;
-                else _heldKeys[boneIdx] = pose.Value;
+                else _heldKeys[boneIdx] = key;
             }
         }
     }
 
-    private void ApplyAnimationToBones(AnimationData data, float time, int animPriority, bool boosted,
-        JointPriorityTable<Quaternion> boneRots,
-        JointPriorityTable<System.Numerics.Vector3> bonePositions)
+    // The viewer blends a lower layer UNDER what is accumulated: nlerp(t, layer, accumulated) for
+    // rotations, lerp for positions (llpose.cpp:322, 360). Cached, so a frame allocates no delegate.
+    private static readonly Func<float, Quaternion, Quaternion, Quaternion> BlendRotation = NlerpSl;
+    private static readonly Func<float, System.Numerics.Vector3, System.Numerics.Vector3, System.Numerics.Vector3> BlendPosition
+        = (t, layer, accumulated) => System.Numerics.Vector3.Lerp(layer, accumulated, t);
+
+    private void ApplyAnimationToBones(AnimationData data, float time, int animPriority, bool boosted, float weight,
+        JointBlendTable<Quaternion> boneRots,
+        JointBlendTable<System.Numerics.Vector3> bonePositions)
     {
-        if (_skeleton == null) return;
+        if (_skeleton == null || !(weight > 0f)) return;
 
         foreach (var joint in data.Joints)
         {
@@ -629,11 +691,11 @@ public sealed class AvatarAnimationPlayer
             int effectivePriority = JointPriority.Effective(boosted, LocomotionBoostPriority, joint.Priority, animPriority);
 
             // Rotation channel
-            if (joint.RotationKeys.Length > 0 && boneRots.Wins(boneIdx, effectivePriority))
+            if (joint.RotationKeys.Length > 0 && !boneRots.Saturated(boneIdx, effectivePriority))
             {
                 var rot = EvaluateRotation(joint.RotationKeys, time);
                 var godotRot = new Quaternion(rot.X, rot.Z, -rot.Y, rot.W);
-                boneRots.Set(boneIdx, effectivePriority, godotRot);
+                boneRots.Offer(boneIdx, effectivePriority, weight, godotRot);
             }
 
             // Position channel: any joint, same per-joint priority rule as rotation (BUG-ANIM-07).
@@ -643,9 +705,9 @@ public sealed class AvatarAnimationPlayer
             // every joint (llkeyframemotion.cpp:1680-1782, :414-417). The tongue joints that looked
             // like "dummy tracks" in BUG-ANIM-01 were an absolute key, equal to the skeleton default,
             // added to the rest a second time; KeyToPosePosition does not add it.
-            if (joint.PositionKeys.Length > 0 && bonePositions.Wins(boneIdx, effectivePriority))
+            if (joint.PositionKeys.Length > 0 && !bonePositions.Saturated(boneIdx, effectivePriority))
             {
-                bonePositions.Set(boneIdx, effectivePriority, EvaluatePosition(joint.PositionKeys, time));
+                bonePositions.Offer(boneIdx, effectivePriority, weight, EvaluatePosition(joint.PositionKeys, time));
             }
         }
     }
@@ -754,6 +816,42 @@ public sealed class AvatarAnimationPlayer
         var g = new Quaternion(q.X, q.Y, q.Z, q.W);
         float len = g.Length();
         return len > 0.0001f ? g / len : Quaternion.Identity;
+    }
+
+    // BUG-ANIM-08 trace (--diag): for ~TraceFramesPerChange frames after a motion starts or stops, one
+    // line per frame with every motion's weight, so a change between two loops can be read as a
+    // crossfade (weights summing to ~1 and moving) or as a jolt (a weight jumping to 1 or 0).
+    private const int TraceFramesPerChange = 40;
+    private int _traceFramesLeft;
+    private float _traceClock;
+
+    /// <summary>Names this player in the <c>[AnimBlend]</c> trace; the skeleton's instance id when unset.</summary>
+    public string? TraceLabel { get; set; }
+
+    private void TraceBlend(float delta)
+    {
+        if (_traceFramesLeft <= 0) return;
+
+        _traceClock += delta;
+        var line = new System.Text.StringBuilder();
+        bool blending = false;
+        for (int i = _localOverlay.Count - 1; i >= 0; i--) AppendTrace(line, _localOverlay[i], "local", ref blending);
+        for (int i = _active.Count - 1; i >= 0; i--) AppendTrace(line, _active[i], "", ref blending);
+
+        // Nothing fading: the change has settled, stop talking.
+        if (!blending) { _traceFramesLeft = 0; return; }
+
+        _traceFramesLeft--;
+        GD.Print($"[AnimBlend] {TraceLabel ?? "sk#" + _skeleton!.GetInstanceId()} dt={delta * 1000f:0} ms{line}");
+    }
+
+    private static void AppendTrace(System.Text.StringBuilder line, PlayingAnimation anim, string kind, ref bool blending)
+    {
+        var m = anim.Motion;
+        if (m.Weight < 0.999f || m.Stopped) blending = true;
+        line.Append($" | {anim.AnimationId.ToString()[..8]}{(kind.Length > 0 ? " " + kind : "")} pri={anim.Data.Priority} ")
+            .Append(m.Stopped ? "out" : m.Weight < 0.999f ? "in" : "on")
+            .Append($" w={m.Weight:0.00} t={m.PoseTime:0.00}");
     }
 
     private void ResetToRestPose()
