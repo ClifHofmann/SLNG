@@ -235,6 +235,7 @@ public static class AvatarShapeService
         var distortions = new Dictionary<string, (Vector3 Scale, Vector3 Position)>();
         var morphs = new Dictionary<string, float>();
         var weights = ComputeEffectiveWeights(visualParams, charDir);
+        var volumeMorphs = VolumeMorphTable.Load(charDir);
 
         foreach (var (paramId, effectiveWeight) in weights)
         {
@@ -245,6 +246,19 @@ public static class AvatarShapeService
                 mWeight = 0f;
             }
             morphs[param.Name] = mWeight + effectiveWeight;
+
+            // BUG-AVATAR-15: the param's collision-volume morphs (llpolymorph.cpp:642-650), added to the volume joint the
+            // same way a skeletal distortion is added to a bone: weight * delta, summed over params.
+            if (volumeMorphs.TryGetValue(paramId, out var volumes))
+            {
+                foreach (var volume in volumes)
+                {
+                    if (!distortions.TryGetValue(volume.Volume, out var at)) at = (Vector3.Zero, Vector3.Zero);
+                    at.Scale += volume.Scale * effectiveWeight;
+                    at.Position += volume.Position * effectiveWeight;
+                    distortions[volume.Volume] = at;
+                }
+            }
 
             if (param.SkeletalDistortions == null || param.SkeletalDistortions.Length == 0) continue;
 

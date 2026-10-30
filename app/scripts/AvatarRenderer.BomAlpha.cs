@@ -62,6 +62,8 @@ public partial class AvatarRenderer
         {
             var face = ResolveFaceTexture(faces, defaultFace, f);
             parts.Add($"{f}:{Short(face.TextureId)} a={face.Color.W.ToString("0.###", CultureInfo.InvariantCulture)}" +
+                      $" rgb=({face.Color.X.ToString("0.##", CultureInfo.InvariantCulture)},{face.Color.Y.ToString("0.##", CultureInfo.InvariantCulture)},{face.Color.Z.ToString("0.##", CultureInfo.InvariantCulture)})" +
+                      (face.Fullbright ? " fullbright" : "") +
                       (face.LegacyMaterialId != Guid.Empty ? $" mat={Short(face.LegacyMaterialId)}" : "") +
                       (face.RenderMaterialId != Guid.Empty ? $" pbr={Short(face.RenderMaterialId)}" : "") +
                       Placement(face) +
@@ -121,6 +123,46 @@ public partial class AvatarRenderer
         return BakeAlphaMaps.TryGet(bakeId, out var map) ? map : null;
     }
 
+    private static readonly HashSet<string> _bomBoundLogged = new();
+
+    /// <summary>[BomBound] (--diag, once per mesh/face/bake): what the surface's albedo sampler ACTUALLY holds, read
+    /// back from the uploaded texture, over the face's UV box -- mean RGB and the share of blue-dominant texels (the
+    /// "BAKED_UPPER" placeholder is blue). [BomAlpha] measures the decoded bake the asset service handed out; this
+    /// measures what is bound, so a placeholder or a wrong image on the sampler shows here and nowhere else.</summary>
+    private static void LogBomBound(MeshInstance3D mi, int surface, ShaderMaterial sm, Guid meshId, int faceIndex, FaceMaterialFacts facts)
+    {
+        string key = $"{meshId:N}:{faceIndex}:{facts.Texture:N}";
+        lock (_bomBoundLogged) { if (!_bomBoundLogged.Add(key)) return; }
+        if (sm.GetShaderParameter(PrimShaderFamily.AlbedoTexture).Obj is not Texture2D texture || !IsInstanceValid(texture)
+            || mi.Mesh is not ArrayMesh mesh || !MeshSurfaceCache.TryGetSurface(mesh, surface, out var arrays))
+        {
+            GD.Print($"[BomBound] mesh={meshId.ToString("N")[..8]} face={faceIndex} no bound albedo texture (has={sm.GetShaderParameter(PrimShaderFamily.HasAlbedoTexture)})");
+            return;
+        }
+        using var image = texture.GetImage();
+        if (image == null || image.IsEmpty()) return;
+        if (image.IsCompressed()) image.Decompress();
+        if (image.GetFormat() != Image.Format.Rgba8) image.Convert(Image.Format.Rgba8);
+        int w = image.GetWidth(), h = image.GetHeight();
+        var data = image.GetData();
+        var uvs = arrays[(int)Mesh.ArrayType.TexUV].AsVector2Array();
+        var scale = sm.GetShaderParameter(PrimShaderFamily.UvScale).AsVector2();
+        var offset = sm.GetShaderParameter(PrimShaderFamily.UvOffset).AsVector2();
+        long r = 0, g = 0, b = 0, blue = 0, n = 0;
+        foreach (var uv in uvs)
+        {
+            var p = uv * scale + offset;
+            int x = Math.Clamp((int)(p.X * w), 0, w - 1), y = Math.Clamp((int)(p.Y * h), 0, h - 1);
+            int i = (y * w + x) * 4;
+            r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+            if (data[i + 2] > data[i] + 40 && data[i + 2] > data[i + 1] + 40) blue++;
+        }
+        if (n == 0) return;
+        GD.Print($"[BomBound] mesh={meshId.ToString("N")[..8]} face={faceIndex} intended bake={facts.Texture.ToString("N")[..8]} " +
+                 $"bound {w}x{h} at the face's {n} UVs: mean rgb=({r / n},{g / n},{b / n}) blueDominant={(100f * blue / n).ToString("0.#", CultureInfo.InvariantCulture)}% " +
+                 $"shader={sm.Shader?.ResourcePath} kind={facts.Kind}");
+    }
+
     /// <summary>Measures a Bakes-on-Mesh face against its bake (see the type's summary). Main thread; reads only
     /// managed copies (the surface's cached arrays, the asset service's decoded bake) -- never the GPU.</summary>
     private void LogBomAlpha(MeshInstance3D mi, int surface, Material material, AvatarVisual? visual, Guid meshId, int faceIndex)
@@ -128,6 +170,7 @@ public partial class AvatarRenderer
         if (!Diagnostics.Enabled || visual == null || _assetService == null || material is not ShaderMaterial sm) return;
         var facts = FactsOf(sm);
         if (facts.BakeChannel < 0 || facts.Texture == Guid.Empty || facts.Hidden || facts.Failed) return;
+        LogBomBound(mi, surface, sm, meshId, faceIndex, facts);
         string key = $"{meshId:N}:{faceIndex}:{facts.Texture:N}:{facts.Kind}";
         lock (_bomAlphaLogged)
         {

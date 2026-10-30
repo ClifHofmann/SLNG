@@ -129,6 +129,12 @@ param(
     # --trace-object=<uuid>. Works without -Diag.
     [string]$TraceObject = '',
 
+    # BUG-RENDER-54: isolation for "which worn item draws that?". Comma-separated hex prefixes of a worn object id or mesh id
+    # (no dashes); -HideAttachment leaves those rigged meshes out of the scene, -OnlyAttachment leaves out all others.
+    # Passes --hide-attachment= / --only-attachment=.
+    [string]$HideAttachment = '',
+    [string]$OnlyAttachment = '',
+
     # FEAT-PERF-17: cap the video-memory budget Windows reports to this many MB, to test how the
     # viewer behaves on a smaller card (e.g. 3500 for a 4 GB card). 0 = use the real budget.
     # Passes --vram-budget=<MB>.
@@ -253,6 +259,14 @@ if ($NoGroundDrop) {
 if ($NoReattach) {
     Write-Host "      login outfit reconcile OFF -- missing attachments stay missing (--no-reattach)" -ForegroundColor Magenta
     $userArgs += '--no-reattach'
+}
+if ($HideAttachment -ne '') {
+    Write-Host "      hiding worn meshes $HideAttachment (--hide-attachment)" -ForegroundColor Yellow
+    $userArgs += "--hide-attachment=$HideAttachment"
+}
+if ($OnlyAttachment -ne '') {
+    Write-Host "      only worn meshes $OnlyAttachment (--only-attachment)" -ForegroundColor Yellow
+    $userArgs += "--only-attachment=$OnlyAttachment"
 }
 if ($TraceObject -ne '') {
     Write-Host "      tracing object $TraceObject (--trace-object)" -ForegroundColor Yellow
