@@ -107,7 +107,9 @@ public class AvatarShapeServiceTests
         var withoutCharDir = AvatarShapeService.ComputeDistortions(null);
         var withCharDir = AvatarShapeService.ComputeDistortions(null, charDir);
 
-        Assert.Equal(withoutCharDir.BoneMods.Count, withCharDir.BoneMods.Count);
+        // BUG-AVATAR-15: the real charDir also brings the collision-volume morphs (LEFT_PEC, BELLY, ...), which are
+        // extra entries; every bone the skeletal distortions already named must be untouched by them.
+        Assert.True(withCharDir.BoneMods.Count >= withoutCharDir.BoneMods.Count);
         foreach (var (bone, dist) in withoutCharDir.BoneMods)
         {
             Assert.True(withCharDir.BoneMods.TryGetValue(bone, out var dist2));

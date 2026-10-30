@@ -1758,6 +1758,10 @@ public partial class AvatarRenderer : Node3D
                 ApplyShape(visual, visual.Skeleton, _avatarSkeleton, distortions.BoneMods, visual.JointPosOverrides);
                 visual.Skeleton.ResetBonePoses();
 
+                // BUG-AVATAR-15 [ShapeVolume] (--diag): the sliders that resize the collision volumes fitted meshes are rigged to,
+                // and what they made of the PEC / belly / butt volumes -- the first thing to read when a body and its clothes disagree.
+                if (Diagnostics.Enabled) LogShapeVolumes(visual, weights, distortions.BoneMods);
+
                 RecomputeFootOffset(visual, distortions.BoneMods);
 
                 if (visual.IsReduced)
@@ -2120,6 +2124,18 @@ public partial class AvatarRenderer : Node3D
             string to = animId?.ToString()[..8] ?? "(none)";
             if (Diagnostics.Enabled) GD.Print($"[Locomotion] predict {from} -> {to} (NOT applied: selfEntityId={(_selfEntityId == Guid.Empty ? "unset" : "set")}, haveVisual={haveVisual})");
         }
+    }
+
+    /// <summary>BUG-AVATAR-15: the breast, gravity, cleavage and butt sliders and the volume joints they moved.</summary>
+    private static void LogShapeVolumes(AvatarVisual visual, IReadOnlyDictionary<int, float> weights,
+        IReadOnlyDictionary<string, (System.Numerics.Vector3 Scale, System.Numerics.Vector3 Position)> distortions)
+    {
+        string W(int id) => weights.TryGetValue(id, out var w) ? w.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "-";
+        string V(string volume) => distortions.TryGetValue(volume, out var d)
+            ? $"{volume} scale=({d.Scale.X:0.###},{d.Scale.Y:0.###},{d.Scale.Z:0.###}) pos=({d.Position.X:0.###},{d.Position.Y:0.###},{d.Position.Z:0.###})"
+            : $"{volume} none";
+        GD.Print($"[ShapeVolume] {(visual.IsSelf ? "SELF" : visual.AgentId.ToString("N")[..8])} breastSize(105)={W(105)} gravity(507)={W(507)} " +
+                 $"cleavage(684)={W(684)} buttSize(795)={W(795)} | {V("LEFT_PEC")} | {V("RIGHT_PEC")} | {V("BELLY")} | {V("BUTT")}");
     }
 
     /// <summary>A single scale component, forced finite and strictly positive (min 1e-4) so a
