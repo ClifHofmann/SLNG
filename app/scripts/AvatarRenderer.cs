@@ -2618,7 +2618,7 @@ public partial class AvatarRenderer : Node3D
         }
 
         Logger.Debug($"[Attachment] pt {attachment.AttachmentPoint} bone {boneName} " +
-                 $"mesh {(isMeshAttachment ? prim!.MeshId.ToString() : "no")} entity {entityId:N}");
+                 $"mesh {(isMeshAttachment ? prim!.MeshId.ToString() : "no")} entity {entityId:D} agent {_world?.GetEntity(attachment.AvatarEntityId)?.GetComponent<AvatarComponent>()?.AgentId:D}");
 
         // Re-use existing node or create a new BoneAttachment3D on the avatar skeleton. The cached
         // node can be a stale reference to one freed with a torn-down skeleton (relog, region
