@@ -23,15 +23,7 @@ public static class FriendCategoryStore
     public static bool Persist { get; set; } = true;
 
     public static string? GetSection(string? gridSlug, string? agentId)
-    {
-        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
-            return null;
-
-        if (System.Guid.TryParse(agentId, out var guid) && guid == System.Guid.Empty)
-            return null;
-
-        return $"{SectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
-    }
+        => SLNG.Core.AccountScope.Section(SectionPrefix, gridSlug, agentId);
 
     /// <summary>The saved book for this account on this grid, or an empty one when there is none (or it cannot be read).</summary>
     public static FriendCategoryBook Load(string? gridSlug, string? agentId)

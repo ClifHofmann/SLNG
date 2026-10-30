@@ -7,7 +7,7 @@ namespace SLNG.App;
 
 /// <summary>
 /// FEAT-UI-75: owns the agent's availability -- Away, Do Not Disturb, the autorespond modes -- and the clock that goes
-/// Away by itself. Boot creates one after login and hands it the session; every change is pushed to
+/// Away by itself. Boot creates one at start-up and hands it the session at every login; every change is pushed to
 /// <see cref="GridSession.Presence"/>, which sets the Away flag on the sim and decides which instant messages are
 /// answered (<c>SLNG.Core.Presence</c>), and to <see cref="Changed"/> for the menu and the readout.
 ///
@@ -15,6 +15,12 @@ namespace SLNG.App;
 /// sends the agent Away (<c>LLAppViewer::idle</c>), losing the window's focus does too while that timeout is on, and
 /// regaining it, or any input once ten seconds have passed, brings the agent back (<c>LLViewerWindow::handleActivate</c>,
 /// <c>handleKey</c>). <c>_Input</c> sees every event before the UI can consume it, so a click on a window counts.</para>
+///
+/// <para><b>One login at a time (BUG-UI-43).</b> The setup is per account (<see cref="PresenceSettings"/>), so the controller
+/// holds the one of the login it is <see cref="BindAccount">bound</see> to and nothing else: <see cref="Attach"/> (before the
+/// login, when the agent is not known yet) starts from the defaults, <see cref="BindAccount"/> loads the login's own setup
+/// once the login has succeeded, and <see cref="Detach"/> at logout puts the defaults back, so the next avatar can never
+/// inherit what the last one had in memory. Unbound, a change is applied but never written anywhere.</para>
 /// </summary>
 public partial class PresenceController : Node
 {
@@ -23,9 +29,15 @@ public partial class PresenceController : Node
     private PresenceConfig _config = new();
     private int _timeoutSeconds = PresenceSettings.DefaultAwayTimeoutSeconds;
     private bool _awayOnFocusLoss;
+    private string? _gridSlug;
+    private string? _agentId;
 
     /// <summary>Raised on the main thread whenever the configuration changed, for any reason.</summary>
     public event Action<PresenceConfig>? Changed;
+
+    /// <summary>Raised on the main thread when the setup of another login (or none) was put in place, before
+    /// <see cref="Changed"/>: a draft typed for the previous login is not this login's to keep.</summary>
+    public event Action? AccountChanged;
 
     public PresenceConfig Config => _config;
     public int AwayTimeoutSeconds => _timeoutSeconds;
@@ -33,15 +45,49 @@ public partial class PresenceController : Node
 
     private static double Now => Time.GetTicksMsec() / 1000.0;
 
-    /// <summary>Starts from the saved setup (Away and Do Not Disturb off) and applies it to the session.</summary>
+    /// <summary>Starts a login: the session gets the defaults (nothing is answered) until <see cref="BindAccount"/> knows
+    /// whose setup to use, which is only after the login has succeeded.</summary>
     public void Attach(GridSession session)
     {
         _session = session;
-        _config = PresenceSettings.Load();
-        _timeoutSeconds = PresenceSettings.AwayTimeoutSeconds;
-        _awayOnFocusLoss = PresenceSettings.AwayOnFocusLoss;
-        _away.ClearAway(Now); // also starts the quiet spell from now, not from the clock's zero
+        Reset();
         Push(persist: false);
+    }
+
+    /// <summary>The login succeeded: from now on this grid and agent are the tenant. Loads their saved setup (Away and Do Not
+    /// Disturb off) -- seeding it once from the old shared section if they have none yet -- and applies it to the session.</summary>
+    public void BindAccount(string gridSlug, string agentId)
+    {
+        _gridSlug = gridSlug;
+        _agentId = agentId;
+        Reset(PresenceSettings.Load(gridSlug, agentId));
+        AccountChanged?.Invoke();
+        Push(persist: false);
+    }
+
+    /// <summary>Logout or a session the grid ended: forget the login completely.</summary>
+    public void Detach()
+    {
+        _session = null;
+        Reset();
+        AccountChanged?.Invoke();
+        Changed?.Invoke(_config);
+    }
+
+    /// <summary>Takes <paramref name="data"/> (or the defaults when there is none) as the current state, with no login bound
+    /// unless <see cref="BindAccount"/> sets one right after.</summary>
+    private void Reset(PresenceSettingsData? data = null)
+    {
+        if (data == null)
+        {
+            _gridSlug = null;
+            _agentId = null;
+        }
+        data ??= PresenceSettingsData.Defaults;
+        _config = data.Config;
+        _timeoutSeconds = data.AwayTimeoutSeconds;
+        _awayOnFocusLoss = data.AwayOnFocusLoss;
+        _away.ClearAway(Now); // also starts the quiet spell from now, not from the clock's zero
     }
 
     public void SetAway(bool away)
@@ -158,7 +204,7 @@ public partial class PresenceController : Node
     private void Push(bool persist)
     {
         if (_session != null) _session.Presence = _config;
-        if (persist) PresenceSettings.Save(_config, _timeoutSeconds, _awayOnFocusLoss);
+        if (persist) PresenceSettings.Save(_gridSlug, _agentId, new PresenceSettingsData(_config, _timeoutSeconds, _awayOnFocusLoss));
         Changed?.Invoke(_config);
     }
 }

@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.69-alpha";
+    public const string AppVersion = "v0.28.70-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -4653,6 +4653,10 @@ public partial class Boot : Control
             BeginLoginStartFavorites();
 
             LogMessage($"[color=#2dd4bf]Login SUCCESS[/color] - AgentID: {result.AgentId}");
+
+            // BUG-UI-43: Away / auto-response is per account, and the agent is only known now. Until here the session ran
+            // on the defaults (nothing answered); from here it is this login's own setup.
+            _presenceController.BindAccount(GridIdentity.Slug(_sessionGridUri), result.AgentId ?? "");
             if (!string.IsNullOrEmpty(result.Message))
             {
                 LogMessage(result.Message);
@@ -6183,6 +6187,7 @@ public partial class Boot : Control
             _avatarHoverSettings.Reset();
             _avatarHoverWindow?.Refresh();
             SLNG.App.UI.GroupMuteSettings.Reset();
+            _presenceController.Detach(); // BUG-UI-43: Away / auto-response is the setup of one login
             _notifications.DismissAll();
             _notificationActions.Clear();
             _groupInviteActionKeys.Clear();
@@ -6327,6 +6332,7 @@ public partial class Boot : Control
             _avatarHoverSettings.Reset();
             _avatarHoverWindow?.Refresh();
             SLNG.App.UI.GroupMuteSettings.Reset();
+            _presenceController.Detach(); // BUG-UI-43: Away / auto-response is the setup of one login
             _notifications.DismissAll();
             _notificationActions.Clear();
             _groupInviteActionKeys.Clear();

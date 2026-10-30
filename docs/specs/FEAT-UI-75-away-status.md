@@ -31,7 +31,7 @@ Away flag, no Do Not Disturb, and a first IM from a stranger was never answered.
   in `preferences.cfg`. Selftest "autoresponse preferences page".
 
 ## Differences from Firestorm
-- Settings are global, not per account.
+- Settings were global until v0.28.70-alpha (BUG-UI-43); they are now per login (grid + agent), as in Firestorm.
 - No inventory item attached to an answer (`FSAutoresponseItemUUID`), no per-friend overrides (contact sets), no
   "answer muted avatars" option, no "sit on away".
 - Do Not Disturb only answers; the reference viewer also silences notifications and declines offers. Not done.

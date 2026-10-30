@@ -36,26 +36,10 @@ public partial class UserProfileWindow : SLNGWindow
     public static bool Persist { get; set; } = true;
 
     public static string? GetNotesSection(string? gridSlug, string? agentId)
-    {
-        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
-            return null;
-
-        if (Guid.TryParse(agentId, out var guid) && guid == Guid.Empty)
-            return null;
-
-        return $"{NotesSectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
-    }
+        => SLNG.Core.AccountScope.Section(NotesSectionPrefix, gridSlug, agentId);
 
     public static string? GetNotesImportedSection(string? gridSlug, string? agentId)
-    {
-        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
-            return null;
-
-        if (Guid.TryParse(agentId, out var guid) && guid == Guid.Empty)
-            return null;
-
-        return $"{NotesImportedSectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
-    }
+        => SLNG.Core.AccountScope.Section(NotesImportedSectionPrefix, gridSlug, agentId);
 
     private Guid _agentId;
     private string _agentName = "";

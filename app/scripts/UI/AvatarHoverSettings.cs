@@ -31,15 +31,7 @@ public sealed class AvatarHoverSettings
     public float HoverHeight { get; private set; } = DefaultHoverHeight;
 
     public static string? GetSection(string? gridSlug, string? agentId)
-    {
-        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
-            return null;
-
-        if (System.Guid.TryParse(agentId, out var guid) && guid == System.Guid.Empty)
-            return null;
-
-        return $"{SectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
-    }
+        => SLNG.Core.AccountScope.Section(SectionPrefix, gridSlug, agentId);
 
     public void Load(string? gridSlug = null, string? agentId = null)
     {

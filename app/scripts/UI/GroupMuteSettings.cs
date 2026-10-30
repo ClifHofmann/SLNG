@@ -48,15 +48,7 @@ public static class GroupMuteSettings
     public static event Action<Guid, bool>? MuteChanged;
 
     public static string? GetSection(string? gridSlug, string? agentId)
-    {
-        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
-            return null;
-
-        if (Guid.TryParse(agentId, out var guid) && guid == Guid.Empty)
-            return null;
-
-        return $"{SectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
-    }
+        => SLNG.Core.AccountScope.Section(SectionPrefix, gridSlug, agentId);
 
     public static void Initialize(string? gridSlug, string? agentId)
     {

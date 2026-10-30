@@ -72,6 +72,12 @@ public sealed class AutoresponsePreferencesPage
 
         // A change from outside (the Avatar menu's checks) shows here without waiting for the page to reopen.
         presence.Changed += _ => Refresh();
+        // BUG-UI-43: another login's setup was put in place; a text typed for the last one is not this one's to keep.
+        presence.AccountChanged += () =>
+        {
+            ShowTexts();
+            Refresh();
+        };
         Refresh();
     }
 
