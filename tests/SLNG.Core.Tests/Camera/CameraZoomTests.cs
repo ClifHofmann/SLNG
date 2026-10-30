@@ -25,6 +25,32 @@ public class CameraZoomTests
     }
 
     [Fact]
+    public void DragStep_is_proportional_one_percent_per_pixel()
+    {
+        Assert.Equal(10f * MathF.Pow(0.99f, 10f), CameraZoom.DragStep(10f, -10f, Min), 4);
+        Assert.Equal(10f / MathF.Pow(0.99f, 10f), CameraZoom.DragStep(10f, 10f, Min), 4);
+    }
+
+    [Fact]
+    public void DragStep_moves_less_in_metres_when_near()
+    {
+        float near = 10f - CameraZoom.DragStep(10f, -20f, Min);
+        float closer = 1f - CameraZoom.DragStep(1f, -20f, Min);
+        Assert.True(closer < near / 5f);
+    }
+
+    [Fact]
+    public void DragStep_down_then_up_returns_to_start()
+        => Assert.Equal(7f, CameraZoom.DragStep(CameraZoom.DragStep(7f, 13f, Min), -13f, Min), 4);
+
+    [Fact]
+    public void DragStep_clamps_to_the_limits()
+    {
+        Assert.Equal(Min, CameraZoom.DragStep(1f, -10000f, Min));
+        Assert.Equal(CameraZoom.MaxZoom, CameraZoom.DragStep(100f, 10000f, Min));
+    }
+
+    [Fact]
     public void WheelStep_in_then_out_returns_to_start()
         => Assert.Equal(5f, CameraZoom.WheelStep(CameraZoom.WheelStep(5f, -3, Min), 3, Min), 4);
 

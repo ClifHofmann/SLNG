@@ -305,6 +305,8 @@ public partial class AvatarController : Camera3D
 
         float oldZoom = _zoom;
         _zoom = CameraZoom.EaseToward(oldZoom, target, (float)delta);
+        if (Diagnostics.Enabled)
+            GD.Print($"[Zoom] frame t={Time.GetTicksMsec()} dt={delta * 1000:F1}ms zoom={_zoom:F3} target={target:F3} step={_zoom - oldZoom:F3}");
         if (_zoom == target) _wheelZoomTarget = null;
     }
 
@@ -330,8 +332,27 @@ public partial class AvatarController : Camera3D
     /// HUD is the thing being edited.</summary>
     public System.Func<int, bool>? WheelOverride;
 
-    /// <summary>Immediate, additive zoom by <paramref name="zoomDelta"/> metres. Kept for the Alt+drag zoom, where
-    /// the delta is already a per-frame mouse movement; the wheel goes through <see cref="WheelZoom"/>.</summary>
+    /// <summary>Alt+drag zoom. The reference viewer scales the distance by 0.99 per pixel and lets the camera follow a
+    /// target (<c>LLToolCamera::handleHover</c> -> <c>cameraZoomIn</c>), so the drag is proportional (slower near, faster
+    /// far) and smooth. Here the drag moves the same eased target the wheel does; only a glide toward a focus, which owns
+    /// the distance, still takes the step at once.</summary>
+    private void DragZoom(float pixelsDown, Vector2 mousePos)
+    {
+        if (pixelsDown == 0f) return;
+        bool glidingToFocus = _transitioning && !_transitionEndIsAvatarFollow;
+        if (glidingToFocus)
+        {
+            ZoomBy(CameraZoom.DragStep(_zoom, pixelsDown, MinZoom) - _zoom, mousePos);
+            return;
+        }
+
+        _transitioning = false;
+        _wheelZoomTarget = CameraZoom.DragStep(_wheelZoomTarget ?? _zoom, pixelsDown, MinZoom);
+        _wheelZoomCursor = mousePos;
+    }
+
+    /// <summary>Immediate, additive zoom by <paramref name="zoomDelta"/> metres. Used for a zoom that must happen at
+    /// once (a glide toward a focus); the wheel and the Alt+drag go through <see cref="WheelZoom"/> / <see cref="DragZoom"/>.</summary>
     private void ZoomBy(float zoomDelta, Vector2 mousePos)
     {
         _wheelZoomTarget = null;
@@ -368,6 +389,8 @@ public partial class AvatarController : Camera3D
     {
         bool glidingToFocus = _transitioning && !_transitionEndIsAvatarFollow;
         bool resetGlideWithFocus = _transitioning && _transitionEndIsAvatarFollow && _orbitTarget.HasValue;
+        if (Diagnostics.Enabled)
+            GD.Print($"[Zoom] notch t={Time.GetTicksMsec()} notches={notches} path={(glidingToFocus || resetGlideWithFocus ? "immediate (glide)" : "eased")} zoom={_zoom:F3} pending={_wheelZoomTarget?.ToString("F3") ?? "-"} min={MinZoom:F3} focus={_focusKind}");
         if (glidingToFocus || resetGlideWithFocus)
         {
             _wheelZoomTarget = null;
@@ -404,10 +427,12 @@ public partial class AvatarController : Camera3D
     {
         const float portraitDistance = 3.5f;
 
-        // Aim roughly at head height, not their feet/pelvis -- the same FocusHeight the
-        // local-avatar follow camera already uses, for the identical reason (framing a face, not
-        // the ground they're standing on).
-        var target = targetPosition + Godot.Vector3.Up * (_cameraSettings?.FocusHeight ?? 1.8f);
+        // Aim at the head: the position the grid reports for another avatar is its PELVIS, so the head is
+        // about a metre above it -- the reference viewer's mThirdPersonHeadOffset (0,0,1), llagentcamera.cpp:148.
+        // FocusHeight (1.8 m) is the offset for the local avatar, whose transform sits at its own convention, and
+        // put this focus about a metre above everybody else's head.
+        const float headAbovePelvis = 1.0f;
+        var target = targetPosition + Godot.Vector3.Up * headAbovePelvis;
 
         var approachDir = avatarForwardGodot is { } fwd && fwd.LengthSquared() > 0.0001f
             ? fwd
@@ -1173,7 +1198,7 @@ public partial class AvatarController : Camera3D
             _orbitYaw -= orbitDelta.X * sensitivity;
             // BUG-UI-05: dolly toward the Alt+Click hit point (set by FocusOn on engage) rather
             // than the screen-space _panOffset nudge, which drifted the pivot off the object.
-            ZoomBy(orbitDelta.Y * sensitivity * 50.0f, _altZoomAnchorPos);
+            DragZoom(orbitDelta.Y, _altZoomAnchorPos);
             _orbitLastMousePos = currentPos;
         }
 

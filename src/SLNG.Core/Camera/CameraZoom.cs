@@ -25,6 +25,10 @@ public static class CameraZoom
     /// <summary>Time for the remaining zoom distance to halve (the viewer's CAMERA_ZOOM_HALF_LIFE).</summary>
     public const float DefaultHalfLifeSeconds = 0.07f;
 
+    /// <summary>Alt+drag zoom: the distance is scaled by this for every pixel of vertical mouse travel, the reference
+    /// viewer's <c>IN_FACTOR</c> (<c>LLToolCamera::handleHover</c>), so a drag is proportional like the wheel.</summary>
+    public const float DragFactorPerPixel = 0.99f;
+
     /// <summary>Distance below which the ease snaps to its target.</summary>
     public const float SnapDistance = 0.001f;
 
@@ -36,6 +40,14 @@ public static class CameraZoom
     /// </summary>
     public static float WheelStep(float current, int notches, float min, float max = MaxZoom)
         => Math.Clamp(current * MathF.Pow(2f, notches * NotchExponent), min, max);
+
+    /// <summary>
+    /// The target distance after an Alt+drag of <paramref name="pixelsDown"/> pixels (positive = mouse moved down =
+    /// zoom out): <c>current * 0.99^(-pixelsDown)</c>, clamped. Like <see cref="WheelStep"/> it moves a target the ease
+    /// follows, so a drag is as smooth as the wheel.
+    /// </summary>
+    public static float DragStep(float current, float pixelsDown, float min, float max = MaxZoom)
+        => Math.Clamp(current * MathF.Pow(DragFactorPerPixel, -pixelsDown), min, max);
 
     /// <summary>
     /// One frame of the ease: moves <paramref name="current"/> toward <paramref name="target"/> by the
