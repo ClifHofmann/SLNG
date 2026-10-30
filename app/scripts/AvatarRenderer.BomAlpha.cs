@@ -69,7 +69,11 @@ public partial class AvatarRenderer
                       Placement(face) +
                       $" {state.GetValueOrDefault(f, "not-in-LOD")}");
         }
-        GD.Print($"[WornFaces] wearer={visual.AgentId.ToString("N")[..8]} item={entityId.ToString("N")[..8]} mesh={Short(meshId)} | " +
+        // BUG-AVATAR-18: faces a script hides with the TextureEntry colour (0,0,0,0) -- the Sensations add-on
+        // draws text as one glyph per face this way.
+        int zeroColourHidden = System.Linq.Enumerable.Count(state, kv => kv.Value == "HIDDEN" && ResolveFaceTexture(faces, defaultFace, kv.Key) is { ColorSet: true, Color: { X: 0f, Y: 0f, Z: 0f, W: 0f } });
+        GD.Print($"[WornFaces] wearer={visual.AgentId.ToString("N")[..8]} item={entityId.ToString("N")[..8]} mesh={Short(meshId)}" +
+                 (zeroColourHidden > 0 ? $" zeroColourHidden={zeroColourHidden}" : "") + " | " +
                  string.Join(" | ", parts));
 
         static string Short(Guid id) => id == Guid.Empty ? "-" : id.ToString("N")[..8];
