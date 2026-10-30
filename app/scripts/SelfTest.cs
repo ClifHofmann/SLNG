@@ -322,6 +322,7 @@ public static partial class SelfTest
         results.Add(CheckFriendshipOfferWindow(tree));
         results.Add(CheckGroupInfoWindow(tree)); // FEAT-UI-54
         results.Add(CheckAutoresponseWindow(tree)); // FEAT-UI-75
+        results.Add(CheckPresencePerAccount()); // BUG-UI-43
         results.Add(CheckPreferencesBuilder(tree)); // FEAT-UI-79
         results.Add(CheckPreferencesWindowWiring(tree)); // FEAT-UI-79
         results.Add(CheckPreferencesComplete(tree)); // FEAT-UI-79

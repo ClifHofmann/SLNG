@@ -25,15 +25,7 @@ public static class LandmarkFavoritesStore
     public static bool Persist { get; set; } = true;
 
     public static string? GetSection(string? gridSlug, string? agentId)
-    {
-        if (string.IsNullOrWhiteSpace(gridSlug) || string.IsNullOrWhiteSpace(agentId))
-            return null;
-
-        if (System.Guid.TryParse(agentId, out var guid) && guid == System.Guid.Empty)
-            return null;
-
-        return $"{SectionPrefix}{gridSlug.Trim().ToLowerInvariant()}_{agentId.Trim().ToLowerInvariant()}";
-    }
+        => SLNG.Core.AccountScope.Section(SectionPrefix, gridSlug, agentId);
 
     public static LandmarkFavoritesList Load(string? gridSlug, string? agentId)
     {
