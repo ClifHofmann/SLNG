@@ -4092,9 +4092,10 @@ public partial class AvatarRenderer : Node3D
 
         // The TextureEntry colour does not tint a PBR face (llface.cpp:1395-1400); its base colour is
         // set from the material below.
-        var tint = pbr != null || ft.Color == default
+        var faceColor = ft.EffectiveColor;
+        var tint = pbr != null
             ? new Color(1, 1, 1, 1)
-            : new Color(ft.Color.X, ft.Color.Y, ft.Color.Z, ft.Color.W);
+            : new Color(faceColor.X, faceColor.Y, faceColor.Z, faceColor.W);
 
         // PrimShaderFamily.Select is the only place that turns a (transparency, surface) pair into
         // a shader, so the alpha decisions below stay a plain Kind and the caller's surface rides

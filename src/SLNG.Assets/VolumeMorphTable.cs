@@ -17,19 +17,21 @@ public readonly record struct VolumeMorph(string Volume, Vector3 Scale, Vector3 
 /// </summary>
 public static class VolumeMorphTable
 {
-    private static Dictionary<int, VolumeMorph[]>? _cached;
+    // Per directory: a process-wide single slot returned a table parsed for one directory to a caller that passed none
+    // (or another), so a test that skipped the morphs passed or failed with what ran before it.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Dictionary<int, VolumeMorph[]>> _byDirectory = new();
 
-    /// <summary>Param id -> its volume morphs; only params that have any. Cached after the first successful parse;
-    /// a null or wrong directory returns an empty table without caching it.</summary>
+    /// <summary>Param id -> its volume morphs; only params that have any. Cached per directory after the first
+    /// successful parse; a null or wrong directory returns an empty table and is never cached.</summary>
     public static IReadOnlyDictionary<int, VolumeMorph[]> Load(string? charDir)
     {
-        if (_cached != null) return _cached;
         if (charDir == null) return new Dictionary<int, VolumeMorph[]>();
         try
         {
-            string path = Path.Combine(charDir, "avatar_lad.xml");
+            string path = Path.GetFullPath(Path.Combine(charDir, "avatar_lad.xml"));
+            if (_byDirectory.TryGetValue(path, out var cached)) return cached;
             if (!File.Exists(path)) return new Dictionary<int, VolumeMorph[]>();
-            return _cached = Parse(XDocument.Load(path));
+            return _byDirectory[path] = Parse(XDocument.Load(path));
         }
         catch
         {

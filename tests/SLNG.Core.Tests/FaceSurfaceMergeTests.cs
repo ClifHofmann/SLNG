@@ -96,6 +96,8 @@ public class FaceSurfaceMergeTests
         { "rotation", Face(rotation: 1.5707964f) },
         { "texgen", Face(texGen: FaceTexture.TexGenPlanar) },
         { "fullbright", Face(fullbright: true) },
+        // BUG-AVATAR-18: a face with no colour record (white) is not the same face as one whose colour is (1,1,1,1).
+        { "colour record", Face() with { ColorSet = false } },
         // A specular highlight is a material difference like any other: FEAT-RENDER-19 drives
         // ROUGHNESS and SPECULAR from this, so a matte face merged with a polished one would
         // take whichever material the run happened to build.

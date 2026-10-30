@@ -108,4 +108,14 @@ public class CollisionVolumeMorphTests
         Assert.False(table.ContainsKey(5));
         Assert.Equal(Vector3.Zero, table[6][0].Position); // a missing attribute is the viewer's zero default
     }
+
+    [Fact]
+    public void Loading_a_directory_never_leaks_into_a_call_that_passes_none()
+    {
+        // Order independence: the table is cached per directory, so what an earlier test loaded does not answer for null.
+        Assert.NotEmpty(VolumeMorphTable.Load(CharDir));
+        Assert.Empty(VolumeMorphTable.Load(null));
+        Assert.Empty(VolumeMorphTable.Load(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "no-such-character-dir")));
+        Assert.NotEmpty(VolumeMorphTable.Load(CharDir));
+    }
 }

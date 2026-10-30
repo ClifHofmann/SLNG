@@ -37,7 +37,7 @@ public class PrimitiveComponent : IComponent
     public Guid LegacyMaterialId { get; set; }
 
     /// <summary>Base color tint (RGBA) applied to the texture/material.</summary>
-    public Vector4 ColorTint { get; set; }
+    public Vector4 ColorTint { get; set; } = Vector4.One;
 
     public float RepeatU { get; set; } = 1.0f;
     public float RepeatV { get; set; } = 1.0f;
@@ -214,7 +214,7 @@ public class PrimitiveComponent : IComponent
     /// have already advertised a later version that the fetch for it just hasn't completed yet.</summary>
     public string? MediaVersion { get; set; }
 
-    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4 colorTint = default, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null, bool fullbright = false, Guid legacyMaterialId = default)
+    public PrimitiveComponent(Vector3 scale, byte profileCurve, bool isMesh = false, Guid meshId = default, Guid textureId = default, Guid renderMaterialId = default, Vector4? colorTint = null, float repeatU = 1.0f, float repeatV = 1.0f, float offsetU = 0.0f, float offsetV = 0.0f, float rotation = 0.0f, PrimShape shape = default, bool isSculpt = false, Guid sculptId = default, byte sculptType = 0, FaceTexture[]? faces = null, byte texGen = FaceTexture.TexGenDefault, ParticleSystemData? particles = null, bool fullbright = false, Guid legacyMaterialId = default)
     {
         Scale = scale;
         ProfileCurve = profileCurve;
@@ -223,7 +223,8 @@ public class PrimitiveComponent : IComponent
         TextureId = textureId;
         RenderMaterialId = renderMaterialId;
         LegacyMaterialId = legacyMaterialId;
-        ColorTint = colorTint;
+        // BUG-AVATAR-18: no colour given is white, never (0,0,0,0) -- that is a real, fully transparent colour.
+        ColorTint = colorTint ?? Vector4.One;
         RepeatU = repeatU;
         RepeatV = repeatV;
         OffsetU = offsetU;

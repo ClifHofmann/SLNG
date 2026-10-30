@@ -80,8 +80,17 @@ public readonly record struct FaceTexture(
     /// surface run, and gives a different material key, and equal overrides give equal keys. Only meaningful when
     /// <see cref="RenderMaterialId"/> is not empty. Never set by the network layer's face build: it is stamped by
     /// WorldSimulation (see GltfOverrideStamp).</summary>
-    GltfMaterialOverride? PbrOverride = null)
+    GltfMaterialOverride? PbrOverride = null,
+    /// <summary>BUG-AVATAR-18: whether <see cref="Color"/> is a real TextureEntry colour. True for every face built through
+    /// the constructor, so the wire value (0,0,0,0) -- fully transparent -- is a colour like any other; false only for
+    /// <c>default(FaceTexture)</c>, "no face record at all", which draws white and visible (see <see cref="EffectiveColor"/>).
+    /// This replaces a zero-colour sentinel that made a script-hidden face (colour 0,0,0,0) indistinguishable from "unset".
+    /// </summary>
+    bool ColorSet = true)
 {
+    /// <summary>The colour the face is drawn with: its TextureEntry colour, or white when there is none.</summary>
+    public Vector4 EffectiveColor => ColorSet ? Color : Vector4.One;
+
     /// <summary>The viewer's SHININESS_TO_ALPHA (llface.cpp:1420): the glossiness that a legacy
     /// shiny level feeds into the specular LUT. Index is the raw 0-3 value; anything out of
     /// range is treated as none, as the viewer asserts it cannot be.</summary>
@@ -116,5 +125,5 @@ public readonly record struct FaceTexture(
     /// v0.27.83 made it false for every face naming a material, and with the material fetch failing,
     /// hair layers a HUD had switched off by TE alpha came back.</para></summary>
     public bool IsInvisible =>
-        TextureId == TransparentTextureId || (Color != default && Color.W <= 0.001f);
+        TextureId == TransparentTextureId || (ColorSet && Color.W <= 0.001f);
 }

@@ -199,7 +199,7 @@ public sealed class RiggedMeshBuilderTests
     public void Invisible_submeshes_are_skipped_and_surviving_face_indices_preserved()
     {
         var transparentFace = default(FaceTexture) with { TextureId = FaceTexture.TransparentTextureId };
-        var zeroAlphaFace = default(FaceTexture) with { TextureId = Guid.NewGuid(), Color = new Vector4(1f, 1f, 1f, 0f) };
+        var zeroAlphaFace = default(FaceTexture) with { TextureId = Guid.NewGuid(), Color = new Vector4(1f, 1f, 1f, 0f), ColorSet = true };
         var visibleFace0 = default(FaceTexture) with { TextureId = Guid.NewGuid() };
         var visibleFace2 = default(FaceTexture) with { TextureId = Guid.NewGuid() };
 
@@ -253,7 +253,7 @@ public sealed class RiggedMeshBuilderTests
         // transparent legacy texture keeps its triangles.
         var material = Guid.Parse("e69dde89-50f8-b85f-9a26-da60314acba6");
         var pbrOverTransparent = default(FaceTexture) with { TextureId = FaceTexture.TransparentTextureId, RenderMaterialId = material };
-        var pbrOverZeroAlpha = default(FaceTexture) with { TextureId = Guid.NewGuid(), Color = new Vector4(1f, 1f, 1f, 0f), RenderMaterialId = material };
+        var pbrOverZeroAlpha = default(FaceTexture) with { TextureId = Guid.NewGuid(), Color = new Vector4(1f, 1f, 1f, 0f), ColorSet = true, RenderMaterialId = material };
         Assert.True(pbrOverTransparent.IsInvisible);
         Assert.True(pbrOverZeroAlpha.IsInvisible);
 
