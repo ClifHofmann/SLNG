@@ -2901,6 +2901,11 @@ public partial class AvatarRenderer : Node3D
         System.Numerics.Vector3 slPos, System.Numerics.Quaternion slRot, Guid entityId)
     {
         if (_assetService == null) return;
+        if (Diagnostics.IsAttachmentIsolatedOut(entityId, meshId))
+        {
+            GD.Print($"[Isolate] worn mesh {meshId.ToString("N")[..8]} object {entityId.ToString("N")[..8]} left out (--hide-attachment/--only-attachment)");
+            return;
+        }
 
         var lod = PickAttachmentDetailLevel(avatarVisual);
         // BUG-RENDER-49: the faces' glTF materials are fetched alongside the mesh -- a rigged mesh's
@@ -2915,6 +2920,9 @@ public partial class AvatarRenderer : Node3D
         if (meshData.Skin != null && !materials.IsCompleted)
             await System.Threading.Tasks.Task.WhenAny(materials, System.Threading.Tasks.Task.Delay(PbrPrefetchWait)).ConfigureAwait(false);
         Logger.Debug($"[Attachment] mesh {meshId}: {meshData.Submeshes.Count} submeshes, rigged={meshData.Skin != null}");
+        if (Diagnostics.Enabled && meshData.Skin != null)
+            GD.Print($"[AttachLod] wearer={avatarVisual.AgentId.ToString("N")[..8]} mesh={meshId.ToString("N")[..8]} asked={lod} " +
+                     $"got={meshData.Submeshes.Count} submeshes, {meshData.Submeshes.Sum(sm => sm.Indices.Length / 3)} tris");
         ApplyAttachmentMeshDataAsync(meshData, attachParent, avatarVisual, meshId,
             faces, defaultFace, slScale, slPos, slRot, entityId);
     }
@@ -7792,6 +7800,7 @@ void fragment() {
         TickOutfitMerge();
         // BUG-RENDER-50: worn alpha re-ranked after attaches, detaches and point changes.
         TickWornAlphaOrder();
+        TickPlaceholderAudit(delta);
 
         float dt = (float)delta;
         ReportAvatarCost(delta);

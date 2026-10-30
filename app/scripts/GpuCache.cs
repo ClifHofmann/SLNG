@@ -495,6 +495,16 @@ public class GpuCache
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
         if (assetService != null && !ReferenceEquals(_assets, assetService)) _assets = assetService;
+        // BUG-RENDER-54 [BomMagicRequest] (--diag): a Bakes-on-Mesh magic id is a placeholder asset and is never
+        // meant to be drawn from here -- every legitimate face swaps it for the wearer's bake first. Whoever asks
+        // for it is the one drawing the placeholder letters; the stack names them, once per distinct caller.
+        if (Diagnostics.Enabled && bakeChannel == null && SLNG.Assets.BakedTextureIds.TryGetBakeIndex(textureId, out int magicChannel))
+        {
+            var trace = new System.Diagnostics.StackTrace(1, false).ToString();
+            string head = string.Join(" <- ", System.Linq.Enumerable.Select(System.Linq.Enumerable.Take(trace.Split('\n'), 6), l => l.Trim().Replace("at ", "")));
+            if (_magicRequestLogged.TryAdd(head, 0))
+                GD.Print($"[BomMagicRequest] {textureId.ToString("N")[..8]} (channel {magicChannel}) requested as a plain texture: {head}");
+        }
 
         // FEAT-PERF-17: null is "whatever this texture's callers said" (the cull sweep's re-offer).
         if (compress is bool asked) { bool wants = asked && bakeChannel == null; _compressIntent.AddOrUpdate(textureId, wants, (_, had) => had && wants); }
@@ -1839,6 +1849,8 @@ public class GpuCache
         var prepared = PrepareShrinkImage(decoded, nw, nh, mips);
         return (prepared.Image, prepared.Stats);
     }
+
+    private readonly ConcurrentDictionary<string, byte> _magicRequestLogged = new();
 
     private async Task<ImageTexture?> FetchAndUploadTextureAsync(
         Guid textureId, SLNG.Assets.AssetService assetService, bool generateMipmaps, int initialRefCount, float screenPixelArea, float priority, bool rejectDegraded, int? bakeChannel = null, Guid bakeAgentId = default,

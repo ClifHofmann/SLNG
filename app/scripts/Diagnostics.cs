@@ -77,6 +77,9 @@ public static class Diagnostics
         NoGroundDrop = HasFlag(OS.GetCmdlineArgs(), "--no-ground-drop")
                     || HasFlag(OS.GetCmdlineUserArgs(), "--no-ground-drop");
 
+        HideAttachments = ParsePrefixes("--hide-attachment=");
+        OnlyAttachments = ParsePrefixes("--only-attachment=");
+
         string? traceArg = FindValueArg("--trace-object=", OS.GetCmdlineArgs())
                         ?? FindValueArg("--trace-object=", OS.GetCmdlineUserArgs());
         if (traceArg != null && System.Guid.TryParse(traceArg, out var traceId)) TraceObject = traceId;
@@ -237,6 +240,32 @@ public static class Diagnostics
     /// <summary>Returns the part after <paramref name="prefix"/> for the first
     /// <c>--name=value</c> argument that matches, lower-cased; null if none. Used for the
     /// BUG-RENDER-16 foliage-alpha selector.</summary>
+    /// <summary>BUG-RENDER-54: <c>--hide-attachment=a1b2,c3d4</c> -- worn rigged meshes whose object id or mesh id
+    /// (hex, no dashes) starts with one of these are not built at all this run. The isolation switch for "which worn
+    /// item draws that?" when it cannot be picked. Empty = off.</summary>
+    public static string[] HideAttachments { get; private set; } = System.Array.Empty<string>();
+
+    /// <summary><c>--only-attachment=a1b2,c3d4</c>: the inverse -- every worn rigged mesh NOT matching is skipped.</summary>
+    public static string[] OnlyAttachments { get; private set; } = System.Array.Empty<string>();
+
+    /// <summary>Whether this worn rigged mesh is left out of the scene by <c>--hide-attachment</c> /
+    /// <c>--only-attachment</c>.</summary>
+    public static bool IsAttachmentIsolatedOut(System.Guid entityId, System.Guid meshId)
+    {
+        if (HideAttachments.Length == 0 && OnlyAttachments.Length == 0) return false;
+        string e = entityId.ToString("N"), m = meshId.ToString("N");
+        bool Matches(string[] list) { foreach (var p in list) if (e.StartsWith(p, System.StringComparison.Ordinal) || m.StartsWith(p, System.StringComparison.Ordinal)) return true; return false; }
+        if (Matches(HideAttachments)) return true;
+        return OnlyAttachments.Length > 0 && !Matches(OnlyAttachments);
+    }
+
+    private static string[] ParsePrefixes(string prefix)
+    {
+        string? v = FindValueArg(prefix, OS.GetCmdlineArgs()) ?? FindValueArg(prefix, OS.GetCmdlineUserArgs());
+        return string.IsNullOrWhiteSpace(v) ? System.Array.Empty<string>()
+            : v.Replace("-", "").Split(',', System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries);
+    }
+
     private static string? FindValueArg(string prefix, string[] args)
     {
         foreach (string arg in args)
