@@ -173,18 +173,107 @@ public sealed partial class GridSession
 
     public async Task<byte[]?> FetchMeshDataAsync(Guid meshId)
     {
-        var asset = await _client.Assets
-            .RequestMeshAsync(new UUID(meshId), CancellationToken.None)
-            .ConfigureAwait(false);
-        return asset?.AssetData;
+        RegisterPipeReporting();
+        long started = MeshPipe.Begin();
+        byte[]? data = null;
+        try
+        {
+            data = await FetchMeshOverHttpAsync(meshId).ConfigureAwait(false);
+            return data;
+        }
+        finally
+        {
+            MeshPipe.End(started, data is { Length: > 0 }, data?.Length ?? 0);
+        }
+    }
+
+    /// <summary>How long one mesh transfer may take once it has started (the slot wait is not part of it).</summary>
+    private static readonly TimeSpan MeshFetchTimeout = TimeSpan.FromSeconds(60);
+
+    private const int MeshFetchAttempts = 2;
+
+    /// <summary>
+    /// FEAT-NET-07: a mesh over the region's mesh capability with our own HTTP client. This used to be
+    /// LibreMetaverse's <c>RequestMeshAsync</c>, whose download queue let about ten meshes through a second: a cold
+    /// visit asked for 8,876 and the median wait reached 400 s while the texture path, on the same servers, did
+    /// 20-47 a second. Concurrency is now decided by the caller (<c>AssetService</c>'s mesh gate), the way it is for
+    /// textures. Never throws; null when the capability is missing, the region refused the asset (remembered, as for
+    /// materials) or the attempts ran out.
+    /// </summary>
+    private async Task<byte[]?> FetchMeshOverHttpAsync(Guid meshId)
+    {
+        ulong region = CurrentRegionHandle;
+        if (_assetRefusals.IsRefused(region, meshId)) return null;
+        var cap = _client.Network.CurrentSim?.Caps?.GetMeshCapURI();
+        if (cap is null) return null;
+        var url = SLNG.Core.MeshFetchUrl.Build(cap, meshId);
+
+        for (int attempt = 0; attempt < MeshFetchAttempts; attempt++)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(MeshFetchTimeout);
+                using var response = await _textureHttpClient.GetAsync(url, timeout.Token).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
+                    return bytes.Length > 0 ? bytes : null;
+                }
+                if (AssetRefusals.IsRefusal(response.StatusCode))
+                {
+                    if (_assetRefusals.Remember(region, meshId))
+                        Console.Error.WriteLine($"[MeshFetch] {meshId}: the region refused it (HTTP {(int)response.StatusCode})");
+                    return null;
+                }
+                if (!SLNG.Core.MeshFetchUrl.IsTransient((int)response.StatusCode)) return null;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+            {
+                // A timeout or a dropped connection: try again below.
+            }
+            if (attempt + 1 < MeshFetchAttempts) await Task.Delay(500 * (attempt + 1)).ConfigureAwait(false);
+        }
+        return null;
+    }
+
+    // Cold-start diagnostics (--diag): one [MeshPipe] / [MatPipe] / [TexHttp] / [TexWait] line every 5 s.
+    // MeshPipe runs through LibreMetaverse, so its inflight peak is the concurrency that HTTP stack really
+    // gives us; TexHttp is the transfer once a slot is held, TexWait the wait for the slot.
+    internal static readonly SLNG.Core.FetchPipeStats MeshPipe = new("MeshPipe");
+    internal static readonly SLNG.Core.FetchPipeStats MatPipe = new("MatPipe");
+    internal static readonly SLNG.Core.FetchPipeStats TexHttp = new("TexHttp");
+    internal static readonly SLNG.Core.FetchPipeStats TexWait = new("TexWait");
+    private static int _pipeReportingRegistered;
+
+    private static void RegisterPipeReporting()
+    {
+        if (System.Threading.Volatile.Read(ref _pipeReportingRegistered) != 0
+            || System.Threading.Interlocked.Exchange(ref _pipeReportingRegistered, 1) != 0) return;
+        SLNG.Core.FetchPipeReporter.Register(MeshPipe);
+        SLNG.Core.FetchPipeReporter.Register(MatPipe);
+        SLNG.Core.FetchPipeReporter.Register(TexHttp);
+        SLNG.Core.FetchPipeReporter.Register(TexWait);
     }
 
     private static readonly HttpClient _textureHttpClient = new();
 
-    private static readonly System.Threading.SemaphoreSlim _textureFetchSemaphore = new System.Threading.SemaphoreSlim(8, 8);
+    /// <summary>HTTP texture transfers at once. The reference viewer opens 8 connections, up to 12, and pipelines
+    /// on each (llappcorehttp.cpp:70). <c>--tex-slots=N</c> changes it for an A/B run; set it before the first fetch.</summary>
+    public const int DefaultTextureFetchSlots = 8;
+
+    /// <summary>The slots, handed out highest priority first (<see cref="SLNG.Core.PriorityGate"/>): the wearer's own
+    /// textures go before the scenery's, where a plain semaphore served strictly in arrival order.</summary>
+    private static SLNG.Core.PriorityGate _textureSlots = new(DefaultTextureFetchSlots);
+
+    /// <summary>Replaces the texture slot semaphore. Startup only: a transfer already holding the old one would release into it.</summary>
+    public static void SetTextureFetchSlots(int slots)
+    {
+        slots = Math.Clamp(slots, 1, 64);
+        _textureSlots = new SLNG.Core.PriorityGate(slots);
+    }
 
     /// <summary>The animation lane of the <c>ViewerAsset</c> fetches. Animations used to share
-    /// <see cref="_textureFetchSemaphore"/> with every texture, so on a busy sim a pose waited behind hundreds of
+    /// <see cref="_textureSlots"/> with every texture, so on a busy sim a pose waited behind hundreds of
     /// queued textures -- and the 20 s timeout ran WHILE it waited, so it could give up before it had even been
     /// asked for. An animation is a few kilobytes and is what takes an avatar out of the T-pose, so it gets slots
     /// of its own (BUG-AVATAR-09).</summary>
@@ -242,7 +331,7 @@ public sealed partial class GridSession
     /// (found live on Agni 2026-09-02: only the local avatar's own bakes ever resolved). Empty
     /// falls back to our own id so a caller that only ever deals with the local avatar can omit
     /// it.</summary>
-    public async Task<TextureFetchResult> FetchBakeTextureDataAsync(Guid textureId, int bakeChannel, Guid agentId = default, CancellationToken ct = default)
+    public async Task<TextureFetchResult> FetchBakeTextureDataAsync(Guid textureId, int bakeChannel, Guid agentId = default, CancellationToken ct = default, float priority = 0f)
     {
         if (_lindenGridShortName == null) return new TextureFetchResult { Data = null, IsReliable = false };
 
@@ -251,7 +340,7 @@ public sealed partial class GridSession
 
         var owner = agentId == Guid.Empty ? _client.Self.AgentID.Guid : agentId;
         var url = BuildBakeTextureUrl(_lindenGridShortName, owner, slot, textureId);
-        var bytes = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard: 0, capUri: null, maxRetries: 2, fetchUrl: url).ConfigureAwait(false);
+        var bytes = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard: 0, capUri: null, maxRetries: 2, fetchUrl: url, priority: priority).ConfigureAwait(false);
         return new TextureFetchResult { Data = bytes, IsReliable = bytes != null };
     }
 
@@ -262,7 +351,7 @@ public sealed partial class GridSession
     internal static Uri BuildBakeTextureUrl(string gridShortName, Guid agentId, string slot, Guid textureId) =>
         new($"http://bake-texture.glb.{gridShortName}.lindenlab.com/texture/{agentId}/{slot}/{textureId}");
 
-    public async Task<TextureFetchResult> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0, bool skipHttp = false)
+    public async Task<TextureFetchResult> FetchTextureDataAsync(Guid textureId, int desiredDiscard = 0, bool skipHttp = false, float priority = 0f)
     {
         // FEAT-PERF-02 Phase 2: prefer our own HTTP GetTexture Range fetch over the UDP path
         // below. Two wins over the pre-existing code: (1) HTTP is the faster transport (no UDP
@@ -293,13 +382,13 @@ public sealed partial class GridSession
 
         if (viewerAssetCap != null)
         {
-            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, viewerAssetCap).ConfigureAwait(false);
+            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, viewerAssetCap, priority: priority).ConfigureAwait(false);
             if (httpResult != null) return new TextureFetchResult { Data = httpResult, IsReliable = true };
         }
 
         if (getTextureCap != null && getTextureCap != viewerAssetCap)
         {
-            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, getTextureCap, maxRetries: 5).ConfigureAwait(false);
+            var httpResult = await FetchTextureViaHttpRangeAsync(textureId, desiredDiscard, getTextureCap, maxRetries: 5, priority: priority).ConfigureAwait(false);
             if (httpResult != null) return new TextureFetchResult { Data = httpResult, IsReliable = true };
         }
 
@@ -489,7 +578,7 @@ public sealed partial class GridSession
     /// completely different URL (<c>/texture/&lt;agent&gt;/&lt;slot&gt;/&lt;id&gt;</c>, no query
     /// string, always a full fetch) but the same validation and retry logic below, which is why
     /// this exists as an extra parameter here rather than a copy of the whole method.</summary>
-    private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri? capUri, int maxRetries = 0, Uri? fetchUrl = null)
+    private async Task<byte[]?> FetchTextureViaHttpRangeAsync(Guid textureId, int desiredDiscard, Uri? capUri, int maxRetries = 0, Uri? fetchUrl = null, float priority = 0f)
     {
         for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
@@ -506,7 +595,12 @@ public sealed partial class GridSession
                 HttpResponseMessage? response = null;
                 byte[]? bytes = null;
                 long? declaredLength = null;
-                await _textureFetchSemaphore.WaitAsync().ConfigureAwait(false);
+                RegisterPipeReporting();
+                var slots = _textureSlots;
+                long waitStarted = TexWait.Begin();
+                await slots.WaitAsync(priority).ConfigureAwait(false);
+                TexWait.End(waitStarted, true, 0);
+                long httpStarted = TexHttp.Begin();
                 try
                 {
                     response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
@@ -554,7 +648,8 @@ public sealed partial class GridSession
                 finally
                 {
                     response?.Dispose();
-                    _textureFetchSemaphore.Release();
+                    TexHttp.End(httpStarted, bytes is { Length: > 0 }, bytes?.Length ?? 0);
+                    slots.Release();
                 }
 
                 if (bytes != null)
@@ -670,6 +765,22 @@ public sealed partial class GridSession
     /// for ever.</para>
     /// </summary>
     public async Task<byte[]?> FetchMaterialAssetAsync(Guid materialId)
+    {
+        RegisterPipeReporting();
+        long started = MatPipe.Begin();
+        byte[]? data = null;
+        try
+        {
+            data = await FetchMaterialAssetCoreAsync(materialId).ConfigureAwait(false);
+            return data;
+        }
+        finally
+        {
+            MatPipe.End(started, data is { Length: > 0 }, data?.Length ?? 0);
+        }
+    }
+
+    private async Task<byte[]?> FetchMaterialAssetCoreAsync(Guid materialId)
     {
         ulong region = CurrentRegionHandle;
         if (_assetRefusals.IsRefused(region, materialId)) return null;

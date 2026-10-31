@@ -64,8 +64,26 @@ public class AssetService
     private void MaybeDumpTexPipe(Guid id)
     {
         _texPipeDistinct.TryAdd(id, 0);
+        // Under --diag the reporter prints this every few seconds (TakeTexPipeLine); otherwise keep the old cadence.
+        if (SLNG.Core.Diag.Verbose) return;
         int n = _texPipeReq;
         if (n % 200 != 0) return;
+        Console.Error.WriteLine(FormatTexPipe(n));
+    }
+
+    private int _texPipeLastReported;
+
+    /// <summary>The [TexPipe] line when requests came in since the last one, else null.</summary>
+    private string? TakeTexPipeLine()
+    {
+        int n = _texPipeReq;
+        if (n == _texPipeLastReported) return null;
+        _texPipeLastReported = n;
+        return FormatTexPipe(n);
+    }
+
+    private string FormatTexPipe(int n)
+    {
         int hit = _texPipeCacheHit, http = _texPipeHttp, decHit = _texPipeDecodedCacheHit;
         int j2kHits = hit - decHit;
         double avgMs = j2kHits > 0
@@ -73,9 +91,9 @@ public class AssetService
             : 0;
         // distinct << req  => the same textures are being re-decoded (a cache upstream isn't
         // sticking); distinct ~ req => the scene genuinely has that many textures.
-        Console.Error.WriteLine($"[TexPipe] req={n} distinct={_texPipeDistinct.Count} decCacheHit={decHit} diskCacheHit={hit} " +
+        return $"[TexPipe] req={n} distinct={_texPipeDistinct.Count} decCacheHit={decHit} diskCacheHit={hit} " +
             $"(avg {avgMs:0}ms J2K decode) httpFetch={http} reduced={_texPipeReduced} " +
-            $"reduceRetry={_texPipeReduceRetry} inflight={_inflightTextures.Count}");
+            $"reduceRetry={_texPipeReduceRetry} inflight={_inflightTextures.Count}";
     }
 
     // Ids already reported by [TextureGiveUp]. The texture path has several distinct ways to end
@@ -190,6 +208,8 @@ public class AssetService
     {
         _session = session;
         _cacheDir = cacheDirectory;
+        // --diag: the texture pipeline line every few seconds while there is traffic, not every 200 requests.
+        SLNG.Core.FetchPipeReporter.Register(TakeTexPipeLine);
         if (!string.IsNullOrEmpty(_cacheDir) && !Directory.Exists(_cacheDir))
         {
             Directory.CreateDirectory(_cacheDir);
@@ -378,7 +398,10 @@ public class AssetService
             byte[]? bytes;
             try
             {
-                bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false);
+                // FEAT-NET-07: our own HTTP fetch, so concurrency is ours to bound (LibreMetaverse's queue gave ~10/s).
+                await _meshFetchThrottle.WaitAsync(0f).ConfigureAwait(false);
+                try { bytes = await _session.FetchMeshDataAsync(meshId).ConfigureAwait(false); }
+                finally { _meshFetchThrottle.Release(); }
             }
             catch (Exception ex)
             {
@@ -838,7 +861,7 @@ public class AssetService
             return cached;
         }
 
-        var bakeResult = await _session.FetchBakeTextureDataAsync(textureId, bakeChannel, bakeAgentId).ConfigureAwait(false);
+        var bakeResult = await _session.FetchBakeTextureDataAsync(textureId, bakeChannel, bakeAgentId, priority: priority).ConfigureAwait(false);
         if (bakeResult.Data is { Length: > 0 } bytes)
         {
             var decoded = await Task.Run(() => DecodeTexture(bytes, isSculpt: false)).ConfigureAwait(false);
@@ -913,7 +936,24 @@ public class AssetService
     // PriorityGate, not SemaphoreSlim: a plain semaphore admits strictly in arrival order, so
     // whatever the camera is actually pointed at waits behind an arbitrary amount of scenery that
     // merely happened to be requested first. See PriorityGate's doc comment.
-    private static readonly PriorityGate _textureFetchThrottle = new PriorityGate(32);
+    private static PriorityGate _textureFetchThrottle = new PriorityGate(32);
+
+    /// <summary>Mesh transfers at once (FEAT-NET-07). The reference viewer runs 8 pipelined connections with 32-100
+    /// requests queued behind them (llmeshrepository.cpp:352); 16 plain HTTP/1.1 connections is the same order.
+    /// <c>--mesh-slots=N</c> changes it for a diagnostic run; set it before the first fetch.</summary>
+    public const int DefaultMeshFetchSlots = 16;
+    private static PriorityGate _meshFetchThrottle = new PriorityGate(DefaultMeshFetchSlots);
+
+    public static void SetMeshFetchSlots(int slots) => _meshFetchThrottle = new PriorityGate(Math.Clamp(slots, 1, 64));
+
+    /// <summary>--tex-slots=N (an A/B switch for cold-start runs): N HTTP texture transfers at once, and the
+    /// admission gate in front of them four times that (32 for the default 8). Startup only.</summary>
+    public static void SetTextureFetchSlots(int slots)
+    {
+        slots = Math.Clamp(slots, 1, 64);
+        GridSession.SetTextureFetchSlots(slots);
+        _textureFetchThrottle = new PriorityGate(Math.Max(32, slots * 4));
+    }
     private static readonly PriorityGate _sculptFetchThrottle = new PriorityGate(4);
 
     // The disk-cache hit path was a BARE Task.Run per texture -- measured 2026-09-03: a familiar
@@ -1083,7 +1123,7 @@ public class AssetService
             bool isReliable = false;
             try
             {
-                var fetchTask = _session.FetchTextureDataAsync(textureId, desiredDiscard, httpUndecodable);
+                var fetchTask = _session.FetchTextureDataAsync(textureId, desiredDiscard, httpUndecodable, priority);
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
                 if (await Task.WhenAny(fetchTask, timeoutTask).ConfigureAwait(false) == fetchTask)
                 {
