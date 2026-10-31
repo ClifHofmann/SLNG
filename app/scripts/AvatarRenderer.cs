@@ -3969,7 +3969,7 @@ public partial class AvatarRenderer : Node3D
         if (count < minimum) return;
         float? wornBase = WornAlphaBaseOf(mi);
 
-        var blend = PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar);
+        var blend = PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar);  // a viewer-specular twin is a blend face too (BaseVariant)
         int alreadySplit = 0;
         List<int>? pending = null;
         for (int s = 0; s < count; s++)
@@ -3979,7 +3979,7 @@ public partial class AvatarRenderer : Node3D
                 alreadySplit++;
                 continue;
             }
-            if (mi.GetSurfaceOverrideMaterial(s) is ShaderMaterial sm && ReferenceEquals(sm.Shader, blend))
+            if (mi.GetSurfaceOverrideMaterial(s) is ShaderMaterial sm && ReferenceEquals(PrimShaderFamily.BaseVariant(sm.Shader), blend))
                 (pending ??= new List<int>()).Add(s);
         }
         if (pending == null || alreadySplit + pending.Count < minimum) return;
@@ -4164,6 +4164,7 @@ public partial class AvatarRenderer : Node3D
         // A PBR face's tint is white (above), so it never reaches this as translucent.
         bool hasExplicitAlpha = false;
         bool legacyAlphaResolved = false;
+        LegacyMaterialData? legacyMaps = null;
         if (pbr != null)
         {
             hasExplicitAlpha = true;
@@ -4201,6 +4202,15 @@ public partial class AvatarRenderer : Node3D
             // replaces the legacy material outright (above).
             var (route, cutoff) = LegacyMaterialAlpha.Route(legacy.DiffuseAlphaMode, legacy.AlphaMaskCutoff, tintTranslucent);
             LogLegacyMaterial(legacy);
+            // BUG-AVATAR-16: the material's normal and specular maps, with their placement and specular scalars. The
+            // viewer draws a rigged face through the same LLDrawPoolMaterials as a prim, so they apply exactly alike
+            // (llvovolume.cpp:6031-6047 routes it to the normal/specular/both pool; the rigged shader variant
+            // is the same program, lldrawpoolmaterials.cpp:57-90). A HUD is unshaded: they would show nothing.
+            if (legacy.HasMaps && surface != PrimShaderFamily.Surface.Hud)
+            {
+                legacyMaps = legacy;
+                ApplyLegacyShading(material, LegacyMaterialShading.From(legacy));
+            }
             if (route != LegacyAlphaRoute.Pixels)
             {
                 hasExplicitAlpha = true;
@@ -4223,7 +4233,9 @@ public partial class AvatarRenderer : Node3D
         // once both are in (one thread writes the material). A HUD is unshaded: they would show nothing.
         var mapsTask = pbr != null && surface != PrimShaderFamily.Surface.Hud
             ? LoadPbrMapsAsync(pbr, avatarVisual)
-            : System.Threading.Tasks.Task.FromResult<PbrMaps>(default);
+            : legacyMaps is { } maps
+                ? LoadLegacyMapsAsync(maps, avatarVisual)
+                : System.Threading.Tasks.Task.FromResult<PbrMaps>(default);
 
         // Bakes-on-Mesh: a face carrying one of the IMG_USE_BAKED_* magic ids wants the AVATAR's
         // server-baked texture for that channel, not the magic id itself (which is just a red UV
@@ -4257,10 +4269,12 @@ public partial class AvatarRenderer : Node3D
                 (wasBom ? $" (Bakes-on-Mesh channel {bomIndex} not resolved yet)" : " (face carries no texture id)"));
             LogHudFace(surface, meshId, faceIndex, ft, tint,
                 wasBom ? $"NO TEXTURE (BoM channel {bomIndex} unresolved)" : "NO TEXTURE (face carries no texture id)");
-            ApplyPbrMaps(material, await mapsTask.ConfigureAwait(false));
+            var earlyMaps = await mapsTask.ConfigureAwait(false);
+            ApplyFaceMaps(material, earlyMaps, legacyMaps, meshId, faceIndex);
             // texId is the base colour a PBR face asked for even without an asset service to load it
             // (the selftest); the merge key and its roles read it from the facts.
-            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex,
+                specularMap: earlyMaps.Specular != null);
         }
 
         // initialRefCount: 1 -- see LoadAndApplyTextureAsync's identical call for why (a
@@ -4309,7 +4323,9 @@ public partial class AvatarRenderer : Node3D
         MainThreadWorkQueue.RecordIfMainThread("avatar.material.texture",
             System.Diagnostics.Stopwatch.GetElapsedTime(texStart).TotalMilliseconds);
         var built = await builtTask.ConfigureAwait(false);
-        ApplyPbrMaps(material, await mapsTask.ConfigureAwait(false));
+        var faceMaps = await mapsTask.ConfigureAwait(false);
+        ApplyFaceMaps(material, faceMaps, legacyMaps, meshId, faceIndex);
+        bool specularMap = faceMaps.Specular != null;
         if (avatarVisual != null && texId != Guid.Empty)
         {
             // The await above resumes on a pool thread, and PinnedTextureIds / UsedTextureIds are plain
@@ -4347,10 +4363,12 @@ public partial class AvatarRenderer : Node3D
             {
                 material.SetShaderParameter(PrimShaderFamily.AlbedoColor, new Godot.Color(1f, 1f, 1f, 0f));
                 material.SetShaderParameter(PrimShaderFamily.HasAlbedoTexture, false);
-                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface, texId, failed: true, bakeChannel: bomIndex);
+                return FinishFaceMaterial(material, PrimShaderFamily.Kind.Blend, scissorThreshold, surface, texId, failed: true, bakeChannel: bomIndex,
+                    specularMap: specularMap);
             }
 
-            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
+            return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex,
+                specularMap: specularMap);
         }
 
         LogHudFace(surface, meshId, faceIndex, ft, tint, $"textured {built.GetWidth()}x{built.GetHeight()}");
@@ -4402,7 +4420,8 @@ public partial class AvatarRenderer : Node3D
         if (wasBom && kind == PrimShaderFamily.Kind.Scissor && !legacyAlphaResolved)
             scissorThreshold = BomAlphaScissorThreshold;
 
-        return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex);
+        return FinishFaceMaterial(material, kind, scissorThreshold, surface, texId, bakeChannel: bomIndex,
+            specularMap: specularMap);
     }
 
     /// <summary>BUG-RENDER-49 follow-up: who a <c>[PbrFace]</c> line is about -- the wearer, the worn item (when the
@@ -4516,7 +4535,55 @@ public partial class AvatarRenderer : Node3D
 
     /// <summary>A PBR face's maps other than its base colour, as loaded (null where the material has
     /// none or it did not load).</summary>
-    private readonly record struct PbrMaps(ImageTexture? Normal, ImageTexture? MetallicRoughness, ImageTexture? Emissive);
+    private readonly record struct PbrMaps(ImageTexture? Normal, ImageTexture? MetallicRoughness, ImageTexture? Emissive,
+        ImageTexture? Specular = null);
+
+    /// <summary>BUG-AVATAR-16: a legacy material's normal and specular maps, loaded the way a glTF face's maps are
+    /// (pinned, recorded against the wearer). The normal map stays uncompressed like every normal map here;
+    /// the specular map's alpha is the creator's gloss/environment mask, which BC3 keeps.</summary>
+    private async System.Threading.Tasks.Task<PbrMaps> LoadLegacyMapsAsync(LegacyMaterialData legacy, AvatarVisual? avatarVisual)
+    {
+        var normal = LoadPbrMapAsync(legacy.NormalMap, avatarVisual, compress: false);
+        var specular = LoadPbrMapAsync(legacy.SpecularMap, avatarVisual, compress: true);
+        return new PbrMaps(await normal.ConfigureAwait(false), null, null, await specular.ConfigureAwait(false));
+    }
+
+    /// <summary>Sets a legacy material's specular scalars and each map's placement. The shader reads the scalars
+    /// only on a face that also has a specular map (the viewer's own gate, llvovolume.cpp:5565, see
+    /// prim_common.gdshaderinc), so setting them while a map is still loading shows nothing early.</summary>
+    internal static void ApplyLegacyShading(ShaderMaterial material, LegacyMaterialShading shading)
+    {
+        material.SetShaderParameter(PrimShaderFamily.SpecularTint, new Godot.Vector3(shading.SpecularTint.X, shading.SpecularTint.Y, shading.SpecularTint.Z));
+        material.SetShaderParameter(PrimShaderFamily.SpecularGlossiness, shading.Glossiness);
+        material.SetShaderParameter(PrimShaderFamily.SpecularEnvironment, shading.Environment);
+        material.SetShaderParameter(PrimShaderFamily.NormalScale, 1.0f);
+        material.SetShaderParameter(PrimShaderFamily.NormalUvScale, new Godot.Vector2(shading.Normal.Scale.X, shading.Normal.Scale.Y));
+        material.SetShaderParameter(PrimShaderFamily.NormalUvOffset, new Godot.Vector2(shading.Normal.Offset.X, shading.Normal.Offset.Y));
+        material.SetShaderParameter(PrimShaderFamily.NormalUvRotation, shading.Normal.Rotation);
+        material.SetShaderParameter(PrimShaderFamily.HasNormalUv, true);
+        material.SetShaderParameter(PrimShaderFamily.SpecularUvScale, new Godot.Vector2(shading.Specular.Scale.X, shading.Specular.Scale.Y));
+        material.SetShaderParameter(PrimShaderFamily.SpecularUvOffset, new Godot.Vector2(shading.Specular.Offset.X, shading.Specular.Offset.Y));
+        material.SetShaderParameter(PrimShaderFamily.SpecularUvRotation, shading.Specular.Rotation);
+    }
+
+    private static readonly System.Collections.Generic.HashSet<string> _wornMapsLogged = new();
+
+    /// <summary>Applies the maps a face's material brought and, for a legacy material (--diag), says which of its
+    /// normal and specular maps ended up bound -- a map that is named but not bound means it did not load.</summary>
+    private static void ApplyFaceMaps(ShaderMaterial material, PbrMaps maps, LegacyMaterialData? legacy, Guid meshId, int faceIndex)
+    {
+        ApplyPbrMaps(material, maps);
+        if (legacy is not { } lm || !Diagnostics.Enabled) return;
+        string N(Guid id, bool bound) => id == Guid.Empty ? "none" : $"{id.ToString("N")[..8]}{(bound ? "" : " (NOT bound)")}";
+        string line = $"[WornMaps] mesh={meshId.ToString("N")[..8]} face={faceIndex} mat={lm.Id.ToString("N")[..8]} " +
+                      $"normal={N(lm.NormalMap, maps.Normal != null)} specular={N(lm.SpecularMap, maps.Specular != null)} " +
+                      $"specExp={lm.SpecularExponent} env={lm.EnvironmentIntensity}";
+        lock (_wornMapsLogged)
+        {
+            if (!_wornMapsLogged.Add(line)) return;
+        }
+        GD.Print(line);
+    }
 
     /// <summary>BUG-RENDER-49: loads a PBR face's normal, metallic-roughness and emissive maps the way
     /// <see cref="BuildFaceMaterialAsync"/> loads its base colour: pinned, and recorded against the
@@ -4533,8 +4600,13 @@ public partial class AvatarRenderer : Node3D
             await emissive.ConfigureAwait(false));
     }
 
+    /// <summary>SelfTest only (BUG-AVATAR-16): map textures served without an asset service or GPU cache. Never set
+    /// in the client.</summary>
+    internal System.Collections.Generic.Dictionary<Guid, ImageTexture>? MapTexturesForSelfTest { get; set; }
+
     private async System.Threading.Tasks.Task<ImageTexture?> LoadPbrMapAsync(Guid textureId, AvatarVisual? avatarVisual, bool compress)
     {
+        if (MapTexturesForSelfTest != null && MapTexturesForSelfTest.TryGetValue(textureId, out var seeded)) return seeded;
         if (textureId == Guid.Empty || _assetService == null || _gpuCache == null
             || SLNG.Assets.BakedTextureIds.TryGetBakeIndex(textureId, out _))
             return null;
@@ -4582,6 +4654,11 @@ public partial class AvatarRenderer : Node3D
         {
             material.SetShaderParameter(PrimShaderFamily.EmissionTexture, maps.Emissive);
             material.SetShaderParameter(PrimShaderFamily.HasEmissionTexture, true);
+        }
+        if (maps.Specular != null)
+        {
+            material.SetShaderParameter(PrimShaderFamily.SpecularTexture, maps.Specular);
+            material.SetShaderParameter(PrimShaderFamily.HasSpecularTexture, true);
         }
     }
 
@@ -4646,13 +4723,20 @@ public partial class AvatarRenderer : Node3D
     /// <param name="texture">The texture the face samples (the bake, for BoM), empty for none.</param>
     /// <param name="failed">The texture did not load: the face is the alpha-0 Blend card.</param>
     /// <param name="bakeChannel">The Bakes-on-Mesh channel <paramref name="texture"/> came from, or -1.</param>
+    /// <param name="specularMap">The face has a legacy specular map bound (so it takes the viewer-specular twin).</param>
     private static ShaderMaterial FinishFaceMaterial(ShaderMaterial material, PrimShaderFamily.Kind kind,
         float scissorThreshold, PrimShaderFamily.Surface surface, Guid texture = default, bool failed = false,
-        int bakeChannel = -1)
+        int bakeChannel = -1, bool specularMap = false)
     {
         // FEAT-PERF-23: what this material is, for the outfit merge's material key and its roles.
         RecordFaceMaterialFacts(material, new FaceMaterialFacts(kind, scissorThreshold, texture, failed, Hidden: false, bakeChannel));
-        material.Shader = PrimShaderFamily.Select(kind, surface);
+        var shader = PrimShaderFamily.Select(kind, surface);
+        // BUG-AVATAR-17: a face with a legacy specular map is lit by the viewer's own highlight and gloss reflection,
+        // as a world prim is (ObjectRenderer.ApplyViewerSpecularVariant), not by Godot's GGX at the Blinn-Phong alpha --
+        // a lobe ~15x narrower and ~550x stronger at its peak at gloss 222, which drew hard mirror-like pinpoints.
+        if (specularMap && MaterialLab.ViewerSunSpecular && PrimShaderFamily.ViewerSpecTwin(shader) is { } twin)
+            shader = twin;
+        material.Shader = shader;
         if (kind == PrimShaderFamily.Kind.Scissor)
             material.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, scissorThreshold);
         // BUG-RENDER-09: Kind.Hash carries no threshold -- the dither's probability IS the pixel's
