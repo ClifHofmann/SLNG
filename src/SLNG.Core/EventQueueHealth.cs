@@ -171,6 +171,33 @@ public sealed class EventQueueHealth
     }
 
     /// <summary>
+    /// Pulls the <c>ip:port</c> out of a simulator as LibreMetaverse renders it into a log line:
+    /// <c>Millenium (54.218.44.155:13037)</c>, or just <c>(54.218.44.155:13037)</c> once the
+    /// library has already dropped the region and its name is empty. False when there is none.
+    /// </summary>
+    /// <remarks>
+    /// The address is what tells a region we are still connected to from one we have already left:
+    /// the library keeps polling the queue of a region it disconnected from, and that queue then
+    /// fails for ever. The name is no use for this, it is empty exactly in that case.
+    /// </remarks>
+    public static bool TryReadAddress(string? text, out string address)
+    {
+        address = string.Empty;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        int open = text.LastIndexOf('(');
+        if (open < 0) return false;
+        int close = text.IndexOf(')', open);
+        if (close < 0) return false;
+
+        string inside = text.Substring(open + 1, close - open - 1).Trim();
+        if (inside.IndexOf(':') < 0) return false;
+
+        address = inside;
+        return true;
+    }
+
+    /// <summary>
     /// Pulls the region's name out of the way LibreMetaverse renders a simulator into a log line:
     /// <c>Millenium (54.218.44.155:13037)</c>. Empty when it does not look like that.
     /// </summary>

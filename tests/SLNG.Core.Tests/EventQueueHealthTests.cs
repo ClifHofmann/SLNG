@@ -195,4 +195,27 @@ public class EventQueueHealthTests
     [InlineData(null, "")]
     public void TheRegionNameIsPulledOutOfLibreMetaversesSimulatorText(string? text, string expected)
         => Assert.Equal(expected, EventQueueHealth.RegionNameFromSimulatorText(text));
+
+    [Theory]
+    [InlineData("Millenium (54.218.44.155:13037)", "54.218.44.155:13037")]
+    // The case that matters: the library has already dropped the region, so its name is empty.
+    // Copied from a real session -- 1705 failures against a region that had been left.
+    [InlineData("(34.220.22.188:13072)", "34.220.22.188:13072")]
+    [InlineData("Da Boom (127.0.0.1:9000)", "127.0.0.1:9000")]
+    public void TheAddressIsPulledOutEvenWhenTheNameIsEmpty(string text, string expected)
+    {
+        Assert.True(EventQueueHealth.TryReadAddress(text, out var address));
+        Assert.Equal(expected, address);
+    }
+
+    [Theory]
+    [InlineData("Millenium")]
+    [InlineData("Lusk (North)")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void NoAddressMeansNoAddress(string? text)
+    {
+        Assert.False(EventQueueHealth.TryReadAddress(text, out var address));
+        Assert.Equal(string.Empty, address);
+    }
 }
