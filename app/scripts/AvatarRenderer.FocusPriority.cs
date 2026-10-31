@@ -27,9 +27,11 @@ public partial class AvatarRenderer
         string? coalesceKey = null, string label = "?") =>
         MainThreadWorkQueue.Enqueue(lane, work, coalesceKey, label, agentId);
 
-    /// <summary>Fetch/decode priority for this avatar's textures: the focus avatar's go before the scenery's.</summary>
-    private static float FocusTexturePriorityFor(AvatarVisual? visual) =>
-        visual != null && PrioritySubject.IsFocus(visual.AgentId) ? PrioritySubject.FocusTexturePriority : 0f;
+    /// <summary>Fetch/decode priority for this avatar's textures: your own first, then the focus avatar's, anyone else's by
+    /// their size on screen -- the scenery's scale (BUG-PERF-24; they used to ask with 0 and wait behind all scenery).</summary>
+    private static float TexturePriorityFor(AvatarVisual? visual) =>
+        visual == null ? 0f
+            : TexturePriority.ForAvatar(visual.IsSelf, PrioritySubject.IsFocus(visual.AgentId), visual.SizePriority);
 
     /// <summary>One look at who the camera is on. Cheap: a loop over the shown avatars, on the cull tick.</summary>
     private void UpdateFocusAvatar(Camera3D? camera, Godot.Vector3 camPos)

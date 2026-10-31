@@ -480,7 +480,7 @@ public class GpuCache
     /// resolution its closest/largest viewer needed and stays there for the session.</para>
     /// </summary>
     /// <summary>Fetch/decode priority of the local avatar's textures; a scenery texture's is its on-screen area, far below.</summary>
-    internal const float SelfTexturePriority = 1.0e9f;
+    internal const float SelfTexturePriority = SLNG.Core.PrioritySubject.SelfTexturePriority;
 
     public Task<ImageTexture?> GetOrUploadTextureAsync(
         Guid textureId,
