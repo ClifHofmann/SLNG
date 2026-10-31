@@ -100,6 +100,42 @@ public sealed partial class GridSession
         LibreMetaverse.Simulator sim, List<LibreMetaverse.UUID> ids,
         List<LegacyMaterialData> into, CancellationToken cancellationToken)
     {
+        RegisterPipeReporting();
+        long started = LegacyMatPipe.Begin();
+        int before = into.Count;
+        try
+        {
+            await FetchOneBatchCoreAsync(sim, ids, into, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // One request is a batch of up to 50 ids; "done" is a batch that returned at least one material.
+            LegacyMatPipe.End(started, into.Count > before, into.Count - before);
+        }
+    }
+
+    /// <summary>A wearable asset (clothing / body part) through LibreMetaverse, counted as <c>[WearablePipe]</c>.</summary>
+    private async Task<LibreMetaverse.Assets.Asset?> RequestWearableAssetAsync(
+        LibreMetaverse.UUID assetId, LibreMetaverse.AssetType type, bool priority, CancellationToken ct)
+    {
+        RegisterPipeReporting();
+        long started = WearablePipe.Begin();
+        LibreMetaverse.Assets.Asset? asset = null;
+        try
+        {
+            asset = await _client.Assets.RequestAssetAsync(assetId, type, priority, ct).ConfigureAwait(false);
+            return asset;
+        }
+        finally
+        {
+            WearablePipe.End(started, asset != null, asset?.AssetData?.Length ?? 0);
+        }
+    }
+
+    private async Task FetchOneBatchCoreAsync(
+        LibreMetaverse.Simulator sim, List<LibreMetaverse.UUID> ids,
+        List<LegacyMaterialData> into, CancellationToken cancellationToken)
+    {
         var uri = sim.Caps?.CapabilityURI("RenderMaterials");
         if (uri == null) return;
 
@@ -243,6 +279,11 @@ public sealed partial class GridSession
     internal static readonly SLNG.Core.FetchPipeStats MatPipe = new("MatPipe");
     internal static readonly SLNG.Core.FetchPipeStats TexHttp = new("TexHttp");
     internal static readonly SLNG.Core.FetchPipeStats TexWait = new("TexWait");
+    // The paths that still go through LibreMetaverse (its caps rate limiter / request queues), counted so a cold
+    // run says whether any of them queues the way its mesh fetch did (FEAT-NET-07). No behaviour change.
+    internal static readonly SLNG.Core.FetchPipeStats LegacyMatPipe = new("LegacyMatPipe");
+    internal static readonly SLNG.Core.FetchPipeStats NamePipe = new("NamePipe");
+    internal static readonly SLNG.Core.FetchPipeStats WearablePipe = new("WearablePipe");
     private static int _pipeReportingRegistered;
 
     private static void RegisterPipeReporting()
@@ -253,6 +294,9 @@ public sealed partial class GridSession
         SLNG.Core.FetchPipeReporter.Register(MatPipe);
         SLNG.Core.FetchPipeReporter.Register(TexHttp);
         SLNG.Core.FetchPipeReporter.Register(TexWait);
+        SLNG.Core.FetchPipeReporter.Register(LegacyMatPipe);
+        SLNG.Core.FetchPipeReporter.Register(NamePipe);
+        SLNG.Core.FetchPipeReporter.Register(WearablePipe);
     }
 
     private static readonly HttpClient _textureHttpClient = new();

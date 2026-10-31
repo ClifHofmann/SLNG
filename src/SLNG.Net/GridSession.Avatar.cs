@@ -1367,8 +1367,7 @@ public sealed partial class GridSession
                 if (w.Asset != null) { decoded++; continue; }
                 try
                 {
-                    var asset = await _client.Assets
-                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: true, ct).ConfigureAwait(false);
+                    var asset = await RequestWearableAssetAsync(w.AssetID, w.AssetType, priority: true, ct).ConfigureAwait(false);
                     if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode()) { w.Asset = aw; decoded++; }
                     else Console.Error.WriteLine($"[Bake]   {w.WearableType}: asset {w.AssetID} did not fetch/decode");
                 }
@@ -2460,8 +2459,7 @@ public sealed partial class GridSession
                     continue;
                 try
                 {
-                    var asset = await _client.Assets
-                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: false, ct).ConfigureAwait(false);
+                    var asset = await RequestWearableAssetAsync(w.AssetID, w.AssetType, priority: false, ct).ConfigureAwait(false);
                     if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode()) w.Asset = aw;
                 }
                 catch (OperationCanceledException) { throw; }
@@ -2538,8 +2536,7 @@ public sealed partial class GridSession
                     continue;
                 try
                 {
-                    var asset = await _client.Assets
-                        .RequestAssetAsync(w.AssetID, w.AssetType, priority: true, ct).ConfigureAwait(false);
+                    var asset = await RequestWearableAssetAsync(w.AssetID, w.AssetType, priority: true, ct).ConfigureAwait(false);
                     if (asset is LibreMetaverse.Assets.AssetWearable aw && aw.Decode()) { w.Asset = aw; decoded++; }
                 }
                 catch (OperationCanceledException) { throw; }

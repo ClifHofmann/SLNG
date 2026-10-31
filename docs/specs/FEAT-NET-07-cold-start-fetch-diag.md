@@ -53,3 +53,16 @@ a focus-avatar priority can later use. LibreMetaverse's own mesh cache is no lon
 
 Same cold run as before (rename `cache` and `grids/<grid>/cache/objects`, `run-client.ps1 -Diag`, ~3 min at a busy place):
 `[MeshPipe] peak` should now reach the slot count and `+N done` per interval should be far above 50.
+
+## Counters for the paths that still go through LibreMetaverse (follow-up)
+
+No behaviour change; the same `FetchPipeStats` lines every 5 s under `--diag`, so a cold run says whether any of them queues the way the
+mesh fetch did:
+
+- `[LegacyMatPipe]` -- one request is one `RenderMaterials` POST (up to 50 ids) through `HttpCapsClient`, i.e. LibreMetaverse's caps rate
+  limiter. "done" = the batch returned at least one material; the byte column counts materials.
+- `[NamePipe]` -- one request is one `GetDisplayNamesAsync` call (a batch of ids).
+- `[WearablePipe]` -- the local avatar's wearable assets (`RequestAssetAsync`, appearance/bake at login).
+
+Read them like `[MeshPipe]`: a small `peak` with a growing p95 means a queue in front of the request; then that path gets its own client
+and slot cap the way meshes did.
