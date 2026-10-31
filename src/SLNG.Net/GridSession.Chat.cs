@@ -79,10 +79,14 @@ public sealed partial class GridSession
         _ = Task.Run(async () =>
         {
             bool ok = false;
+            RegisterPipeReporting();
+            long pipeStarted = NamePipe.Begin();
             try
             {
                 var (success, names, _) = await _client.Avatars.GetDisplayNamesAsync(ids).ConfigureAwait(false);
                 ok = success && names != null;
+                NamePipe.End(pipeStarted, ok, 0);
+                pipeStarted = 0;
                 if (ok)
                 {
                     Volatile.Write(ref _displayNameFailingSince, 0);
@@ -111,6 +115,7 @@ public sealed partial class GridSession
             }
             catch (Exception ex)
             {
+                if (pipeStarted != 0) NamePipe.End(pipeStarted, false, 0);
                 // Optional capability -- absent on most OpenSim grids, so not an error by default.
                 if (Diag.Verbose)
                     Diag.Write($"[DisplayName] lookup threw {ex.GetType().Name}: {ex.Message}");
