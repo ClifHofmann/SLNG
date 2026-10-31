@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using Godot;
+using SLNG.Core;
 
 namespace SLNG.App;
 
@@ -63,11 +64,33 @@ public static class MainThreadWorkQueue
         public double MaxMs;
     }
 
-    private static readonly ConcurrentQueue<Item>[] _lanes =
+    // FEAT-PERF-27: each lane is first-in first-out EXCEPT for the focus avatar (SLNG.Core.PrioritySubject): its items
+    // jump the queue, up to BumpQueue's consecutive limit so the rest keeps a share. The focus is read when an item is
+    // taken, so a change of focus re-ranks what is already queued without touching it.
+    private static readonly BumpQueue<Item>[] _lanes =
     {
-        new ConcurrentQueue<Item>(), // Visual
-        new ConcurrentQueue<Item>(), // Refine
+        new BumpQueue<Item>(() => PrioritySubject.Focus), // Visual
+        new BumpQueue<Item>(() => PrioritySubject.Focus), // Refine
     };
+
+    /// <summary>Items of <paramref name="subject"/> still waiting in any lane (the focus avatar's backlog).</summary>
+    public static int PendingFor(Guid subject)
+    {
+        int n = 0;
+        foreach (var lane in _lanes) n += lane.CountFor(subject);
+        return n;
+    }
+
+    /// <summary>Items served ahead of older ones because of the focus, since the start.</summary>
+    public static long BumpedTotal
+    {
+        get
+        {
+            long n = 0;
+            foreach (var lane in _lanes) n += lane.BumpedTotal;
+            return n;
+        }
+    }
 
     /// <summary>Keys currently sitting in a lane. A plain HashSet under its own lock rather than a
     /// ConcurrentDictionary because enqueue must test-and-add atomically with respect to the drain
@@ -157,7 +180,7 @@ public static class MainThreadWorkQueue
     /// <paramref name="label"/> groups the item for <see cref="ReportCosts"/>. Keep it a small fixed
     /// set of constants, never per-object text, or the cost table grows without bound.
     /// </summary>
-    public static void Enqueue(Lane lane, Action work, string? coalesceKey = null, string label = "?")
+    public static void Enqueue(Lane lane, Action work, string? coalesceKey = null, string label = "?", Guid subject = default)
     {
         // BUG-RENDER-37: the client is quitting, and nothing will drain the lanes again. This used
         // to fall back to CallDeferred through a delegate-backed Callable -- main-thread-only in
@@ -177,7 +200,7 @@ public static class MainThreadWorkQueue
 
         // Before the pump exists, the work simply waits in its lane -- it drains the moment the
         // pump's first frame runs. Nothing here touches Godot, from whatever thread this is.
-        _lanes[(int)lane].Enqueue(new Item { Work = work, CoalesceKey = coalesceKey, Label = label });
+        _lanes[(int)lane].Enqueue(new Item { Work = work, CoalesceKey = coalesceKey, Label = label }, subject);
 
         int depth = Interlocked.Increment(ref _depth);
         if (depth > _peakDepth) _peakDepth = depth;

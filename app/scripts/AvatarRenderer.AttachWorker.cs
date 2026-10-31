@@ -115,7 +115,7 @@ public partial class AvatarRenderer
         }
 
         if (prepared == null) return;
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => CommitPreparedAttach(request, prepared),
+        EnqueueFor(request.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => CommitPreparedAttach(request, prepared),
             label: "avatar.attach");
     }
 

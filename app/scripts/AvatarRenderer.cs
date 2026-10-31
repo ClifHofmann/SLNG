@@ -2347,7 +2347,8 @@ public partial class AvatarRenderer : Node3D
         var godotTexture = await _gpuCache.GetOrUploadTextureAsync(
             textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
             bakeChannel: bakeIndex, bakeAgentId: visual.AgentId,
-            screenPixelArea: screenPixelArea, isAvatar: true, isSelf: visual.IsSelf);
+            screenPixelArea: screenPixelArea, isAvatar: true, isSelf: visual.IsSelf,
+            priority: FocusTexturePriorityFor(visual));
 
         if (godotTexture == null)
         {
@@ -2393,7 +2394,7 @@ public partial class AvatarRenderer : Node3D
             _ => Array.Empty<string>()   // 19 (SkirtBaked): no skirt part is loaded
         };
 
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => {
+        EnqueueFor(visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => {
             try
             {
                 if (visual.Root == null || !IsInstanceValid(visual.Root)) return;
@@ -3796,7 +3797,7 @@ public partial class AvatarRenderer : Node3D
 
             var material = await BuildFaceMaterialAsync(ft, avatarVisual, meshId, faceIndex, pbrLogItem: pbrLogItem).ConfigureAwait(false);
             int s = surf;
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+            EnqueueFor(avatarVisual?.AgentId ?? Guid.Empty, MainThreadWorkQueue.Lane.Visual, () =>
             {
                 if (!IsInstanceValid(mi) || s >= ((ArrayMesh)mi.Mesh).GetSurfaceCount()) return;
                 // BUG-RENDER-38: a surface already moved onto its own instance takes its new
@@ -3817,7 +3818,7 @@ public partial class AvatarRenderer : Node3D
 
         // Same lane, queued after every surface's material: the lane is FIFO, so this runs once
         // they are all in place and can tell which surfaces blend -- and whether any is drawn.
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+        EnqueueFor(avatarVisual?.AgentId ?? Guid.Empty, MainThreadWorkQueue.Lane.Visual, () =>
         {
             // Reattached first: the split reads the skeleton through mi.Skeleton.
             ReattachSkeleton(mi);
@@ -4317,6 +4318,7 @@ public partial class AvatarRenderer : Node3D
             bakeChannel: wasBom ? bomIndex : null,
             bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default,
             screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf,
+            priority: FocusTexturePriorityFor(avatarVisual),
             // FEAT-PERF-17: worn textures are compressed; bakes never are (GpuCache skips a bake channel),
             // and a HUD is drawn at screen scale, text and all, where BC1's blocks would show.
             compress: !isHud);
@@ -4619,7 +4621,8 @@ public partial class AvatarRenderer : Node3D
         {
             texture = await _gpuCache.GetOrUploadTextureAsync(
                 textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
-                screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf, compress: compress).ConfigureAwait(false);
+                screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf, compress: compress,
+                priority: FocusTexturePriorityFor(avatarVisual)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -7671,7 +7674,8 @@ void fragment() {
         foreach (var (entityId, visual) in _visuals)
         {
             if (visual.IsControlAvatar) continue;
-            bool isExempt = visual.IsSelf || _alwaysRenderFully.Contains(visual.AgentId);
+            // FEAT-PERF-27: the focus avatar is a full avatar whatever the cap is, and takes no slot from the others.
+            bool isExempt = visual.IsSelf || _alwaysRenderFully.Contains(visual.AgentId) || PrioritySubject.IsFocus(visual.AgentId);
             float dist = visual.GodotPos.DistanceTo(camPos);
 
             if (!visual.Shown)
@@ -8091,6 +8095,9 @@ void fragment() {
                 }
             }
         }
+
+        // FEAT-PERF-27: who the camera is on, a few times a second; re-ranks the queues only when it changes.
+        if (doCull && haveAgent) UpdateFocusAvatar(camera, camPos ?? agentPos);
 
         // FEAT-PERF-08: once a second on the cull tick; a cap change or a new avatar asks for it at once.
         if (_avatarLimitEvaluationPending
