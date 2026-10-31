@@ -23,6 +23,9 @@ public static class PrioritySubject
     /// <summary>Priority for a fetch or decode of the focus avatar's texture: above any scenery (its on-screen area),
     /// below the local avatar's own (<c>GpuCache.SelfTexturePriority</c>).</summary>
     public const float FocusTexturePriority = 5.0e8f;
+
+    /// <summary>Priority of the local avatar's own textures: above everything (they were served in arrival order behind the whole region).</summary>
+    public const float SelfTexturePriority = 1.0e9f;
 }
 
 /// <summary>

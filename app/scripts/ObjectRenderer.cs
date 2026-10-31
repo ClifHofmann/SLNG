@@ -5158,8 +5158,6 @@ public partial class ObjectRenderer : Node3D
             radius = worldSize.Length() * 0.5f;
         }
 
-        float apparentSize = radius / Mathf.Max(distance, 0.1f);
-
         // Screen-space area this object covers, in PIXELS -- a direct port of the real viewer's
         // LLFace::calcPixelArea (llface.cpp:2382-2398):
         //     dist      = max(|center - camera| - |halfExtents|, 0.001)   // to the NEAR surface
@@ -5216,12 +5214,10 @@ public partial class ObjectRenderer : Node3D
         // Priority stays on the old apparent-size scale (roughly 0..1, comparable across objects
         // and unchanged in meaning for AssetService's fetch ordering), halved for anything behind
         // the camera plane.
-        float priority = apparentSize;
-        if (viewDirection != Vector3.Zero && distance > 0.001f
-            && viewDirection.Dot(toObject / distance) < 0f)
-        {
-            priority *= 0.5f;
-        }
+        // BUG-PERF-24: the same function ranks other avatars' textures (AvatarRenderer), so both sit on one scale.
+        bool behindCamera = viewDirection != Vector3.Zero && distance > 0.001f
+            && viewDirection.Dot(toObject / distance) < 0f;
+        float priority = SLNG.Core.TexturePriority.ForWorld(radius, distance, behindCamera);
 
         return (screenPixelArea, priority);
     }

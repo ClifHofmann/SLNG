@@ -72,6 +72,8 @@ public partial class AvatarRenderer : Node3D
         public double LastAreaNoteAt { get; set; } = double.NegativeInfinity;
         public Guid EntityId { get; set; }
         public volatile float ScreenPixelArea;
+        // BUG-PERF-24: this avatar's texture rank on the scenery's scale (SLNG.Core.TexturePriority.ForWorld), set with ScreenPixelArea.
+        public volatile float SizePriority;
         public Dictionary<string, MeshInstance3D> Parts { get; } = new();
         // Base (un-morphed) body-part data, keyed by part name. Kept so the body meshes can be
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
@@ -2337,6 +2339,16 @@ public partial class AvatarRenderer : Node3D
         float vpHeight = viewport != null ? viewport.GetVisibleRect().Size.Y : 1080f;
         if (vpHeight <= 0f) vpHeight = 1080f;
 
+        // BUG-PERF-24: the rank of this avatar's textures, on the scenery's scale (radius / distance), kept next to the area so a
+        // fetch on a worker thread reads a managed copy. Behind the camera it is halved, as for scenery.
+        bool behind = false;
+        if (camera != null && GodotObject.IsInstanceValid(camera))
+        {
+            var toAvatar = visual.GodotPos - camera.GlobalPosition;
+            behind = toAvatar.Length() > 0.001f && toAvatar.Dot(-camera.GlobalTransform.Basis.Z) < 0f;
+        }
+        visual.SizePriority = SLNG.Core.TexturePriority.ForWorld(radius, dist, behind);
+
         return SLNG.Assets.TextureLod.ScreenPixelAreaForSphere(dist, radius, fovDegrees, vpHeight);
     }
 
@@ -2351,7 +2363,7 @@ public partial class AvatarRenderer : Node3D
             textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
             bakeChannel: bakeIndex, bakeAgentId: visual.AgentId,
             screenPixelArea: screenPixelArea, isAvatar: true, isSelf: visual.IsSelf,
-            priority: FocusTexturePriorityFor(visual));
+            priority: TexturePriorityFor(visual));
 
         if (godotTexture == null)
         {
@@ -4323,7 +4335,7 @@ public partial class AvatarRenderer : Node3D
             bakeChannel: wasBom ? bomIndex : null,
             bakeAgentId: wasBom && avatarVisual != null ? avatarVisual.AgentId : default,
             screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf,
-            priority: FocusTexturePriorityFor(avatarVisual),
+            priority: TexturePriorityFor(avatarVisual),
             // FEAT-PERF-17: worn textures are compressed; bakes never are (GpuCache skips a bake channel),
             // and a HUD is drawn at screen scale, text and all, where BC1's blocks would show.
             compress: !isHud);
@@ -4627,7 +4639,7 @@ public partial class AvatarRenderer : Node3D
             texture = await _gpuCache.GetOrUploadTextureAsync(
                 textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
                 screenPixelArea: screenPixelArea, isAvatar: true, isSelf: isSelf, compress: compress,
-                priority: FocusTexturePriorityFor(avatarVisual)).ConfigureAwait(false);
+                priority: TexturePriorityFor(avatarVisual)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
