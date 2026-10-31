@@ -910,6 +910,11 @@ public partial class AvatarController : Camera3D
         _world = world;
         _session = session;
         _avatarRenderer = avatarRenderer;
+        // FEAT-PERF-27: tells the renderer which avatar an Alt+Click / roster focus is on, so that avatar loads first even
+        // when the camera stays far away. Only while the focus is on a person (CameraFocusKind.Avatar).
+        if (avatarRenderer != null)
+            avatarRenderer.FocusPointProvider = () =>
+                HasManualFocusTarget && _focusKind == CameraFocusKind.Avatar ? FocusSubjectPoint : null;
     }
 
     public override void _Ready()
