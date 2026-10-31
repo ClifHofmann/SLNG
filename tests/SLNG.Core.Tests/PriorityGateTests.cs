@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
-using SLNG.Assets;
+using SLNG.Core;
 using Xunit;
 
-namespace SLNG.Assets.Tests;
+namespace SLNG.Core.Tests;
 
 public class PriorityGateTests
 {

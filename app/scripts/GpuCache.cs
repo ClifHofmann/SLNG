@@ -479,6 +479,9 @@ public class GpuCache
     /// re-downsamples a texture once it has been sharpened, so a shared texture settles at the
     /// resolution its closest/largest viewer needed and stays there for the session.</para>
     /// </summary>
+    /// <summary>Fetch/decode priority of the local avatar's textures; a scenery texture's is its on-screen area, far below.</summary>
+    internal const float SelfTexturePriority = 1.0e9f;
+
     public Task<ImageTexture?> GetOrUploadTextureAsync(
         Guid textureId,
         SLNG.Assets.AssetService? assetService,
@@ -494,6 +497,9 @@ public class GpuCache
         bool? compress = null)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
+        // FEAT-NET-07: the wearer's own textures go first in every fetch and decode queue (they were served in
+        // arrival order behind the whole region: ~2 s per fetch slot wait, minutes for a late outfit).
+        if (isSelf && priority < SelfTexturePriority) priority = SelfTexturePriority;
         if (assetService != null && !ReferenceEquals(_assets, assetService)) _assets = assetService;
         // BUG-RENDER-54 [BomMagicRequest] (--diag): a Bakes-on-Mesh magic id is a placeholder asset and is never
         // meant to be drawn from here -- every legitimate face swaps it for the wearer's bake first. Whoever asks

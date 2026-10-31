@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace SLNG.Assets;
+namespace SLNG.Core;
 
 /// <summary>
 /// A concurrency limiter like <see cref="SemaphoreSlim"/>, except waiters are admitted
@@ -25,7 +25,7 @@ namespace SLNG.Assets;
 /// re-prioritized. Fixing that properly needs cancel-and-requeue on camera movement; deliberately
 /// out of scope here (see the FEAT-PERF-02 spec).
 /// </summary>
-internal sealed class PriorityGate
+public sealed class PriorityGate
 {
     private readonly object _lock = new();
     // Min-heap by negated priority == max-heap by priority. The long tiebreaker keeps admission

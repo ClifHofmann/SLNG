@@ -135,6 +135,13 @@ param(
     [string]$HideAttachment = '',
     [string]$OnlyAttachment = '',
 
+    # FEAT-NET-07 cold-start A/B: the number of HTTP texture transfers at once (default 8; the reference viewer
+    # allows up to 12 and pipelines). Passes --tex-slots=N; only honoured together with -Diag.
+    [int]$TexSlots = 0,
+
+    # FEAT-NET-07: mesh transfers at once (default 16). Passes --mesh-slots=N; only honoured together with -Diag.
+    [int]$MeshSlots = 0,
+
     # FEAT-PERF-17: cap the video-memory budget Windows reports to this many MB, to test how the
     # viewer behaves on a smaller card (e.g. 3500 for a 4 GB card). 0 = use the real budget.
     # Passes --vram-budget=<MB>.
@@ -263,6 +270,14 @@ if ($NoReattach) {
 if ($HideAttachment -ne '') {
     Write-Host "      hiding worn meshes $HideAttachment (--hide-attachment)" -ForegroundColor Yellow
     $userArgs += "--hide-attachment=$HideAttachment"
+}
+if ($MeshSlots -gt 0) {
+    Write-Host "      HTTP mesh slots $MeshSlots (--mesh-slots)" -ForegroundColor Yellow
+    $userArgs += "--mesh-slots=$MeshSlots"
+}
+if ($TexSlots -gt 0) {
+    Write-Host "      HTTP texture slots $TexSlots (--tex-slots)" -ForegroundColor Yellow
+    $userArgs += "--tex-slots=$TexSlots"
 }
 if ($OnlyAttachment -ne '') {
     Write-Host "      only worn meshes $OnlyAttachment (--only-attachment)" -ForegroundColor Yellow

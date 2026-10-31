@@ -124,6 +124,25 @@ public static class Diagnostics
                 System.Globalization.CultureInfo.InvariantCulture, out float wd) && wd >= 0f && wd <= 1f)
             RenderConfig.WornAlphaDepth = wd;
 
+        // FEAT-NET-07: --tex-slots=N, the HTTP texture transfers at once (default 8), for a cold-start A/B run.
+        // Diagnostics only: it is ignored without --diag so a stray flag cannot change a normal session.
+        string? texSlotsArg = FindValueArg("--tex-slots=", OS.GetCmdlineArgs())
+                           ?? FindValueArg("--tex-slots=", OS.GetCmdlineUserArgs());
+        if (Enabled && texSlotsArg != null && int.TryParse(texSlotsArg, out int texSlots) && texSlots >= 1)
+        {
+            SLNG.Assets.AssetService.SetTextureFetchSlots(texSlots);
+            System.Console.Error.WriteLine($"[Diag] HTTP texture slots set to {System.Math.Clamp(texSlots, 1, 64)} (--tex-slots)");
+        }
+
+        // FEAT-NET-07: --mesh-slots=N, the mesh transfers at once (default 16), same rules as --tex-slots.
+        string? meshSlotsArg = FindValueArg("--mesh-slots=", OS.GetCmdlineArgs())
+                            ?? FindValueArg("--mesh-slots=", OS.GetCmdlineUserArgs());
+        if (Enabled && meshSlotsArg != null && int.TryParse(meshSlotsArg, out int meshSlots) && meshSlots >= 1)
+        {
+            SLNG.Assets.AssetService.SetMeshFetchSlots(meshSlots);
+            System.Console.Error.WriteLine($"[Diag] HTTP mesh slots set to {System.Math.Clamp(meshSlots, 1, 64)} (--mesh-slots)");
+        }
+
         // BUG-RENDER-16: --alpha-sort-hysteresis [=N]. Bare flag takes the reference viewer's own
         // 0.64 (llspatialpartition.cpp:667); =N overrides it. See RenderConfig.AlphaSortHysteresis
         // for what the number means -- it is a chord on the unit sphere (~37 deg), not radians.
