@@ -61,6 +61,9 @@ public class AssetService
     private long _texPipeCacheDecodeTicks;
     private readonly ConcurrentDictionary<Guid, byte> _texPipeDistinct = new();
 
+    /// <summary>Textures in flight right now: the <c>inflight</c> of <c>[TexPipe]</c> (FEAT-PERF-28: the arrival timeline's "back to 0").</summary>
+    public int InflightTextureCount => _inflightTextures.Count;
+
     private void MaybeDumpTexPipe(Guid id)
     {
         _texPipeDistinct.TryAdd(id, 0);

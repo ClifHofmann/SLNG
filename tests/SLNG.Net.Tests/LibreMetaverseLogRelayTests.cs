@@ -37,7 +37,9 @@ public class LibreMetaverseLogRelayTests
 
             Diag.Verbose = true;
             logger.LogWarning("loud");
-            Assert.Equal(new[] { "warn: SLNG[0] loud" }, lines);
+            // Every verbose line carries the monotonic time (FEAT-PERF-28); this one has no [Tag], so it goes in front.
+            var line = Assert.Single(lines);
+            Assert.Matches(@"^t=\d+\.\d warn: SLNG\[0\] loud$", line);
         }
         finally
         {

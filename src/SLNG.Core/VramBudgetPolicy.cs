@@ -110,6 +110,82 @@ public static class VramBudgetPolicy
     }
 
     /// <summary>
+    /// FEAT-PERF-28: the figures a budget is made of, before smoothing. <c>[GpuCache]</c> printed only the result, so nobody could say
+    /// why a budget fell from 3456 to 1473 MB (ADR 0005, cause 4). <see cref="Compute(long,long,long,long,long,long,long?,long,double,out bool)"/>
+    /// takes its target from <see cref="Explain"/>, so the logged terms cannot drift from the arithmetic.
+    /// </summary>
+    /// <param name="OsBudget">What Windows grants the process.</param>
+    /// <param name="OsUsage">What the process holds on the card.</param>
+    /// <param name="GodotUsage">What Godot says it holds (the OS figure when unknown), never above <paramref name="OsUsage"/>.</param>
+    /// <param name="CacheBytes">The texture cache's own size.</param>
+    /// <param name="Slack">Held by the process but not accounted for by Godot (<c>OsUsage - GodotUsage</c>).</param>
+    /// <param name="SlackCounted">The part of the slack the target reserves room for (bounded to <see cref="SlackFraction"/> unless the OS is over budget).</param>
+    /// <param name="NonCache">Godot's memory besides the cache plus <paramref name="SlackCounted"/>.</param>
+    /// <param name="Headroom">The reserve kept free.</param>
+    /// <param name="Floor">The lowest budget the policy's own arithmetic may end at.</param>
+    /// <param name="OthersOnCard">What every other program holds on the card; 0 when no adapter reading.</param>
+    /// <param name="CardBudget">What the card can afford for this process (<see cref="long.MaxValue"/> when unknown).</param>
+    /// <param name="Target">The budget the terms lead to, before the smoothing against the previous one.</param>
+    public readonly record struct Terms(
+        long OsBudget, long OsUsage, long GodotUsage, long CacheBytes,
+        long Slack, long SlackCounted, long NonCache, long Headroom, long Floor,
+        long OthersOnCard, long CardBudget, long Target);
+
+    /// <summary>The terms and target for these readings. See <see cref="Terms"/>.</summary>
+    public static Terms Explain(
+        long osBudget,
+        long osUsage,
+        long godotUsage,
+        long adapterDedicated,
+        long adapterUsage,
+        long cacheBytes,
+        long? manualCapBytes)
+    {
+        // 1. What Godot holds besides the cache, plus the slack the process holds that Godot does not
+        //    account for. Godot reading higher than the OS never makes the budget smaller than the
+        //    OS-only reading would have.
+        long godot = Math.Min(godotUsage > 0 ? godotUsage : osUsage, osUsage);
+        long godotNonCache = Math.Max(0L, godot - cacheBytes);
+        long slack = Math.Max(0L, osUsage - godot);
+        long countedSlack = osUsage > osBudget
+            ? slack
+            : Math.Min(slack, (long)(osBudget * SlackFraction));
+        long nonCache = godotNonCache + countedSlack;
+
+        // 2. headroom = max(MinHeadroomBytes, osBudget * HeadroomFraction).
+        long headroom = Math.Max(MinHeadroomBytes, (long)(osBudget * HeadroomFraction));
+
+        // 3. target = max(floor, osBudget - nonCache - headroom).
+        long floor = Math.Max(MinBudgetBytes, (long)(osBudget * FloorFraction));
+        long target = Math.Max(floor, osBudget - nonCache - headroom);
+
+        // 3b. The whole card (BUG-PERF-19): what is left of it after everybody else, less what we hold besides the cache.
+        long cardBudget = CardBudget(adapterDedicated, adapterUsage, osUsage);
+        long others = cardBudget == long.MaxValue ? 0L : Math.Max(0L, adapterUsage - Math.Max(0L, osUsage));
+        if (cardBudget != long.MaxValue)
+            target = Math.Min(target, Math.Max(floor, cardBudget - nonCache));
+
+        // 4. If manualCapBytes has a value: target = min(target, manualCapBytes). In Manual mode the OS budget is still a hard safety limit.
+        if (manualCapBytes.HasValue)
+        {
+            target = Math.Min(target, manualCapBytes.Value);
+            target = Math.Max(MinBudgetBytes, target);
+        }
+
+        return new Terms(osBudget, osUsage, godot, cacheBytes, slack, countedSlack, nonCache, headroom, floor, others, cardBudget, target);
+    }
+
+    /// <summary>One <c>[VramTerms]</c> line: the new budget, the one before it (0 = none) and every term it is made of.</summary>
+    public static string FormatTerms(Terms t, long budget, long previous)
+    {
+        static string Mb(long bytes) => (bytes >> 20).ToString(System.Globalization.CultureInfo.InvariantCulture) + "MB";
+        return $"[VramTerms] budget={Mb(budget)} was={(previous > 0 ? Mb(previous) : "none")} target={Mb(t.Target)} " +
+               $"osBudget={Mb(t.OsBudget)} osUsage={Mb(t.OsUsage)} godot={Mb(t.GodotUsage)} cache={Mb(t.CacheBytes)} " +
+               $"slack={Mb(t.Slack)} slackCounted={Mb(t.SlackCounted)} nonCache={Mb(t.NonCache)} headroom={Mb(t.Headroom)} " +
+               $"floor={Mb(t.Floor)} others={Mb(t.OthersOnCard)} cardBudget={(t.CardBudget == long.MaxValue ? "none" : Mb(t.CardBudget))}";
+    }
+
+    /// <summary>
     /// <see cref="Compute(long,long,long,long,long?,long,double,out bool)"/> that also respects the whole card
     /// (BUG-PERF-19): <paramref name="adapterDedicated"/> is the adapter's dedicated video memory and
     /// <paramref name="adapterUsage"/> what ALL processes hold on it right now (the "GPU Adapter Memory" counter);
@@ -131,35 +207,7 @@ public static class VramBudgetPolicy
     {
         rose = false;
 
-        // 1. What Godot holds besides the cache, plus the slack the process holds that Godot does not
-        //    account for. Godot reading higher than the OS never makes the budget smaller than the
-        //    OS-only reading would have.
-        long godot = Math.Min(godotUsage > 0 ? godotUsage : osUsage, osUsage);
-        long godotNonCache = Math.Max(0L, godot - cacheBytes);
-        long slack = Math.Max(0L, osUsage - godot);
-        long countedSlack = osUsage > osBudget
-            ? slack
-            : Math.Min(slack, (long)(osBudget * SlackFraction));
-        long nonCache = godotNonCache + countedSlack;
-
-        // 2. headroom = max(MinHeadroomBytes, osBudget * HeadroomFraction).
-        long headroom = Math.Max(MinHeadroomBytes, (long)(osBudget * HeadroomFraction));
-
-        // 3. target = max(floor, osBudget - nonCache - headroom).
-        long floor = Math.Max(MinBudgetBytes, (long)(osBudget * FloorFraction));
-        long target = Math.Max(floor, osBudget - nonCache - headroom);
-
-        // 3b. The whole card (BUG-PERF-19): what is left of it after everybody else, less what we hold besides the cache.
-        long cardBudget = CardBudget(adapterDedicated, adapterUsage, osUsage);
-        if (cardBudget != long.MaxValue)
-            target = Math.Min(target, Math.Max(floor, cardBudget - nonCache));
-
-        // 4. If manualCapBytes has a value: target = min(target, manualCapBytes). In Manual mode the OS budget is still a hard safety limit.
-        if (manualCapBytes.HasValue)
-        {
-            target = Math.Min(target, manualCapBytes.Value);
-            target = Math.Max(MinBudgetBytes, target);
-        }
+        long target = Explain(osBudget, osUsage, godotUsage, adapterDedicated, adapterUsage, cacheBytes, manualCapBytes).Target;
 
         // 5. Smoothing against previousBudget. On the very first call pass previousBudget = 0 and return target directly.
         if (previousBudget <= 0)

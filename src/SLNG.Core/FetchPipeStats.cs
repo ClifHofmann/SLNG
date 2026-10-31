@@ -80,6 +80,16 @@ public sealed class FetchPipeStats
         }
     }
 
+    /// <summary>The cumulative counters and what is open right now (FEAT-PERF-28: the arrival timeline reads the bytes
+    /// transferred so far). Unlike <see cref="TakeInterval"/> it leaves the interval alone, so the reporter's line is unaffected.</summary>
+    public readonly record struct Totals(long Requests, long Completed, long Failed, long Bytes, int InFlight);
+
+    /// <summary>Reads <see cref="Totals"/> without starting a new interval.</summary>
+    public Totals Peek()
+    {
+        lock (_lock) return new Totals(_requests, _completed, _failed, _bytes, _inFlight);
+    }
+
     /// <summary>The counters, with the percentiles of the interval since the previous call; starts a new interval.</summary>
     public Snapshot TakeInterval()
     {

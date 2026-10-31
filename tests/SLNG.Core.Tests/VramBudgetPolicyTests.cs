@@ -469,4 +469,96 @@ public class VramBudgetPolicyTests
         long result = VramBudgetPolicy.CardBudget(CardDedicated, 5000L * Mb, 5500L * Mb);
         Assert.Equal((long)(CardDedicated * VramBudgetPolicy.AdapterUsageLimit), result);
     }
+
+    // FEAT-PERF-28: the terms behind a budget, so a falling budget can be explained from the log.
+
+    [Fact]
+    public void Explain_names_the_terms_the_per_process_target_is_made_of()
+    {
+        long osBudget = 8000L * Mb, osUsage = 3000L * Mb, godot = 2600L * Mb, cache = 1500L * Mb;
+        // godotNonCache = 1100, slack = 400 (under 15 % of 8000 = 1200, so all counted), headroom = 800
+        var t = VramBudgetPolicy.Explain(osBudget, osUsage, godot, 0, 0, cache, null);
+
+        Assert.Equal(osBudget, t.OsBudget);
+        Assert.Equal(osUsage, t.OsUsage);
+        Assert.Equal(godot, t.GodotUsage);
+        Assert.Equal(cache, t.CacheBytes);
+        Assert.Equal(400L * Mb, t.Slack);
+        Assert.Equal(400L * Mb, t.SlackCounted);
+        Assert.Equal(1500L * Mb, t.NonCache);
+        Assert.Equal(800L * Mb, t.Headroom);
+        Assert.Equal(0, t.OthersOnCard);
+        Assert.Equal(long.MaxValue, t.CardBudget);
+        Assert.Equal(8000L * Mb - 1500L * Mb - 800L * Mb, t.Target);
+    }
+
+    [Fact]
+    public void Explain_counts_only_a_bounded_share_of_the_slack_while_the_os_is_not_asking_us_to_trim()
+    {
+        long osBudget = 8000L * Mb;
+        // 6 GB the allocator holds that Godot does not account for: only 15 % of the budget is counted.
+        var t = VramBudgetPolicy.Explain(osBudget, 7000L * Mb, 1000L * Mb, 0, 0, 500L * Mb, null);
+
+        Assert.Equal(6000L * Mb, t.Slack);
+        Assert.Equal(1200L * Mb, t.SlackCounted);
+    }
+
+    [Fact]
+    public void Explain_shows_the_other_programs_on_the_card_and_the_card_budget()
+    {
+        long dedicated = 12000L * Mb, adapterUsage = 11000L * Mb, osUsage = 7000L * Mb;
+        var t = VramBudgetPolicy.Explain(9000L * Mb, osUsage, 5000L * Mb, dedicated, adapterUsage, 2000L * Mb, null);
+
+        Assert.Equal(4000L * Mb, t.OthersOnCard);
+        Assert.Equal(VramBudgetPolicy.CardBudget(dedicated, adapterUsage, osUsage), t.CardBudget);
+    }
+
+    [Theory]
+    [InlineData(8000, 3000, 2600, 0, 0, 1500, null)]
+    [InlineData(8000, 7000, 1000, 0, 0, 500, null)]
+    [InlineData(9000, 7000, 5000, 12000, 11000, 2000, null)]
+    [InlineData(9000, 7000, 5000, 12000, 11800, 2000, 3000)]
+    [InlineData(500, 480, 400, 0, 0, 100, null)]
+    public void Explain_target_is_what_Compute_returns_on_its_first_call(
+        int osBudgetMb, int osUsageMb, int godotMb, int adapterDedicatedMb, int adapterUsageMb, int cacheMb, int? manualMb)
+    {
+        long? manual = manualMb.HasValue ? manualMb.Value * Mb : (long?)null;
+        var t = VramBudgetPolicy.Explain(osBudgetMb * Mb, osUsageMb * Mb, godotMb * Mb,
+            adapterDedicatedMb * Mb, adapterUsageMb * Mb, cacheMb * Mb, manual);
+
+        long first = VramBudgetPolicy.Compute(osBudgetMb * Mb, osUsageMb * Mb, godotMb * Mb,
+            adapterDedicatedMb * Mb, adapterUsageMb * Mb, cacheMb * Mb, manual, 0, 0, out _);
+
+        Assert.Equal(first, t.Target);
+    }
+
+    [Fact]
+    public void The_formatted_terms_carry_every_figure_the_budget_is_made_of()
+    {
+        var t = VramBudgetPolicy.Explain(9000L * Mb, 7000L * Mb, 5000L * Mb, 12000L * Mb, 11000L * Mb, 2000L * Mb, null);
+
+        string line = VramBudgetPolicy.FormatTerms(t, budget: 1473L * Mb, previous: 3456L * Mb);
+
+        Assert.StartsWith("[VramTerms]", line);
+        Assert.Contains("budget=1473MB", line);
+        Assert.Contains("was=3456MB", line);
+        Assert.Contains("osBudget=9000MB", line);
+        Assert.Contains("osUsage=7000MB", line);
+        Assert.Contains("godot=5000MB", line);
+        Assert.Contains("cache=2000MB", line);
+        Assert.Contains("slackCounted=", line);
+        Assert.Contains("others=4000MB", line);
+        Assert.Contains("cardBudget=", line);
+    }
+
+    [Fact]
+    public void An_unknown_card_budget_prints_as_none_not_as_a_huge_number()
+    {
+        var t = VramBudgetPolicy.Explain(9000L * Mb, 7000L * Mb, 5000L * Mb, 0, 0, 2000L * Mb, null);
+
+        string line = VramBudgetPolicy.FormatTerms(t, budget: 1000L * Mb, previous: 0);
+
+        Assert.Contains("cardBudget=none", line);
+        Assert.Contains("was=none", line);
+    }
 }

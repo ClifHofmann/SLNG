@@ -53,6 +53,7 @@ public sealed partial class GridSession
             // previously tore down. "[RegionEnter] X" with no following "[RegionData] ... for X" is
             // the sim not streaming (interest list / camera), not a render bug.
             Console.WriteLine($"[RegionEnter] {sim.Name} ({sim.Handle}) is now the current region");
+            SLNG.Core.ArrivalTimeline.Shared.NoteRegionCurrent((long)sim.Handle, sim.Name ?? "", SLNG.Core.Diag.NowSeconds); // FEAT-PERF-28
             // BUG-NET-36: LibreMetaverse raises this even when it gave up waiting for the handshake.
             _currentRegionUnanswered = !sim.HandshakeComplete;
             if (_currentRegionUnanswered)

@@ -119,6 +119,9 @@ public sealed partial class GridSession
                 simulator.Flags = (RegionFlags)handshake.RegionInfo4[0].RegionFlagsExtended;
             }
 
+            // FEAT-PERF-28: the arrival clock starts here (any simulator's handshake is noted; only the current region's starts it).
+            SLNG.Core.ArrivalTimeline.Shared.NoteHandshake((long)simulator.Handle, SLNG.Core.Diag.NowSeconds);
+
             var key = new RegionKey(simulator.Handle, handshake.RegionInfo.CacheID.Guid);
             ForgetProbesForArrival(key.Handle);
             RememberKey(key);

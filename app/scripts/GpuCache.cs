@@ -576,6 +576,14 @@ public class GpuCache
 
         if (assetService == null) return Task.FromResult<ImageTexture?>(null);
 
+        // FEAT-PERF-28 (--diag only): whose texture this is, for the per-class [TexWait] split.
+        if (SLNG.Core.Diag.Verbose)
+        {
+            bool focus = isAvatar && priority == SLNG.Core.PrioritySubject.FocusTexturePriority;
+            SLNG.Core.TexClassRegistry.Shared.Note(textureId,
+                SLNG.Core.TexClassifier.Classify(isSelf, isAvatar, bakeChannel.HasValue, focus));
+        }
+
         // The start of a fetch runs inline up to its first await that does not complete at once.
         using (MainThreadWorkQueue.Part("tex.miss"))
         {
@@ -583,9 +591,22 @@ public class GpuCache
                 () => FetchAndUploadTextureAsync(id, assetService, generateMipmaps, initialRefCount, screenPixelArea, priority, rejectDegraded, bakeChannel, bakeAgentId,
                     compressible: bakeChannel == null && _compressIntent.TryGetValue(id, out bool allowed) && allowed),
                 LazyThreadSafetyMode.ExecutionAndPublication));
-            return lazy.Value;
+            var pending = lazy.Value;
+            if (SLNG.Core.Diag.Verbose && !pending.IsCompleted)
+            {
+                Interlocked.Increment(ref _facesWaiting);
+                pending.ContinueWith(static (_, state) => Interlocked.Decrement(ref ((GpuCache)state!)._facesWaiting),
+                    this, TaskScheduler.Default);
+            }
+            return pending;
         }
     }
+
+    // FEAT-PERF-28 (--diag only): requests that missed this cache and have not been answered yet -- one per asking face, so a texture
+    // shared by ten faces counts ten. The arrival timeline's "no face without a texture". Not limited to what is on screen: the
+    // cull sweep re-offers only textures it already holds, so a miss is a face that is new to the scene.
+    private int _facesWaiting;
+    public int FacesWaiting => Volatile.Read(ref _facesWaiting);
 
     /// <summary>Screen pixel area each cached texture's CURRENT upload was sized for, so a later
     /// request from closer up can tell that a sharper level is now warranted. Only holds entries
