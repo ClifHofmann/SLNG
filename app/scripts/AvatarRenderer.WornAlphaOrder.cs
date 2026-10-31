@@ -205,7 +205,7 @@ public partial class AvatarRenderer
     private static ShaderMaterial? WornDepthMaterialFor(Material? color)
     {
         if (RenderConfig.WornAlphaDepth <= 0f || color is not ShaderMaterial sm) return null;
-        if (!ReferenceEquals(sm.Shader, PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar)))
+        if (!ReferenceEquals(PrimShaderFamily.BaseVariant(sm.Shader), PrimShaderFamily.Select(PrimShaderFamily.Kind.Blend, PrimShaderFamily.Surface.Avatar)))
             return null;
         var facts = FactsOf(sm);
         if (facts.Failed || facts.Hidden) return null;

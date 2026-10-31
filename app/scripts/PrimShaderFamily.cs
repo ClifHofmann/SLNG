@@ -100,6 +100,10 @@ public static class PrimShaderFamily
     private const string ScissorAvatarPath = "res://materials/prim/prim_scissor_avatar.gdshader";
     private const string BlendAvatarPath = "res://materials/prim/prim_blend_avatar.gdshader";
     private const string HashAvatarPath = "res://materials/prim/prim_hash_avatar.gdshader";
+    // BUG-AVATAR-17: the viewer-specular twins of the avatar variants (a worn face with a legacy specular map).
+    private const string OpaqueAvatarViewerSpecPath = "res://materials/prim/prim_opaque_avatar_vspec.gdshader";
+    private const string ScissorAvatarViewerSpecPath = "res://materials/prim/prim_scissor_avatar_vspec.gdshader";
+    private const string BlendAvatarViewerSpecPath = "res://materials/prim/prim_blend_avatar_vspec.gdshader";
 
     private const string OpaqueHudPath = "res://materials/prim/prim_opaque_hud.gdshader";
     private const string ScissorHudPath = "res://materials/prim/prim_scissor_hud.gdshader";
@@ -139,6 +143,9 @@ public static class PrimShaderFamily
     private static readonly Lazy<Shader> _scissorAvatar = MakeLazy(ScissorAvatarPath);
     private static readonly Lazy<Shader> _blendAvatar = MakeLazy(BlendAvatarPath);
     private static readonly Lazy<Shader> _hashAvatar = MakeLazy(HashAvatarPath);
+    private static readonly Lazy<Shader> _opaqueAvatarViewerSpec = MakeLazy(OpaqueAvatarViewerSpecPath);
+    private static readonly Lazy<Shader> _scissorAvatarViewerSpec = MakeLazy(ScissorAvatarViewerSpecPath);
+    private static readonly Lazy<Shader> _blendAvatarViewerSpec = MakeLazy(BlendAvatarViewerSpecPath);
 
     private static readonly Lazy<Shader> _opaqueHud = MakeLazy(OpaqueHudPath);
     private static readonly Lazy<Shader> _scissorHud = MakeLazy(ScissorHudPath);
@@ -173,6 +180,9 @@ public static class PrimShaderFamily
         if (ReferenceEquals(shader, _blendDoubleSided.Value)) return _blendDoubleSidedViewerSpec.Value;
         if (ReferenceEquals(shader, _blendDepth.Value)) return _blendDepthViewerSpec.Value;
         if (ReferenceEquals(shader, _blendPrepass.Value)) return _blendPrepassViewerSpec.Value;
+        if (ReferenceEquals(shader, _opaqueAvatar.Value)) return _opaqueAvatarViewerSpec.Value;
+        if (ReferenceEquals(shader, _scissorAvatar.Value)) return _scissorAvatarViewerSpec.Value;
+        if (ReferenceEquals(shader, _blendAvatar.Value)) return _blendAvatarViewerSpec.Value;
         return null;
     }
 
@@ -190,6 +200,9 @@ public static class PrimShaderFamily
         if (ReferenceEquals(shader, _blendDoubleSidedViewerSpec.Value)) return _blendDoubleSided.Value;
         if (ReferenceEquals(shader, _blendDepthViewerSpec.Value)) return _blendDepth.Value;
         if (ReferenceEquals(shader, _blendPrepassViewerSpec.Value)) return _blendPrepass.Value;
+        if (ReferenceEquals(shader, _opaqueAvatarViewerSpec.Value)) return _opaqueAvatar.Value;
+        if (ReferenceEquals(shader, _scissorAvatarViewerSpec.Value)) return _scissorAvatar.Value;
+        if (ReferenceEquals(shader, _blendAvatarViewerSpec.Value)) return _blendAvatar.Value;
         return null;
     }
 
@@ -372,6 +385,9 @@ public static class PrimShaderFamily
         _ = _scissorAvatar.Value;
         _ = _blendAvatar.Value;
         _ = _hashAvatar.Value;
+        _ = _opaqueAvatarViewerSpec.Value;
+        _ = _scissorAvatarViewerSpec.Value;
+        _ = _blendAvatarViewerSpec.Value;
         _ = _opaqueHud.Value;
         _ = _scissorHud.Value;
         _ = _blendHud.Value;

@@ -32,4 +32,9 @@ public static partial class SelfTest
     /// (<c>AvatarRenderer.SelfTestPbrRenderMaterial</c>).</summary>
     private static Check CheckPbrRenderMaterialWorn(SceneTree tree) =>
         RunOnRenderer(tree, "PBR render material on a worn rigged mesh", r => r.SelfTestPbrRenderMaterial());
+
+    /// <summary>BUG-AVATAR-16: a worn rigged face's legacy material binds its normal and specular maps
+    /// (<c>AvatarRenderer.SelfTestLegacyWornMaps</c>).</summary>
+    private static Check CheckLegacyWornMaps(SceneTree tree) =>
+        RunOnRenderer(tree, "legacy normal/specular maps on a worn rigged mesh", r => r.SelfTestLegacyWornMaps());
 }

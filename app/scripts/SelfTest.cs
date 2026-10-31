@@ -260,6 +260,7 @@ public static partial class SelfTest
         results.Add(CheckPbrOverrideApply(tree)); // FEAT-RENDER-26
         results.Add(CheckPbrRenderMaterialWorld(tree)); // BUG-RENDER-49
         results.Add(CheckPbrRenderMaterialWorn(tree)); // BUG-RENDER-49
+        results.Add(CheckLegacyWornMaps(tree)); // BUG-AVATAR-16
         results.Add(CheckTargetOmega(tree)); // FEAT-RENDER-27
         results.Add(CheckTargetOmegaSitter(tree)); // FEAT-RENDER-27
         results.Add(CheckMeshAssetCollisionAndRemovals(tree)); // BUG-PERF-11
