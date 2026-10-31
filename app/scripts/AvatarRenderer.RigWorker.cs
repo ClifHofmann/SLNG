@@ -114,7 +114,7 @@ public partial class AvatarRenderer
                     if (ready != null)
                     {
                         _preparedRigs[entityId] = ready;
-                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => CommitPreparedRig(entityId),
+                        EnqueueFor(request.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => CommitPreparedRig(entityId),
                             coalesceKey: $"avatar.rig:{entityId}", label: "avatar.rig");
                     }
                     else
@@ -173,6 +173,10 @@ public partial class AvatarRenderer
             if (req.Visual.IsSelf)
             {
                 distSq = 0f;
+            }
+            else if (PrioritySubject.IsFocus(req.Visual.AgentId))
+            {
+                distSq = 0.5f; // FEAT-PERF-27: right after the local avatar, before everyone else however near
             }
             else
             {

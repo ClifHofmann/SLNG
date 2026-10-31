@@ -953,12 +953,12 @@ public partial class AvatarRenderer
         {
             // Nothing to swap in (the gate was closed, or the merge threw): FinishMergeJob tries the buckets again.
             job.Result = null;
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => FinishMergeJob(job), label: "avatar.merge.swap");
+            EnqueueFor(job.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => FinishMergeJob(job), label: "avatar.merge.swap");
             return;
         }
 
         // In order, on the FIFO lane: binds, the uploads in batches, the swap.
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => CommitMergeBinds(job), label: "avatar.merge.binds");
+        EnqueueFor(job.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => CommitMergeBinds(job), label: "avatar.merge.binds");
         var batch = new List<(JobBucket Bucket, UploadKind Kind, int Index, int Surface)>();
         int batchVertices = 0;
         foreach (var jb in job.Buckets)
@@ -975,7 +975,7 @@ public partial class AvatarRenderer
                 AddToBatch(jb, UploadKind.Sorted, s, 0, jb.Result.Sorted[s].Arrays.VertexCount);
         }
         FlushBatch();
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => SwapMergeJob(job), label: "avatar.merge.swap");
+        EnqueueFor(job.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => SwapMergeJob(job), label: "avatar.merge.swap");
 
         void AddToBatch(JobBucket jb, UploadKind kind, int index, int surface, int vertices)
         {
@@ -990,7 +990,7 @@ public partial class AvatarRenderer
             var work = batch.ToArray();
             batch.Clear();
             batchVertices = 0;
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => UploadMergeBatch(job, work), label: "avatar.merge.upload");
+            EnqueueFor(job.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => UploadMergeBatch(job, work), label: "avatar.merge.upload");
         }
     }
 
@@ -1463,7 +1463,7 @@ public partial class AvatarRenderer
             rebuilt.Add((s, material));
         }
         if (rebuilt.Count == 0) return;
-        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => ApplyMergedBomMaterials(item, input, rebuilt),
+        EnqueueFor(item.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => ApplyMergedBomMaterials(item, input, rebuilt),
             label: "avatar.merge.bom");
     }
 
