@@ -279,6 +279,18 @@ public sealed partial class GridSession
     internal static readonly SLNG.Core.FetchPipeStats MatPipe = new("MatPipe");
     internal static readonly SLNG.Core.FetchPipeStats TexHttp = new("TexHttp");
     internal static readonly SLNG.Core.FetchPipeStats TexWait = new("TexWait");
+    // FEAT-PERF-28: the same wait, split by whose texture it is (one line per class that saw traffic). TexWait stays the sum.
+    internal static readonly SLNG.Core.FetchPipeStats[] TexWaitByClass = CreateTexWaitByClass();
+    private static SLNG.Core.FetchPipeStats[] CreateTexWaitByClass()
+    {
+        var stats = new SLNG.Core.FetchPipeStats[SLNG.Core.TexClassifier.Count];
+        foreach (SLNG.Core.TexClass c in Enum.GetValues<SLNG.Core.TexClass>())
+            stats[(int)c] = new SLNG.Core.FetchPipeStats("TexWait." + SLNG.Core.TexClassifier.Name(c));
+        return stats;
+    }
+
+    /// <summary>Texture bytes received over HTTP since the process started (FEAT-PERF-28: the arrival timeline's "bytes until").</summary>
+    public static long TextureBytesFetched => TexHttp.Peek().Bytes;
     // The paths that still go through LibreMetaverse (its caps rate limiter / request queues), counted so a cold
     // run says whether any of them queues the way its mesh fetch did (FEAT-NET-07). No behaviour change.
     internal static readonly SLNG.Core.FetchPipeStats LegacyMatPipe = new("LegacyMatPipe");
@@ -294,6 +306,7 @@ public sealed partial class GridSession
         SLNG.Core.FetchPipeReporter.Register(MatPipe);
         SLNG.Core.FetchPipeReporter.Register(TexHttp);
         SLNG.Core.FetchPipeReporter.Register(TexWait);
+        foreach (var byClass in TexWaitByClass) SLNG.Core.FetchPipeReporter.Register(byClass);
         SLNG.Core.FetchPipeReporter.Register(LegacyMatPipe);
         SLNG.Core.FetchPipeReporter.Register(NamePipe);
         SLNG.Core.FetchPipeReporter.Register(WearablePipe);
@@ -642,7 +655,11 @@ public sealed partial class GridSession
                 RegisterPipeReporting();
                 var slots = _textureSlots;
                 long waitStarted = TexWait.Begin();
+                // FEAT-PERF-28: the class was noted by the GPU cache (--diag only); Take also forgets it.
+                var waitStats = TexWaitByClass[(int)(SLNG.Core.Diag.Verbose ? SLNG.Core.TexClassRegistry.Shared.Take(textureId) : SLNG.Core.TexClass.Scenery)];
+                long classWaitStarted = waitStats.Begin();
                 await slots.WaitAsync(priority).ConfigureAwait(false);
+                waitStats.End(classWaitStarted, true, 0);
                 TexWait.End(waitStarted, true, 0);
                 long httpStarted = TexHttp.Begin();
                 try

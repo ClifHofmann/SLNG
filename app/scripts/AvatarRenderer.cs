@@ -77,6 +77,9 @@ public partial class AvatarRenderer : Node3D
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
         public Dictionary<string, SLNG.Assets.AvatarBodyPartMesh> BodyPartData { get; } = new();
         public Dictionary<int, Guid> LoadedTextures { get; } = new();
+        // FEAT-PERF-28: bake index -> the texture id actually applied to the body part (LoadedTextures is set when the bake is
+        // REQUESTED, so it cannot tell "asked for" from "on the avatar"). Main thread only.
+        public Dictionary<int, Guid> BakesApplied { get; } = new();
         public AvatarAnimationPlayer AnimPlayer { get; } = new();
         public List<Guid>? LoadedAnimationIds { get; set; }
         // Which animation request is the latest for this avatar. A request that finishes after a newer one was
@@ -2468,6 +2471,8 @@ public partial class AvatarRenderer : Node3D
                     // alpha_to_coverage is baked into the scissor variant's render_mode. MSAA 4x is on
                     // project-wide (app/project.godot) specifically so this edge resolves smoothly.
                 }
+
+                visual.BakesApplied[bakeIndex] = textureId; // FEAT-PERF-28: the arrival timeline's "this bake is on the avatar"
             }
             finally
             {
@@ -7893,6 +7898,7 @@ void fragment() {
 
         float dt = (float)delta;
         ReportAvatarCost(delta);
+        TickArrival(delta);
 
         // Recompute draw-distance visibility a few times a second (not every frame — the
         // agent lookup scans all entities). Animation still advances every frame, but only

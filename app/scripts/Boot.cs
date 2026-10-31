@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.28.77-alpha";
+    public const string AppVersion = "v0.28.78-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -3496,6 +3496,11 @@ public partial class Boot : Control
 
             if (newBudget != _lastVramBudget || force)
             {
+                // FEAT-PERF-28 (--diag): every change of the budget with the terms it is made of, so a fall can be explained.
+                if (SLNG.Core.Diag.Verbose)
+                    SLNG.Core.Diag.Write(VramBudgetPolicy.FormatTerms(
+                        VramBudgetPolicy.Explain(osBudget, osUsage, godotUsage, adapterDedicated, adapterUsage, _gpuCache.CurrentSizeBytes, manualCap),
+                        newBudget, _lastVramBudget));
                 _lastVramBudget = newBudget;
                 _gpuCache.SetBudget(newBudget);
                 // FEAT-PERF-25: a texture budget that collapsed is exactly when the breakdown is wanted.

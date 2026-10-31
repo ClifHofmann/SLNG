@@ -88,6 +88,25 @@ public class FetchPipeStatsTests
     }
 
     [Fact]
+    public void Peek_ReadsTheCountersWithoutStartingANewInterval()
+    {
+        var s = new FetchPipeStats("TexHttp");
+        s.Begin(); s.Begin();
+        s.EndTimed(10, ok: true, bytes: 4096);
+
+        var first = s.Peek();
+        var again = s.Peek();
+
+        Assert.Equal(2, first.Requests);
+        Assert.Equal(1, first.Completed);
+        Assert.Equal(4096, first.Bytes);
+        Assert.Equal(1, first.InFlight);
+        Assert.Equal(first, again);
+        // The interval is still whole: the reporter's next line sees both requests.
+        Assert.Equal(2, s.TakeInterval().IntervalRequests);
+    }
+
+    [Fact]
     public void TakeLine_NamesThePipe_AndGoesQuietAgainWhenNothingHappens()
     {
         var s = new FetchPipeStats("MeshPipe");
