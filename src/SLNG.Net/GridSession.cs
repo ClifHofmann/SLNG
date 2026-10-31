@@ -312,6 +312,23 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
         });
     }
 
+    /// <summary>True when the simulator named in a log line is no longer one we are connected to.
+    /// Matched by <c>ip:port</c>, because the name is empty once the library has dropped the region.</summary>
+    private bool IsRegionAlreadyLeft(string simulatorText)
+    {
+        if (!SLNG.Core.EventQueueHealth.TryReadAddress(simulatorText, out string address)) return false;
+        try
+        {
+            Simulator[] sims;
+            lock (_client.Network.Simulators) sims = _client.Network.Simulators.ToArray();
+            return !sims.Any(s => string.Equals(s.IPEndPoint?.ToString(), address, StringComparison.Ordinal));
+        }
+        catch (Exception)
+        {
+            return false; // cannot tell: announce, as before
+        }
+    }
+
     // How many glTF material override messages LibreMetaverse failed to parse this session (see below).
     private int _gltfOverrideParseFailures;
 
@@ -347,6 +364,12 @@ public sealed partial class GridSession : IDisposable, IWorldEventSource
             announce = _eventQueueHealth.ReportFailure(simulatorText, DateTime.UtcNow);
             count = _eventQueueHealth.FailureCount(simulatorText);
         }
+
+        // A region we have already left keeps being polled by LibreMetaverse and fails for ever
+        // (seen: 1705 failures after "[Neighbor] disconnected"). It cannot affect the user any more,
+        // so it is neither announced nor can it log the user out. Unreadable address: keep announcing.
+        if (announce && IsRegionAlreadyLeft(simulatorText))
+            return first;
 
         if (announce)
         {
