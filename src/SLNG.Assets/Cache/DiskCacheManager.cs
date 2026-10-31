@@ -65,6 +65,12 @@ public sealed class DiskCacheManager : IDisposable
     /// <summary>Currently measured cache size in bytes across raw assets and decoded textures.</summary>
     public long CurrentSizeBytes => Interlocked.Read(ref _currentSizeBytes);
 
+    /// <summary>Completes when the scan of the cache folders started by the constructor has set the tracked size.</summary>
+    public Task InitialScan { get; }
+
+    /// <summary>Blocks until <see cref="InitialScan"/> is done (tests and tools; never call it on the main thread).</summary>
+    public void WaitForInitialScan() => InitialScan.GetAwaiter().GetResult();
+
     /// <summary>Whether an eviction pass is currently executing.</summary>
     public bool IsEvicting => Interlocked.CompareExchange(ref _isEvicting, 0, 0) == 1;
 
@@ -86,8 +92,10 @@ public sealed class DiskCacheManager : IDisposable
             Console.Error.WriteLine($"[DiskCache] Failed to ensure base cache dir '{_baseCacheDir}': {ex.Message}");
         }
 
-        // Initialize size asynchronously so constructor does not stall
-        Task.Run(RefreshSize);
+        // Initialize size asynchronously so constructor does not stall. The scan REPLACES the tracked size with a
+        // snapshot of the disk, so a RecordWrite/RecordDelete that lands before it finishes can be overwritten or
+        // counted twice: InitialScan lets a caller (and the tests) wait for it before relying on the delta methods.
+        InitialScan = Task.Run(RefreshSize);
 
         if (startPeriodicTimer)
         {

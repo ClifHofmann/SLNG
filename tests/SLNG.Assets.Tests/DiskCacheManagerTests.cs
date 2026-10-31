@@ -55,6 +55,7 @@ public class DiskCacheManagerTests : IDisposable
         CreateFile(decodedDir, "tex1.dec", 4096);
 
         using var manager = new DiskCacheManager(_testDir, maxSizeBytes: 1024 * 1024, startPeriodicTimer: false);
+        manager.WaitForInitialScan();
         manager.RefreshSize();
 
         Assert.Equal(1024 + 2048 + 4096, manager.CurrentSizeBytes);
@@ -68,6 +69,7 @@ public class DiskCacheManagerTests : IDisposable
     public void RecordWrite_UpdatesTrackedSize()
     {
         using var manager = new DiskCacheManager(_testDir, maxSizeBytes: 1024 * 1024, startPeriodicTimer: false);
+        manager.WaitForInitialScan();
         string file = Path.Combine(_testDir, "test.j2c");
         CreateFile(_testDir, "test.j2c", 5000);
 
@@ -87,6 +89,7 @@ public class DiskCacheManagerTests : IDisposable
         {
             SessionGracePeriod = TimeSpan.Zero // Allow immediate eviction for test
         };
+        manager.WaitForInitialScan();
 
         // Create 15 files of 10 KB each = 150 KB (exceeds 100 KB limit)
         DateTime baseTime = DateTime.UtcNow.AddHours(-10);
@@ -127,6 +130,7 @@ public class DiskCacheManagerTests : IDisposable
         {
             SessionGracePeriod = TimeSpan.Zero
         };
+        manager.WaitForInitialScan();
 
         DateTime baseTime = DateTime.UtcNow.AddDays(-2);
 
@@ -173,6 +177,7 @@ public class DiskCacheManagerTests : IDisposable
         {
             SessionGracePeriod = TimeSpan.FromMinutes(30)
         };
+        manager.WaitForInitialScan();
 
         DateTime oldTime = DateTime.UtcNow.AddHours(-2);
         // Create 8 old files of 10 KB = 80 KB
@@ -208,6 +213,7 @@ public class DiskCacheManagerTests : IDisposable
         {
             SessionGracePeriod = TimeSpan.Zero
         };
+        manager.WaitForInitialScan();
 
         Guid textureId = Guid.NewGuid();
         DateTime oldTime = DateTime.UtcNow.AddDays(-5);
@@ -238,6 +244,7 @@ public class DiskCacheManagerTests : IDisposable
         CreateFile(decodedDir, "test3.dec", 4096);
 
         using var manager = new DiskCacheManager(_testDir, maxSizeBytes: 1024 * 1024, startPeriodicTimer: false);
+        manager.WaitForInitialScan();
         manager.RefreshSize();
         Assert.Equal(1024 + 2048 + 4096, manager.CurrentSizeBytes);
 
