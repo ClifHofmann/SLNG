@@ -142,6 +142,12 @@ param(
     # FEAT-NET-07: mesh transfers at once (default 16). Passes --mesh-slots=N; only honoured together with -Diag.
     [int]$MeshSlots = 0,
 
+    # FEAT-PERF-29 A/B: progressive texture streaming -- a coarse first request, then the bytes the face needs.
+    # Passes --tex-stream; only honoured together with -Diag. -TexStreamFirst N sets the first request's size in
+    # bytes (default 18840, the estimator's discard-5 size; 600 is the reference viewer's).
+    [switch]$TexStream,
+    [int]$TexStreamFirst = 0,
+
     # FEAT-PERF-17: cap the video-memory budget Windows reports to this many MB, to test how the
     # viewer behaves on a smaller card (e.g. 3500 for a 4 GB card). 0 = use the real budget.
     # Passes --vram-budget=<MB>.
@@ -278,6 +284,11 @@ if ($MeshSlots -gt 0) {
 if ($TexSlots -gt 0) {
     Write-Host "      HTTP texture slots $TexSlots (--tex-slots)" -ForegroundColor Yellow
     $userArgs += "--tex-slots=$TexSlots"
+}
+if ($TexStream) {
+    Write-Host "      texture streaming ON (--tex-stream)$(if ($TexStreamFirst -gt 0) { ", first request $TexStreamFirst B" })" -ForegroundColor Yellow
+    $userArgs += '--tex-stream'
+    if ($TexStreamFirst -gt 0) { $userArgs += "--tex-stream-first=$TexStreamFirst" }
 }
 if ($OnlyAttachment -ne '') {
     Write-Host "      only worn meshes $OnlyAttachment (--only-attachment)" -ForegroundColor Yellow

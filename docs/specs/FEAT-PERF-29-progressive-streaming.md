@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-29`
 - **Track:** `net` + `assets` (perf)
-- **Status:** `🚧 In Progress` (PR 1, the spike, is this document; PR 2 builds it)
+- **Status:** `🧪 Review` (PR 1 spike merged as this document; PR 2 built in v0.28.83-alpha, in-world A/B open)
 - **Owner:** `claude`
 - **Spec / Roadmap:** [ROADMAP.md](file:///E:/Git/SLNG/docs/ROADMAP.md),
   [ADR 0005](../adr/0005-region-arrival-texture-streaming.md) task 3
@@ -281,9 +281,33 @@ PR 2 (build), measured with the FEAT-PERF-28 time base, Sirens or KinkyEvent, co
 - [ ] Main-thread time for texture uploads reported. More than +25 % against the baseline blocks the default.
 - [ ] Near textures reach full resolution, alpha textures keep their silhouette at distance, and nothing is
       speckled (in-world look, maintainer).
-- [ ] Unit tests (test-first): Range response to completeness/total; partial decode via the reduced path
-      only and never degraded; the same partial decoded twice gives the same pixels; the 256 B / 1 KB rescue; `.part` cache round trip and promotion; refinement
-      target from the pixel area with the alpha floor.
+- [x] Unit tests (test-first): Range response to completeness/total; partial decode via the reduced path
+      only and never degraded; the same partial decoded twice gives the same pixels; the 256 B / 1 KB rescue;
+      `.part` cache round trip and promotion; refinement target from the pixel area with the alpha floor
+      (`TextureRangeTests`, `TextureStreamingTests`, `TextureStreamerTests`).
+
+### How PR 2 is built (v0.28.83-alpha)
+
+Run the A/B with `tools/baseline-run.ps1 -TexStream` (and optionally `-TexStreamFirst <bytes>`, `-TexSlots <n>`);
+`info.txt` records the switches. The client needs `--diag` for `--tex-stream` to take effect.
+
+- `SLNG.Net.TextureRange` (pure) builds the range and reads the response; `GridSession.FetchTextureRangeAsync`
+  sends it over the ViewerAsset cap with the same slots and `[TexHttp]`/`[TexWait]` accounting as a full fetch.
+  In `AssetService` it waits at the same 32-wide admission gate first, so both arms queue alike.
+- `SLNG.Assets.TextureStreamer` does one step per call: the coarse first request, or the missing bytes up to the
+  target discard, or nothing when the `.part` already covers it. A complete response becomes `<id>_v5.j2c` and is
+  decoded by the existing cache path. Anything that does not work out (no cap, an error, an undecodable prefix after
+  the rescue) falls back to today's full fetch.
+- **Refinement reuses `GpuCache`'s sharpen path** instead of a second mechanism. A partial upload is recorded as
+  built for a quarter of its texels (`TextureStreaming.BuiltForArea`), so `TryUpgradeCachedTexture` fetches more as
+  soon as the face shows more. It is called right after the coarse upload, and again on every re-offer; the existing
+  budget and admission rules decide when there is room.
+- Not streamed: sculpt maps, bakes (`GetBakeTextureAsync`), the wearer's own textures (`_noShrink`), and any request
+  without a screen area.
+- Left out on purpose: no decoded-cache entry and no compressed GPU copy is stored from a prefix; both stand for the
+  whole asset.
+- `[TexStream]` (`--diag`, every 5 s): first requests and MB, refinements and MB, decodes from `.part` without a
+  request, completed assets, rescued decodes, fallbacks.
 
 ## Technical Specs & Affected Files (PR 2)
 
@@ -299,5 +323,5 @@ PR 2 (build), measured with the FEAT-PERF-28 time base, Sirens or KinkyEvent, co
 ## Sub-tasks / Progress
 
 - [x] PR 1: spike, offline from the cache (this spec)
-- [ ] PR 2: build behind `--tex-stream`, tests first
+- [x] PR 2: build behind `--tex-stream`, tests first (v0.28.83-alpha)
 - [ ] PR 2: in-world A/B against the FEAT-PERF-28 baseline

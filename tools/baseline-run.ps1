@@ -33,6 +33,13 @@
     Do not wait for Enter between runs and do not ask for a note after a run.
 .PARAMETER DryRun
     Print what would happen and touch nothing.
+.PARAMETER TexStream
+    FEAT-PERF-29 A/B: every run with progressive texture streaming (passes -TexStream to run-client.ps1).
+    Recorded in info.txt, so a streaming folder cannot be mistaken for a baseline.
+.PARAMETER TexStreamFirst
+    With -TexStream: the first request's size in bytes (default 18840; 600 is the reference viewer's).
+.PARAMETER TexSlots
+    HTTP texture transfers at once for every run (passes -TexSlots; default 8).
 #>
 param(
     [int]$ColdRuns = 3,
@@ -41,7 +48,10 @@ param(
     [string]$OutDir = '',
     [string]$Grid = 'agni',
     [switch]$NoPrompt,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$TexStream,
+    [int]$TexStreamFirst = 0,
+    [int]$TexSlots = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -148,7 +158,9 @@ $version = (Select-String -Path (Join-Path $repo 'app\scripts\Boot.cs') -Pattern
 $info = Join-Path $OutDir 'info.txt'
 if (-not (Test-Path $info)) {
     @("started   : $(Get-Date -Format 'yyyy-MM-dd HH:mm')", "place     : $Place", "version   : $version", "branch    : $branch @ $commit",
-      "machine   : $env:COMPUTERNAME") | Set-Content $info
+      "machine   : $env:COMPUTERNAME",
+      "texStream : $(if ($TexStream) { "on$(if ($TexStreamFirst -gt 0) { ", first $TexStreamFirst B" })" } else { 'off' })",
+      "texSlots  : $(if ($TexSlots -gt 0) { $TexSlots } else { 'default' })") | Set-Content $info
 }
 $runsCsv = Join-Path $OutDir 'runs.csv'
 if (-not (Test-Path $runsCsv)) { 'label,kind,minutes,net_peak_1s_mbit,net_peak_5s_mbit,note,log' | Set-Content $runsCsv }
@@ -191,7 +203,12 @@ try {
         $sampler = Start-NetSampler $netCsv
         $t0 = Get-Date
         try {
-            & (Join-Path $repo 'tools\run-client.ps1') -Diag
+            # FEAT-PERF-29: the A/B switches go to every run.
+            $clientArgs = @{ Diag = $true }
+            if ($TexStream) { $clientArgs.TexStream = $true }
+            if ($TexStreamFirst -gt 0) { $clientArgs.TexStreamFirst = $TexStreamFirst }
+            if ($TexSlots -gt 0) { $clientArgs.TexSlots = $TexSlots }
+            & (Join-Path $repo 'tools\run-client.ps1') @clientArgs
         } finally {
             Stop-Job $sampler -ErrorAction SilentlyContinue
             Remove-Job $sampler -Force -ErrorAction SilentlyContinue

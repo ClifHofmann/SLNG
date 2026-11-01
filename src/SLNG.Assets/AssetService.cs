@@ -207,6 +207,18 @@ public class AssetService
     /// <summary>Global on-disk asset cache manager and LRU eviction coordinator (FEAT-CACHE-01).</summary>
     public Cache.DiskCacheManager? DiskCache { get; }
 
+    private readonly TextureStreamer _streamer;
+
+    /// <summary>FEAT-PERF-29: a streamed range waits at the same admission gate as a full fetch (and then for the
+    /// same HTTP slots), so the queueing in front of the line is the same with and without --tex-stream.</summary>
+    private async Task<SLNG.Net.TextureRangeResult?> FetchTextureRangeGatedAsync(Guid textureId, long start, long? end, float priority)
+    {
+        var throttle = _textureFetchThrottle;
+        await throttle.WaitAsync(priority).ConfigureAwait(false);
+        try { return await _session.FetchTextureRangeAsync(textureId, start, end, priority).ConfigureAwait(false); }
+        finally { throttle.Release(); }
+    }
+
     public AssetService(GridSession session, string cacheDirectory, long maxCacheSizeMb = 20480, long decodedCacheSizeMb = 16384)
     {
         _session = session;
@@ -222,6 +234,9 @@ public class AssetService
         string baseDir = string.IsNullOrEmpty(_cacheDir) ? System.IO.Path.GetTempPath() : _cacheDir;
         DiskCache = new Cache.DiskCacheManager(baseDir, maxCacheSizeMb * 1024L * 1024L);
         DecodedCache = new DecodedTextureCache(baseDir, decodedCacheSizeMb * 1024L * 1024L, DiskCache);
+        // FEAT-PERF-29: used only with --tex-stream and a cache folder (see FetchAndDecodeTextureAsync).
+        _streamer = new TextureStreamer(baseDir, FetchTextureRangeGatedAsync, DiskCache);
+        SLNG.Core.FetchPipeReporter.Register(TextureStreaming.TakeLine);
 
         var opts = new MemoryCacheOptions
         {
@@ -667,7 +682,11 @@ public class AssetService
     /// the caller still receives at least as many pixels as it asked to display, and
     /// <c>TextureData.SourceWidth/Height</c> say what the full asset would have been so a closer
     /// look can re-decode it sharper.</param>
-    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f, bool rejectDegraded = false, float screenPixelArea = 0f)
+    /// <param name="stream">FEAT-PERF-29: the caller allows progressive streaming for this texture. It happens only
+    /// with <see cref="TextureStreaming.Enabled"/>, a screen area, a disk cache and no whole asset cached yet; never
+    /// for a sculpt map. The result may then be <see cref="TextureData.IsPartial"/>: coarser than the area asks
+    /// for, with the next call fetching more. The caller keeps the wearer's own textures out; bakes never come here.</param>
+    public Task<TextureData?> GetTextureAsync(Guid textureId, int desiredDiscard = 0, bool isSculpt = false, float priority = 0f, bool rejectDegraded = false, float screenPixelArea = 0f, bool stream = false)
     {
         if (textureId == TextureTransparentId)
             return Task.FromResult<TextureData?>(TextureTransparentData);
@@ -729,7 +748,7 @@ public class AssetService
         // start ran 2-6 ms of it per texture inside the Godot main thread's frame (ObjectRenderer asks
         // from queue items and from the cull sweep). Same trap as BUG-PERF-07, one layer down.
         var lazy = _inflightTextures.GetOrAdd(textureId, id => new Lazy<Task<TextureData?>>(
-            () => Task.Run(() => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority, rejectDegraded, effectiveArea)), LazyThreadSafetyMode.ExecutionAndPublication));
+            () => Task.Run(() => FetchDecodeAndCacheTextureAsync(id, effectiveDiscard, isSculpt, priority, rejectDegraded, effectiveArea, stream)), LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
 
@@ -887,11 +906,11 @@ public class AssetService
         return await GetTextureAsync(textureId, desiredDiscard: 0, priority: priority).ConfigureAwait(false);
     }
 
-    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f)
+    private async Task<TextureData?> FetchDecodeAndCacheTextureAsync(Guid id, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f, bool stream = false)
     {
         try
         {
-            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority, rejectDegraded, screenPixelArea).ConfigureAwait(false);
+            var result = await FetchAndDecodeTextureAsync(id, desiredDiscard, isSculpt, priority, rejectDegraded, screenPixelArea, stream).ConfigureAwait(false);
             // Mirror the disk cache's own guard (see FetchAndDecodeTextureAsync) -- a degraded
             // result can still be returned (better than nothing on the last retry attempt), but
             // must never be memoized. Caching it here would pin the bad decode in memory for a
@@ -993,7 +1012,7 @@ public class AssetService
         return TextureLod.ClampReduceLevel(reduce, w, h, levels);
     }
 
-    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f)
+    private async Task<TextureData?> FetchAndDecodeTextureAsync(Guid textureId, int desiredDiscard, bool isSculpt, float priority, bool rejectDegraded = false, float screenPixelArea = 0f, bool stream = false)
     {
         System.Threading.Interlocked.Increment(ref _texPipeReq);
         MaybeDumpTexPipe(textureId);
@@ -1005,7 +1024,27 @@ public class AssetService
         // fetch is intentionally truncated (see GridSession.FetchTextureDataAsync), not the
         // "whole texture" the cache file name promises; treating it as one would let a future
         // full-resolution request silently get served a blurry cached partial forever.
+        // FEAT-PERF-29 keeps a streamed prefix apart for the same reason, as <id>_v5.part (TextureStreamer).
         string? cacheFile = string.IsNullOrEmpty(_cacheDir) ? null : System.IO.Path.Combine(_cacheDir, textureId.ToString() + "_v5.j2c");
+
+        // FEAT-PERF-29: stream when nothing whole is cached. Complete leaves the whole asset in cacheFile for the
+        // cache path below; FellBack is the full fetch further down.
+        if (stream && TextureStreaming.Enabled && !isSculpt && screenPixelArea > 0f && desiredDiscard == 0
+            && cacheFile != null && !File.Exists(cacheFile))
+        {
+            var streamed = await _streamer.FetchAsync(textureId, screenPixelArea, priority).ConfigureAwait(false);
+            if (streamed.Outcome == TextureStreamer.Outcome.Partial)
+            {
+                System.Threading.Interlocked.Increment(ref _texPipeHttp);
+                return streamed.Data;
+            }
+            if (streamed.Outcome == TextureStreamer.Outcome.Gone)
+            {
+                if (_goneTextures.TryAdd(textureId, 0) && SLNG.Core.Diag.Verbose)
+                    SLNG.Core.Diag.Write($"[TextureGiveUp] {textureId}: sim denied it (403/401) -- not retrying this session");
+                return null;
+            }
+        }
 
         if (desiredDiscard == 0 && cacheFile != null && File.Exists(cacheFile))
         {
@@ -1237,6 +1276,8 @@ public class AssetService
                             DiskCache?.RecordWrite(cacheFile, bytes.Length);
                         }
                         catch { }
+                        // FEAT-PERF-29: a streamed prefix of it is now superseded.
+                        _streamer.Discard(textureId);
                         // FEAT-PERF-11: store freshly fetched and decoded clean texture into decoded disk cache
                         if (isSculpt)
                             _ = Task.Run(() => DecodedCache.PutSculptAsync(textureId, result));
@@ -1742,7 +1783,7 @@ public class AssetService
     /// <para>Returns null rather than throwing on anything unexpected; the caller then decodes in
     /// full, which is always correct and only slower.</para>
     /// </remarks>
-    private static TextureData? TryDecodeReduced(byte[] bytes, int steps)
+    internal static TextureData? TryDecodeReduced(byte[] bytes, int steps)
     {
         if (steps <= 0) return null;
         if (!TryReadJ2kSize(bytes, out int fullWidth, out int fullHeight, out _)) return null;

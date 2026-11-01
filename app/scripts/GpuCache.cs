@@ -852,7 +852,8 @@ public class GpuCache
                 {
                     var textureData = isBake
                         ? await assetService.GetBakeTextureAsync(textureId, bake.Channel, priority, bake.Agent).ConfigureAwait(false)
-                        : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, screenPixelArea: screenPixelArea).ConfigureAwait(false);
+                        : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, screenPixelArea: screenPixelArea,
+                            stream: StreamAllowed(textureId)).ConfigureAwait(false);
                     if (textureData == null)
                     {
                         _uploadedForPixelArea.TryUpdate(textureId, builtFor, screenPixelArea);
@@ -1438,6 +1439,12 @@ public class GpuCache
                         : screenPixelArea;
                 }
 
+                // FEAT-PERF-29: a streamed prefix can be coarser than the area asked for. Built for what it holds,
+                // so the sharpen rule fetches the next level as soon as the face shows more.
+                if (textureData.IsPartial)
+                    uploadedFor = SLNG.Assets.TextureStreaming.BuiltForArea(uploadedFor > 0f ? uploadedFor : screenPixelArea,
+                        image.GetWidth(), image.GetHeight());
+
                 // Before mipmaps, so the scan covers the base level only -- the mips are
                 // derived from it and add nothing but work. See _alphaModes for why this is
                 // computed here and not where it is used.
@@ -1468,7 +1475,8 @@ public class GpuCache
                 {
                     image.Dispose();
                     image = compressed;
-                    if (!textureData.IsDegraded)
+                    // FEAT-PERF-29: not from a streamed prefix either -- the stored copy stands for the whole asset.
+                    if (!textureData.IsDegraded && !textureData.IsPartial)
                         _assets?.StoreCompressedTexture(textureId, new SLNG.Assets.CompressedTextureData(
                             format, fw, fh, generateMipmaps, blocks!,
                             textureData.SourceWidth > 0 ? textureData.SourceWidth : textureData.Width,
@@ -1948,7 +1956,8 @@ public class GpuCache
                 // fails because Magick will not read a codestream that ends early; a reduce level
                 // is a decoder option on the complete bytes. The local downsample below still runs
                 // on whatever is left over, because one reduce factor covers two discard levels.
-                : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded, screenPixelArea: screenPixelArea).ConfigureAwait(false);
+                : await assetService.GetTextureAsync(textureId, desiredDiscard: 0, priority: priority, rejectDegraded: rejectDegraded, screenPixelArea: screenPixelArea,
+                    stream: StreamAllowed(textureId)).ConfigureAwait(false);
             if (textureData == null) return null;
 
             // Record whether this upload came from a gap-filled decode, so a later rejectDegraded
@@ -2002,6 +2011,10 @@ public class GpuCache
                 var committed = CommitPreparedTexture(textureId, prepared, screenPixelArea, generateMipmaps, initialRefCount);
                 SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Done);   // before SetResult: it runs the awaiting code inline
                 tcs.SetResult(committed);
+                // FEAT-PERF-29: a streamed coarse texture is on screen now; fetch the level the face needs at once
+                // instead of waiting for the next re-offer. The sharpen rule decides whether it needs one.
+                if (textureData.IsPartial && committed != null)
+                    TryUpgradeCachedTexture(textureId, committed, assetService, generateMipmaps, screenPixelArea, priority);
             }, label: "texture.upload");
             return await tcs.Task.ConfigureAwait(false);
         }
@@ -2011,6 +2024,11 @@ public class GpuCache
             _inflightTextureUploads.TryRemove(textureId, out _);
         }
     }
+
+    /// <summary>FEAT-PERF-29: whether a texture may be streamed (with <c>--tex-stream</c>). Not the wearer's own:
+    /// those are boosted and never shrunk, and are fetched whole like the reference viewer's boosted textures. Bakes
+    /// never get here (GetBakeTextureAsync, always in full).</summary>
+    private bool StreamAllowed(Guid textureId) => SLNG.Assets.TextureStreaming.Enabled && !_noShrink.ContainsKey(textureId);
 
     /// <summary>BUG-AVATAR-01: drop a cached entry outright, ignoring its refcount, so the next
     /// <see cref="GetOrUploadTextureAsync"/> re-downloads and re-decodes it from scratch. Used by
