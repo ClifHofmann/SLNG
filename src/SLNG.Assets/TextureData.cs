@@ -10,6 +10,9 @@ namespace SLNG.Assets;
 /// deliberately low-resolution decode from a full one — a texture uploaded at a reduced level must
 /// stay eligible for a sharper re-decode when the camera moves closer, and one already at full
 /// resolution never is.</param>
+/// <param name="IsPartial">FEAT-PERF-29: decoded from an intended partial codestream (texture streaming).
+/// More bytes exist, so a sharper level means a further fetch, and the image may be coarser than the
+/// screen asked for. Never degraded: the reduced decode of a prefix is clean at its level.</param>
 public sealed record TextureData(
     int Width, int Height, byte[] Rgba, bool IsDegraded = false,
-    int SourceWidth = 0, int SourceHeight = 0);
+    int SourceWidth = 0, int SourceHeight = 0, bool IsPartial = false);

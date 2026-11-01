@@ -273,8 +273,8 @@ public sealed partial class GridSession
     }
 
     // Cold-start diagnostics (--diag): one [MeshPipe] / [MatPipe] / [TexHttp] / [TexWait] line every 5 s.
-    // MeshPipe runs through LibreMetaverse, so its inflight peak is the concurrency that HTTP stack really
-    // gives us; TexHttp is the transfer once a slot is held, TexWait the wait for the slot.
+    // MeshPipe is our own HTTP mesh fetch (FEAT-NET-07), so its inflight peak is what AssetService's mesh gate
+    // lets through; TexHttp is the transfer once a slot is held, TexWait the wait for the slot.
     internal static readonly SLNG.Core.FetchPipeStats MeshPipe = new("MeshPipe");
     internal static readonly SLNG.Core.FetchPipeStats MatPipe = new("MatPipe");
     internal static readonly SLNG.Core.FetchPipeStats TexHttp = new("TexHttp");
@@ -537,6 +537,81 @@ public sealed partial class GridSession
             });
 
         return UdpGaveNothing(await fallbackTcs.Task);
+    }
+
+    /// <summary>How long one streamed range may take once it holds a slot.</summary>
+    private static readonly TimeSpan TextureRangeTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// FEAT-PERF-29: one Range request for a streamed texture, bytes <paramref name="start"/>..<paramref name="end"/>
+    /// (inclusive; null = to the end), over the region's ViewerAsset cap (GetTexture where there is none). Same
+    /// slots and the same <c>[TexHttp]</c>/<c>[TexWait]</c> accounting as a full fetch.
+    ///
+    /// <para>Null when it did not work out -- no cap, an error status, a timeout, a body that is not a codestream --
+    /// and the caller then fetches the asset in full (<see cref="FetchTextureDataAsync"/>), which has the retries
+    /// and the UDP fallback. A 403/401 is remembered exactly as there. <see cref="TextureRangeResult.Gone"/> only
+    /// for an id this session already gave up on.</para>
+    ///
+    /// <para>Unlike the full fetch, a body that ends early is not a failure here: an intended partial codestream
+    /// never carries an EOC and its single tile-part declares the whole asset, so neither the EOC check nor
+    /// <see cref="J2cCodestream.IsTruncated"/> can judge it (FEAT-PERF-29 spec).</para>
+    /// </summary>
+    public async Task<TextureRangeResult?> FetchTextureRangeAsync(Guid textureId, long start, long? end, float priority = 0f)
+    {
+        if (_permanentlyDeniedTextures.ContainsKey(textureId))
+            return new TextureRangeResult(Array.Empty<byte>(), start, false, -1, Gone: true);
+        if (_httpDeniedTextures.ContainsKey(textureId)) return null;
+
+        var caps = _client.Network.CurrentSim?.Caps;
+        var cap = caps?.CapabilityURI("ViewerAsset") ?? caps?.CapabilityURI("GetTexture");
+        if (cap == null) return null;
+
+        var url = new Uri($"{cap}?texture_id={textureId}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(start, end);
+
+        RegisterPipeReporting();
+        var slots = _textureSlots;
+        long waitStarted = TexWait.Begin();
+        var waitStats = TexWaitByClass[(int)(SLNG.Core.Diag.Verbose ? SLNG.Core.TexClassRegistry.Shared.Take(textureId) : SLNG.Core.TexClass.Scenery)];
+        long classWaitStarted = waitStats.Begin();
+        await slots.WaitAsync(priority).ConfigureAwait(false);
+        waitStats.End(classWaitStarted, true, 0);
+        TexWait.End(waitStarted, true, 0);
+        long httpStarted = TexHttp.Begin();
+        byte[]? body = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TextureRangeTimeout);
+            using var response = await _textureHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            int status = (int)response.StatusCode;
+            if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
+            {
+                _httpDeniedTextures.TryAdd(textureId, 0);
+                return null;
+            }
+            if (status is not (200 or 206 or 416)) return null;
+
+            body = status == 416 ? Array.Empty<byte>() : await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
+            long? declared = response.Content.Headers.ContentLength;
+            if (status != 416 && declared.HasValue && body.Length < declared.Value) return null;   // the connection closed early
+
+            var range = response.Content.Headers.ContentRange;
+            var result = TextureRange.Interpret(status, range?.From, range?.Length, start, end, body);
+            if (result is not { } r) return null;
+            // From byte 0 the body must be a codestream (see the full fetch: 1-3 byte "textures" with a 200).
+            if (r.DataOffset == 0 && r.Data.Length > 0 && !(r.Data.Length >= 2 && r.Data[0] == 0xFF && r.Data[1] == 0x4F)) return null;
+            return r;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException)
+        {
+            return null;
+        }
+        finally
+        {
+            TexHttp.End(httpStarted, body is { Length: > 0 }, body?.Length ?? 0);
+            slots.Release();
+        }
     }
 
     /// <summary>
