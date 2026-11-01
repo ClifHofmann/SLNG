@@ -61,3 +61,6 @@ tools/opensim/data/
 scratchpad*
 tools/ProbeTerrain/
 docs/dashboard.html
+
+# Arrival baseline runs (tools/baseline-run.ps1): raw logs of 15-100 MB each, summarised in docs/perf
+/baseline/
