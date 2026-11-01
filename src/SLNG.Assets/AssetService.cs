@@ -210,7 +210,7 @@ public class AssetService
     private readonly TextureStreamer _streamer;
 
     /// <summary>FEAT-PERF-29: a streamed range waits at the same admission gate as a full fetch (and then for the
-    /// same HTTP slots), so the queueing in front of the line is the same with and without --tex-stream.</summary>
+    /// same HTTP slots), so the queueing in front of the line is the same with and without --no-tex-stream.</summary>
     private async Task<SLNG.Net.TextureRangeResult?> FetchTextureRangeGatedAsync(Guid textureId, long start, long? end, float priority)
     {
         var throttle = _textureFetchThrottle;
@@ -234,7 +234,7 @@ public class AssetService
         string baseDir = string.IsNullOrEmpty(_cacheDir) ? System.IO.Path.GetTempPath() : _cacheDir;
         DiskCache = new Cache.DiskCacheManager(baseDir, maxCacheSizeMb * 1024L * 1024L);
         DecodedCache = new DecodedTextureCache(baseDir, decodedCacheSizeMb * 1024L * 1024L, DiskCache);
-        // FEAT-PERF-29: used only with --tex-stream and a cache folder (see FetchAndDecodeTextureAsync).
+        // FEAT-PERF-29: used whenever streaming is on (the default) and there is a cache folder (see FetchAndDecodeTextureAsync).
         _streamer = new TextureStreamer(baseDir, FetchTextureRangeGatedAsync, DiskCache);
         SLNG.Core.FetchPipeReporter.Register(TextureStreaming.TakeLine);
 

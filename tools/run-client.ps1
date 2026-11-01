@@ -142,9 +142,11 @@ param(
     # FEAT-NET-07: mesh transfers at once (default 16). Passes --mesh-slots=N; only honoured together with -Diag.
     [int]$MeshSlots = 0,
 
-    # FEAT-PERF-29 A/B: progressive texture streaming -- a coarse first request, then the bytes the face needs.
-    # Passes --tex-stream; only honoured together with -Diag. -TexStreamFirst N sets the first request's size in
-    # bytes (default 18840, the estimator's discard-5 size; 600 is the reference viewer's).
+    # FEAT-PERF-29: progressive texture streaming (a coarse first request, then the bytes the face needs) is ON by
+    # default since v0.28.84. -NoTexStream turns it off (passes --no-tex-stream; works without -Diag), for the A/B the
+    # other way round. -TexStream is the switch from before and changes nothing now. -TexStreamFirst N sets the first
+    # request's size in bytes (default 18840; 600 is the reference viewer's); only honoured together with -Diag.
+    [switch]$NoTexStream,
     [switch]$TexStream,
     [int]$TexStreamFirst = 0,
 
@@ -285,10 +287,12 @@ if ($TexSlots -gt 0) {
     Write-Host "      HTTP texture slots $TexSlots (--tex-slots)" -ForegroundColor Yellow
     $userArgs += "--tex-slots=$TexSlots"
 }
-if ($TexStream) {
-    Write-Host "      texture streaming ON (--tex-stream)$(if ($TexStreamFirst -gt 0) { ", first request $TexStreamFirst B" })" -ForegroundColor Yellow
-    $userArgs += '--tex-stream'
-    if ($TexStreamFirst -gt 0) { $userArgs += "--tex-stream-first=$TexStreamFirst" }
+if ($NoTexStream) {
+    Write-Host "      texture streaming OFF -- every texture fetched whole (--no-tex-stream)" -ForegroundColor Yellow
+    $userArgs += '--no-tex-stream'
+} elseif ($TexStreamFirst -gt 0) {
+    Write-Host "      texture streaming, first request $TexStreamFirst B (--tex-stream-first)" -ForegroundColor Yellow
+    $userArgs += "--tex-stream-first=$TexStreamFirst"
 }
 if ($OnlyAttachment -ne '') {
     Write-Host "      only worn meshes $OnlyAttachment (--only-attachment)" -ForegroundColor Yellow

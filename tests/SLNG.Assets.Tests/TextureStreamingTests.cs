@@ -13,6 +13,18 @@ namespace SLNG.Assets.Tests;
 public class TextureStreamingTests
 {
     [Fact]
+    public void Streaming_is_on_unless_the_command_line_switches_it_off()
+    {
+        // FEAT-PERF-29: on by default since v0.28.84 (the A/B: cold texture bytes 1.94 -> 0.83 GB), and no
+        // longer tied to --diag. --tex-stream stays accepted as a no-op so older scripts keep working.
+        Assert.True(TextureStreaming.EnabledByArgs(System.Array.Empty<string>()));
+        Assert.True(TextureStreaming.EnabledByArgs(new[] { "--tex-stream" }));
+        Assert.True(TextureStreaming.EnabledByArgs(new[] { "--diag", "--tex-stream-first=600" }));
+        Assert.False(TextureStreaming.EnabledByArgs(new[] { "--no-tex-stream" }));
+        Assert.False(TextureStreaming.EnabledByArgs(new[] { "--tex-stream", "--no-tex-stream" }));
+    }
+
+    [Fact]
     public void First_request_is_the_estimators_discard_5_size_for_an_unknown_size()
     {
         Assert.Equal(J2kByteSizeEstimator.CalcDataSizeJ2C(0, 0, 5), TextureStreaming.DefaultFirstRequestBytes);

@@ -134,17 +134,23 @@ public static class Diagnostics
             System.Console.Error.WriteLine($"[Diag] HTTP texture slots set to {System.Math.Clamp(texSlots, 1, 64)} (--tex-slots)");
         }
 
-        // FEAT-PERF-29: --tex-stream turns progressive texture streaming on (a coarse first request, then the bytes the
-        // face needs); --tex-stream-first=N sets the first request's size (default 18840). Same rule as --tex-slots: only
-        // with --diag, so the A/B cannot leak into a normal session.
-        if (Enabled && (HasFlag(OS.GetCmdlineArgs(), "--tex-stream") || HasFlag(OS.GetCmdlineUserArgs(), "--tex-stream")))
+        // FEAT-PERF-29: progressive texture streaming (a coarse first request, then the bytes the face needs) is on in
+        // every session; --no-tex-stream turns it off, with or without --diag, so the A/B runs the other way round.
+        // --tex-stream, the switch from before, is accepted and changes nothing. --tex-stream-first=N, the first
+        // request's size (default 18840), stays an A/B knob: only with --diag, like --tex-slots.
+        SLNG.Assets.TextureStreaming.Enabled = SLNG.Assets.TextureStreaming.EnabledByArgs(
+            System.Linq.Enumerable.Concat(OS.GetCmdlineArgs(), OS.GetCmdlineUserArgs()));
+        if (!SLNG.Assets.TextureStreaming.Enabled)
         {
-            SLNG.Assets.TextureStreaming.Enabled = true;
+            System.Console.Error.WriteLine("[TexStream] texture streaming off (--no-tex-stream): every texture is fetched whole");
+        }
+        else if (Enabled)
+        {
             string? firstArg = FindValueArg("--tex-stream-first=", OS.GetCmdlineArgs())
                             ?? FindValueArg("--tex-stream-first=", OS.GetCmdlineUserArgs());
             if (firstArg != null && int.TryParse(firstArg, out int firstBytes) && firstBytes >= 256)
                 SLNG.Assets.TextureStreaming.FirstRequestBytes = firstBytes;
-            System.Console.Error.WriteLine($"[Diag] texture streaming on, first request {SLNG.Assets.TextureStreaming.FirstRequestBytes} B (--tex-stream)");
+            System.Console.Error.WriteLine($"[Diag] texture streaming on, first request {SLNG.Assets.TextureStreaming.FirstRequestBytes} B");
         }
 
         // FEAT-NET-07: --mesh-slots=N, the mesh transfers at once (default 16), same rules as --tex-slots.
