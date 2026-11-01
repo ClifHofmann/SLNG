@@ -2,7 +2,8 @@
 
 - Status: proposed
 - Date: 2026-10-31
-- Updated: 2026-11-01 with the FEAT-PERF-28 baseline (`docs/perf/baseline-arrival-2026-10-31.md`)
+- Updated: 2026-11-01 with the FEAT-PERF-28 baseline (`docs/perf/baseline-arrival-2026-10-31.md`), and
+  again that evening with the results of tasks 1, 2, 3 and 5 ("Where it stands" below)
 - Refines ADR 0004 P4 (one importance scheduler) and amends P3's jelly-doll rule.
 - Goal (maintainer, 2026-10-31): a significant improvement when entering a new region.
 
@@ -66,6 +67,54 @@ What it changes:
   two cold runs with many reduced avatars, other avatars' bakes waited ~45 s p95, scenery ~2 s.
 - **VRAM unloading did not show at Sirens** (0 in six runs). A crowded PEAK Lounge run the same day
   had 9. The budget still falls: from 9680 to 4556–4742 MB in the BUG-AVATAR-19 runs of 2026-11-01.
+
+### Where it stands (2026-11-01, evening)
+
+Sirens, 3 cold and 3 warm runs per set, with `tools/baseline-run.ps1`:
+- `baseline/20261101-1636`, v0.28.82: tasks 1, 2 and 5 merged, plus FEAT-PERF-31 (below).
+- `baseline/20261101-1745`, v0.28.83 with `--tex-stream`: task 3's build.
+
+Medians, ranges in brackets. "Settled" is new (see the findings).
+
+| Measure | Baseline (31.10.) | v0.28.82 | v0.28.83, `--tex-stream` |
+|---|---|---|---|
+| Every full avatar has every bake, cold | 30.4 s | 19.0 s | 15.6 s |
+| Every full avatar has every bake, warm | 29.8 s | 24.2 s | 23.7 s |
+| Settled, cold | 134.0 s | 135.8 s (116–136) | 106.5 s (96–116) |
+| Settled, warm | 71.7 s | 10.9 s (9–11) | 10.1 s (7–16) |
+| First moment no face waits (`noFaceWithoutTexture`), cold | 134.0 s | 36.4 s | 30.1 s |
+| Texture MB over HTTP, cold, whole run | 1722–1736 | 1927–1995 | **749–841** |
+| MB until settled, cold | 1666 | 1852 | 724 |
+| Reduced avatars without a bake at +60 s | nearly all | 0–1 | 0–2 |
+| Worst `Net` stage p50, cold | not measured | 30–42 s | 8–19 s |
+| `parked outfit unloaded under VRAM pressure` | 0 | 0 | 0 |
+
+What it says:
+- **Cause 3 was the main-thread queue.** FEAT-PERF-30 timed every stage. Texture binds waited 23–52 s
+  in `QueueWait`, behind ~13 ms `avatar.face_material` items in the shared lane, while the bind itself
+  takes 1–5 ms. FEAT-PERF-31 (#176) gave them their own lane with a 4 ms budget: `QueueWait` p50 fell
+  to 0.1–1.6 s, and a warm arrival settles in about 10 s instead of 65–101 s.
+- **A cold arrival comes in two waves.** About 65–80 s after the handshake, roughly 2,000 new textures
+  for 15,000–29,000 faces are requested and wait on the network until +115–136 s. The likely source is
+  objects the sim sends late: cold, the world holds about 8,000 entities at +15 s and 30,000 at +60 s.
+  That is not verified.
+- **The `[Arrival]` milestone fires between the waves.** `noFaceWithoutTexture` is the *first* moment
+  no face waits, so it flatters cold runs (36 s, with a gigabyte still to come). `tools/arrival_summary.py`
+  now also prints **settled**: the first `[TexStage.Total]` report after the last one with more than 50
+  faces waiting, and the MB until then. The 31.10. baseline had no stage reports; its 134 s is taken as
+  settled, because its queue never emptied in between (2,468–4,922 faces waiting at +30 s).
+- **Streaming cuts the cold bytes by about 58 %** and settles about 30 s earlier. A cold arrival is still
+  bound by the network (`Net` holds everything after the first wave), so the cold target is not met yet.
+- **Bakes:** cold is near the target, warm is not. Warm bakes take 24 s although almost everything else
+  settles in 10 s. Not looked into.
+- **The VRAM budget** still falls from 9680 to 3840–4272 MB, with and without streaming, and nothing was
+  unloaded at Sirens.
+- **Streaming is off by default** (`--tex-stream`, honoured only with `-Diag`). The maintainer's visual
+  check with it on found nothing wrong. Another avatar showed only its name tag for a while and then
+  appeared. After a restart it was there at once, with and without streaming, so nothing ties
+  it to streaming.
+- The network sampler of `baseline-run.ps1` read 1.0–1.4 Gbit/s peaks in these runs, against 225–273
+  Mbit/s on 31.10. It probably counts another adapter; the peaks are not used here.
 
 ### What the code does (read 2026-10-31, `main` at 7adb71b6)
 
@@ -138,6 +187,10 @@ everyone waits: cause 4 for the bytes of a cold arrival, cause 3 for everything 
 cold or warm. Cause 5 undoes work that was already done. We cannot change the line (6), and it is
 faster than assumed.
 
+*Status, 2026-11-01 evening:* causes 1, 2 and 3 are fixed (#173, #172, and FEAT-PERF-31 in #176).
+Cause 4 is built behind a setting (#178). What is left of a cold arrival is the bytes of its second
+wave on the line (4 and 6); cause 5 is the next task.
+
 Bronte fits causes 2 and 5. She was a full avatar whose head bake waited at priority 0. Then
 `full->parked` at 42 m unloaded her outfit, and `reduced->full` at 4.5 m loaded it again. Her grey
 head has no log line of its own. A missing GPU resolution is plausible but not proven.
@@ -149,17 +202,18 @@ Avatar priority and texture bytes are separate tasks, for three reasons:
 - They carry different risk: one is a priority function, the other a pipeline change behind a setting.
 - Each must be measurable on its own.
 
-Tasks 0, 1 and 2 are in `docs/ROADMAP.md`. The other ids are still proposals. The table is in the
-order the tasks run; task 5 came with the baseline and runs before task 3's build.
+Tasks 0–3 and 5 are in `docs/ROADMAP.md`. BUG-PERF-25 and BUG-NET-38 are still proposals. The table
+is in the order the tasks run; task 5 came with the baseline and ran before task 3's build.
 
-| Task | Id and title | What | Size | Status (2026-11-01) |
+| Task | Id and title | What | Size | Status (2026-11-01 evening) |
 |---|---|---|---|---|
 | 0 | FEAT-PERF-28 Arrival time base | Measurement only | S | Merged (#171); baseline in `docs/perf` |
 | 1 | BUG-PERF-24 Avatar textures rank by size | Priority | S | Merged (#172) |
-| 2 | BUG-AVATAR-19 Reduced avatars draw their bakes | Parity | S–M | PR #173 open |
-| 5 | FEAT-PERF-30 Where a face waits after the network | Measurement only | S–M | Not started |
-| 3 | FEAT-PERF-29 Progressive texture streaming | Spike (any time), then build after task 5 | L | Not started |
-| 4 | BUG-PERF-25 The VRAM budget falls under load | Read the logged terms, then fix | M | Not started; the terms are logged |
+| 2 | BUG-AVATAR-19 Reduced avatars draw their bakes | Parity | S–M | Merged (#173) |
+| 5 | FEAT-PERF-30 Where a face waits after the network | Measurement only | S–M | Merged (#176) |
+| 5, fix | FEAT-PERF-31 Texture binds get their own main-thread lane | Found by task 5 | S | Merged (#176) |
+| 3 | FEAT-PERF-29 Progressive texture streaming | Spike, then build | L | Spike merged (#177), build merged (#178), off by default |
+| 4 | BUG-PERF-25 The VRAM budget falls under load | Read the logged terms, then fix | M | Next; the terms are logged |
 | Any time | BUG-NET-38 Display names asked before the cap | Small fix | S | Not started |
 
 **Task 0: FEAT-PERF-28, the time base.** It changes no behaviour.
@@ -211,8 +265,8 @@ fallback "for avatars never loaded".
 - Open point for the spec: a bake's alpha (from alpha layers) must not cut holes in a stand-in that
   has no mesh body over it.
 
-*Status:* PR #173 is open. Its first 3 cold runs at Sirens had 0, 2 and 0 reduced avatars without a
-bake at +60 s, against nearly all in the baseline. Warm runs are still to do.
+*Result:* merged (#173). In the twelve runs of 2026-11-01, 0–2 reduced avatars had no bake at +60 s,
+against nearly all in the baseline.
 
 **Task 5: FEAT-PERF-30, where a face waits after the network.** Added with the baseline. It changes no
 behaviour. For each texture a face asks for, it logs the time spent in each stage between the request
@@ -226,6 +280,11 @@ and the bound texture:
 It reports p50/p95 per stage, and how many faces wait in each stage at +30 s, warm and cold. It is
 done when one warm run says which stage holds the 65–101 s. That result decides whether task 3's build
 can afford its extra uploads, or whether that stage is fixed first.
+
+*Result:* merged (#176), together with the fix it found. `QueueWait` held the time: texture binds sat
+23–52 s behind avatar material items in the shared lane. FEAT-PERF-31 gives them a lane of their own,
+served first, with a 4 ms budget (`RenderConfig.TextureUploadBudgetMs`). Warm, the block-compressed copy
+was found for 4,985–5,269 of 7,885–8,496 tries.
 
 **Task 3: FEAT-PERF-29, progressive streaming.** Two PRs. The spike can run now. The build waits for
 task 5: streaming shortens the ~60 s of cold bytes, but it adds uploads to the stage the baseline
@@ -247,12 +306,20 @@ points at.
   - In passing, fix the stale comment at `GridSession.Assets.cs:275-277`, which still says MeshPipe
     runs through LibreMetaverse (untrue since FEAT-NET-07).
 
+*Result:* both merged. The spike (#177, `docs/specs/FEAT-PERF-29-progressive-streaming.md`) found that
+Phase 2 failed because CoreJ2K could not yet produce an image in the client (until 2026-08-02), and that
+today the degraded branch was the blocker. The build (#178) asks first for the discard-5 size (18,840 B),
+decodes through the reduce path, refines through `GpuCache`'s sharpen path, and keeps partial bytes as
+`.part`. Bakes, sculpt maps and the own avatar's textures are fetched in full. Off by default; the A/B is
+in "Where it stands". Open: alpha is classified on the coarse image and not again after refinement, and
+the extra uploads' main-thread time is not measured on its own.
+
 **Task 4: BUG-PERF-25.** Its own task. The fix waits for the terms that task 0 logs. Measure again
 after task 3, because streaming changes how much texture memory there is.
 
 *Status:* the terms are logged now (`[VramTerms]`). At Sirens the budget fell from 9680 to about
-4.6 GB without unloading anything; the unloading needs a crowded place (PEAK Lounge, KinkyEvent) to
-reproduce.
+4.6 GB without unloading anything, and to 3.8–4.3 GB in the runs of 2026-11-01 evening, with and without
+streaming. The unloading needs a crowded place (PEAK Lounge, KinkyEvent) to reproduce.
 
 ### 3. VRAM pressure is its own task, measurement first
 
@@ -280,15 +347,20 @@ The baseline is Sirens, not KinkyEvent. The crowd varies between runs (13 to 43 
 compare only runs with a similar `[AvatarLimit]` count. The VRAM target needs a crowded place,
 because Sirens unloaded nothing.
 
-The targets are half the baseline (revised 2026-11-01 from the relative targets of the first version):
+The targets are half the baseline (revised 2026-11-01 from the relative targets of the first version).
+"No face waiting" now means **settled** (see "Where it stands"), not the first quiet moment.
 
-| Metric | Baseline cold / warm (median) | Target cold / warm |
-|---|---|---|
-| Arrival → every full avatar has every bake (any resolution) | 30.4 s / 29.8 s | 15 s / 15 s |
-| Arrival → no face waiting for a texture | 134.0 s / 71.7 s | 67 s / 36 s |
-| MB until no face waits | 1666 / 23 | 833 / none (already small) |
-| Reduced avatars without any bake at +60 s | nearly all / nearly all | 0 / 0 |
-| `parked outfit unloaded under VRAM pressure`, first 5 min, crowded place, 12 GB card | 9 (PEAK Lounge, one run) | 0 |
+| Metric | Baseline cold / warm (median) | Now: v0.28.83, `--tex-stream` | Target cold / warm |
+|---|---|---|---|
+| Arrival → every full avatar has every bake (any resolution) | 30.4 s / 29.8 s | 15.6 s / 23.7 s | 15 s / 15 s |
+| Arrival → settled (no more than 50 faces waiting from then on) | 134.0 s / 71.7 s | 106.5 s / 10.1 s | 67 s / 36 s |
+| MB until settled | 1666 / 23 | 724 / about 130 | 833 / none (already small) |
+| Reduced avatars without any bake at +60 s | nearly all / nearly all | 0–2 / 0–2 | 0 / 0 |
+| `parked outfit unloaded under VRAM pressure`, first 5 min, crowded place, 12 GB card | 9 (PEAK Lounge, one run) | not measured yet | 0 |
+
+Met: warm settled, the cold MB, cold bakes within a second, reduced avatars with bakes (nearly).
+Open: cold settled (107 s against 67 s), warm bakes (24 s against 15 s), and the VRAM target, which
+needs a crowded place.
 
 "Bytes until texture inflight is back to 0" is dropped as a target (see task 0's result). "Every
 bake" does not see missing attachments, so a bare avatar can still count as complete; that needs a
@@ -321,13 +393,16 @@ Each one needs a task-0 measurement before it becomes a task.
 | Cancel fetches nobody wants any more | The viewer drops a request whose priority stayed 0 for 5 s (`llviewertexture.cpp:2088-2093`). Our queue keeps textures of objects and avatars that are gone or left behind | The share of served textures whose owner is already gone |
 | Re-rank queued requests | The viewer re-reads the priority on every update. Ours is fixed when the request joins the queue | Only if, after streaming, `[TexWait]` by class still shows stale ranks |
 | Discard bias while the backlog is long | The viewer raises a discard bias under memory pressure (`llviewertexture.cpp:533-625`). We could also raise it for low-rank textures while inflight is large | The backlog length after task 3 |
-| A larger main-thread upload budget while a backlog exists | Warm arrivals wait with nothing in flight, and the work queue runs on a fixed budget per frame (memory `mainthread-workqueue-is-the-bottleneck`) | Task 5: whether the queue is the stage that holds the time |
-| Warm start from the compressed copy | `GpuCache` already reads a block-compressed copy before it decodes, when compression is on (`GpuCache.cs:1888-1908`). How often a warm face uses it is unknown | Task 5's hit rate for that copy |
+| A larger main-thread upload budget while a backlog exists | Partly done by FEAT-PERF-31 (own lane, 4 ms). Warm runs still show `QueueWait` p95 of 2.5–4.7 s in the first seconds, when everything arrives at once | Whether those first seconds matter once the rest is fast |
+| Warm start from the compressed copy | Task 5 measured it: found for 4,985–5,269 of 7,885–8,496 warm tries. Why the rest misses is unknown | The misses by reason |
+| Find what the second cold wave is | About 2,000 textures for 15,000–29,000 faces are asked 65–80 s after arrival and hold the cold result. Late objects from the sim are likely, not verified | `[RegionLoad]` entity counts against the `[TexStage]` request times, and which objects the faces belong to |
+| Streaming on by default | The A/B and the visual check are good. Today it is honoured only with `-Diag` | A small PR: on by default, off by a setting; then a run in a crowded place |
+| Why warm bakes take 24 s | Everything else settles in about 10 s warm | The bake fetches' stage times in a warm run |
 | Fetch only the mesh LOD in use | The viewer fetches only the LOD it needs. Whether our mesh fetch does is unmeasured | `[MeshPipe]` bytes per mesh compared with the LOD in use |
 | Pre-warm from the object cache | On a return visit, the `.slobj` cache knows the texture ids before ObjectUpdates arrive. Coarse fetches could start at the handshake | Helps only on a return visit, not in a new region |
 | Coarse textures for neighbour regions | Child regions already stream. Coarse textures for them would make a crossing cheaper | Region-crossing runs |
 | Real impostors | The viewer's over-cap avatar is a rendered snapshot that includes the mesh body and attachments | After BUG-AVATAR-19, if the base-body stand-in looks too wrong |
-| Stream bakes or fetch them in full | The viewer streams J2C bakes. It fetches in full only server bakes that are not J2C (`lltexturefetch.cpp:2553-2564`) | Which case SL's bake host is. The FEAT-PERF-29 spec decides |
+| Stream bakes or fetch them in full | The viewer streams J2C bakes. It fetches in full only server bakes that are not J2C (`lltexturefetch.cpp:2553-2564`). The FEAT-PERF-29 build fetches them in full; whether SL's bake host answers Range requests is unchecked | Whether bakes are among the last things to finish once streaming is on |
 | HTTP/2 to the asset host | Many streams over one connection instead of 8 connections | Ruled out by the baseline: the line is full during a cold download, so more streams add no bandwidth |
 | Grow the draw distance after arrival | Start near, then widen. Firestorm has a setting for this (not checked in its source) | Whether arrival is still bound by object count after tasks 1–5 |
 | Batch material ids (variant A) | See decision 4 | The `[Arrival]` trace |

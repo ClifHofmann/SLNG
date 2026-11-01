@@ -14,6 +14,11 @@ import sys
 
 NUM = r"([0-9.]+)"
 
+# A cold arrival comes in waves and the pipe can empty between them, so the [Arrival] milestones (the FIRST moment no face
+# waits) can fire before the last wave. "Settled" is the first report after the LAST one with more than this many faces
+# waiting (ADR 0005, 2026-11-01 results).
+SETTLE_FACES = 50
+
 # The stages of one texture fetch, in the order a warm one takes them (SLNG.Core.TexStage).
 STAGES = ["Pool", "Copy", "Disk", "DecodeWait", "DecodedRead", "Decode", "Net", "PrepWait", "Prepare", "QueueWait", "Upload"]
 STAGE_LINE = re.compile(
@@ -45,6 +50,7 @@ def summarise(path, timeline=True):
     wait_p95 = {}      # class -> max p95 ms seen
     wait_inflight = {}  # class -> max inflight seen
     http_mb = 0.0
+    http_points = []   # (t, MB so far) from [TexHttp]
     stages = {}        # stage -> {t: (n, p50, p95, max, open, faces, oldest)}
     counters = {}      # t -> tuple of the [TexStage] counters
     perf_path = os.path.splitext(path)[0] + ".perf.txt"
@@ -66,6 +72,9 @@ def summarise(path, timeline=True):
             m = re.search(r"MB=" + NUM, line)
             if m:
                 http_mb = max(http_mb, float(m.group(1)))
+                mt = re.search(r"\[TexHttp\] t=" + NUM, line)
+                if mt:
+                    http_points.append((float(mt.group(1)), float(m.group(1))))
         elif "[TexStage" in line:
             pass  # handled below, from both files
         else:
@@ -101,6 +110,7 @@ def summarise(path, timeline=True):
               "| ended:", line.split("ended:")[-1].strip())
         for key in ("bakes", "noFaceWithoutTexture", "texInflight0"):
             print(f"  {key:22}: {field(line, key)}")
+    print_settled(stages.get("Total", {}), http_points, handshake)
     for line in counts or perf_counts:
         print("  ", re.sub(r"^(?:\d\d:\d\d:\d\d )?\[ArrivalCount\] t=[0-9.]+ ", "", line))
 
@@ -124,6 +134,27 @@ def summarise(path, timeline=True):
         budgets = [int(re.search(r"budget=(\d+)MB", t).group(1)) for t in terms]
         print(f"  [VramTerms]: {len(terms)} changes, budget first {budgets[0]} / lowest {min(budgets)} / last {budgets[-1]} MB")
     print(f"  'parked outfit unloaded under VRAM pressure': {parked}")
+
+
+def print_settled(total, http_points, handshake):
+    """When the last wave of waiting faces is over: the first [TexStage.Total] report after the last one above SETTLE_FACES."""
+    if not total:
+        return
+    base = handshake if handshake is not None else 0.0
+    times = sorted(total)
+    busy = [t for t in times if total[t][5] > SETTLE_FACES]
+    if not busy:
+        print(f"  settled               : never more than {SETTLE_FACES} faces waiting")
+        return
+    after = [t for t in times if t > busy[-1]]
+    peak_t = max(busy, key=lambda t: total[t][5])
+    if not after:
+        print(f"  settled               : not within the run (still {total[busy[-1]][5]} faces waiting at +{busy[-1] - base:.0f}s)")
+        return
+    settled = after[0]
+    mb = max((mb for t, mb in http_points if t <= settled), default=0.0)
+    print(f"  settled               : +{settled - base:.1f}s/{mb:.1f}MB (last report above {SETTLE_FACES} faces waiting at "
+          f"+{busy[-1] - base:.0f}s; peak {total[peak_t][5]} faces at +{peak_t - base:.0f}s)")
 
 
 def print_stages(stages, counters, handshake, timeline):
