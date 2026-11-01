@@ -82,6 +82,9 @@ public partial class AvatarRenderer : Node3D
         // FEAT-PERF-28: bake index -> the texture id actually applied to the body part (LoadedTextures is set when the bake is
         // REQUESTED, so it cannot tell "asked for" from "on the avatar"). Main thread only.
         public Dictionary<int, Guid> BakesApplied { get; } = new();
+        // BUG-AVATAR-19: the material a stand-in's body part is drawn with once its bake has arrived (opaque, jelly where the bake's alpha
+        // hides the body). The part's own material stays in StashedPartMaterials for the promotion. Main thread only.
+        public Dictionary<MeshInstance3D, ShaderMaterial> StandInMaterials { get; } = new();
         public AvatarAnimationPlayer AnimPlayer { get; } = new();
         public List<Guid>? LoadedAnimationIds { get; set; }
         // Which animation request is the latest for this avatar. A request that finishes after a newer one was
@@ -1798,12 +1801,16 @@ public partial class AvatarRenderer : Node3D
                      "until one arrives; GridSession recovers the ids from our own ObjectUpdate.");
         }
 
-        // A reduced avatar is drawn in the jelly-doll colour, so its bakes are not fetched; the next
-        // UpdateVisual after SetAvatarFull sees them as changed and loads them.
-        if (avatar.BakedTextures != null && _assetService != null && !visual.IsReduced)
+        // BUG-AVATAR-19: a reduced avatar draws its system body with its bakes, each part on the jelly colour until its bake has
+        // arrived, so it loads the bakes the stand-in shows (StandInBakePolicy) -- but only while it is on screen, where its bakes
+        // matter. The cull tick asks again when it comes into range. A full avatar loads every channel as before.
+        if (avatar.BakedTextures != null && _assetService != null && (!visual.IsReduced || visual.Shown))
         {
             bool anyBakeChanged = false;
-            foreach (var kv in avatar.BakedTextures)
+            IEnumerable<KeyValuePair<int, Guid>> wantedBakes = visual.IsReduced
+                ? StandInBakePolicy.WantedBakes(avatar.BakedTextures)
+                : avatar.BakedTextures;
+            foreach (var kv in wantedBakes)
             {
                 int bakeIndex = kv.Key;
                 var textureId = kv.Value;
@@ -2359,11 +2366,15 @@ public partial class AvatarRenderer : Node3D
         // BUG-PERF-13: Bake textures stay full-res (screenPixelArea 0) and are exempt from distance LOD
         // and shrinking (matching reference viewer BOOST_AVATAR_BAKED).
         float screenPixelArea = 0f;
+        // BUG-AVATAR-19: a reduced avatar's stand-in is small on screen; its bake is prepared at what it can show, not at full size,
+        // and is sharpened again if the avatar is promoted (the cache's RestoreBake).
+        bool standIn = visual.IsReduced;
+        if (standIn) screenPixelArea = StandInBakePolicy.PixelAreaForStandIn(ComputeAvatarScreenPixelArea(visual));
         var godotTexture = await _gpuCache.GetOrUploadTextureAsync(
             textureId, _assetService, generateMipmaps: true, initialRefCount: 1, rejectDegraded: true,
             bakeChannel: bakeIndex, bakeAgentId: visual.AgentId,
             screenPixelArea: screenPixelArea, isAvatar: true, isSelf: visual.IsSelf,
-            priority: TexturePriorityFor(visual));
+            priority: TexturePriorityFor(visual), standIn: standIn);
 
         if (godotTexture == null)
         {
@@ -2482,6 +2493,9 @@ public partial class AvatarRenderer : Node3D
                     mat.SetShaderParameter(PrimShaderFamily.AlphaScissorThreshold, 0.5f);
                     // alpha_to_coverage is baked into the scissor variant's render_mode. MSAA 4x is on
                     // project-wide (app/project.godot) specifically so this edge resolves smoothly.
+
+                    // BUG-AVATAR-19: this part is on its stashed material because the avatar is a stand-in; show the bake now.
+                    if (stashed) ShowStandInFromOriginal(visual, PartNameOf(visual, meshInstance), meshInstance);
                 }
 
                 visual.BakesApplied[bakeIndex] = textureId; // FEAT-PERF-28: the arrival timeline's "this bake is on the avatar"
@@ -7398,6 +7412,8 @@ void fragment() {
             jelly ??= GetJellyMaterial(visual.AgentId);
             if (!visual.StashedPartMaterials.ContainsKey(mi)) visual.StashedPartMaterials[mi] = mi.MaterialOverride;
             mi.MaterialOverride = jelly;
+            // BUG-AVATAR-19: an avatar that already wore its bakes (demoted from full) keeps showing them.
+            ShowStandInFromOriginal(visual, name, mi);
         }
     }
 
@@ -7409,6 +7425,7 @@ void fragment() {
             if (IsInstanceValid(mi)) mi.MaterialOverride = original;
         }
         visual.StashedPartMaterials.Clear();
+        visual.StandInMaterials.Clear();   // BUG-AVATAR-19: the stand-in materials are released with the jelly.
     }
 
     private void SetAvatarReduced(AvatarVisual visual)
@@ -7943,7 +7960,11 @@ void fragment() {
             {
                 bool visible = visual.Root.Position.DistanceSquaredTo(agentPos) <= maxSq;
                 if (visual.Root.Visible != visible) { visual.Root.Visible = visible; FrameTimeline.CountXform(FrameTimeline.XformSource.Visibility); }
+                bool wasShown = visual.Shown;
                 visual.Shown = visible;
+                // BUG-AVATAR-19: a reduced avatar asks for its stand-in bakes only while it is in range; ask now it has come into it.
+                if (visible && !wasShown && visual.IsReduced && visual.EntityId != Guid.Empty)
+                    CallDeferred(nameof(UpdateVisual), visual.EntityId.ToString());
                 if (visible) visual.HiddenSince = double.PositiveInfinity;
                 else if (double.IsPositiveInfinity(visual.HiddenSince)) visual.HiddenSince = NowSeconds;
 

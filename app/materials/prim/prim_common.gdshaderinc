@@ -13,6 +13,13 @@ uniform vec4 albedo_color : source_color = vec4(1.0);
 uniform sampler2D albedo_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_albedo_texture = false;
 
+// BUG-AVATAR-19: a reduced avatar's stand-in draws its system body with the bake, but the bake's alpha hides the body wherever an
+// alpha layer sits under a mesh body (the RGB there is conventionally black), and a stand-in wears no mesh. Where the bake's alpha is
+// below this cutoff the stand-in shows `standin_color` (its jelly colour) instead of a hole or a black patch. 0 = off, which every
+// other face is. The cutoff is the full avatar's own alpha-scissor value.
+uniform float standin_alpha_cutoff : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 standin_color : source_color = vec3(0.5);
+
 // --- PBR --------------------------------------------------------------------------------
 uniform float metallic_factor : hint_range(0.0, 1.0) = 0.0;
 uniform float roughness_factor : hint_range(0.0, 1.0) = 1.0;
@@ -604,7 +611,12 @@ float slng_shade(vec2 uv, vec3 view_position, vec3 normal,
                  out vec3 out_emission) {
     vec4 albedo = albedo_color;
     if (has_albedo_texture) {
-        albedo *= texture(albedo_texture, uv);
+        vec4 tex = texture(albedo_texture, uv);
+        if (standin_alpha_cutoff > 0.0 && tex.a < standin_alpha_cutoff) {
+            albedo = vec4(standin_color, 1.0);
+        } else {
+            albedo *= tex;
+        }
     }
 
     vec3 atmos_additive;
