@@ -76,7 +76,7 @@ per avatar**:
 
 One avatar is then a handful of draws and one skin update per frame, instead of dozens. Over-cap
 avatars are **parked** (hidden, skin detached, data kept) and only unloaded under memory pressure, so
-a camera swing costs nothing. The jelly doll stays the fallback for avatars never loaded. Impostors
+a camera swing costs nothing. A reduced avatar draws its system body with its bakes (BUG-AVATAR-19, amended 2026-10-31; spec `docs/specs/BUG-AVATAR-19-reduced-avatar-bakes.md`): the jelly doll shows only on a part whose bake has not arrived yet, and for avatars the viewer would mute. Impostors
 become a cheap later option on top of a merged character, not a prerequisite.
 
 *Tasks:* BUG-PERF-16 (park), outfit merge (new), FEAT-PERF-18, FEAT-PERF-22 (re-scoped).

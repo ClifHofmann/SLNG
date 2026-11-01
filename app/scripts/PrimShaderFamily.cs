@@ -401,6 +401,9 @@ public static class PrimShaderFamily
     public static readonly StringName AlbedoColor = "albedo_color";
     public static readonly StringName AlbedoTexture = "albedo_texture";
     public static readonly StringName HasAlbedoTexture = "has_albedo_texture";
+    // BUG-AVATAR-19: a reduced avatar's stand-in draws this colour where the bake's alpha is below the cutoff (see prim_common.gdshaderinc).
+    public static readonly StringName StandInAlphaCutoff = "standin_alpha_cutoff";
+    public static readonly StringName StandInColor = "standin_color";
 
     public static readonly StringName MetallicFactor = "metallic_factor";
     public static readonly StringName RoughnessFactor = "roughness_factor";

@@ -494,7 +494,8 @@ public class GpuCache
         Guid bakeAgentId = default,
         bool isAvatar = false,
         bool isSelf = false,
-        bool? compress = null)
+        bool? compress = null,
+        bool standIn = false)
     {
         if (textureId == Guid.Empty) return Task.FromResult<ImageTexture?>(null);
         // FEAT-NET-07: the wearer's own textures go first in every fetch and decode queue (they were served in
@@ -520,7 +521,9 @@ public class GpuCache
         // but must NOT be in _noShrink so they can be evicted when unreferenced or shrunk when over budget.
         if (bakeChannel.HasValue)
         {
-            screenPixelArea = 0f;
+            // BUG-AVATAR-19: a reduced avatar's stand-in keeps the area it was asked with, so its bake is prepared at what the
+            // avatar can show instead of at full size; RestoreBake sharpens it when its wearer is promoted (UpdateProtectedAvatarTextures).
+            if (!standIn) screenPixelArea = 0f;
             _avatarTextures.TryAdd(textureId, 0);
             _bakeTextures.TryAdd(textureId, 0);
             _bakeSource[textureId] = (bakeChannel.Value, bakeAgentId);
