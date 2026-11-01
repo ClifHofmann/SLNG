@@ -1914,7 +1914,7 @@ public class GpuCache
                         _uploadFromDegraded.TryRemove(textureId, out _);
                         var warmTcs = new TaskCompletionSource<ImageTexture?>();
                         SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.QueueWait);
-                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Upload, () =>
                         {
                             SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Upload);
                             var committed = CommitPreparedTexture(textureId, warm, screenPixelArea, generateMipmaps, initialRefCount);
@@ -1993,7 +1993,7 @@ public class GpuCache
             // migrated to it.
             var tcs = new TaskCompletionSource<ImageTexture?>();
             SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.QueueWait);
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Upload, () =>
             {
                 SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Upload);
                 var committed = CommitPreparedTexture(textureId, prepared, screenPixelArea, generateMipmaps, initialRefCount);
