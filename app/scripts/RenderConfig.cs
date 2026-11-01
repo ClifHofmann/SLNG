@@ -353,6 +353,11 @@ public static class RenderConfig
     /// </summary>
     public static double MainThreadWorkBudgetMaxMs = 9.0;
 
+    /// <summary>FEAT-PERF-31: milliseconds a frame the main-thread queue spends binding textures that are ready
+    /// (<see cref="MainThreadWorkQueue.Lane.Upload"/>), on top of <see cref="MainThreadWorkBudgetMs"/>. A texture
+    /// bind is 0.02-5 ms (most under 1), so this is tens to hundreds a frame; at least one runs whatever the figure.</summary>
+    public static double TextureUploadBudgetMs = 4.0;
+
     /// <summary>Queue depth at which the budget starts rising above
     /// <see cref="MainThreadWorkBudgetMs"/>, and the depth at which it reaches
     /// <see cref="MainThreadWorkBudgetMaxMs"/>.</summary>

@@ -54,6 +54,7 @@ $asideObjects = "$objectsDir.baseline-aside"
 $testCache = "$cacheDir.baseline-test"
 $testObjects = "$objectsDir.baseline-test"
 $godotLog = Join-Path $userData 'logs\godot.log'
+$perfLog = Join-Path $userData 'logs\slng-perf.log'   # written straight through; carries [Arrival*] and [TexStage*] too
 
 if (-not $OutDir) { $OutDir = Join-Path $repo ("baseline\" + (Get-Date -Format 'yyyyMMdd-HHmm')) }
 $summaryScript = Join-Path $repo 'tools\arrival_summary.py'
@@ -200,6 +201,8 @@ try {
         Start-Sleep -Seconds 2   # the log is closed by now; a moment for the file system
         $dest = Join-Path $OutDir "$label.log"
         if (Test-Path $godotLog) { Copy-Item $godotLog $dest } else { Say "godot.log nicht gefunden: $godotLog" Red }
+        # Next to it, not *.log (the summary reads every *.log in the folder as a run of its own): arrival_summary.py picks it up by name.
+        if (Test-Path $perfLog) { Copy-Item $perfLog (Join-Path $OutDir "$label.perf.txt") } else { Say "slng-perf.log nicht gefunden: $perfLog" Yellow }
         $peaks = Get-NetPeaks $netCsv
         $note = ''
         if (-not $NoPrompt) { $note = Read-Host 'Notiz zu diesem Lauf (z.B. "Bronte nackt"), Enter = keine' }

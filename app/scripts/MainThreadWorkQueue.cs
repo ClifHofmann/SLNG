@@ -47,6 +47,12 @@ public static class MainThreadWorkQueue
 
         /// <summary>Cosmetic refinement of something already visible (texture sharpening).</summary>
         Refine = 1,
+
+        /// <summary>FEAT-PERF-31: a texture whose pixels are ready and only needs binding (<c>texture.upload</c>). Each costs a
+        /// few hundredths of a millisecond, yet in the Visual lane it queued behind avatar face materials of ~13 ms each, one of
+        /// them per frame: warm arrivals at Sirens waited 40-52 s there with nothing left to download. Served first, from a budget
+        /// of its own (<see cref="RenderConfig.TextureUploadBudgetMs"/>), so it cannot be starved and cannot starve the rest.</summary>
+        Upload = 2,
     }
 
     private sealed class Item
@@ -71,7 +77,11 @@ public static class MainThreadWorkQueue
     {
         new BumpQueue<Item>(() => PrioritySubject.Focus), // Visual
         new BumpQueue<Item>(() => PrioritySubject.Focus), // Refine
+        new BumpQueue<Item>(() => PrioritySubject.Focus), // Upload
     };
+
+    /// <summary>The order the pump serves the lanes in: texture uploads first (FEAT-PERF-31), then as before.</summary>
+    private static readonly int[] _pumpOrder = { (int)Lane.Upload, (int)Lane.Visual, (int)Lane.Refine };
 
     /// <summary>Items of <paramref name="subject"/> still waiting in any lane (the focus avatar's backlog).</summary>
     public static int PendingFor(Guid subject)
@@ -226,8 +236,14 @@ public static class MainThreadWorkQueue
         _onPumpThread = true;
         _clock.Restart();
 
-        for (int lane = 0; lane < _lanes.Length; lane++)
+        foreach (int lane in _pumpOrder)
         {
+            // FEAT-PERF-31: uploads have their own budget and the clock starts over after them, so the lanes behind
+            // keep the budget they always had.
+            double laneBudgetMs = budgetMs;
+            if ((Lane)lane == Lane.Visual) _clock.Restart();
+            else if ((Lane)lane == Lane.Upload) laneBudgetMs = RenderConfig.TextureUploadBudgetMs;
+
             // Limit texture sharpening (SetImage) to 2 per frame to prevent Godot 4 Vulkan backend
             // from crashing (Signal 11) when freeing and recreating too many in-use ImageTextures.
             int maxItems = (Lane)lane == Lane.Refine ? 2 : int.MaxValue;
@@ -236,7 +252,7 @@ public static class MainThreadWorkQueue
             
             while (true)
             {
-                if (ranOne && _clock.Elapsed.TotalMilliseconds >= budgetMs) break;
+                if (ranOne && _clock.Elapsed.TotalMilliseconds >= laneBudgetMs) break;
                 if (itemsProcessed >= maxItems) break;
                 if (!_lanes[lane].TryDequeue(out var item)) break;
 

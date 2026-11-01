@@ -560,6 +560,7 @@ public class GpuCache
             bypassedDegraded = cached != null && rejectDegraded && _uploadFromDegraded.ContainsKey(textureId);
             if (bypassedDegraded) cached = null;
             MaybeDumpGpuCacheStats(cached != null, bypassedDegraded);
+            SLNG.Core.TexStages.NoteLookup(cached != null);   // FEAT-PERF-30 (--diag): one Interlocked add
         }
         if (cached != null)
         {
@@ -598,6 +599,7 @@ public class GpuCache
             if (SLNG.Core.Diag.Verbose && !pending.IsCompleted)
             {
                 Interlocked.Increment(ref _facesWaiting);
+                SLNG.Core.TexStages.AddFace(textureId);   // FEAT-PERF-30: the stage this face's texture is in
                 pending.ContinueWith(static (_, state) => Interlocked.Decrement(ref ((GpuCache)state!)._facesWaiting),
                     this, TaskScheduler.Default);
             }
@@ -1279,15 +1281,21 @@ public class GpuCache
     /// straight from _Process's cull sweep. Without the hop that case would run the whole image
     /// build on the main thread with no budget at all, which is worse than the queued version it
     /// replaces.</summary>
-    private static async Task<T> RunOnImageWorker<T>(Func<T> work, T whenShuttingDown)
+    private static async Task<T> RunOnImageWorker<T>(Func<T> work, T whenShuttingDown, Guid stageId = default)
     {
+        // FEAT-PERF-30 (--diag): a texture fetch's stage clock, when this is for one (see SLNG.Core.TextureStageBoard).
+        if (stageId != default) SLNG.Core.TexStages.Enter(stageId, SLNG.Core.TexStage.PrepWait);
         await _imagePrepGate.WaitAsync().ConfigureAwait(false);
         Interlocked.Increment(ref _imagePrepsRunning);
         try
         {
             // Counted first, checked second -- see BeginShutdown. The engine is going away;
             // no texture is worth an AccessViolation on the way out.
-            return await Task.Run(() => _shuttingDown ? whenShuttingDown : work()).ConfigureAwait(false);
+            return await Task.Run(() =>
+            {
+                if (stageId != default) SLNG.Core.TexStages.Enter(stageId, SLNG.Core.TexStage.Prepare);
+                return _shuttingDown ? whenShuttingDown : work();
+            }).ConfigureAwait(false);
         }
         finally
         {
@@ -1307,10 +1315,10 @@ public class GpuCache
     /// sharpness. 0 compares bytes, in the new image's format.</param>
     private Task<PreparedImage> PrepareImageAsync(
         Guid textureId, SLNG.Assets.TextureData textureData, bool generateMipmaps, float screenPixelArea,
-        long replacedBytes = 0, bool compressible = false, int replacedWidth = 0, int replacedHeight = 0)
+        long replacedBytes = 0, bool compressible = false, int replacedWidth = 0, int replacedHeight = 0, Guid stageId = default)
         => RunOnImageWorker(
             () => PrepareImage(textureId, textureData, generateMipmaps, screenPixelArea, replacedBytes, compressible, replacedWidth, replacedHeight),
-            new PreparedImage(null, 0f, 0));
+            new PreparedImage(null, 0f, 0), stageId);
 
     /// <summary>FEAT-PERF-17: a re-upload of <paramref name="width"/> x <paramref name="height"/> would be no
     /// sharper than what is resident -- by size when the resident size is known, else by bytes.</summary>
@@ -1888,26 +1896,38 @@ public class GpuCache
     {
         try
         {
+            // FEAT-PERF-30 (--diag): the stage clock of this fetch; see SLNG.Core.TextureStageBoard.
+            SLNG.Core.TexStages.Open(textureId);
+
             // FEAT-PERF-17 Part B: the stored compressed copy first. A hit is a slice of its mip chain -- no
             // decode, no RGBA read, no encode -- and is a clean decode's by construction.
             if (compressible && _compressTextures)
             {
+                SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Copy);
                 var copy = await assetService.TryGetCompressedTextureAsync(textureId).ConfigureAwait(false);
+                SLNG.Core.TexStages.NoteCopyAttempt(copy != null);
                 if (copy != null)
                 {
                     var fromCopy = await RunOnImageWorker(
                         () => PrepareFromCompressed(textureId, copy, generateMipmaps, screenPixelArea, 0),
-                        (PreparedImage?)null).ConfigureAwait(false);
+                        (PreparedImage?)null, textureId).ConfigureAwait(false);
                     if (fromCopy is { Image: not null } warm)
                     {
+                        SLNG.Core.TexStages.NotePath(SLNG.Core.TexPath.Copy);
                         _uploadFromDegraded.TryRemove(textureId, out _);
                         var warmTcs = new TaskCompletionSource<ImageTexture?>();
-                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-                            warmTcs.SetResult(CommitPreparedTexture(textureId, warm, screenPixelArea, generateMipmaps, initialRefCount)),
-                            label: "texture.upload");
+                        SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.QueueWait);
+                        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Upload, () =>
+                        {
+                            SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Upload);
+                            var committed = CommitPreparedTexture(textureId, warm, screenPixelArea, generateMipmaps, initialRefCount);
+                            SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Done);   // before SetResult: it runs the awaiting code inline
+                            warmTcs.SetResult(committed);
+                        }, label: "texture.upload");
                         return await warmTcs.Task.ConfigureAwait(false);
                     }
                 }
+                SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Pool);
             }
 
             // desiredDiscard: 0 here, deliberately -- always fetch/decode the complete asset.
@@ -1962,7 +1982,7 @@ public class GpuCache
             // per-item cost to a fraction of a millisecond, so the same 3 ms budget now drains
             // many uploads per frame. It is also what AGENTS.md's non-negotiable #2 asks for.
             var prepared = await PrepareImageAsync(textureId, textureData, generateMipmaps, screenPixelArea,
-                    compressible: compressible)
+                    compressible: compressible, stageId: textureId)
                 .ConfigureAwait(false);
 
             // FATAL BUG, live on Aditi: this used to be Godot.Callable.From(() => {...}).CallDeferred()
@@ -1975,13 +1995,19 @@ public class GpuCache
             // MainThreadWorkQueue, built for exactly this -- and this call site was simply never
             // migrated to it.
             var tcs = new TaskCompletionSource<ImageTexture?>();
-            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () =>
-                tcs.SetResult(CommitPreparedTexture(textureId, prepared, screenPixelArea, generateMipmaps, initialRefCount)),
-                label: "texture.upload");
+            SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.QueueWait);
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Upload, () =>
+            {
+                SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Upload);
+                var committed = CommitPreparedTexture(textureId, prepared, screenPixelArea, generateMipmaps, initialRefCount);
+                SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Done);   // before SetResult: it runs the awaiting code inline
+                tcs.SetResult(committed);
+            }, label: "texture.upload");
             return await tcs.Task.ConfigureAwait(false);
         }
         finally
         {
+            SLNG.Core.TexStages.Close(textureId);
             _inflightTextureUploads.TryRemove(textureId, out _);
         }
     }
