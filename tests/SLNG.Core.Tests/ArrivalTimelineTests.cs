@@ -176,6 +176,23 @@ public class ArrivalTimelineTests
     }
 
     [Fact]
+    public void A_detail_provider_adds_where_the_waiting_faces_are_to_the_count_lines_only()
+    {
+        int asked = 0;
+        _timeline.CountDetail = () => { asked++; return "decodeWait=40f/9t"; };
+        Enter(100, 100);
+        _timeline.Update(Sample(full: 1, reduced: 1, texInflight: 5, facesWaiting: 5, bytes: Mb), 101);
+        _timeline.Update(Sample(full: 1, reduced: 1, texInflight: 5, facesWaiting: 5, bytes: Mb), 120);
+        Assert.Equal(0, asked);
+
+        _timeline.Update(Sample(full: 1, reduced: 1, texInflight: 5, facesWaiting: 5, bytes: Mb), 131);
+
+        var line = Assert.Single(_lines, l => l.StartsWith("[ArrivalCount]"));
+        Assert.Contains("waitingIn: decodeWait=40f/9t", line);
+        Assert.Equal(1, asked);
+    }
+
+    [Fact]
     public void Each_count_is_written_once_however_often_it_is_sampled_afterwards()
     {
         Enter(100, 100);
