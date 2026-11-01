@@ -195,7 +195,7 @@ Streaming bakes is a later option, if the `[Arrival]` trace puts them on the cri
 
 Behind `--tex-stream` (`Diagnostics.cs`, like `--tex-slots`), off by default, with `run-client.ps1
 -TexStream` for the A/B. No Preferences entry in this PR: that needs the maintainer's OK and the Preferences
-plan.
+plan. (Since v0.28.84 streaming is on by default; see "Default on" below.)
 
 1. **First request: the estimator's discard-5 size for an unknown size** (`CalcDataSizeJ2C(0, 0, 5)` =
    18,840 B), not the viewer's 600 B.
@@ -288,8 +288,8 @@ PR 2 (build), measured with the FEAT-PERF-28 time base, Sirens or KinkyEvent, co
 
 ### How PR 2 is built (v0.28.83-alpha)
 
-Run the A/B with `tools/baseline-run.ps1 -TexStream` (and optionally `-TexStreamFirst <bytes>`, `-TexSlots <n>`);
-`info.txt` records the switches. The client needs `--diag` for `--tex-stream` to take effect.
+The A/B ran with `tools/baseline-run.ps1 -TexStream` on v0.28.83, where `--tex-stream` needed `--diag`. Since
+v0.28.84 streaming is the default (see "Default on" below).
 
 - `SLNG.Net.TextureRange` (pure) builds the range and reads the response; `GridSession.FetchTextureRangeAsync`
   sends it over the ViewerAsset cap with the same slots and `[TexHttp]`/`[TexWait]` accounting as a full fetch.
@@ -309,6 +309,33 @@ Run the A/B with `tools/baseline-run.ps1 -TexStream` (and optionally `-TexStream
 - `[TexStream]` (`--diag`, every 5 s): first requests and MB, refinements and MB, decodes from `.part` without a
   request, completed assets, rescued decodes, fallbacks.
 
+### Default on (v0.28.84-alpha)
+
+The A/B (off `baseline/20261101-1636`, on `baseline/20261101-1745`): cold texture bytes 1.94 -> 0.83 GB, the last
+network wave over at ~126 -> ~91 s, warm unchanged; the maintainer's look in-world found nothing wrong. So:
+
+- Streaming is on in every session, with or without `--diag`. `--no-tex-stream` turns it off
+  (`TextureStreaming.EnabledByArgs`); `tools/run-client.ps1 -NoTexStream` and `tools/baseline-run.ps1 -NoTexStream`
+  pass it, and `info.txt` records the arm.
+- `--tex-stream` / `-TexStream` are still accepted and change nothing, so older scripts and notes keep working.
+- `--tex-stream-first=N` stays an A/B knob and needs `--diag`, like `--tex-slots`. The `[TexStream]` line is
+  `--diag` only, as before.
+- **No Preferences entry.** The Preferences plan (`docs/specs/FEAT-UI-79-preferences-rework.md`) has no row for it.
+  The fitting place by its own "Rule for Advanced" would be Network & cache › Network › Advanced, but adding a row
+  the plan does not name needs the maintainer's OK and a plan update first (AGENTS.md).
+
+**Known gap: alpha is classified on the coarse image.** `GpuCache` computes `DetectAlpha` / `AnalyzeAlphaMaskable`
+on every upload, the refined one included, but `ObjectRenderer.ApplyAlphaCutout` reads them only when a face's
+material is built, so the coarse upload decides. Measured offline on the 33 four-component textures of the spike
+sample: 29 keep their class, 3 change from None (an alpha channel that is all 255) to Blend on the 64 px coarse
+decode, all of them 2048x2048. Those faces get the cutout shader with alpha ~1, so they look opaque but leave the
+opaque path. The reference viewer re-reads the alpha on each new image (`LLImageGL::analyzeAlphaData`). Fixing it
+here takes three parts, which is why it is not in this change: a "refined, alpha class changed" signal from
+`GpuCache`'s sharpen; an index from texture id to the legacy materials bound to it (with their tint, fullbright and
+"resolved by the legacy material" flags, from `BindLegacyFaceTexture`); and an `ApplyAlphaCutout` that can run a
+second time, since today it starts from an opaque material and its None branch returns without undoing an earlier
+alpha choice.
+
 ## Technical Specs & Affected Files (PR 2)
 
 - `src/SLNG.Net/GridSession.Assets.cs`: Range fetch with completeness, offset continuation, stale comment
@@ -324,4 +351,5 @@ Run the A/B with `tools/baseline-run.ps1 -TexStream` (and optionally `-TexStream
 
 - [x] PR 1: spike, offline from the cache (this spec)
 - [x] PR 2: build behind `--tex-stream`, tests first (v0.28.83-alpha)
+- [x] Streaming on by default, `--no-tex-stream` to turn it off (v0.28.84-alpha)
 - [ ] PR 2: in-world A/B against the FEAT-PERF-28 baseline

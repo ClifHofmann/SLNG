@@ -10,8 +10,14 @@ namespace SLNG.Assets;
 /// </summary>
 public static class TextureStreaming
 {
-    /// <summary>Off by default; <c>--tex-stream</c> (with <c>--diag</c>) turns it on for the A/B. Startup only.</summary>
-    public static bool Enabled { get; set; }
+    /// <summary>On by default since v0.28.84 (the A/B at a crowded region: cold texture bytes 1.94 -> 0.83 GB, the
+    /// last network wave over at ~91 s instead of ~126 s); <c>--no-tex-stream</c> turns it off. Startup only.</summary>
+    public static bool Enabled { get; set; } = true;
+
+    /// <summary>The setting the command line asks for: on, unless <c>--no-tex-stream</c> is among
+    /// <paramref name="args"/>. <c>--tex-stream</c>, the switch from before the default changed, is accepted and
+    /// changes nothing, so scripts and notes that pass it keep working.</summary>
+    public static bool EnabledByArgs(IEnumerable<string> args) => !args.Contains("--no-tex-stream");
 
     /// <summary>The estimator's discard-5 size for a texture of unknown size (it assumes 2048x2048): 18,840 B.
     /// The spike decoded every such cut cleanly; the viewer's own 600 B was blank or far off on large textures.</summary>

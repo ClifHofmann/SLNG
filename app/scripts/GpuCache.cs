@@ -2025,7 +2025,7 @@ public class GpuCache
         }
     }
 
-    /// <summary>FEAT-PERF-29: whether a texture may be streamed (with <c>--tex-stream</c>). Not the wearer's own:
+    /// <summary>FEAT-PERF-29: whether a texture may be streamed (on by default; <c>--no-tex-stream</c>). Not the wearer's own:
     /// those are boosted and never shrunk, and are fetched whole like the reference viewer's boosted textures. Bakes
     /// never get here (GetBakeTextureAsync, always in full).</summary>
     private bool StreamAllowed(Guid textureId) => SLNG.Assets.TextureStreaming.Enabled && !_noShrink.ContainsKey(textureId);
