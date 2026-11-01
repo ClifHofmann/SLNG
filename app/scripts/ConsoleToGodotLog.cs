@@ -132,6 +132,10 @@ internal static class PerfSidecar
         "[LegacyMat]",
         // Whether each environment texture (water normal, clouds, sun, moon) actually arrived.
         "[EnvTex]",
+        // FEAT-PERF-28/30 (--diag only): the arrival milestones and the texture stage timings. A baseline run reads these
+        // from godot.log, which lost 3 of 12 [ArrivalCount] lines in the first set of runs; this file is written straight
+        // through, so the next set shows whether the loss is on godot.log's side. Both [Arrival] and [ArrivalCount].
+        "[Arrival", "[TexStage",
     };
 
     private static StreamWriter? _writer;

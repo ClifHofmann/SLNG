@@ -52,7 +52,11 @@ public sealed class ArrivalTimeline
     public static ArrivalTimeline Shared { get; } = new(line =>
     {
         if (Diag.Verbose) Diag.Write(line);
-    });
+    })
+    {
+        // FEAT-PERF-30: which stage the waiting faces are in, at the moment of the count.
+        CountDetail = () => TexStages.Board.DescribeWaiting(),
+    };
 
     private sealed class Milestone
     {
@@ -107,6 +111,10 @@ public sealed class ArrivalTimeline
     private readonly Milestone _inflight = new();
 
     public ArrivalTimeline(Action<string> emit) => _emit = emit;
+
+    /// <summary>FEAT-PERF-30: asked for once per <c>[ArrivalCount]</c> line, never otherwise; its text is appended as <c>waitingIn: ...</c>.
+    /// A provider that throws is left out of the line.</summary>
+    public Func<string>? CountDetail { get; set; }
 
     /// <summary>True while an arrival is being watched, so a caller can skip building a sample when nothing wants it.</summary>
     public bool Active { get { lock (_lock) return _active; } }
@@ -170,7 +178,7 @@ public sealed class ArrivalTimeline
                 lines.Add(string.Create(CultureInfo.InvariantCulture,
                     $"[ArrivalCount] +{CountAt[_countsDone]:0}s (sampled at +{elapsed:0.0}s) full={sample.FullAvatars} " +
                     $"fullNoBakes={sample.FullWithoutBakes} reduced={sample.ReducedAvatars} " +
-                    $"reducedNoBakes={sample.ReducedWithoutBakes} facesWaiting={sample.FacesWaiting} texInflight={sample.TexInflight}"));
+                    $"reducedNoBakes={sample.ReducedWithoutBakes} facesWaiting={sample.FacesWaiting} texInflight={sample.TexInflight}{DescribeDetail()}"));
                 _countsDone++;
             }
 
@@ -182,6 +190,16 @@ public sealed class ArrivalTimeline
             if (_lineEmitted && _countsDone >= CountAt.Length) _active = false;
         }
         Emit(lines);
+    }
+
+    private string DescribeDetail()
+    {
+        try
+        {
+            string? detail = CountDetail?.Invoke();
+            return string.IsNullOrEmpty(detail) ? "" : " | waitingIn: " + detail;
+        }
+        catch { return ""; }
     }
 
     private void Start(long handle, string name, double handshakeAt)

@@ -213,6 +213,7 @@ public class AssetService
         _cacheDir = cacheDirectory;
         // --diag: the texture pipeline line every few seconds while there is traffic, not every 200 requests.
         SLNG.Core.FetchPipeReporter.Register(TakeTexPipeLine);
+        SLNG.Core.TexStages.RegisterReporter();   // FEAT-PERF-30: the [TexStage*] lines
         if (!string.IsNullOrEmpty(_cacheDir) && !Directory.Exists(_cacheDir))
         {
             Directory.CreateDirectory(_cacheDir);
@@ -864,9 +865,12 @@ public class AssetService
             return cached;
         }
 
+        SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Net);
         var bakeResult = await _session.FetchBakeTextureDataAsync(textureId, bakeChannel, bakeAgentId, priority: priority).ConfigureAwait(false);
         if (bakeResult.Data is { Length: > 0 } bytes)
         {
+            SLNG.Core.TexStages.NotePath(SLNG.Core.TexPath.Http);
+            SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Decode);
             var decoded = await Task.Run(() => DecodeTexture(bytes, isSculpt: false)).ConfigureAwait(false);
             if (decoded != null)
             {
@@ -993,6 +997,8 @@ public class AssetService
     {
         System.Threading.Interlocked.Increment(ref _texPipeReq);
         MaybeDumpTexPipe(textureId);
+        // FEAT-PERF-30 (--diag): the stage clock for this texture. A texture nobody opened (terrain, a sculpt) is ignored.
+        SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Disk);
 
         // FEAT-PERF-02 Phase 2: the disk cache only ever holds complete (discard 0) assets --
         // both reading and writing are gated on desiredDiscard == 0 below. A partial/low-discard
@@ -1015,7 +1021,9 @@ public class AssetService
                 int reduce = ReduceFactorFromHeader(cached, isSculpt, screenPixelArea);
 
                 // FEAT-PERF-11: decoded-cache reads share the decode slots -- bounded and priority-ordered, not thousands of 4 MB reads at once after a teleport.
+                SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.DecodeWait);
                 await _textureDecodeThrottle.WaitAsync(priority).ConfigureAwait(false);
+                SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.DecodedRead);
                 TextureData? decodedFromCache;
                 System.Diagnostics.Stopwatch? _texSw = null;
                 try
@@ -1028,6 +1036,7 @@ public class AssetService
 
                     if (decodedFromDecCache != null)
                     {
+                        SLNG.Core.TexStages.NotePath(SLNG.Core.TexPath.DecodedCache);
                         System.Threading.Interlocked.Increment(ref _texPipeDecodedCacheHit);
                         System.Threading.Interlocked.Increment(ref _texPipeCacheHit);
                         if (reduce > 0)
@@ -1037,6 +1046,8 @@ public class AssetService
                         return decodedFromDecCache;
                     }
 
+                    SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Decode);
+                    SLNG.Core.TexStages.NotePath(SLNG.Core.TexPath.Decode);
                     _texSw = System.Diagnostics.Stopwatch.StartNew();
                     decodedFromCache = await Task.Run(() => DecodeTexture(cached, isSculpt, reduce)).ConfigureAwait(false);
                     // Only a FULL decode's verdict is trusted. A reduced decode reporting degraded
@@ -1121,6 +1132,8 @@ public class AssetService
         {
             if (!_session.IsConnected) return null;
 
+            SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Net);
+            if (attempt == 0) SLNG.Core.TexStages.NotePath(SLNG.Core.TexPath.Http);
             await throttle.WaitAsync(priority).ConfigureAwait(false);
             byte[]? bytes;
             bool isReliable = false;
@@ -1155,6 +1168,7 @@ public class AssetService
             if (bytes is { Length: > 0 })
             {
                 int httpReduce = ReduceFactorFromHeader(bytes, isSculpt, screenPixelArea);
+                SLNG.Core.TexStages.Enter(textureId, SLNG.Core.TexStage.Decode);
                 var result = await Task.Run(() => DecodeTexture(bytes, isSculpt, httpReduce)).ConfigureAwait(false);
                 if (httpReduce > 0 && (result == null || result.IsDegraded))
                 {
