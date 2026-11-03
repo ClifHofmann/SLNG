@@ -197,10 +197,11 @@ public static class MainThreadWorkQueue
     /// TerseObjectUpdate, the backlog grows faster than any budget can drain it, and the visual falls
     /// progressively further behind the world. Pass null for work that must run once per call.
     ///
-    /// <paramref name="label"/> groups the item for <see cref="ReportCosts"/>. Keep it a small fixed
-    /// set of constants, never per-object text, or the cost table grows without bound.
+    /// <paramref name="priority"/> orders items within the lane (higher first, FIFO among equals).
+    /// Defaults to 0; pass e.g. 100 for high-priority items that should run at the head of the lane
+    /// (e.g. avatar bakes in <see cref="Lane.Visual"/>).
     /// </summary>
-    public static void Enqueue(Lane lane, Action work, string? coalesceKey = null, string label = "?", Guid subject = default)
+    public static void Enqueue(Lane lane, Action work, string? coalesceKey = null, string label = "?", Guid subject = default, float priority = 0f)
     {
         // BUG-RENDER-37: the client is quitting, and nothing will drain the lanes again. This used
         // to fall back to CallDeferred through a delegate-backed Callable -- main-thread-only in
@@ -224,7 +225,7 @@ public static class MainThreadWorkQueue
         {
             Work = work, CoalesceKey = coalesceKey, Label = label,
             EnqueuedAt = Diag.Verbose ? Stopwatch.GetTimestamp() : 0,
-        }, subject);
+        }, subject, priority);
 
         int depth = Interlocked.Increment(ref _depth);
         if (depth > _peakDepth) _peakDepth = depth;

@@ -281,6 +281,7 @@ public static partial class SelfTest
         results.Add(CheckSharedRiggedSkins(tree)); // FEAT-PERF-24
         results.Add(CheckMirrorInView()); // BUG-PERF-23
         results.Add(CheckFocusQueue()); // FEAT-PERF-27
+        results.Add(CheckWorkQueuePriority()); // BUG-PERF-26
         results.Add(CheckWorkQueueWaitIsMeasured()); // FEAT-PERF-32 step 1
         results.Add(CheckAnisotropyLevel()); // BUG-RENDER-52
         results.Add(CheckGraphicsFirstRun()); // FEAT-PERF-26

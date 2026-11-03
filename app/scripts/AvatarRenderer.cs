@@ -2420,6 +2420,9 @@ public partial class AvatarRenderer : Node3D
             _ => Array.Empty<string>()   // 19 (SkirtBaked): no skirt part is loaded
         };
 
+        // BUG-PERF-26: avatar bakes are ~0.05 ms texture binds. Enqueue at the head of Lane.Visual (priority: 100f)
+        // so they do not sit behind tens of thousands of scenery updates during arrival (up to 14 s queue wait),
+        // while keeping Lane.Upload dedicated to texture.upload so bakes cannot delay texture binds.
         EnqueueFor(visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => {
             try
             {
@@ -2504,7 +2507,7 @@ public partial class AvatarRenderer : Node3D
             {
                 if (leased) _gpuCache?.ReleaseRef(textureId);
             }
-        }, label: "avatar.bake");
+        }, label: "avatar.bake", priority: 100f);
     }
 
     /// <summary>The object is not worn any more (detached, dropped, re-parented into a world
