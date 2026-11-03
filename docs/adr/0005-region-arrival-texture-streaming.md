@@ -3,7 +3,8 @@
 - Status: proposed
 - Date: 2026-10-31
 - Updated: 2026-11-01 with the FEAT-PERF-28 baseline (`docs/perf/baseline-arrival-2026-10-31.md`), and
-  again that evening with the results of tasks 1, 2, 3 and 5 ("Where it stands" below)
+  again that evening with the results of tasks 1, 2, 3 and 5 ("Where it stands" below); on 2026-11-03 with
+  the BoM-probe finding and a baseline without the probe
 - Refines ADR 0004 P4 (one importance scheduler) and amends P3's jelly-doll rule.
 - Goal (maintainer, 2026-10-31): a significant improvement when entering a new region.
 
@@ -116,6 +117,57 @@ What it says:
 - The network sampler of `baseline-run.ps1` read 1.0–1.4 Gbit/s peaks in these runs, against 225–273
   Mbit/s on 31.10. It probably counts another adapter; the peaks are not used here.
 
+### Where it stands (2026-11-03)
+
+Sirens, `baseline/20261103-0831`, v0.28.87, 3 cold and 3 warm runs, streaming on (the default since
+v0.28.84), **BoM probe off** (the new default of `tools/baseline-run.ps1`).
+
+**The probe finding (FEAT-PERF-32).** Under `--diag`, the Bakes-on-Mesh probes (`[BomBound]`,
+`[BomAlpha]`) read the bound texture back from the GPU on the main thread, inside the
+`avatar.face_material` queue item. In twelve runs (`20261101-1745`, `20261102-1244`) that was 12.6 ms
+per `[BomBound]` line, 653–1,355 lines a run, and 98 % of all `avatar.face_material` time (7–19 s a
+run; without the probe the item costs about 0.05 ms). Every earlier `-Diag` run carries it, so
+**every earlier baseline overstates avatar work**, and with it the late second wave. A normal session
+never pays it. FEAT-PERF-31 stays right (a bind should not queue behind anything), but the "~13 ms
+items" it names were the probe.
+
+**The A/B.** v0.28.86, 3 cold runs per arm (`docs/specs/FEAT-PERF-32-avatar-work-lane.md`):
+- `20261102-2022`, probe off, avatars in the shared lane: `avatar.face_material` waited 2–3 s (p50);
+  geometry half applied at +52–68 s.
+- `20261102-2042`, probe on, avatars in a bounded lane of their own: it waited 10–17 s; half applied
+  at +81–86 s.
+- So the probe moved the waits, not the lane. The lane's own effect could not be told from the
+  probe's, a model of the frame loop expected about 0, and a first version with a fixed share had
+  starved the bakes (98 s, 143 s, never). The lane was dropped.
+
+The honest baseline, medians with ranges:
+
+| Measure | v0.28.83, probe on (11-01) | v0.28.87, probe off (11-03) |
+|---|---|---|
+| Every full avatar has every bake, cold | 15.6 s (11.7–16.9) | 23.7 s (17.6–23.9) |
+| Every full avatar has every bake, warm | 23.7 s | 23.0 s (20.6–24.1) |
+| Settled, cold | 106.5 s (96–116) | 59.9 s (30.5–65.4) |
+| Settled, warm | 10.1 s (7–16) | 11.5 s (10.2–14.6) |
+| MB until settled, cold | 724 | 551 (280–576) |
+| Texture MB over HTTP, cold, whole run | 749–841 | 766–796 |
+| Second wave (more than 1,500 faces in `Net`), cold | 2 of 3 runs, at +91 s | none |
+| Worst `Net` stage p50, cold | 8–19 s | 0.2–2.3 s |
+| Reduced avatars without a bake at +60 s | 0–2 | 0–1 |
+| `[Perf]` fps / low1%, first 120 s | 20–25 / 10–12 | 18–21 / 7–9 |
+
+What it means:
+- **The second wave did not show without the probe**, and `Net` stayed short. Two caveats: in the
+  evening arms of 11-02 one run in each still had a late wave (arm A's kalt1 had `Net` p50 at 35 s),
+  and a calmer network that morning may have helped. One morning is not proof.
+- **Both settle targets are met at Sirens:** cold 60 s against 67 s (all three runs 30–65 s), warm
+  11.5 s against 36 s. Zero faces waiting is later, cold at +82–101 s: a tail of at most 50 faces.
+- **Bakes are still open**, about 21–24 s against 15. Cold was 15.6 s on 11-01 with the probe on, so
+  removing it did not help them, and the runs scatter widely (14.8–28.6 s and 14.2–46.6 s in the two
+  arms of 11-02). Not looked into.
+- **fps is lower than on 11-01** (18–21 against 20–25, low1% 7–9 against 10–12). The runs of 11-02 with
+  the probe on were low too, so the probe is not the cause. Not checked: machine load, driver, a later change.
+- **The VRAM target** still needs a crowded place.
+
 ### What the code does (read 2026-10-31, `main` at 7adb71b6)
 
 1. **Over-cap avatars are never textured.** A reduced avatar is drawn in the jelly-doll colour and
@@ -213,6 +265,7 @@ is in the order the tasks run; task 5 came with the baseline and ran before task
 | 5 | FEAT-PERF-30 Where a face waits after the network | Measurement only | S–M | Merged (#176) |
 | 5, fix | FEAT-PERF-31 Texture binds get their own main-thread lane | Found by task 5 | S | Merged (#176) |
 | 3 | FEAT-PERF-29 Progressive texture streaming | Spike, then build | L | Spike merged (#177), build merged (#178), off by default |
+| 5, fix 2 | FEAT-PERF-32 Queue wait per label; baselines without the BoM probe | Measurement; an avatar lane was tried and dropped | S | Built 2026-11-03 |
 | 4 | BUG-PERF-25 The VRAM budget falls under load | Read the logged terms, then fix | M | Next; the terms are logged |
 | Any time | BUG-NET-38 Display names asked before the cap | Small fix | S | Not started |
 
@@ -350,17 +403,18 @@ because Sirens unloaded nothing.
 The targets are half the baseline (revised 2026-11-01 from the relative targets of the first version).
 "No face waiting" now means **settled** (see "Where it stands"), not the first quiet moment.
 
-| Metric | Baseline cold / warm (median) | Now: v0.28.83, `--tex-stream` | Target cold / warm |
+| Metric | Baseline cold / warm (median) | Now: v0.28.87, no probe (2026-11-03) | Target cold / warm |
 |---|---|---|---|
-| Arrival → every full avatar has every bake (any resolution) | 30.4 s / 29.8 s | 15.6 s / 23.7 s | 15 s / 15 s |
-| Arrival → settled (no more than 50 faces waiting from then on) | 134.0 s / 71.7 s | 106.5 s / 10.1 s | 67 s / 36 s |
-| MB until settled | 1666 / 23 | 724 / about 130 | 833 / none (already small) |
-| Reduced avatars without any bake at +60 s | nearly all / nearly all | 0–2 / 0–2 | 0 / 0 |
+| Arrival → every full avatar has every bake (any resolution) | 30.4 s / 29.8 s | 23.7 s / 23.0 s | 15 s / 15 s |
+| Arrival → settled (no more than 50 faces waiting from then on) | 134.0 s / 71.7 s | 59.9 s / 11.5 s | 67 s / 36 s |
+| MB until settled | 1666 / 23 | 551 / 157 | 833 / none (already small) |
+| Reduced avatars without any bake at +60 s | nearly all / nearly all | 0–1 / 0–1 | 0 / 0 |
 | `parked outfit unloaded under VRAM pressure`, first 5 min, crowded place, 12 GB card | 9 (PEAK Lounge, one run) | not measured yet | 0 |
 
-Met: warm settled, the cold MB, cold bakes within a second, reduced avatars with bakes (nearly).
-Open: cold settled (107 s against 67 s), warm bakes (24 s against 15 s), and the VRAM target, which
-needs a crowded place.
+Met (2026-11-03, one morning): cold settled (60 s against 67 s) and warm settled, the cold MB, reduced
+avatars with bakes (0–1). Open: bakes, cold and warm (24 s and 23 s against 15 s), and the VRAM target,
+which needs a crowded place. fps is lower than on 11-01 (cause unchecked). The earlier "Now" column,
+v0.28.83 with the probe on, is in "Where it stands" (2026-11-03).
 
 "Bytes until texture inflight is back to 0" is dropped as a target (see task 0's result). "Every
 bake" does not see missing attachments, so a bare avatar can still count as complete; that needs a
@@ -395,7 +449,7 @@ Each one needs a task-0 measurement before it becomes a task.
 | Discard bias while the backlog is long | The viewer raises a discard bias under memory pressure (`llviewertexture.cpp:533-625`). We could also raise it for low-rank textures while inflight is large | The backlog length after task 3 |
 | A larger main-thread upload budget while a backlog exists | Partly done by FEAT-PERF-31 (own lane, 4 ms). Warm runs still show `QueueWait` p95 of 2.5–4.7 s in the first seconds, when everything arrives at once | Whether those first seconds matter once the rest is fast |
 | Warm start from the compressed copy | Task 5 measured it: found for 4,985–5,269 of 7,885–8,496 warm tries. Why the rest misses is unknown | The misses by reason |
-| Find what the second cold wave is | About 2,000 textures for 15,000–29,000 faces are asked 65–80 s after arrival and hold the cold result. Late objects from the sim are likely, not verified | `[RegionLoad]` entity counts against the `[TexStage]` request times, and which objects the faces belong to |
+| ~~Find what the second cold wave is~~ Answered 2026-11-03 | Mostly the BoM probe: its main-thread time (98 % of `avatar.face_material` under `--diag`) held the scenery geometry back, and the textures are asked when the geometry is applied. No cold run of 11-03 showed a wave | Re-check if it returns: `wave2` in `tools/ab_compare.py` (more than 1,500 faces in `Net`) |
 | Streaming on by default | The A/B and the visual check are good. Today it is honoured only with `-Diag` | A small PR: on by default, off by a setting; then a run in a crowded place |
 | Why warm bakes take 24 s | Everything else settles in about 10 s warm | The bake fetches' stage times in a warm run |
 | Fetch only the mesh LOD in use | The viewer fetches only the LOD it needs. Whether our mesh fetch does is unmeasured | `[MeshPipe]` bytes per mesh compared with the LOD in use |

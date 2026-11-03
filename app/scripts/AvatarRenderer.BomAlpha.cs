@@ -171,7 +171,7 @@ public partial class AvatarRenderer
     /// managed copies (the surface's cached arrays, the asset service's decoded bake) -- never the GPU.</summary>
     private void LogBomAlpha(MeshInstance3D mi, int surface, Material material, AvatarVisual? visual, Guid meshId, int faceIndex)
     {
-        if (!Diagnostics.Enabled || visual == null || _assetService == null || material is not ShaderMaterial sm) return;
+        if (!Diagnostics.Enabled || Diagnostics.NoBomProbe || visual == null || _assetService == null || material is not ShaderMaterial sm) return;
         var facts = FactsOf(sm);
         if (facts.BakeChannel < 0 || facts.Texture == Guid.Empty || facts.Hidden || facts.Failed) return;
         LogBomBound(mi, surface, sm, meshId, faceIndex, facts);

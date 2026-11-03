@@ -532,7 +532,7 @@ public partial class AvatarRenderer : Node3D
         _assetService = assetService;
         // BUG-RENDER-50 [BomAlpha] (--diag): every bake the asset service hands out, by any path, leaves a small
         // in-memory alpha map behind (BakeAlphaMaps). Static handler, so a second Initialize cannot double it.
-        if (Diagnostics.Enabled && assetService != null)
+        if (Diagnostics.Enabled && !Diagnostics.NoBomProbe && assetService != null)
         {
             assetService.BakeMaterialised -= BakeAlphaMaps.Capture;
             assetService.BakeMaterialised += BakeAlphaMaps.Capture;
@@ -3843,7 +3843,7 @@ public partial class AvatarRenderer : Node3D
                 else
                     mi.SetSurfaceOverrideMaterial(s, material);
                 // BUG-RENDER-50 follow-up: how much of a Bakes-on-Mesh face its bake cuts away (--diag).
-                if (Diagnostics.Enabled) LogBomAlpha(mi, s, material, avatarVisual, meshId, faceIndex);
+                if (Diagnostics.Enabled && !Diagnostics.NoBomProbe) LogBomAlpha(mi, s, material, avatarVisual, meshId, faceIndex);
             }, label: "avatar.face_material");
         }
 

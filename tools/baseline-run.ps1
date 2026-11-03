@@ -42,6 +42,12 @@
     With streaming on: the first request's size in bytes (default 18840; 600 is the reference viewer's).
 .PARAMETER TexSlots
     HTTP texture transfers at once for every run (passes -TexSlots; default 8).
+.PARAMETER BomProbe
+    FEAT-PERF-32: switch the --diag Bakes-on-Mesh probes ([BomBound], [BomAlpha]) back ON for every run. By default the runs are made
+    WITHOUT them (the script passes -NoBomProbe to run-client.ps1): they read the bound texture back from the GPU on the main thread,
+    ~12 ms each, a thousand times in a Sirens arrival -- 98 % of the avatar.face_material queue item's time, which a normal session does
+    not pay, so a baseline with them overstates avatar work. Baselines whose info.txt has no bomProbe line, or says
+    'on', carry them. Recorded in info.txt (bomProbe), so the two arms cannot be mixed up.
 #>
 param(
     [int]$ColdRuns = 3,
@@ -54,7 +60,8 @@ param(
     [switch]$NoTexStream,
     [switch]$TexStream,
     [int]$TexStreamFirst = 0,
-    [int]$TexSlots = 0
+    [int]$TexSlots = 0,
+    [switch]$BomProbe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -163,7 +170,8 @@ if (-not (Test-Path $info)) {
     @("started   : $(Get-Date -Format 'yyyy-MM-dd HH:mm')", "place     : $Place", "version   : $version", "branch    : $branch @ $commit",
       "machine   : $env:COMPUTERNAME",
       "texStream : $(if ($NoTexStream) { 'off (-NoTexStream)' } else { "on (default)$(if ($TexStreamFirst -gt 0) { ", first $TexStreamFirst B" })" })",
-      "texSlots  : $(if ($TexSlots -gt 0) { $TexSlots } else { 'default' })") | Set-Content $info
+      "texSlots  : $(if ($TexSlots -gt 0) { $TexSlots } else { 'default' })",
+      "bomProbe  : $(if ($BomProbe) { 'on (-BomProbe)' } else { 'off (default)' })") | Set-Content $info
 }
 $runsCsv = Join-Path $OutDir 'runs.csv'
 if (-not (Test-Path $runsCsv)) { 'label,kind,minutes,net_peak_1s_mbit,net_peak_5s_mbit,note,log' | Set-Content $runsCsv }
@@ -211,6 +219,7 @@ try {
             if ($NoTexStream) { $clientArgs.NoTexStream = $true }
             elseif ($TexStreamFirst -gt 0) { $clientArgs.TexStreamFirst = $TexStreamFirst }
             if ($TexSlots -gt 0) { $clientArgs.TexSlots = $TexSlots }
+            if (-not $BomProbe) { $clientArgs.NoBomProbe = $true }
             & (Join-Path $repo 'tools\run-client.ps1') @clientArgs
         } finally {
             Stop-Job $sampler -ErrorAction SilentlyContinue
