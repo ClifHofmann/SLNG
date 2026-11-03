@@ -34,6 +34,13 @@ public static class Diagnostics
     /// <see cref="Initialize"/>.</summary>
     public static bool NoGroundDrop { get; private set; }
 
+    /// <summary>True when the client was started with <c>--no-bom-probe</c> (FEAT-PERF-32): under <c>--diag</c> the Bakes-on-Mesh
+    /// probes <c>[BomBound]</c> and <c>[BomAlpha]</c> (BUG-RENDER-50 follow-up) are not run. They read the bound texture back from
+    /// the GPU on the main thread, once per worn rigged face, inside the <c>avatar.face_material</c> queue item: about 12-13 ms each,
+    /// 14-19 s of main thread in a Sirens arrival, against about 0.05 ms for the same item without them. Without <c>--diag</c> they
+    /// never run, so a normal session is the same with or without this switch.</summary>
+    public static bool NoBomProbe { get; private set; }
+
     /// <summary>The sim UUID given with <c>--trace-object=&lt;uuid&gt;</c>, or empty. The object and
     /// every part linked to it are reported every few seconds (see ObjectRenderer.TraceLinkset):
     /// "object X is not shown" cannot be told apart from a screenshot, because a part that was never
@@ -76,6 +83,10 @@ public static class Diagnostics
         // avatar rendered 0.69 m low as a result.
         NoGroundDrop = HasFlag(OS.GetCmdlineArgs(), "--no-ground-drop")
                     || HasFlag(OS.GetCmdlineUserArgs(), "--no-ground-drop");
+
+        // FEAT-PERF-32: see NoBomProbe.
+        NoBomProbe = HasFlag(OS.GetCmdlineArgs(), "--no-bom-probe")
+                  || HasFlag(OS.GetCmdlineUserArgs(), "--no-bom-probe");
 
         HideAttachments = ParsePrefixes("--hide-attachment=");
         OnlyAttachments = ParsePrefixes("--only-attachment=");

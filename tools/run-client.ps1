@@ -150,6 +150,12 @@ param(
     [switch]$TexStream,
     [int]$TexStreamFirst = 0,
 
+    # FEAT-PERF-32: -NoBomProbe leaves out the Bakes-on-Mesh probes ([BomBound], [BomAlpha]) that -Diag switches on. They read the
+    # bound texture back from the GPU on the main thread, about 12 ms each, a thousand times in a Sirens arrival -- 14-19 s of main thread
+    # that a normal session does not pay and that sit inside the avatar.face_material queue item. Passes --no-bom-probe. An ordinary
+    # -Diag session is unchanged without it; tools\baseline-run.ps1 passes it by default.
+    [switch]$NoBomProbe,
+
     # FEAT-PERF-17: cap the video-memory budget Windows reports to this many MB, to test how the
     # viewer behaves on a smaller card (e.g. 3500 for a 4 GB card). 0 = use the real budget.
     # Passes --vram-budget=<MB>.
@@ -286,6 +292,10 @@ if ($MeshSlots -gt 0) {
 if ($TexSlots -gt 0) {
     Write-Host "      HTTP texture slots $TexSlots (--tex-slots)" -ForegroundColor Yellow
     $userArgs += "--tex-slots=$TexSlots"
+}
+if ($NoBomProbe) {
+    Write-Host "      Bakes-on-Mesh probes OFF (--no-bom-probe)" -ForegroundColor Yellow
+    $userArgs += '--no-bom-probe'
 }
 if ($NoTexStream) {
     Write-Host "      texture streaming OFF -- every texture fetched whole (--no-tex-stream)" -ForegroundColor Yellow

@@ -60,6 +60,9 @@ public static class MainThreadWorkQueue
         public Action Work = null!;
         public string? CoalesceKey;
         public string Label = "?";
+
+        /// <summary>FEAT-PERF-32: <see cref="Stopwatch.GetTimestamp"/> at enqueue, or 0 when not measuring (no --diag).</summary>
+        public long EnqueuedAt;
     }
 
     /// <summary>Per-label cost accounting, so the backlog can be attributed instead of guessed at.</summary>
@@ -68,7 +71,14 @@ public static class MainThreadWorkQueue
         public int Count;
         public double TotalMs;
         public double MaxMs;
+
+        /// <summary>FEAT-PERF-32: how long this label's items waited from enqueue to run, this interval. Filled only under --diag.</summary>
+        public SampleWindow? Wait;
     }
+
+    /// <summary>FEAT-PERF-32: enough samples that the median of a busy 5 s interval (a label at several thousand items a second) is
+    /// the interval's, not its last second's. 8 bytes each, a label that waits at all, --diag only.</summary>
+    private const int WaitWindowCapacity = 16384;
 
     // FEAT-PERF-27: each lane is first-in first-out EXCEPT for the focus avatar (SLNG.Core.PrioritySubject): its items
     // jump the queue, up to BumpQueue's consecutive limit so the rest keeps a share. The focus is read when an item is
@@ -210,7 +220,11 @@ public static class MainThreadWorkQueue
 
         // Before the pump exists, the work simply waits in its lane -- it drains the moment the
         // pump's first frame runs. Nothing here touches Godot, from whatever thread this is.
-        _lanes[(int)lane].Enqueue(new Item { Work = work, CoalesceKey = coalesceKey, Label = label }, subject);
+        _lanes[(int)lane].Enqueue(new Item
+        {
+            Work = work, CoalesceKey = coalesceKey, Label = label,
+            EnqueuedAt = Diag.Verbose ? Stopwatch.GetTimestamp() : 0,
+        }, subject);
 
         int depth = Interlocked.Increment(ref _depth);
         if (depth > _peakDepth) _peakDepth = depth;
@@ -258,6 +272,9 @@ public static class MainThreadWorkQueue
 
                 Interlocked.Decrement(ref _depth);
                 if (item.CoalesceKey != null) ReleaseKey(item.CoalesceKey);
+
+                if (item.EnqueuedAt != 0)
+                    RecordWait(item.Label, (Stopwatch.GetTimestamp() - item.EnqueuedAt) * 1000.0 / Stopwatch.Frequency);
 
                 double before = _clock.Elapsed.TotalMilliseconds;
                 _currentLabel = item.Label;
@@ -331,6 +348,14 @@ public static class MainThreadWorkQueue
         c.Count++;
         c.TotalMs += ms;
         if (ms > c.MaxMs) c.MaxMs = ms;
+    }
+
+    /// <summary>FEAT-PERF-32: files one item's wait. Filed when the item is taken, before it runs, so the cost entry may not exist
+    /// yet; <see cref="Record"/> adds to the same one afterwards.</summary>
+    private static void RecordWait(string label, double ms)
+    {
+        if (!_costs.TryGetValue(label, out var c)) _costs[label] = c = new Cost();
+        (c.Wait ??= new SampleWindow(WaitWindowCapacity)).Add(ms);
     }
 
     private static void RecordPart(string item, string part, double ms)
@@ -420,9 +445,15 @@ public static class MainThreadWorkQueue
 
     private static void EmitCost(string label, Cost c)
     {
+        // FEAT-PERF-32: under --diag, how long this label's items sat in their lane before they ran (enqueue to start), as
+        // the median and the longest of the interval. cost = what running them took; wait = what the user paid for the lane.
+        string wait = "";
+        if (c.Wait != null && c.Wait.Take() is { Count: > 0 } w)
+            wait = $" waitP50Ms={w.P50,8:F1} waitMaxMs={w.Max,8:F1}";
+
         UI.StatsOverlay.EmitPerfLine(
             $"[WorkCost] {label,-18} n={c.Count,-6} totalMs={c.TotalMs,8:F1} " +
-            $"avgMs={c.TotalMs / Math.Max(c.Count, 1),6:F2} maxMs={c.MaxMs,7:F1}");
+            $"avgMs={c.TotalMs / Math.Max(c.Count, 1),6:F2} maxMs={c.MaxMs,7:F1}{wait}");
     }
 
     /// <summary>Self test seam: every total in the cost tables (items as their label, parts as
@@ -435,6 +466,18 @@ public static class MainThreadWorkQueue
         _costs.Clear();
         _partCosts.Clear();
         return totals;
+    }
+
+    /// <summary>Self test seam (FEAT-PERF-32): the wait summary of every label that has one, then the cost tables cleared.
+    /// Same data <see cref="ReportCosts"/> prints as waitP50Ms / waitMaxMs.</summary>
+    internal static Dictionary<string, SampleWindow.Summary> TakeWaits()
+    {
+        var waits = new Dictionary<string, SampleWindow.Summary>();
+        foreach (var (label, c) in _costs)
+            if (c.Wait != null && c.Wait.Take() is { Count: > 0 } w) waits[label] = w;
+        _costs.Clear();
+        _partCosts.Clear();
+        return waits;
     }
 
     /// <summary>Current depth plus the peak since the previous call, which this resets.</summary>
