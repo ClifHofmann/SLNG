@@ -269,6 +269,33 @@ public sealed partial class GridSession
             }
         }
 
+        // BUG-AVATAR-22: bake channel diagnostics for remote avatars.
+        if (Diag.Verbose && e.AvatarID != _client.Self.AgentID)
+        {
+            int len = e.FaceTextures?.Length ?? 0;
+            bool isShort = len < 45;
+            if (isShort) System.Threading.Interlocked.Increment(ref _shortAppearanceCount);
+
+            var validIndices = textures.Where(kv => kv.Key >= 8)
+                                       .OrderBy(kv => kv.Key)
+                                       .Select(kv => $"{kv.Key}:{kv.Value.ToString("N")[..8]}");
+            string indicesStr = string.Join(", ", validIndices);
+
+            var has40to44 = new List<int>();
+            for (int ch = 40; ch <= 44; ch++)
+            {
+                if (textures.ContainsKey(ch)) has40to44.Add(ch);
+            }
+            string hasStr = has40to44.Count > 0 ? string.Join(",", has40to44) : "none";
+
+            string sig = $"{len}:{indicesStr}";
+            if (!_avatarAppearanceSignatures.TryGetValue(e.AvatarID.Guid, out var lastSig) || lastSig != sig)
+            {
+                _avatarAppearanceSignatures[e.AvatarID.Guid] = sig;
+                Diag.Write($"[AvatarBakes] avatar={e.AvatarID.Guid.ToString()[..8]} faceTextures.Length={len} short={isShort.ToString().ToLowerInvariant()} indices=[{indicesStr}] has40-44={hasStr}");
+            }
+        }
+
         // FEAT-AVATAR-01: the simulator's own view of our baked textures -- the last set known to
         // actually work, since some other viewer produced them. Kept as the reference the bake
         // diagnostic compares LibreMetaverse's (possibly empty) Textures[] against, and the
@@ -2397,6 +2424,10 @@ public sealed partial class GridSession
     private readonly System.Diagnostics.Stopwatch _selfAppearanceClock = new();
 
     private int _selfRelayLatencyLogged;
+
+    /// <summary>BUG-AVATAR-22: appearance signature deduplication per remote avatar for bake diagnostics.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, string> _avatarAppearanceSignatures = new();
+    private int _shortAppearanceCount;
 
     /// <summary>BUG-AVATAR-04: how long to wait before falling back to the cached shape.
     ///
