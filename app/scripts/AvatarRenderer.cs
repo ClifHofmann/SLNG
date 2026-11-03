@@ -563,6 +563,7 @@ public partial class AvatarRenderer : Node3D
     }
 
     private readonly Queue<Guid> _pendingRemovals = new();
+    private readonly Dictionary<Guid, int> _frameRemovalsPerWearer = new();
 
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
@@ -879,14 +880,44 @@ public partial class AvatarRenderer : Node3D
         UpdateVisual(entityIdStr);
     }
 
-    private void RemoveVisual(string entityIdStr)
+    private void RemoveVisual(string entityIdStr, string reason = "entity-removed")
     {
         if (Guid.TryParse(entityIdStr, out var entityId))
-            RemoveVisual(entityId);
+            RemoveVisual(entityId, reason);
     }
 
-    private void RemoveVisual(Guid entityId)
+    private void RemoveVisual(Guid entityId, string reason = "entity-removed")
     {
+        // BUG-AVATAR-21: log origin and avatar state when a worn attachment leaves the client.
+        if (_attachmentToAvatar.TryGetValue(entityId, out var avId))
+        {
+            _frameRemovalsPerWearer[avId] = _frameRemovalsPerWearer.GetValueOrDefault(avId) + 1;
+
+            _visuals.TryGetValue(avId, out var wearerVisual);
+            string wearerStr = wearerVisual != null
+                ? (wearerVisual.IsSelf ? "SELF" : wearerVisual.AgentId.ToString()[..8])
+                : avId.ToString()[..8];
+            string itemStr = entityId.ToString()[..8];
+            string meshStr = "--------";
+            if (_attachmentMeshIds.TryGetValue(entityId, out var meshInfo) && meshInfo.MeshId != Guid.Empty)
+            {
+                meshStr = meshInfo.MeshId.ToString()[..8];
+            }
+
+            Camera3D? camera = IsInsideTree() ? GetViewport()?.GetCamera3D() : null;
+            string wearerDist = (camera != null && wearerVisual != null)
+                ? wearerVisual.GodotPos.DistanceTo(camera.GlobalPosition).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                : "-1";
+
+            bool wearerShown = wearerVisual?.Shown ?? false;
+            bool wearerReduced = wearerVisual?.IsReduced ?? false;
+            bool wearerParked = wearerVisual?.IsParked ?? false;
+            int wornLeft = wearerVisual != null
+                ? (wearerVisual.WornAttachmentEntities.Contains(entityId) ? wearerVisual.WornAttachmentEntities.Count - 1 : wearerVisual.WornAttachmentEntities.Count)
+                : 0;
+
+            GD.Print($"[WornRemoved] wearer={wearerStr} item={itemStr} mesh={meshStr} reason={reason} wearerDist={wearerDist} wearerShown={wearerShown.ToString().ToLowerInvariant()} wearerReduced={wearerReduced.ToString().ToLowerInvariant()} wearerParked={wearerParked.ToString().ToLowerInvariant()} wornLeft={wornLeft}");
+        }
         // FEAT-ANIMESH-01: an animated-mesh prim that leaves the world takes its share of the
         // control avatar with it (and the skeleton itself when it was the last one). Idempotent --
         // ObjectRenderer's own RemoveVisual releases the same part.
@@ -2510,7 +2541,7 @@ public partial class AvatarRenderer : Node3D
     /// <summary>The object is not worn any more (detached, dropped, re-parented into a world
     /// linkset): drop everything this renderer built for it, so the object renderer can draw it
     /// as the ordinary world prim it now is.</summary>
-    public void DropWornVisuals(Guid entityId) => RemoveVisual(entityId);
+    public void DropWornVisuals(Guid entityId) => RemoveVisual(entityId, "drop-worn");
 
     private void UpdateAttachment(string entityIdStr)
     {
@@ -7918,6 +7949,23 @@ void fragment() {
         while (_pendingRemovals.TryDequeue(out var removeId))
         {
             RemoveVisual(removeId);
+        }
+
+        if (_frameRemovalsPerWearer.Count > 0)
+        {
+            foreach (var (wearerId, count) in _frameRemovalsPerWearer)
+            {
+                if (count > 3)
+                {
+                    _visuals.TryGetValue(wearerId, out var visual);
+                    string wearer = visual != null
+                        ? (visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])
+                        : wearerId.ToString()[..8];
+                    int wornLeft = visual?.WornAttachmentEntities.Count ?? 0;
+                    GD.Print($"[WornRemoved] wearer={wearer} removed {count} items in one frame (wornLeft={wornLeft})");
+                }
+            }
+            _frameRemovalsPerWearer.Clear();
         }
         // FEAT-PERF-23: after the removals, so a linkset taken off this frame frees its bucket at once.
         TickOutfitMerge();
