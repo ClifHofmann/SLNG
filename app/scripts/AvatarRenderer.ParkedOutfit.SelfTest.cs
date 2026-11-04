@@ -6,7 +6,9 @@ using System.Threading;
 using Godot;
 using SLNG.Assets;
 using SLNG.Core;
+using SLNG.Core.Components;
 using SLNG.Core.ECS;
+using SLNG.Net;
 
 namespace SLNG.App;
 
@@ -232,5 +234,157 @@ public partial class AvatarRenderer
             DrainQueue();
             Thread.Sleep(2);
         }
+    }
+
+    /// <summary>
+    /// BUG-AVATAR-23: When an avatar is parked mid-build (items in _pendingRigs with BoneAttachment3D
+    /// anchors created), on promotion from parked all unfinished items must be re-requested and finish building,
+    /// while items that were already finished must NOT be rebuilt (preserving BUG-PERF-16 instant unpark).
+    /// </summary>
+    internal (bool Passed, string Detail) SelfTestParkedRigsRecovered()
+    {
+        LoadAvatarSkeleton();
+        if (_avatarSkeleton == null) return (false, "the avatar skeleton did not load");
+
+        var problems = new List<string>();
+        var priorWorld = _world;
+        var priorCache = _gpuCache;
+        var priorAssetService = _assetService;
+        bool priorSetting = RenderConfig.OutfitMerge;
+        bool priorApplied = _outfitMergeApplied;
+
+        _world = new World();
+        _gpuCache = new GpuCache(64L << 20);
+        _assetService = new AssetService(new GridSession(), "");
+
+        var worn = new List<Guid>();
+        AvatarVisual? visual = null;
+
+        try
+        {
+            RenderConfig.OutfitMerge = false;
+            _outfitMergeApplied = false;
+
+            visual = NewSelfTestWearer(Guid.NewGuid(), Guid.NewGuid());
+
+            var ibmTorso = System.Numerics.Matrix4x4.CreateTranslation(0f, 0f, -1.2f);
+            var ibmChest = System.Numerics.Matrix4x4.CreateTranslation(0.01f, 0f, -1.35f);
+            var bodyMesh = TestMesh(new[] { "mPelvis", "mTorso", "mChest" }, new[] { System.Numerics.Matrix4x4.Identity, ibmTorso, ibmChest }, faces: 2, x: -0.2f);
+            var hairMesh = TestMesh(new[] { "mChest", "mTorso" }, new[] { ibmChest, ibmTorso }, faces: 2, x: 0f);
+
+            var builtMeshId = Guid.NewGuid();
+            var pendingMeshId = Guid.NewGuid();
+            _assetService.CacheMeshInMemory(builtMeshId, bodyMesh);
+            _assetService.CacheMeshInMemory(pendingMeshId, hairMesh);
+
+            var face = new FaceTexture(Guid.NewGuid(), Guid.Empty, Guid.Empty, new System.Numerics.Vector4(1f, 1f, 1f, 1f), 1f, 1f, 0f, 0f, 0f);
+            const ulong TestRegion = 0xFEEDBEEF00000001UL;
+
+            // Item 1: Already built
+            var e1 = _world.GetOrCreateEntity(TestRegion, 1001);
+            e1.SetComponent(new AttachmentComponent(visual.EntityId, 1));
+            e1.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: builtMeshId));
+            e1.SetComponent(new TransformComponent());
+            var builtId = e1.Id;
+            worn.Add(builtId);
+
+            CommitSelfTestRig(visual, builtId, bodyMesh, new[] { face, face }, keepTangents: false);
+
+            var builtAnchor = new BoneAttachment3D { Name = $"WornItem_{builtId:N}", BoneName = "mChest" };
+            visual.Skeleton!.AddChild(builtAnchor);
+            _attachmentNodes[builtId] = builtAnchor;
+            builtAnchor.AddChild(new Node3D { Name = "PointOffset" });
+
+            if (!_riggedAttachments.TryGetValue(builtId, out var originalBuiltMi))
+                return (false, "item 1 was not rigged");
+
+            // Item 2: Pending rig interrupted mid-build
+            var e2 = _world.GetOrCreateEntity(TestRegion, 1002);
+            e2.SetComponent(new AttachmentComponent(visual.EntityId, 2));
+            e2.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: pendingMeshId));
+            e2.SetComponent(new TransformComponent());
+            var pendingId = e2.Id;
+            worn.Add(pendingId);
+
+            visual.WornAttachmentEntities.Add(pendingId);
+            _attachmentToAvatar[pendingId] = visual.EntityId;
+            var pendingAnchor = new BoneAttachment3D { Name = $"WornItem_{pendingId:N}", BoneName = "mHead" };
+            visual.Skeleton.AddChild(pendingAnchor);
+            _attachmentNodes[pendingId] = pendingAnchor;
+            pendingAnchor.AddChild(new Node3D { Name = "PointOffset" });
+
+            _attachmentMeshIds[pendingId] = (pendingMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.High);
+            var pendingReq = new PendingRig(hairMesh, visual, visual.Skeleton, pendingMeshId, new[] { face, face }, default, _avatarSkeleton, false);
+            _pendingRigs[pendingId] = pendingReq;
+            visual.HasLoadedOutfit = true;
+
+            // Park avatar (mid-build swap-out by cap)
+            SetAvatarReduced(visual);
+
+            if (!visual.IsParked) problems.Add("avatar was not parked");
+            if (_pendingRigs.ContainsKey(pendingId)) problems.Add("pending rig was not purged on park");
+            if (originalBuiltMi.Visible) problems.Add("built rig was not hidden on park");
+
+            // Promote avatar back to full
+            SetAvatarFull(visual);
+
+            if (visual.IsParked) problems.Add("avatar was not unparked");
+            if (visual.IsReduced) problems.Add("avatar is still reduced after promotion");
+
+            // Verify: built item was NOT marked for re-request (dedupe cache remains)
+            if (!_attachmentMeshIds.ContainsKey(builtId))
+                problems.Add("built item dedupe record was erroneously cleared");
+
+            // Verify: pending item WAS marked for re-request (dedupe cache cleared so UpdateAttachment proceeds)
+            if (_attachmentMeshIds.ContainsKey(pendingId))
+                problems.Add("pending item dedupe record was not cleared for re-request");
+
+            // Run the re-request
+            UpdateAttachment(pendingId.ToString());
+            PumpUntil(() => _riggedAttachments.ContainsKey(pendingId));
+            DrainQueue();
+
+            if (!_riggedAttachments.TryGetValue(pendingId, out var newPendingMi) || !IsInstanceValid(newPendingMi))
+            {
+                problems.Add("pending rig was not built after unpark");
+            }
+            else if (!newPendingMi.Visible)
+            {
+                problems.Add("recovered rig is not visible");
+            }
+
+            // Verify: built item was NOT rebuilt (same instance)
+            if (!_riggedAttachments.TryGetValue(builtId, out var currentBuiltMi))
+            {
+                problems.Add("built item lost its instance");
+            }
+            else if (!ReferenceEquals(currentBuiltMi, originalBuiltMi))
+            {
+                problems.Add("built item was rebuilt instead of instantaneous unpark");
+            }
+            else if (!currentBuiltMi.Visible)
+            {
+                problems.Add("built item was not made visible on unpark");
+            }
+        }
+        catch (Exception ex)
+        {
+            problems.Add($"{ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            WaitRigWorkersIdle();
+            DrainQueue();
+            if (visual != null) ReleaseSelfTestWearer(visual, worn);
+            RenderConfig.OutfitMerge = priorSetting;
+            _outfitMergeApplied = priorApplied;
+            _world = priorWorld;
+            _gpuCache = priorCache;
+            _assetService = priorAssetService;
+        }
+
+        return problems.Count == 0
+            ? (true, "pending rig recovers after park and finishes building; already-built rig is not rebuilt on unpark")
+            : (false, string.Join("; ", problems.Distinct()));
     }
 }

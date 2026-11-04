@@ -7577,6 +7577,17 @@ void fragment() {
         if (!RenderConfig.OutfitMerge && visual.OutfitMerge != null) UnloadAvatarOutfit(visual);
     }
 
+    private static bool HasBuiltMesh(Node? node)
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node)) return false;
+        if (node is MeshInstance3D mi && mi.Mesh != null) return true;
+        foreach (var child in node.GetChildren())
+        {
+            if (HasBuiltMesh(child)) return true;
+        }
+        return false;
+    }
+
     private void SetAvatarFull(AvatarVisual visual)
     {
         if (!visual.IsReduced) return;
@@ -7628,13 +7639,27 @@ void fragment() {
                 }
             }
 
-            // Catch any attachments that arrived while parked and were never loaded
+            // BUG-AVATAR-23: Re-request any worn items that have no finished visual (interrupted mid-build,
+            // dropped while reduced, or arrived while parked), while preserving instant unpark for finished ones.
+            int reRequestedCount = 0;
             foreach (var attId in visual.WornAttachmentEntities)
             {
-                if (!IsRiggedOnWearer(attId) && !_attachmentNodes.ContainsKey(attId))
+                bool isRigged = IsRiggedOnWearer(attId);
+                bool hasAnchor = _attachmentNodes.TryGetValue(attId, out var anchorNode) && GodotObject.IsInstanceValid(anchorNode);
+                bool anchorHasMesh = hasAnchor && HasBuiltMesh(anchorNode!);
+
+                if (ParkedOutfitPolicy.ShouldReRequestOnUnpark(isRigged, hasAnchor, anchorHasMesh))
                 {
+                    _attachmentMeshIds.Remove(attId);
+                    _attachmentPrimSignatures.TryRemove(attId, out _);
+                    reRequestedCount++;
                     CallDeferred(nameof(UpdateAttachment), attId.ToString());
                 }
+            }
+
+            if (Diagnostics.Enabled)
+            {
+                GD.Print($"[AvatarLimit] {visual.AgentId.ToString("N")[..8]} unpark re-requested {reRequestedCount} worn items");
             }
 
             // Check if server bakes changed while parked

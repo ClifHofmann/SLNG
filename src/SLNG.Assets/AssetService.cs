@@ -350,6 +350,15 @@ public class AssetService
     /// <para>The disk cache stores the WHOLE asset (all four blocks), so a second level of an
     /// already-cached mesh costs a decode and no network at all.</para>
     /// </summary>
+    /// <summary>Places a decoded mesh into the in-memory cache directly for all LODs (used by tests and asset injection).</summary>
+    public void CacheMeshInMemory(Guid meshId, MeshData mesh)
+    {
+        foreach (MeshDetailLevel lod in Enum.GetValues<MeshDetailLevel>())
+        {
+            _memCache.Set($"mesh:{meshId}:{lod}", mesh, new MemoryCacheEntryOptions { Size = 1024 * 10, SlidingExpiration = TimeSpan.FromMinutes(10) });
+        }
+    }
+
     public Task<MeshData?> GetMeshAsync(Guid meshId, MeshDetailLevel lod = MeshDetailLevel.Highest)
     {
         // Composite cache key. The old key was the bare Guid, which cannot survive per-LOD
