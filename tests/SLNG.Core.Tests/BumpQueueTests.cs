@@ -47,6 +47,17 @@ public class BumpQueueTests
     }
 
     [Fact]
+    public void Priority_LateArrivingItemJumpsAheadOfOlderItems()
+    {
+        var q = new BumpQueue<Job>(() => Guid.Empty);
+        for (int i = 0; i < 5; i++) q.Enqueue(new Job("regular" + i), priority: 0f);
+        q.Enqueue(new Job("bake0"), priority: 100f);
+        q.Enqueue(new Job("bake1"), priority: 100f);
+
+        Assert.Equal(new[] { "bake0", "bake1", "regular0", "regular1", "regular2", "regular3", "regular4" }, Drain(q));
+    }
+
+    [Fact]
     public void FocusSubject_ComesOutBeforeEarlierUnfocusedItems()
     {
         Guid focus = A;

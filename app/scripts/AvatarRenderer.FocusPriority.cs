@@ -24,8 +24,8 @@ public partial class AvatarRenderer
 
     /// <summary>Queues main-thread work on behalf of an avatar, so the work queue can serve the focus avatar first.</summary>
     private static void EnqueueFor(Guid agentId, MainThreadWorkQueue.Lane lane, Action work,
-        string? coalesceKey = null, string label = "?") =>
-        MainThreadWorkQueue.Enqueue(lane, work, coalesceKey, label, agentId);
+        string? coalesceKey = null, string label = "?", float priority = 0f) =>
+        MainThreadWorkQueue.Enqueue(lane, work, coalesceKey, label, agentId, priority);
 
     /// <summary>Fetch/decode priority for this avatar's textures: your own first, then the focus avatar's, anyone else's by
     /// their size on screen -- the scenery's scale (BUG-PERF-24; they used to ask with 0 and wait behind all scenery).</summary>

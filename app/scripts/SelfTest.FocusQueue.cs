@@ -45,4 +45,27 @@ public partial class SelfTest
             PrioritySubject.Set(before);
         }
     }
+
+    /// <summary>BUG-PERF-26: high-priority items in Lane.Visual run before older regular items.</summary>
+    private static Check CheckWorkQueuePriority()
+    {
+        const string Name = "work queue: high-priority items run before older regular items";
+        var ran = new List<string>();
+        // Drain whatever was left.
+        MainThreadWorkQueue.Pump(double.MaxValue);
+
+        for (int i = 0; i < 4; i++)
+        {
+            int n = i;
+            MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => ran.Add("regular" + n), label: "selftest.prio");
+        }
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => ran.Add("high0"), label: "selftest.prio", priority: 100f);
+        MainThreadWorkQueue.Enqueue(MainThreadWorkQueue.Lane.Visual, () => ran.Add("high1"), label: "selftest.prio", priority: 100f);
+
+        MainThreadWorkQueue.Pump(double.MaxValue);
+
+        string order = string.Join(",", ran);
+        bool ok = order == "high0,high1,regular0,regular1,regular2,regular3";
+        return new Check(Name, ok, ok ? $"order {order}" : $"order {order}");
+    }
 }
