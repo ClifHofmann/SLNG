@@ -278,6 +278,7 @@ public static partial class SelfTest
         results.Add(CheckRenderThread()); // FEAT-PERF-13
         results.Add(CheckRenderMarkersBeforeSync()); // FEAT-PERF-24 P0-a
         results.Add(CheckRenderThreadFallback()); // BUG-PERF-22
+        results.Add(CheckTeleportBurstBudget()); // FEAT-PERF-33
         results.Add(CheckSharedRiggedSkins(tree)); // FEAT-PERF-24
         results.Add(CheckMirrorInView()); // BUG-PERF-23
         results.Add(CheckFocusQueue()); // FEAT-PERF-27
@@ -2416,6 +2417,59 @@ public static partial class SelfTest
         finally
         {
             if (GodotObject.IsInstanceValid(objects)) objects.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// FEAT-PERF-33: verifies that the work queue budget adapts during teleport burst
+    /// and steady state.
+    /// </summary>
+    private static Check CheckTeleportBurstBudget()
+    {
+        const string Name = "teleport burst work budget";
+        try
+        {
+            RenderConfig.DisarmTeleportBurst();
+            if (RenderConfig.IsTeleportBurstActive)
+                return new Check(Name, false, "burst should be inactive when disarmed");
+
+            double steadySoft = RenderConfig.MainThreadWorkBudgetFor(100);
+            if (Math.Abs(steadySoft - 3.0) > 0.01)
+                return new Check(Name, false, $"expected 3.0 ms for soft queue, got {steadySoft:0.##}");
+
+            double steadyHard = RenderConfig.MainThreadWorkBudgetFor(2000);
+            if (Math.Abs(steadyHard - 9.0) > 0.01)
+                return new Check(Name, false, $"expected 9.0 ms for hard queue, got {steadyHard:0.##}");
+
+            double steadyExtreme = RenderConfig.MainThreadWorkBudgetFor(10000);
+            if (steadyExtreme <= 9.0 || steadyExtreme > 16.0)
+                return new Check(Name, false, $"expected scaled extreme budget between 9 and 16 ms, got {steadyExtreme:0.##}");
+
+            RenderConfig.ArmTeleportBurst(5f);
+            if (!RenderConfig.IsTeleportBurstActive)
+                return new Check(Name, false, "burst should be active after arming");
+
+            double burstHard = RenderConfig.MainThreadWorkBudgetFor(2000);
+            if (Math.Abs(burstHard - RenderConfig.MainThreadWorkBudgetBurstMs) > 0.01)
+                return new Check(Name, false, $"expected burst max {RenderConfig.MainThreadWorkBudgetBurstMs:0.##} ms, got {burstHard:0.##}");
+
+            RenderConfig.DisarmTeleportBurst();
+            if (RenderConfig.IsTeleportBurstActive)
+                return new Check(Name, false, "burst should be inactive after disarming");
+
+            double restored = RenderConfig.MainThreadWorkBudgetFor(2000);
+            if (Math.Abs(restored - 9.0) > 0.01)
+                return new Check(Name, false, $"expected restored 9.0 ms, got {restored:0.##}");
+
+            return new Check(Name, true, "burst arms, scales to burst max, and disarms cleanly");
+        }
+        catch (System.Exception ex)
+        {
+            return new Check(Name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            RenderConfig.DisarmTeleportBurst();
         }
     }
 

@@ -257,7 +257,8 @@ public static class MainThreadWorkQueue
             // keep the budget they always had.
             double laneBudgetMs = budgetMs;
             if ((Lane)lane == Lane.Visual) _clock.Restart();
-            else if ((Lane)lane == Lane.Upload) laneBudgetMs = RenderConfig.TextureUploadBudgetMs;
+            else if ((Lane)lane == Lane.Upload)
+                laneBudgetMs = RenderConfig.IsTeleportBurstActive ? RenderConfig.TextureUploadBudgetMs * 2.0 : RenderConfig.TextureUploadBudgetMs;
 
             // Limit texture sharpening (SetImage) to 2 per frame to prevent Godot 4 Vulkan backend
             // from crashing (Signal 11) when freeing and recreating too many in-use ImageTextures.

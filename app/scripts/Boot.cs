@@ -438,7 +438,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.29.3-alpha";
+    public const string AppVersion = "v0.29.5-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -4096,6 +4096,7 @@ public partial class Boot : Control
                 _teleportActive = true;
                 _teleportSeenSinceLogin = true; // FEAT-UI-72: the person has moved on; the start-place retry is not made
                 _teleportOverlay.ShowProgress(SLNG.App.UI.L10n.Tr("ui.teleport.requesting"));
+                RenderConfig.ArmTeleportBurst(15f); // FEAT-PERF-33: high-throughput queue burst during teleport
                 break;
             case SLNG.Core.TeleportStage.Progress:
                 if (_teleportActive)
@@ -4107,10 +4108,12 @@ public partial class Boot : Control
                 _teleportOverlay.Finish(true, SLNG.App.UI.L10n.Tr("ui.teleport.arrived"));
                 _teleportCameraResetPending = true;
                 _teleportCameraResetDeadlineMsec = Time.GetTicksMsec() + 4000; // fire anyway if the avatar never confirms
+                RenderConfig.ArmTeleportBurst(10f); // FEAT-PERF-33: allow fast object drainage for 10 s on arrival
                 break;
             case SLNG.Core.TeleportStage.Failed:
             {
                 _teleportActive = false;
+                RenderConfig.DisarmTeleportBurst();
                 string reason = string.IsNullOrWhiteSpace(e.Message)
                     ? SLNG.App.UI.L10n.Tr("ui.teleport.failed")
                     : SLNG.App.UI.TeleportFailureText.For(e.Message);
@@ -4123,6 +4126,7 @@ public partial class Boot : Control
             }
             case SLNG.Core.TeleportStage.Cancelled:
                 _teleportActive = false;
+                RenderConfig.DisarmTeleportBurst();
                 _teleportOverlay.Finish(false, SLNG.App.UI.L10n.Tr("ui.teleport.cancelled"));
                 break;
         }
@@ -5832,6 +5836,7 @@ public partial class Boot : Control
         var handle = ulong.Parse(regionHandle);
         LogOriginChange(handle);
         RenderConfig.SetRegionOrigin(handle);
+        RenderConfig.ArmTeleportBurst(10f); // FEAT-PERF-33: arm burst on region connect/arrival
         // BUG-NET-03: after the origin moves, tell the terrain renderer which region we're in so
         // its void-water plane sits at this region's water height (order matters -- it reads the
         // origin we just set).

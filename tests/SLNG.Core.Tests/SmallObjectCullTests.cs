@@ -126,6 +126,24 @@ public class SmallObjectCullTests
     }
 
     [Fact]
+    public void ShadowEnd_DoesNotExplodeWithHighLodFactor()
+    {
+        // FEAT-PERF-33: shadow distance must not scale with VolumeLodFactor (e.g. 8.0f),
+        // ensuring small objects stop casting shadows at their physical distance.
+        float shadowAtOne = SmallObjectCull.ShadowEndDistance(0.2f, Ppr, Px, 1f);
+        float shadowAtEight = SmallObjectCull.ShadowEndDistance(0.2f, Ppr, Px, 8f);
+        Assert.Equal(shadowAtOne, shadowAtEight);
+    }
+
+    [Fact]
+    public void LodScale_CapsAtExtremeFactors_PreventingDivisionByZero()
+    {
+        // FEAT-PERF-33: factor 8.0f is capped at 4.0f (scale 6.0f) instead of exploding to 36.0f.
+        Assert.Equal(6.0f, SmallObjectCull.LodScale(8f), 2);
+        Assert.Equal(6.0f, SmallObjectCull.LodScale(12f), 2);
+    }
+
+    [Fact]
     public void Margin_IsAFractionOfTheEnd_WithAOneMetreFloor_AndZeroForNoLimit()
     {
         Assert.Equal(0f, SmallObjectCull.Margin(0f));
