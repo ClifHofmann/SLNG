@@ -565,7 +565,7 @@ public partial class AvatarRenderer : Node3D
     }
 
     private readonly Queue<Guid> _pendingRemovals = new();
-    private readonly Dictionary<Guid, int> _frameRemovalsPerWearer = new();
+    private readonly Dictionary<Guid, (int Count, string WearerStr)> _frameRemovalsPerWearer = new();
 
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
@@ -893,12 +893,13 @@ public partial class AvatarRenderer : Node3D
         // BUG-AVATAR-21: log origin and avatar state when a worn attachment leaves the client.
         if (_attachmentToAvatar.TryGetValue(entityId, out var avId))
         {
-            _frameRemovalsPerWearer[avId] = _frameRemovalsPerWearer.GetValueOrDefault(avId) + 1;
-
             _visuals.TryGetValue(avId, out var wearerVisual);
             string wearerStr = wearerVisual != null
                 ? (wearerVisual.IsSelf ? "SELF" : wearerVisual.AgentId.ToString()[..8])
                 : avId.ToString()[..8];
+
+            int prevCount = _frameRemovalsPerWearer.TryGetValue(avId, out var prev) ? prev.Count : 0;
+            _frameRemovalsPerWearer[avId] = (prevCount + 1, wearerStr);
             string itemStr = entityId.ToString()[..8];
             string meshStr = "--------";
             if (_attachmentMeshIds.TryGetValue(entityId, out var meshInfo) && meshInfo.MeshId != Guid.Empty)
@@ -7995,14 +7996,14 @@ void fragment() {
 
         if (_frameRemovalsPerWearer.Count > 0)
         {
-            foreach (var (wearerId, count) in _frameRemovalsPerWearer)
+            foreach (var (wearerId, (count, wearerStr)) in _frameRemovalsPerWearer)
             {
                 if (count > 3)
                 {
                     _visuals.TryGetValue(wearerId, out var visual);
-                    string wearer = visual != null
-                        ? (visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])
-                        : wearerId.ToString()[..8];
+                    string wearer = !string.IsNullOrEmpty(wearerStr)
+                        ? wearerStr
+                        : (visual != null ? (visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8]) : wearerId.ToString()[..8]);
                     int wornLeft = visual?.WornAttachmentEntities.Count ?? 0;
                     GD.Print($"[WornRemoved] wearer={wearer} removed {count} items in one frame (wornLeft={wornLeft})");
                 }
