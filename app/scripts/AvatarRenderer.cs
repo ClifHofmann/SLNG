@@ -79,6 +79,8 @@ public partial class AvatarRenderer : Node3D
         // re-morphed and rebuilt whenever the avatar's shape (VisualParams) changes.
         public Dictionary<string, SLNG.Assets.AvatarBodyPartMesh> BodyPartData { get; } = new();
         public Dictionary<int, Guid> LoadedTextures { get; } = new();
+        // BUG-AVATAR-22: deduplication signature for remote avatar bake log.
+        public string LastBakeLogSig { get; set; } = "";
         // FEAT-PERF-28: bake index -> the texture id actually applied to the body part (LoadedTextures is set when the bake is
         // REQUESTED, so it cannot tell "asked for" from "on the avatar"). Main thread only.
         public Dictionary<int, Guid> BakesApplied { get; } = new();
@@ -1838,6 +1840,7 @@ public partial class AvatarRenderer : Node3D
         if (avatar.BakedTextures != null && _assetService != null && (!visual.IsReduced || visual.Shown))
         {
             bool anyBakeChanged = false;
+            List<int> changedBakeChannels = new();
             IEnumerable<KeyValuePair<int, Guid>> wantedBakes = visual.IsReduced
                 ? StandInBakePolicy.WantedBakes(avatar.BakedTextures)
                 : avatar.BakedTextures;
@@ -1851,7 +1854,23 @@ public partial class AvatarRenderer : Node3D
                     var oldTexId = currentId;
                     visual.LoadedTextures[bakeIndex] = textureId;
                     anyBakeChanged = true;
+                    changedBakeChannels.Add(bakeIndex);
                     _ = LoadAndApplyTextureAsync(visual, bakeIndex, textureId, oldTexId);
+                }
+            }
+
+            // BUG-AVATAR-22: remote avatar loaded bakes diagnostic.
+            if (!visual.IsSelf && Diagnostics.Enabled)
+            {
+                var loadedEntries = visual.LoadedTextures.OrderBy(k => k.Key)
+                                          .Select(k => $"{k.Key}:{k.Value.ToString("N")[..8]}");
+                string loadedStr = string.Join(", ", loadedEntries);
+                string sig = $"{visual.IsReduced}:{loadedStr}";
+                if (sig != visual.LastBakeLogSig)
+                {
+                    visual.LastBakeLogSig = sig;
+                    string wearer = visual.AgentId.ToString("N")[..8];
+                    GD.Print($"[AvatarBakes] wearer={wearer} loaded=[{loadedStr}] reduced={visual.IsReduced.ToString().ToLowerInvariant()}");
                 }
             }
 
@@ -1886,15 +1905,28 @@ public partial class AvatarRenderer : Node3D
             // that loaded BEFORE its bake arrived rendered untextured, so re-resolve its face
             // materials now (viewer analog: setTETexture -> updateMeshTextures propagating new
             // bakes to attachment faces).
-            if (anyBakeChanged && visual.BomAttachments.Count > 0)
+            if (anyBakeChanged)
             {
-                foreach (var (wornId, e) in visual.BomAttachments.ToArray())
+                // BUG-AVATAR-22: log when a bake channel arrives and whether registered BoM meshes are re-resolved.
+                if (Diagnostics.Enabled && changedBakeChannels.Count > 0)
                 {
-                    if (e.Mi != null && IsInstanceValid(e.Mi))
-                        _ = ApplyFaceMaterialsAsync(e.Mi, e.FaceIndices, e.Faces, e.DefaultFace, visual, entityId: wornId);
-                    // FEAT-PERF-23: a merged item's BoM surfaces take the new bake in place.
-                    if (_mergeItems.TryGetValue(wornId, out var merged) && merged.InBucket)
-                        _ = RefreshMergedBomMaterialsAsync(merged);
+                    string wearer = visual.IsSelf ? "SELF" : visual.AgentId.ToString("N")[..8];
+                    foreach (int ch in changedBakeChannels)
+                    {
+                        GD.Print($"[AvatarBakes] wearer={wearer} bake channel {ch} arrived -> re-resolving {visual.BomAttachments.Count} BoM mesh(es)");
+                    }
+                }
+
+                if (visual.BomAttachments.Count > 0)
+                {
+                    foreach (var (wornId, e) in visual.BomAttachments.ToArray())
+                    {
+                        if (e.Mi != null && IsInstanceValid(e.Mi))
+                            _ = ApplyFaceMaterialsAsync(e.Mi, e.FaceIndices, e.Faces, e.DefaultFace, visual, entityId: wornId);
+                        // FEAT-PERF-23: a merged item's BoM surfaces take the new bake in place.
+                        if (_mergeItems.TryGetValue(wornId, out var merged) && merged.InBucket)
+                            _ = RefreshMergedBomMaterialsAsync(merged);
+                    }
                 }
             }
         }
@@ -4317,7 +4349,7 @@ public partial class AvatarRenderer : Node3D
         {
             wasBom = true; bomIndex = bakeIdx;
             texId = avatarVisual.LoadedTextures.TryGetValue(bakeIdx, out var bakeTexId) ? bakeTexId : Guid.Empty;
-            LogBomFace(meshId, faceIndex, bomIndex, texId);
+            LogBomFace(meshId, faceIndex, bomIndex, texId, avatarVisual);
         }
 
         if (texId == Guid.Empty || _assetService == null || _gpuCache == null)
@@ -4752,7 +4784,7 @@ public partial class AvatarRenderer : Node3D
     /// resolve), or it did and the avatar's bake for that channel has not arrived. The existing
     /// [FaceTex] line covers only the second and is Logger.Debug, i.e. unreachable without --diag —
     /// the same blind spot that cost two diagnostic rounds on FEAT-RENDER-06's black HUDs.</summary>
-    private static void LogBomFace(Guid meshId, int faceIndex, int bakeIndex, Guid resolved)
+    private static void LogBomFace(Guid meshId, int faceIndex, int bakeIndex, Guid resolved, AvatarVisual? avatarVisual = null)
     {
         if (!Diagnostics.Enabled) return;
         string outcome = resolved == Guid.Empty ? "UNRESOLVED" : resolved.ToString("N")[..8];
@@ -4762,8 +4794,15 @@ public partial class AvatarRenderer : Node3D
             if (!_bomFaceLogged.Add(key)) return;
         }
 
+        string loadedList = "";
+        if (resolved == Guid.Empty && avatarVisual != null)
+        {
+            var loaded = avatarVisual.LoadedTextures.Keys.OrderBy(k => k);
+            loadedList = $" (loaded: {(avatarVisual.LoadedTextures.Count > 0 ? string.Join(",", loaded) : "none")})";
+        }
+
         GD.Print($"[BomFace] mesh={meshId.ToString("N")[..8]} face={faceIndex} " +
-            $"channel={bakeIndex} -> {(resolved == Guid.Empty ? "UNRESOLVED (avatar bake not loaded)" : "bake " + outcome)}");
+            $"channel={bakeIndex} -> {(resolved == Guid.Empty ? $"UNRESOLVED (avatar bake not loaded){loadedList}" : "bake " + outcome)}");
     }
 
     private static void LogHudFace(PrimShaderFamily.Surface surface, Guid meshId, int faceIndex,
