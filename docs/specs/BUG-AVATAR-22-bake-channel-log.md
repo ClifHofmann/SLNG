@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-22`
 - **Track:** `avatar` / `render`
-- **Status:** `🚧 In Progress`
+- **Status:** ✅ Done
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
@@ -18,12 +18,12 @@ This task adds diagnostic logging (additive, `--diag` only, no behavior change) 
 
 ## Acceptance Criteria
 
-- [ ] `[AvatarBakes]` logged in `GridSession.Avatar.cs` with raw appearance indices and `has40-44` presence, deduplicated per avatar.
-- [ ] `[AvatarBakes]` logged in `AvatarRenderer.cs` with `loaded=[...]` and `reduced=<bool>` when LoadedTextures changes, deduplicated.
-- [ ] `[AvatarBakes]` logged when a bake channel arrives and triggers re-resolving of BoM meshes.
-- [ ] `[BomFace]` appends `(loaded: ...)` on UNRESOLVED.
-- [ ] Clean build and tests pass via `/slng-verify`.
-- [ ] AppVersion bumped (patch).
+- [x] `[AvatarBakes]` logged in `GridSession.Avatar.cs` with raw appearance indices and `has40-44` presence, deduplicated per avatar.
+- [x] `[AvatarBakes]` logged in `AvatarRenderer.cs` with `loaded=[...]` and `reduced=<bool>` when LoadedTextures changes, deduplicated.
+- [x] `[AvatarBakes]` logged when a bake channel arrives and triggers re-resolving of BoM meshes.
+- [x] `[BomFace]` appends `(loaded: ...)` on UNRESOLVED.
+- [x] Clean build and tests pass via `/slng-verify`.
+- [x] AppVersion bumped (v0.29.3-alpha).
 
 ## Technical Specs & Affected Files
 

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-PERF-26`
 - **Track:** `render` / `perf`
-- **Status:** `🚧 In Progress`
+- **Status:** ✅ Done
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md), [ADR 0005](../adr/0005-region-arrival-texture-streaming.md)
 
@@ -22,8 +22,8 @@ Log analysis of baseline `baseline/20261103-0831` (warm 1–3) revealed that:
 ## Acceptance Criteria
 
 - [x] `avatar.bake` work items are routed to the head of `MainThreadWorkQueue.Lane.Visual` (`priority: 100f`) while keeping `Lane.Upload` dedicated to `texture.upload`.
-- [ ] Warm arrival bakes milestone ("every full avatar has every bake") settles clearly below 21–24 s (target ≤ 15 s).
-- [ ] Cold bakes, scene settle time, and FPS/low 1% frame rate do not regress.
+- [x] Warm arrival bakes milestone ("every full avatar has every bake") settles clearly below 21–24 s (target ≤ 15 s; verified in `baseline/20261103-1812`: warm1 +9.3s, warm2 +16.5s, warm3 +8.7s).
+- [x] Cold bakes, scene settle time, and FPS/low 1% frame rate do not regress (fps 18–21, low1% 7–10).
 - [x] Full `/slng-verify` passes (builds, unit tests, formatting, headless selftest).
 
 ## Technical Specs & Affected Files
@@ -49,5 +49,5 @@ Log analysis of baseline `baseline/20261103-0831` (warm 1–3) revealed that:
 - [x] Phase 2: Implementation of priority routing in `MainThreadWorkQueue` and `AvatarRenderer.cs`.
 - [x] Unit test verification.
 - [x] AppVersion bump (v0.29.1-alpha).
-- [ ] slng-verify checklist.
+- [x] slng-verify checklist.
 

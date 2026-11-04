@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-21`
 - **Track:** `avatar` / `render`
-- **Status:** `🚧 In Progress`
+- **Status:** ✅ Done
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
@@ -19,12 +19,12 @@ This task adds diagnostic logging for worn attachment removals without changing 
 
 ## Acceptance Criteria
 
-- [ ] `RemoveVisual(Guid entityId, string reason = "entity-removed")` tracks removal reason.
-- [ ] `DropWornVisuals` passes `"drop-worn"`.
-- [ ] `[WornRemoved]` logged when an entry in `_attachmentToAvatar` is removed.
-- [ ] Mass removals (> 3 items per wearer in one frame) log a summary line.
-- [ ] `AppVersion` bumped (patch).
-- [ ] Clean build and test passes via `/slng-verify`.
+- [x] `RemoveVisual(Guid entityId, string reason = "entity-removed")` tracks removal reason.
+- [x] `DropWornVisuals` passes `"drop-worn"`.
+- [x] `[WornRemoved]` logged when an entry in `_attachmentToAvatar` is removed.
+- [x] Mass removals (> 3 items per wearer in one frame) log a summary line.
+- [x] `AppVersion` bumped (v0.29.2-alpha).
+- [x] Clean build and test passes via `/slng-verify`.
 
 ## Technical Specs & Affected Files
 
