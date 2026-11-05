@@ -31,6 +31,8 @@ public partial class ObjectRenderer
         float savedPx = RenderConfig.SmallObjectCullPixels;
         float savedLod = RenderConfig.VolumeLodFactor;
         float savedDraw = RenderConfig.DrawDistance;
+        bool savedShadows = RenderConfig.SmallObjectShadows;
+        float savedScd = RenderConfig.ShadowCasterDistance;
         try
         {
             RenderConfig.SmallObjectCullPixels = 3f;
@@ -188,12 +190,52 @@ public partial class ObjectRenderer
             RefreshVisibilityRange(ls, readMesh: false);
             Expect(ls.RangeEpoch == -1, "without a viewport the object must stay due for a refresh");
             _rangePpr = keepPpr;
+
+            // ---- FEAT-PERF-33: small-caster shadow cull, reversibility and distance rule ----
+            // Small object (< 0.5m radius) with setting off casts nothing
+            RenderConfig.SmallObjectShadows = false;
+            RenderConfig.ShadowCasterDistance = 100f;
+            UpdateShadowCasting(ss, viewDSq: 4f, shown: true); // near (2m)
+            Expect(ss.MeshInstance.CastShadow == GeometryInstance3D.ShadowCastingSetting.Off,
+                $"small object with SmallObjectShadows=false must not cast shadows (got {ss.MeshInstance.CastShadow})");
+
+            // Setting on casts again without a new mesh
+            RenderConfig.SmallObjectShadows = true;
+            UpdateShadowCasting(ss, viewDSq: 4f, shown: true);
+            Expect(ss.MeshInstance.CastShadow == GeometryInstance3D.ShadowCastingSetting.On,
+                $"toggling SmallObjectShadows=true must restore shadows without re-meshing (got {ss.MeshInstance.CastShadow})");
+
+            // A far object still honours the distance rule
+            UpdateShadowCasting(ss, viewDSq: 200f * 200f, shown: true); // 200m away, past scd and shadowEnd
+            Expect(ss.MeshInstance.CastShadow == GeometryInstance3D.ShadowCastingSetting.Off,
+                $"far object must be culled by distance rule (got {ss.MeshInstance.CastShadow})");
+
+            // Moving back close restores shadow
+            UpdateShadowCasting(ss, viewDSq: 4f, shown: true);
+            Expect(ss.MeshInstance.CastShadow == GeometryInstance3D.ShadowCastingSetting.On,
+                $"moving back close must restore shadow (got {ss.MeshInstance.CastShadow})");
+
+            // Rescaling past 0.5m casts shadow even when SmallObjectShadows is off
+            RenderConfig.SmallObjectShadows = false;
+            UpdateShadowCasting(ss, viewDSq: 4f, shown: true);
+            Expect(ss.MeshInstance.CastShadow == GeometryInstance3D.ShadowCastingSetting.Off,
+                "small object must turn shadow off when SmallObjectShadows=false");
+            Rescale(small, 2.0f); // edge 2.0m -> radius ~1.73m > 0.5m
+            UpdateShadowCasting(ss, viewDSq: 4f, shown: true);
+            Expect(ss.MeshInstance.CastShadow == GeometryInstance3D.ShadowCastingSetting.On,
+                $"rescaling prim past 0.5m must restore shadow even with SmallObjectShadows=false (got {ss.MeshInstance.CastShadow})");
+            Rescale(small, 0.2f);
+            UpdateShadowCasting(ss, viewDSq: 4f, shown: true);
+            Expect(ss.MeshInstance.CastShadow == GeometryInstance3D.ShadowCastingSetting.Off,
+                "shrinking prim back under 0.5m must disable shadow again");
         }
         finally
         {
             RenderConfig.SmallObjectCullPixels = savedPx;
             RenderConfig.VolumeLodFactor = savedLod;
             RenderConfig.DrawDistance = savedDraw;
+            RenderConfig.SmallObjectShadows = savedShadows;
+            RenderConfig.ShadowCasterDistance = savedScd;
         }
 
         return failures.Count == 0
