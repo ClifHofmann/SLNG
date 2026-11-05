@@ -1,3 +1,4 @@
+using System;
 using Godot;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
@@ -417,7 +418,7 @@ public static class RenderConfig
         // If queue depth is extreme (> 2000), provide extra headroom even in steady state to avoid multi-minute stalls
         if (!IsTeleportBurstActive && queueDepth > MainThreadWorkBacklogHard)
         {
-            double extra = System.Math.Min((queueDepth - MainThreadWorkBacklogHard) / (double)(MainThreadWorkBacklogExtreme - MainThreadWorkBacklogHard), 1.0);
+            double extra = Math.Min((queueDepth - MainThreadWorkBacklogHard) / (double)(MainThreadWorkBacklogExtreme - MainThreadWorkBacklogHard), 1.0);
             targetMax = MainThreadWorkBudgetMaxMs + extra * 6.0; // up to 15.0 ms
         }
 
