@@ -81,6 +81,7 @@ public partial class Boot : Control
     private Godot.Collections.Array<string> _savedProfiles = new();
 
     private GridSession? _session;
+    private bool _initialLoginBurstArmed;
     private SLNG.Core.ECS.World? _world;
     private SLNG.Core.Services.LocalizationManager _localizationManager = null!;
     private SLNG.Core.WorldSimulation _worldSimulation = null!;
@@ -438,7 +439,7 @@ public partial class Boot : Control
     private readonly System.Collections.Generic.Dictionary<System.Guid, SLNG.App.UI.GroupInfoWindow> _groupInfoWindows = new();
     private volatile int _openGroupInfoWindows;
 
-    public const string AppVersion = "v0.29.5-alpha";
+    public const string AppVersion = "v0.29.8-alpha";
 
     // FEAT-PERF-17: DXGI video memory probe and automatic VRAM budget
     private DxgiVideoMemory? _dxgiProbe;
@@ -5836,7 +5837,12 @@ public partial class Boot : Control
         var handle = ulong.Parse(regionHandle);
         LogOriginChange(handle);
         RenderConfig.SetRegionOrigin(handle);
-        RenderConfig.ArmTeleportBurst(10f); // FEAT-PERF-33: arm burst on region connect/arrival
+        // FEAT-PERF-33: arm high-throughput burst once for initial login arrival, never on region crossings (teleports are armed by ApplyTeleportProgress)
+        if (!_initialLoginBurstArmed)
+        {
+            _initialLoginBurstArmed = true;
+            RenderConfig.ArmTeleportBurst(10f);
+        }
         // BUG-NET-03: after the origin moves, tell the terrain renderer which region we're in so
         // its void-water plane sits at this region's water height (order matters -- it reads the
         // origin we just set).
@@ -6083,6 +6089,7 @@ public partial class Boot : Control
     /// </remarks>
     private void OnSessionEnded(int reasonValue, string detail)
     {
+        _initialLoginBurstArmed = false;
         if (_sessionEndShown) return;
         _sessionEndShown = true;
 

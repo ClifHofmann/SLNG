@@ -2,7 +2,7 @@
 
 - **Feature ID:** `FEAT-PERF-33`
 - **Track:** `render` / `perf`
-- **Status:** ✅ Done
+- **Status:** 🧪 Review
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md), [ADR 0004](../adr/0004-performance-architecture.md)
 
@@ -17,16 +17,14 @@ Performance telemetry from dense sims (e.g. Maui with ~66k entities and 210k nod
 
 **Goal:**
 1. Fix shadow culling so small objects (<0.5m) and distant small casters do not cast directional shadows, cutting thousands of shadow draw calls on dense sims.
-2. Introduce a temporary `TeleportBurst` budget (up to 28.0 ms) during teleports and region arrivals, draining the visual queue in 5–10 s instead of 30–40 s.
+2. Introduce a temporary `TeleportBurst` budget (up to 28.0 ms) during teleports and initial login arrival, draining the visual queue in 5–10 s instead of 30–40 s, without arming on region crossings.
 
 ## Acceptance Criteria
 
 - [x] `SmallObjectCull.ShadowEndDistance` computes shadow culling from physical screen size without blowing up under high `VolumeLodFactor` preferences.
-- [x] `SmallObjectCull.LodScale` clamps extreme LOD factors (<= 4.0, scale <= 6.0x) preventing division-by-zero or disabling size culling.
-- [x] `ObjectRenderer.cs` properly synchronizes `ShadowSettingBeforeDistanceCull` for small objects (<0.5m) so distance restoration does not resurrect shadow casting when `SmallObjectShadows` is off.
 - [x] `RenderConfig.ShadowCasterDistance` dynamically tracks `GraphicsSettings.ShadowDistance` (`Math.Clamp(ShadowDistance * 0.7f, 30f, 60f)`).
-- [x] `RenderConfig.ArmTeleportBurst` provides a temporary high-throughput work budget (`MainThreadWorkBudgetBurstMs = 28.0 ms`) during teleport and region connect.
-- [x] Full verify pass (`dotnet test` 4,299/4,299 green, `--selftest` 198/198 checks green, `dotnet format` clean).
+- [x] `RenderConfig.ArmTeleportBurst` provides a temporary high-throughput work budget (`MainThreadWorkBudgetBurstMs = 28.0 ms`) during teleport and initial login arrival (scoped away from region border crossings).
+- [x] Full verify pass (`dotnet test` green, `--selftest` checks green, `dotnet format` clean).
 
 ## Technical Specs & Affected Files
 
