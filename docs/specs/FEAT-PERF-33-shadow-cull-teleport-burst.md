@@ -17,7 +17,7 @@ Performance telemetry from dense sims (e.g. Maui with ~66k entities and 210k nod
 
 **Goal:**
 1. Fix shadow culling so small objects (<0.5m) and distant small casters do not cast directional shadows, cutting thousands of shadow draw calls on dense sims.
-2. Introduce a temporary `TeleportBurst` budget (up to 28.0 ms) during teleports and region arrivals, draining the visual queue in 5–10 s instead of 30–40 s.
+2. Introduce a temporary `TeleportBurst` budget (up to 28.0 ms) during teleports and initial login arrival, draining the visual queue in 5–10 s instead of 30–40 s, without arming on region crossings.
 
 ## Acceptance Criteria
 
@@ -25,7 +25,7 @@ Performance telemetry from dense sims (e.g. Maui with ~66k entities and 210k nod
 - [x] `SmallObjectCull.LodScale` restores previous `Math.Min(lodFactor, 8f)` behaviour with no lower clamp so volume_lod_factor=8.0 is not shortened.
 - [x] `ObjectRenderer.cs` reversible small-caster shadow latch via managed `ShadowForcedOffBecauseSmallCaster` and `CachedBoundingRadius` (zero interop reads in sweep).
 - [x] `RenderConfig.ShadowCasterDistance` dynamically tracks `GraphicsSettings.ShadowDistance` (`Math.Clamp(ShadowDistance * 0.7f, 30f, 60f)`).
-- [x] `RenderConfig.ArmTeleportBurst` provides a temporary high-throughput work budget (`MainThreadWorkBudgetBurstMs = 28.0 ms`) during teleport and region connect.
+- [x] `RenderConfig.ArmTeleportBurst` provides a temporary high-throughput work budget (`MainThreadWorkBudgetBurstMs = 28.0 ms`) during teleport and initial login arrival (scoped away from region border crossings).
 - [x] Full verify pass (`dotnet test` green, `--selftest` green, `dotnet format` clean).
 
 ## Technical Specs & Affected Files
