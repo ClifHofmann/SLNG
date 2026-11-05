@@ -64,7 +64,7 @@ public partial class AvatarRenderer : Node3D
         // took it (position and height need it), the vertex morphs wait for SetAvatarFull.
         public IReadOnlyDictionary<int, float>? PendingMorphWeights { get; set; }
         public HashSet<Guid> WornAttachmentEntities { get; } = new();
-        public HashSet<Guid> WornBuildsInProgress { get; } = new();
+        public System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> WornBuildsInProgress { get; } = new();
         // BUG-PERF-13: Texture tracking for distance LOD, re-sharpening, and refcount management.
         public HashSet<Guid> PinnedTextureIds { get; } = new();
         public HashSet<Guid> UsedTextureIds { get; } = new();
@@ -1016,7 +1016,7 @@ public partial class AvatarRenderer : Node3D
             if (_visuals.TryGetValue(avEntityId, out var avVis))
             {
                 avVis.WornAttachmentEntities.Remove(entityId);
-                avVis.WornBuildsInProgress.Remove(entityId);
+                avVis.WornBuildsInProgress.TryRemove(entityId, out _);
                 _wornBuildActiveSeq.TryRemove(entityId, out _);
                 // BUG-RENDER-50: the items after it in the alpha order close up.
                 ForgetWornAlphaItem(avVis, entityId);
@@ -2841,7 +2841,7 @@ public partial class AvatarRenderer : Node3D
                 _attachmentPrimSignatures.TryRemove(entityId, out _);
                 _attachmentLocalPoses[entityId] = (transform != null ? transform.Position : System.Numerics.Vector3.Zero,
                                                    transform != null ? transform.Rotation : System.Numerics.Quaternion.Identity);
-                avatarVisual.WornBuildsInProgress.Add(entityId);
+                avatarVisual.WornBuildsInProgress.TryAdd(entityId, 0);
                 long buildSeq = Interlocked.Increment(ref _wornBuildSequence);
                 _wornBuildActiveSeq[entityId] = buildSeq;
                 Logger.Debug($"[Attachment] REQUESTING MESH {prim.MeshId} for entity {entityId}");
@@ -2862,7 +2862,7 @@ public partial class AvatarRenderer : Node3D
                 _attachmentPrimSignatures[entityId] = PrimAttachSignature.From(prim, defaultFace);
                 _attachmentLocalPoses[entityId] = (transform != null ? transform.Position : System.Numerics.Vector3.Zero,
                                                    transform != null ? transform.Rotation : System.Numerics.Quaternion.Identity);
-                avatarVisual.WornBuildsInProgress.Add(entityId);
+                avatarVisual.WornBuildsInProgress.TryAdd(entityId, 0);
                 long buildSeq = Interlocked.Increment(ref _wornBuildSequence);
                 _wornBuildActiveSeq[entityId] = buildSeq;
                 // Prim or sculpt attachment: build its REAL geometry, the same way ObjectRenderer
@@ -3014,13 +3014,15 @@ public partial class AvatarRenderer : Node3D
     {
         if (_assetService == null)
         {
-            avatarVisual.WornBuildsInProgress.Remove(entityId);
+            if (_wornBuildActiveSeq.TryGetValue(entityId, out var seq) && seq == buildSeq)
+                avatarVisual.WornBuildsInProgress.TryRemove(entityId, out _);
             return;
         }
         if (Diagnostics.IsAttachmentIsolatedOut(entityId, meshId))
         {
             GD.Print($"[Isolate] worn mesh {meshId.ToString("N")[..8]} object {entityId.ToString("N")[..8]} left out (--hide-attachment/--only-attachment)");
-            avatarVisual.WornBuildsInProgress.Remove(entityId);
+            if (_wornBuildActiveSeq.TryGetValue(entityId, out var seq) && seq == buildSeq)
+                avatarVisual.WornBuildsInProgress.TryRemove(entityId, out _);
             return;
         }
 
@@ -3037,7 +3039,8 @@ public partial class AvatarRenderer : Node3D
         if (meshData == null)
         {
             Logger.Warn($"[Attachment] mesh {meshId} failed to fetch/decode — skipped");
-            avatarVisual.WornBuildsInProgress.Remove(entityId);
+            if (_wornBuildActiveSeq.TryGetValue(entityId, out var seq) && seq == buildSeq)
+                avatarVisual.WornBuildsInProgress.TryRemove(entityId, out _);
             return;
         }
         if (meshData.Skin != null && !materials.IsCompleted)
@@ -3074,7 +3077,8 @@ public partial class AvatarRenderer : Node3D
     {
         if (_assetService == null)
         {
-            avatarVisual.WornBuildsInProgress.Remove(entityId);
+            if (_wornBuildActiveSeq.TryGetValue(entityId, out var seq) && seq == buildSeq)
+                avatarVisual.WornBuildsInProgress.TryRemove(entityId, out _);
             return;
         }
 
@@ -3088,7 +3092,8 @@ public partial class AvatarRenderer : Node3D
             {
                 Logger.Warn($"[Attachment] sculpt {prim.SculptId} failed to fetch/decode — skipped");
                 _attachmentPrimSignatures.TryRemove(entityId, out _); // the next update asks again
-                avatarVisual.WornBuildsInProgress.Remove(entityId);
+                if (_wornBuildActiveSeq.TryGetValue(entityId, out var seq) && seq == buildSeq)
+                    avatarVisual.WornBuildsInProgress.TryRemove(entityId, out _);
                 return;
             }
         }
@@ -3102,7 +3107,8 @@ public partial class AvatarRenderer : Node3D
             {
                 Logger.Warn($"[Attachment] prim shape for entity {entityId} failed to mesh — skipped");
                 _attachmentPrimSignatures.TryRemove(entityId, out _); // the next update asks again
-                avatarVisual.WornBuildsInProgress.Remove(entityId);
+                if (_wornBuildActiveSeq.TryGetValue(entityId, out var seq) && seq == buildSeq)
+                    avatarVisual.WornBuildsInProgress.TryRemove(entityId, out _);
                 return;
             }
         }
@@ -3761,7 +3767,7 @@ public partial class AvatarRenderer : Node3D
         if (TryRouteWornRigToControlAvatar(entityId, req))
         {
             ForgetMergeItem(entityId); // FEAT-PERF-23: never merged; it leaves its bucket
-            req.Visual.WornBuildsInProgress.Remove(entityId);
+            req.Visual.WornBuildsInProgress.TryRemove(entityId, out _);
             return;
         }
 
@@ -3785,6 +3791,7 @@ public partial class AvatarRenderer : Node3D
             }
             ForgetMergeItem(entityId); // FEAT-PERF-23: nothing to draw, so nothing in a bucket either
             RecomputeMeshVisibility(req.Visual);
+            req.Visual.WornBuildsInProgress.TryRemove(entityId, out _);
             return;
         }
 
@@ -3800,6 +3807,7 @@ public partial class AvatarRenderer : Node3D
         if (skin == null)
         {
             ForgetMergeItem(entityId);
+            req.Visual.WornBuildsInProgress.TryRemove(entityId, out _);
             return;
         }
 
@@ -3844,7 +3852,7 @@ public partial class AvatarRenderer : Node3D
         _riggedAttachments[entityId] = mi;
         req.Visual.RiggedAttachments.Add((mi, req.MeshData, req.MeshId));
         req.Visual.HasLoadedOutfit = true;
-        req.Visual.WornBuildsInProgress.Remove(entityId);
+        req.Visual.WornBuildsInProgress.TryRemove(entityId, out _);
 
         // Skin is already assigned on the instance; the skeleton path must be set after
         // the node is in the tree so Godot can resolve and drive the skinning.
@@ -7677,7 +7685,7 @@ void fragment() {
                 bool isRigged = IsRiggedOnWearer(attId);
                 bool hasAnchor = _attachmentNodes.TryGetValue(attId, out var anchorNode) && GodotObject.IsInstanceValid(anchorNode);
                 bool neverRequested = !isRigged && !hasAnchor;
-                bool buildInProgress = visual.WornBuildsInProgress.Contains(attId);
+                bool buildInProgress = visual.WornBuildsInProgress.ContainsKey(attId);
 
                 if (buildInProgress || neverRequested)
                 {

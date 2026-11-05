@@ -328,7 +328,7 @@ public partial class AvatarRenderer
             pendingAnchor.AddChild(new Node3D { Name = "PointOffset" });
 
             _attachmentMeshIds[pendingId] = (pendingMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.High);
-            visual.WornBuildsInProgress.Add(pendingId);
+            visual.WornBuildsInProgress.TryAdd(pendingId, 0);
             var pendingReq = new PendingRig(hairMesh, visual, visual.Skeleton, pendingMeshId, new[] { face, face }, default, _avatarSkeleton, false);
             _pendingRigs[pendingId] = pendingReq;
             visual.HasLoadedOutfit = true;
@@ -349,13 +349,14 @@ public partial class AvatarRenderer
 
             // Older rig is committed, but a newer LOD request was started before park
             _attachmentMeshIds[lodId] = (newerHairMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.Highest);
-            visual.WornBuildsInProgress.Add(lodId);
+            visual.WornBuildsInProgress.TryAdd(lodId, 0);
             _pendingRigs[lodId] = new PendingRig(newerHairMesh, visual, visual.Skeleton, newerHairMeshId, new[] { face, face }, default, _avatarSkeleton, false);
 
             // (d) Item 4: Worn animesh part routed to control avatar (not in WornBuildsInProgress)
+            var animeshMeshId = Guid.NewGuid();
             var e4 = _world.GetOrCreateEntity(TestRegion, 1004);
             e4.SetComponent(new AttachmentComponent(visual.EntityId, 4));
-            e4.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: Guid.NewGuid()));
+            e4.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: animeshMeshId));
             e4.SetComponent(new TransformComponent());
             var animeshId = e4.Id;
             worn.Add(animeshId);
@@ -365,7 +366,8 @@ public partial class AvatarRenderer
             var animeshAnchor = new BoneAttachment3D { Name = $"WornItem_{animeshId:N}", BoneName = "mChest" };
             visual.Skeleton.AddChild(animeshAnchor);
             _attachmentNodes[animeshId] = animeshAnchor;
-            visual.WornBuildsInProgress.Remove(animeshId);
+            visual.WornBuildsInProgress.TryRemove(animeshId, out _);
+            _attachmentMeshIds[animeshId] = (animeshMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.High);
 
             // (e) Item 5: Failed mesh fetch (not in cache, removed from WornBuildsInProgress)
             var e5 = _world.GetOrCreateEntity(TestRegion, 1005);
@@ -380,7 +382,7 @@ public partial class AvatarRenderer
             var failedAnchor = new BoneAttachment3D { Name = $"WornItem_{failedId:N}", BoneName = "mChest" };
             visual.Skeleton.AddChild(failedAnchor);
             _attachmentNodes[failedId] = failedAnchor;
-            visual.WornBuildsInProgress.Remove(failedId);
+            visual.WornBuildsInProgress.TryRemove(failedId, out _);
             _attachmentMeshIds[failedId] = (failedMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.High);
 
             // Park avatar (mid-build swap-out by cap)
@@ -401,7 +403,8 @@ public partial class AvatarRenderer
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
 
-            PumpUntil(() => _riggedAttachments.ContainsKey(pendingId));
+            PumpUntil(() => _riggedAttachments.ContainsKey(pendingId)
+                         && visual.RiggedAttachments.Any(r => r.Mi != null && r.MeshId == newerHairMeshId));
             DrainQueue();
 
             // (a) Verify pending rig interrupted mid-build: ends up built and visible
@@ -442,10 +445,14 @@ public partial class AvatarRenderer
                 problems.Add("(c) newer LOD was not built for item");
             }
 
-            // (d) Verify worn animesh part: not rebuilt
+            // (d) Verify worn animesh part: not rebuilt, dedupe record survives unpark without re-request
             if (_riggedAttachments.ContainsKey(animeshId))
             {
                 problems.Add("(d) worn animesh part erroneously rigged on wearer");
+            }
+            if (!_attachmentMeshIds.ContainsKey(animeshId))
+            {
+                problems.Add("(d) worn animesh dedupe record was erroneously cleared for re-request");
             }
 
             // (e) Verify failed mesh: not requested again (remains in dedupe, not built)
@@ -471,6 +478,7 @@ public partial class AvatarRenderer
             _outfitMergeApplied = priorApplied;
             _world = priorWorld;
             _gpuCache = priorCache;
+            _assetService?.Dispose();
             _assetService = priorAssetService;
             try
             {

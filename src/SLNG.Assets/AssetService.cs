@@ -17,7 +17,7 @@ namespace SLNG.Assets;
 /// engine-neutral <see cref="MeshData"/>. No LibreMetaverse type crosses this boundary.
 /// Decoding runs on a worker thread; results are cached per mesh id.
 /// </summary>
-public class AssetService
+public class AssetService : IDisposable
 {
     private static readonly Guid TextureTransparentId = FaceTexture.TransparentTextureId;
     private static readonly Guid TextureWhiteId = new("5748decc-f629-461c-9a36-a35a221fe21f");
@@ -2207,5 +2207,14 @@ public class AssetService
                 }
             }
         };
+    }
+
+    public void Dispose()
+    {
+        SLNG.Core.FetchPipeReporter.Unregister(TakeTexPipeLine);
+        SLNG.Core.FetchPipeReporter.Unregister(TextureStreaming.TakeLine);
+        DiskCache?.Dispose();
+        _memCache.Dispose();
+        _recentTextureFailures.Dispose();
     }
 }
