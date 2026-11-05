@@ -565,7 +565,7 @@ public partial class AvatarRenderer : Node3D
     }
 
     private readonly Queue<Guid> _pendingRemovals = new();
-    private readonly Dictionary<Guid, int> _frameRemovalsPerWearer = new();
+    private readonly Dictionary<Guid, (int Count, string WearerStr)> _frameRemovalsPerWearer = new();
 
     private void OnEntityRemoved(object? sender, EntityEventArgs e)
     {
@@ -893,12 +893,13 @@ public partial class AvatarRenderer : Node3D
         // BUG-AVATAR-21: log origin and avatar state when a worn attachment leaves the client.
         if (_attachmentToAvatar.TryGetValue(entityId, out var avId))
         {
-            _frameRemovalsPerWearer[avId] = _frameRemovalsPerWearer.GetValueOrDefault(avId) + 1;
-
             _visuals.TryGetValue(avId, out var wearerVisual);
             string wearerStr = wearerVisual != null
                 ? (wearerVisual.IsSelf ? "SELF" : wearerVisual.AgentId.ToString()[..8])
                 : avId.ToString()[..8];
+
+            int prevCount = _frameRemovalsPerWearer.TryGetValue(avId, out var prev) ? prev.Count : 0;
+            _frameRemovalsPerWearer[avId] = (prevCount + 1, wearerStr);
             string itemStr = entityId.ToString()[..8];
             string meshStr = "--------";
             if (_attachmentMeshIds.TryGetValue(entityId, out var meshInfo) && meshInfo.MeshId != Guid.Empty)
@@ -7576,6 +7577,17 @@ void fragment() {
         if (!RenderConfig.OutfitMerge && visual.OutfitMerge != null) UnloadAvatarOutfit(visual);
     }
 
+    private static bool HasBuiltMesh(Node? node)
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node)) return false;
+        if (node is MeshInstance3D mi && mi.Mesh != null) return true;
+        foreach (var child in node.GetChildren())
+        {
+            if (HasBuiltMesh(child)) return true;
+        }
+        return false;
+    }
+
     private void SetAvatarFull(AvatarVisual visual)
     {
         if (!visual.IsReduced) return;
@@ -7627,13 +7639,27 @@ void fragment() {
                 }
             }
 
-            // Catch any attachments that arrived while parked and were never loaded
+            // BUG-AVATAR-23: Re-request any worn items that have no finished visual (interrupted mid-build,
+            // dropped while reduced, or arrived while parked), while preserving instant unpark for finished ones.
+            int reRequestedCount = 0;
             foreach (var attId in visual.WornAttachmentEntities)
             {
-                if (!IsRiggedOnWearer(attId) && !_attachmentNodes.ContainsKey(attId))
+                bool isRigged = IsRiggedOnWearer(attId);
+                bool hasAnchor = _attachmentNodes.TryGetValue(attId, out var anchorNode) && GodotObject.IsInstanceValid(anchorNode);
+                bool anchorHasMesh = hasAnchor && HasBuiltMesh(anchorNode!);
+
+                if (ParkedOutfitPolicy.ShouldReRequestOnUnpark(isRigged, hasAnchor, anchorHasMesh))
                 {
+                    _attachmentMeshIds.Remove(attId);
+                    _attachmentPrimSignatures.TryRemove(attId, out _);
+                    reRequestedCount++;
                     CallDeferred(nameof(UpdateAttachment), attId.ToString());
                 }
+            }
+
+            if (Diagnostics.Enabled)
+            {
+                GD.Print($"[AvatarLimit] {visual.AgentId.ToString("N")[..8]} unpark re-requested {reRequestedCount} worn items");
             }
 
             // Check if server bakes changed while parked
@@ -7995,14 +8021,14 @@ void fragment() {
 
         if (_frameRemovalsPerWearer.Count > 0)
         {
-            foreach (var (wearerId, count) in _frameRemovalsPerWearer)
+            foreach (var (wearerId, (count, wearerStr)) in _frameRemovalsPerWearer)
             {
                 if (count > 3)
                 {
                     _visuals.TryGetValue(wearerId, out var visual);
-                    string wearer = visual != null
-                        ? (visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8])
-                        : wearerId.ToString()[..8];
+                    string wearer = !string.IsNullOrEmpty(wearerStr)
+                        ? wearerStr
+                        : (visual != null ? (visual.IsSelf ? "SELF" : visual.AgentId.ToString()[..8]) : wearerId.ToString()[..8]);
                     int wornLeft = visual?.WornAttachmentEntities.Count ?? 0;
                     GD.Print($"[WornRemoved] wearer={wearer} removed {count} items in one frame (wornLeft={wornLeft})");
                 }

@@ -15,6 +15,11 @@ public static partial class SelfTest
     private static Check CheckParkedOutfitHidden(SceneTree tree) =>
         RunOnRenderer(tree, "parked avatars draw no outfit, cap holds (merge off)", r => r.SelfTestParkedOutfitHidden());
 
+    /// <summary>BUG-AVATAR-23: an item with a pending rig that is parked mid-build ends up built after unpark,
+    /// while an already-built item is not rebuilt (<c>AvatarRenderer.SelfTestParkedRigsRecovered</c>).</summary>
+    private static Check CheckParkedRigsRecovered(SceneTree tree) =>
+        RunOnRenderer(tree, "parked rigs recovered on promotion, built rigs untouched", r => r.SelfTestParkedRigsRecovered());
+
     /// <summary>FEAT-PERF-23 fix: the runtime switch off, on, off again -- also mid-un-merge
     /// (<c>AvatarRenderer.SelfTestOutfitMergeToggle</c>).</summary>
     private static Check CheckOutfitMergeToggle(SceneTree tree) =>
