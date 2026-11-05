@@ -63,7 +63,9 @@ public static class SmallObjectCull
     public static float LodScale(float lodFactor)
     {
         if (!(lodFactor > 0f)) return 1f;
-        float f = System.Math.Min(lodFactor, 8f);
+        // Cap the effective factor at 4.0 so extreme LOD preferences (e.g. 8.0) do not
+        // blow up LodScale to 36x+ and disable small-object culling.
+        float f = System.Math.Clamp(lodFactor, 0.1f, 4f);
         float distanceFactor = System.Math.Max(1f - f * 0.1f, 0.1f);
         return 0.9f * f / distanceFactor;
     }
@@ -93,12 +95,16 @@ public static class SmallObjectCull
     /// <summary>
     /// The distance beyond which the object stops casting a shadow, or 0 for "no extra limit". The
     /// renderer takes the smaller of this and <c>RenderConfig.ShadowCasterDistance</c>.
+    /// Shadows are filtered and blurred; they do not scale with the mesh LOD multiplier.
     /// </summary>
-    public static float ShadowEndDistance(float radius, float pixelsPerRadian, float pixelRadius, float lodFactor)
+    public static float ShadowEndDistance(float radius, float pixelsPerRadian, float pixelRadius, float lodFactor = 1f)
     {
         if (!(pixelRadius > 0f) || !(radius > 0f) || !(pixelsPerRadian > 0f)) return 0f;
 
-        float d = Distance(radius, pixelsPerRadian, pixelRadius * ShadowPixelFactor) * LodScale(lodFactor);
+        // Shadow cascades are rasterized at low resolution with soft/PCF filtering.
+        // Culling small casters at physical pixel size saves thousands of shadow draw calls
+        // without blowing through the shadow caster limit under high mesh LOD settings.
+        float d = Distance(radius, pixelsPerRadian, pixelRadius * ShadowPixelFactor);
         if (!(d > 0f)) return 0f;
         return System.Math.Max(d, MinEndMetres);
     }

@@ -1064,34 +1064,46 @@ public partial class ObjectRenderer : Node3D
                 bool instanced = _instanceGroups != null && _instanceGroups.IsInstanced(id);
                 if (!instanced)
                 {
-                    float scd = RenderConfig.ShadowCasterDistance;
-                    // FEAT-PERF-14: a small caster stops casting sooner than a big one. Its shadow spans as
-                    // few pixels as the object does (SmallObjectCull.ShadowEndDistance), so the plain
-                    // distance is only the ceiling. The same managed flag below still holds the real
-                    // setting, and the same 0.9 hysteresis applies to the shorter distance.
-                    float plainScd = scd;
-                    if (state.ShadowEnd > 0f && state.ShadowEnd < scd) scd = state.ShadowEnd;
-                    bool tooFarToCast = viewDSq > scd * scd;
-                    bool nearEnoughToCast = viewDSq < (scd * 0.9f) * (scd * 0.9f);
-                    // BUG-PERF-11: the managed flag first, so an object already forced off (nearly all
-                    // of the far ones) does not read CastShadow back from the node.
-                    if (tooFarToCast && !state.ShadowForcedOffByDistance
-                        && state.MeshInstance.CastShadow != GeometryInstance3D.ShadowCastingSetting.Off)
+                    // FEAT-PERF-33: Small objects under 0.5 m radius never cast shadows when SmallObjectShadows is off.
+                    bool smallCasterDisabled = !RenderConfig.SmallObjectShadows && EffectiveBoundingRadius(state) < 0.5f;
+                    if (smallCasterDisabled)
                     {
-                        state.ShadowSettingBeforeDistanceCull = state.MeshInstance.CastShadow;
-                        state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
-                        state.ShadowForcedOffByDistance = true;
-                    }
-                    else if (nearEnoughToCast && state.ShadowForcedOffByDistance)
-                    {
-                        state.MeshInstance.CastShadow = state.ShadowSettingBeforeDistanceCull;
+                        if (state.MeshInstance.CastShadow != GeometryInstance3D.ShadowCastingSetting.Off)
+                            state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                        state.ShadowSettingBeforeDistanceCull = GeometryInstance3D.ShadowCastingSetting.Off;
                         state.ShadowForcedOffByDistance = false;
                     }
+                    else
+                    {
+                        float scd = RenderConfig.ShadowCasterDistance;
+                        // FEAT-PERF-14: a small caster stops casting sooner than a big one. Its shadow spans as
+                        // few pixels as the object does (SmallObjectCull.ShadowEndDistance), so the plain
+                        // distance is only the ceiling. The same managed flag below still holds the real
+                        // setting, and the same 0.9 hysteresis applies to the shorter distance.
+                        float plainScd = scd;
+                        if (state.ShadowEnd > 0f && state.ShadowEnd < scd) scd = state.ShadowEnd;
+                        bool tooFarToCast = viewDSq > scd * scd;
+                        bool nearEnoughToCast = viewDSq < (scd * 0.9f) * (scd * 0.9f);
+                        // BUG-PERF-11: the managed flag first, so an object already forced off (nearly all
+                        // of the far ones) does not read CastShadow back from the node.
+                        if (tooFarToCast && !state.ShadowForcedOffByDistance
+                            && state.MeshInstance.CastShadow != GeometryInstance3D.ShadowCastingSetting.Off)
+                        {
+                            state.ShadowSettingBeforeDistanceCull = state.MeshInstance.CastShadow;
+                            state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                            state.ShadowForcedOffByDistance = true;
+                        }
+                        else if (nearEnoughToCast && state.ShadowForcedOffByDistance)
+                        {
+                            state.MeshInstance.CastShadow = state.ShadowSettingBeforeDistanceCull;
+                            state.ShadowForcedOffByDistance = false;
+                        }
 
-                    // FEAT-PERF-14: a caster the size rule stopped while the plain distance would still let it
-                    // cast. Counted from the managed flag, so an object that never cast is not in it.
-                    if (scd < plainScd && state.ShadowForcedOffByDistance && viewDSq <= plainScd * plainScd && shown)
-                        _rcShadowCut++;
+                        // FEAT-PERF-14: a caster the size rule stopped while the plain distance would still let it
+                        // cast. Counted from the managed flag, so an object that never cast is not in it.
+                        if (scd < plainScd && state.ShadowForcedOffByDistance && viewDSq <= plainScd * plainScd && shown)
+                            _rcShadowCut++;
+                    }
                 }
 
                 // FEAT-PERF-14: the numbers behind the [RangeCull] line. camDSq is the camera's own distance,
@@ -5726,13 +5738,19 @@ public partial class ObjectRenderer : Node3D
 
             if (mesh != null)
             {
-                if (!RenderConfig.SmallObjectShadows && EffectiveBoundingRadius(state) < 0.5f)
+                // FEAT-PERF-33: Small objects under 0.5 m radius do not cast shadows when SmallObjectShadows is off.
+                // Keep ShadowSettingBeforeDistanceCull in sync so distance culling restore does not re-enable it.
+                var desiredShadow = (!RenderConfig.SmallObjectShadows && EffectiveBoundingRadius(state) < 0.5f)
+                    ? GeometryInstance3D.ShadowCastingSetting.Off
+                    : GeometryInstance3D.ShadowCastingSetting.On;
+                state.ShadowSettingBeforeDistanceCull = desiredShadow;
+                if (!state.ShadowForcedOffByDistance)
                 {
-                    state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                    state.MeshInstance.CastShadow = desiredShadow;
                 }
                 else
                 {
-                    state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+                    state.MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
                 }
 
                 // FEAT-PERF-14: a new mesh is new bounds (a LOD swap changes them a little, a mesh

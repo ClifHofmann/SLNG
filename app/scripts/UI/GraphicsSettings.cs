@@ -665,6 +665,7 @@ public sealed class GraphicsSettings
 
         RenderConfig.DrawDistance = DrawDistance;
         RenderConfig.SmallObjectShadows = SmallObjectShadows;
+        RenderConfig.ShadowCasterDistance = Math.Clamp(ShadowDistance * 0.7f, 30f, 60f);
         // FEAT-PERF-07: takes effect gradually rather than at once, and that is deliberate -- the
         // cull sweep re-evaluates every object's mesh LOD about four times a second, so moving
         // this slider re-levels the scene over the next second instead of re-meshing thousands of

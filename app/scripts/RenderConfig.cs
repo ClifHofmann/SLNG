@@ -1,3 +1,4 @@
+using System;
 using Godot;
 using SLNG.Core.Components;
 using SLNG.Core.ECS;
@@ -353,6 +354,10 @@ public static class RenderConfig
     /// </summary>
     public static double MainThreadWorkBudgetMaxMs = 9.0;
 
+    /// <summary>FEAT-PERF-33: temporary burst budget during teleport or region arrival, so the main-thread
+    /// work queue can clear tens of thousands of queued visual nodes in 5-10 s rather than 40 s.</summary>
+    public static double MainThreadWorkBudgetBurstMs = 28.0;
+
     /// <summary>FEAT-PERF-31: milliseconds a frame the main-thread queue spends binding textures that are ready
     /// (<see cref="MainThreadWorkQueue.Lane.Upload"/>), on top of <see cref="MainThreadWorkBudgetMs"/>. A texture
     /// bind is 0.02-5 ms (most under 1), so this is tens to hundreds a frame; at least one runs whatever the figure.</summary>
@@ -363,6 +368,33 @@ public static class RenderConfig
     /// <see cref="MainThreadWorkBudgetMaxMs"/>.</summary>
     public static int MainThreadWorkBacklogSoft = 200;
     public static int MainThreadWorkBacklogHard = 2000;
+    public static int MainThreadWorkBacklogExtreme = 10000;
+
+    private static ulong _teleportBurstUntilMsec = 0;
+
+    /// <summary>FEAT-PERF-33: arms the high-throughput burst budget for <paramref name="seconds"/>.</summary>
+    public static void ArmTeleportBurst(float seconds = 8f)
+    {
+        ulong now = Godot.Time.GetTicksMsec();
+        ulong until = now + (ulong)(seconds * 1000f);
+        if (until > _teleportBurstUntilMsec)
+            _teleportBurstUntilMsec = until;
+    }
+
+    /// <summary>FEAT-PERF-33: cancels an active teleport burst.</summary>
+    public static void DisarmTeleportBurst() => _teleportBurstUntilMsec = 0;
+
+    /// <summary>FEAT-PERF-33: true while a teleport or region-entry burst is active.</summary>
+    public static bool IsTeleportBurstActive
+    {
+        get
+        {
+            if (_teleportBurstUntilMsec == 0) return false;
+            if (Godot.Time.GetTicksMsec() < _teleportBurstUntilMsec) return true;
+            _teleportBurstUntilMsec = 0;
+            return false;
+        }
+    }
 
     /// <summary>
     /// BUG-NET-11: the budget is a steady-state figure, and it was being applied to a transient
@@ -373,15 +405,28 @@ public static class RenderConfig
     /// <see cref="MainThreadWorkBudgetMaxMs"/> while the backlog is deep converts that latency
     /// into a brief, bounded frame-rate cost and then returns to 3 ms the moment the queue drains
     /// -- an idle or steady scene never sees a different budget from before.
+    ///
+    /// FEAT-PERF-33: during a teleport burst or extreme backlog (>2000), targetMax scales up so the queue
+    /// clears in seconds rather than grinding for half a minute.
     /// </summary>
     public static double MainThreadWorkBudgetFor(int queueDepth)
     {
         if (queueDepth <= MainThreadWorkBacklogSoft) return MainThreadWorkBudgetMs;
-        if (queueDepth >= MainThreadWorkBacklogHard) return MainThreadWorkBudgetMaxMs;
+
+        double targetMax = IsTeleportBurstActive ? MainThreadWorkBudgetBurstMs : MainThreadWorkBudgetMaxMs;
+
+        // If queue depth is extreme (> 2000), provide extra headroom even in steady state to avoid multi-minute stalls
+        if (!IsTeleportBurstActive && queueDepth > MainThreadWorkBacklogHard)
+        {
+            double extra = Math.Min((queueDepth - MainThreadWorkBacklogHard) / (double)(MainThreadWorkBacklogExtreme - MainThreadWorkBacklogHard), 1.0);
+            targetMax = MainThreadWorkBudgetMaxMs + extra * 6.0; // up to 15.0 ms
+        }
+
+        if (queueDepth >= MainThreadWorkBacklogHard) return targetMax;
 
         double t = (double)(queueDepth - MainThreadWorkBacklogSoft)
                  / (MainThreadWorkBacklogHard - MainThreadWorkBacklogSoft);
-        return MainThreadWorkBudgetMs + t * (MainThreadWorkBudgetMaxMs - MainThreadWorkBudgetMs);
+        return MainThreadWorkBudgetMs + t * (targetMax - MainThreadWorkBudgetMs);
     }
 
     /// <summary>

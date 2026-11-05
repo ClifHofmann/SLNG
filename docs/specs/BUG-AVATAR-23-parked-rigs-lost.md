@@ -2,7 +2,7 @@
 
 - **Feature ID:** `BUG-AVATAR-23`
 - **Track:** `avatar` / `render`
-- **Status:** 🧪 Review
+- **Status:** ✅ Done
 - **Owner:** `gemini`
 - **Spec / Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
