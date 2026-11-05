@@ -113,7 +113,7 @@ public class SmallObjectCullTests
     public void ShadowEnd_IsShorterThanTheMainEnd_ForTheSameObject()
     {
         float main = SmallObjectCull.EndDistance(0.2f, Ppr, Px, 1f, 5000f);
-        float shadow = SmallObjectCull.ShadowEndDistance(0.2f, Ppr, Px, 1f);
+        float shadow = SmallObjectCull.ShadowEndDistance(0.2f, Ppr, Px);
         Assert.True(shadow < main);
         Assert.Equal(SmallObjectCull.ShadowPixelFactor, main / shadow, 2);
     }
@@ -121,26 +121,18 @@ public class SmallObjectCullTests
     [Fact]
     public void ShadowEnd_IsZero_WhenTheCullIsOff_AndHonoursTheFloor()
     {
-        Assert.Equal(0f, SmallObjectCull.ShadowEndDistance(0.2f, Ppr, 0f, 1f));
-        Assert.Equal(SmallObjectCull.MinEndMetres, SmallObjectCull.ShadowEndDistance(0.003f, Ppr, Px, 1f));
+        Assert.Equal(0f, SmallObjectCull.ShadowEndDistance(0.2f, Ppr, 0f));
+        Assert.Equal(SmallObjectCull.MinEndMetres, SmallObjectCull.ShadowEndDistance(0.003f, Ppr, Px));
     }
 
     [Fact]
     public void ShadowEnd_DoesNotExplodeWithHighLodFactor()
     {
-        // FEAT-PERF-33: shadow distance must not scale with VolumeLodFactor (e.g. 8.0f),
-        // ensuring small objects stop casting shadows at their physical distance.
-        float shadowAtOne = SmallObjectCull.ShadowEndDistance(0.2f, Ppr, Px, 1f);
-        float shadowAtEight = SmallObjectCull.ShadowEndDistance(0.2f, Ppr, Px, 8f);
-        Assert.Equal(shadowAtOne, shadowAtEight);
-    }
-
-    [Fact]
-    public void LodScale_CapsAtExtremeFactors_PreventingDivisionByZero()
-    {
-        // FEAT-PERF-33: factor 8.0f is capped at 4.0f (scale 6.0f) instead of exploding to 36.0f.
-        Assert.Equal(6.0f, SmallObjectCull.LodScale(8f), 2);
-        Assert.Equal(6.0f, SmallObjectCull.LodScale(12f), 2);
+        // FEAT-PERF-33: shadow distance does not take or scale with VolumeLodFactor (e.g. 8.0f),
+        // staying strictly based on physical screen size even when main EndDistance scales up.
+        float mainAtEight = SmallObjectCull.EndDistance(0.2f, Ppr, Px, 8f, 5000f);
+        float shadow = SmallObjectCull.ShadowEndDistance(0.2f, Ppr, Px);
+        Assert.True(shadow < mainAtEight);
     }
 
     [Fact]
