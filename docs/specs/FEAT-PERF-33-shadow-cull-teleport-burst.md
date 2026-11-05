@@ -21,26 +21,29 @@ Performance telemetry from dense sims (e.g. Maui with ~66k entities and 210k nod
 
 ## Acceptance Criteria
 
-- [x] `SmallObjectCull.ShadowEndDistance` computes shadow culling from physical screen size without blowing up under high `VolumeLodFactor` preferences.
+- [x] `SmallObjectCull.ShadowEndDistance` computes shadow culling from physical screen size without blowing up under high `VolumeLodFactor` preferences (decoupled from `lodFactor`).
+- [x] `SmallObjectCull.LodScale` restores previous `Math.Min(lodFactor, 8f)` behaviour with no lower clamp so volume_lod_factor=8.0 is not shortened.
+- [x] `ObjectRenderer.cs` reversible small-caster shadow latch via managed `ShadowForcedOffBecauseSmallCaster` and `CachedBoundingRadius` (zero interop reads in sweep).
 - [x] `RenderConfig.ShadowCasterDistance` dynamically tracks `GraphicsSettings.ShadowDistance` (`Math.Clamp(ShadowDistance * 0.7f, 30f, 60f)`).
 - [x] `RenderConfig.ArmTeleportBurst` provides a temporary high-throughput work budget (`MainThreadWorkBudgetBurstMs = 28.0 ms`) during teleport and initial login arrival (scoped away from region border crossings).
-- [x] Full verify pass (`dotnet test` green, `--selftest` checks green, `dotnet format` clean).
+- [x] Full verify pass (`dotnet test` green, `--selftest` green, `dotnet format` clean).
 
 ## Technical Specs & Affected Files
 
 - `src/SLNG.Core/SmallObjectCull.cs`:
   - Decouple `ShadowEndDistance` from `lodFactor`.
-  - Clamp `f` in `LodScale` to `[0.1f, 4f]` to prevent `36.0x` explosion at LOD factor 8.
+  - Restore `LodScale` to `Math.Min(lodFactor, 8f)` without lower clamp.
 - `tests/SLNG.Core.Tests/SmallObjectCullTests.cs`:
-  - Unit tests for `ShadowEnd_DoesNotExplodeWithHighLodFactor` and `LodScale_CapsAtExtremeFactors_PreventingDivisionByZero`.
+  - Unit tests for `ShadowEndDistance` and adapted `ShadowEnd_DoesNotExplodeWithHighLodFactor`.
 - `app/scripts/RenderConfig.cs`:
   - Add `MainThreadWorkBudgetBurstMs = 28.0`, `ArmTeleportBurst(float seconds = 8f)`, `DisarmTeleportBurst()`, `IsTeleportBurstActive`.
   - Adapt `MainThreadWorkBudgetFor` to burst and extreme queue depth.
 - `app/scripts/MainThreadWorkQueue.cs`:
   - Allow `TextureUploadBudgetMs` to expand (2x) during active teleport burst.
 - `app/scripts/ObjectRenderer.cs`:
-  - In `AssignSharedMesh`, keep `ShadowSettingBeforeDistanceCull` aligned with `desiredShadow`.
-  - In sweep, enforce `smallCasterDisabled` when `!SmallObjectShadows && EffectiveBoundingRadius < 0.5f`.
+  - `VisualState.ShadowForcedOffBecauseSmallCaster` managed flag.
+  - In `AssignSharedMesh` and `uv.scale`, maintain `CachedBoundingRadius`.
+  - In sweep, use managed state (`CachedBoundingRadius` and `ShadowForcedOffBecauseSmallCaster`) with reversible toggling.
 - `app/scripts/UI/GraphicsSettings.cs`:
   - In `Apply`, scale `RenderConfig.ShadowCasterDistance` with `ShadowDistance`.
 - `app/scripts/Boot.cs`:

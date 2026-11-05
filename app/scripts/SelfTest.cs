@@ -213,7 +213,7 @@ public static partial class SelfTest
     /// Call it from <c>Boot._Ready</c> deferred: the checks load resources, and doing that inside
     /// <c>_Ready</c> would interleave with the rest of the boot sequence still setting itself up.
     /// </summary>
-    public static void Run(SceneTree tree)
+    public static async void Run(SceneTree tree)
     {
         // FEAT-PERF-24 P0-c: opt-in synthetic bench, runs instead of the checks (SelfTest.PrimBench.cs).
         if (PrimBenchRequested)
@@ -289,7 +289,7 @@ public static partial class SelfTest
         results.Add(CheckOutfitProbe(tree)); // FEAT-PERF-23 Phase 0
         results.Add(CheckOutfitMerge(tree)); // FEAT-PERF-23 Phase 1
         results.Add(CheckParkedOutfitHidden(tree)); // FEAT-PERF-23 fix: merge off, parked avatars
-        results.Add(CheckParkedRigsRecovered(tree)); // BUG-AVATAR-23: parked rigs recovered, built rigs untouched
+        results.Add(await CheckParkedRigsRecovered(tree)); // BUG-AVATAR-23: parked rigs recovered, built rigs untouched
         results.Add(CheckOutfitMergeToggle(tree)); // FEAT-PERF-23 fix: runtime switch
         results.Add(CheckWornAlphaOrder(tree)); // BUG-RENDER-50
         results.Add(CheckOutfitMergeUploadBench()); // FEAT-PERF-23 Phase 0, probe 2

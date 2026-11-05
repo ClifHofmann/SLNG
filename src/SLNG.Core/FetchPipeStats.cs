@@ -159,6 +159,19 @@ public static class FetchPipeReporter
 
     public static void Register(FetchPipeStats stats) => Register(stats.TakeLine);
 
+    public static void Unregister(Func<string?> provider)
+    {
+        lock (_lock)
+        {
+            _providers.Remove(provider);
+            if (_providers.Count == 0)
+            {
+                _timer?.Dispose();
+                _timer = null;
+            }
+        }
+    }
+
     private static void Tick()
     {
         Func<string?>[] snapshot;
