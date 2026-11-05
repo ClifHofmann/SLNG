@@ -240,8 +240,14 @@ public partial class AvatarRenderer
     /// BUG-AVATAR-23: When an avatar is parked mid-build (items in _pendingRigs with BoneAttachment3D
     /// anchors created), on promotion from parked all unfinished items must be re-requested and finish building,
     /// while items that were already finished must NOT be rebuilt (preserving BUG-PERF-16 instant unpark).
+    /// Covers 5 cases through the real promotion path (waiting for deferred calls):
+    /// (a) pending rig interrupted: ends up built;
+    /// (b) built item: same instance, not rebuilt;
+    /// (c) built item with a pending newer LOD interrupted: the newer one ends up built;
+    /// (d) worn animesh part: not rebuilt;
+    /// (e) failed mesh: not requested again.
     /// </summary>
-    internal (bool Passed, string Detail) SelfTestParkedRigsRecovered()
+    internal async System.Threading.Tasks.Task<(bool Passed, string Detail)> SelfTestParkedRigsRecovered(SceneTree tree)
     {
         LoadAvatarSkeleton();
         if (_avatarSkeleton == null) return (false, "the avatar skeleton did not load");
@@ -253,9 +259,12 @@ public partial class AvatarRenderer
         bool priorSetting = RenderConfig.OutfitMerge;
         bool priorApplied = _outfitMergeApplied;
 
+        string scratchDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "slng_selftest_" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(scratchDir);
+
         _world = new World();
         _gpuCache = new GpuCache(64L << 20);
-        _assetService = new AssetService(new GridSession(), "");
+        _assetService = new AssetService(new GridSession(), scratchDir);
 
         var worn = new List<Guid>();
         AvatarVisual? visual = null;
@@ -271,16 +280,21 @@ public partial class AvatarRenderer
             var ibmChest = System.Numerics.Matrix4x4.CreateTranslation(0.01f, 0f, -1.35f);
             var bodyMesh = TestMesh(new[] { "mPelvis", "mTorso", "mChest" }, new[] { System.Numerics.Matrix4x4.Identity, ibmTorso, ibmChest }, faces: 2, x: -0.2f);
             var hairMesh = TestMesh(new[] { "mChest", "mTorso" }, new[] { ibmChest, ibmTorso }, faces: 2, x: 0f);
+            var newerHairMesh = TestMesh(new[] { "mChest", "mTorso" }, new[] { ibmChest, ibmTorso }, faces: 2, x: 0.1f);
 
             var builtMeshId = Guid.NewGuid();
             var pendingMeshId = Guid.NewGuid();
+            var newerHairMeshId = Guid.NewGuid();
+            var failedMeshId = Guid.NewGuid(); // deliberately not in cache -> GetMeshAsync returns null
+
             _assetService.CacheMeshInMemory(builtMeshId, bodyMesh);
             _assetService.CacheMeshInMemory(pendingMeshId, hairMesh);
+            _assetService.CacheMeshInMemory(newerHairMeshId, newerHairMesh);
 
             var face = new FaceTexture(Guid.NewGuid(), Guid.Empty, Guid.Empty, new System.Numerics.Vector4(1f, 1f, 1f, 1f), 1f, 1f, 0f, 0f, 0f);
             const ulong TestRegion = 0xFEEDBEEF00000001UL;
 
-            // Item 1: Already built
+            // (b) Item 1: Already built item
             var e1 = _world.GetOrCreateEntity(TestRegion, 1001);
             e1.SetComponent(new AttachmentComponent(visual.EntityId, 1));
             e1.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: builtMeshId));
@@ -298,7 +312,7 @@ public partial class AvatarRenderer
             if (!_riggedAttachments.TryGetValue(builtId, out var originalBuiltMi))
                 return (false, "item 1 was not rigged");
 
-            // Item 2: Pending rig interrupted mid-build
+            // (a) Item 2: Pending rig interrupted mid-build
             var e2 = _world.GetOrCreateEntity(TestRegion, 1002);
             e2.SetComponent(new AttachmentComponent(visual.EntityId, 2));
             e2.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: pendingMeshId));
@@ -314,57 +328,134 @@ public partial class AvatarRenderer
             pendingAnchor.AddChild(new Node3D { Name = "PointOffset" });
 
             _attachmentMeshIds[pendingId] = (pendingMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.High);
+            visual.WornBuildsInProgress.Add(pendingId);
             var pendingReq = new PendingRig(hairMesh, visual, visual.Skeleton, pendingMeshId, new[] { face, face }, default, _avatarSkeleton, false);
             _pendingRigs[pendingId] = pendingReq;
             visual.HasLoadedOutfit = true;
+
+            // (c) Item 3: Built item with a pending newer LOD interrupted
+            var e3 = _world.GetOrCreateEntity(TestRegion, 1003);
+            e3.SetComponent(new AttachmentComponent(visual.EntityId, 3));
+            e3.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: newerHairMeshId));
+            e3.SetComponent(new TransformComponent());
+            var lodId = e3.Id;
+            worn.Add(lodId);
+
+            CommitSelfTestRig(visual, lodId, hairMesh, new[] { face, face }, keepTangents: false);
+            var lodAnchor = new BoneAttachment3D { Name = $"WornItem_{lodId:N}", BoneName = "mChest" };
+            visual.Skeleton.AddChild(lodAnchor);
+            _attachmentNodes[lodId] = lodAnchor;
+            lodAnchor.AddChild(new Node3D { Name = "PointOffset" });
+
+            // Older rig is committed, but a newer LOD request was started before park
+            _attachmentMeshIds[lodId] = (newerHairMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.Highest);
+            visual.WornBuildsInProgress.Add(lodId);
+            _pendingRigs[lodId] = new PendingRig(newerHairMesh, visual, visual.Skeleton, newerHairMeshId, new[] { face, face }, default, _avatarSkeleton, false);
+
+            // (d) Item 4: Worn animesh part routed to control avatar (not in WornBuildsInProgress)
+            var e4 = _world.GetOrCreateEntity(TestRegion, 1004);
+            e4.SetComponent(new AttachmentComponent(visual.EntityId, 4));
+            e4.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: Guid.NewGuid()));
+            e4.SetComponent(new TransformComponent());
+            var animeshId = e4.Id;
+            worn.Add(animeshId);
+
+            visual.WornAttachmentEntities.Add(animeshId);
+            _attachmentToAvatar[animeshId] = visual.EntityId;
+            var animeshAnchor = new BoneAttachment3D { Name = $"WornItem_{animeshId:N}", BoneName = "mChest" };
+            visual.Skeleton.AddChild(animeshAnchor);
+            _attachmentNodes[animeshId] = animeshAnchor;
+            visual.WornBuildsInProgress.Remove(animeshId);
+
+            // (e) Item 5: Failed mesh fetch (not in cache, removed from WornBuildsInProgress)
+            var e5 = _world.GetOrCreateEntity(TestRegion, 1005);
+            e5.SetComponent(new AttachmentComponent(visual.EntityId, 5));
+            e5.SetComponent(new PrimitiveComponent(System.Numerics.Vector3.One, 0, isMesh: true, meshId: failedMeshId));
+            e5.SetComponent(new TransformComponent());
+            var failedId = e5.Id;
+            worn.Add(failedId);
+
+            visual.WornAttachmentEntities.Add(failedId);
+            _attachmentToAvatar[failedId] = visual.EntityId;
+            var failedAnchor = new BoneAttachment3D { Name = $"WornItem_{failedId:N}", BoneName = "mChest" };
+            visual.Skeleton.AddChild(failedAnchor);
+            _attachmentNodes[failedId] = failedAnchor;
+            visual.WornBuildsInProgress.Remove(failedId);
+            _attachmentMeshIds[failedId] = (failedMeshId, new[] { face, face }, default, visual.EntityId, MeshDetailLevel.High);
 
             // Park avatar (mid-build swap-out by cap)
             SetAvatarReduced(visual);
 
             if (!visual.IsParked) problems.Add("avatar was not parked");
             if (_pendingRigs.ContainsKey(pendingId)) problems.Add("pending rig was not purged on park");
+            if (_pendingRigs.ContainsKey(lodId)) problems.Add("newer LOD pending rig was not purged on park");
             if (originalBuiltMi.Visible) problems.Add("built rig was not hidden on park");
 
-            // Promote avatar back to full
+            // Promote avatar back to full (unpark)
             SetAvatarFull(visual);
 
             if (visual.IsParked) problems.Add("avatar was not unparked");
             if (visual.IsReduced) problems.Add("avatar is still reduced after promotion");
 
-            // Verify: built item was NOT marked for re-request (dedupe cache remains)
-            if (!_attachmentMeshIds.ContainsKey(builtId))
-                problems.Add("built item dedupe record was erroneously cleared");
+            // Wait for deferred CallDeferred(nameof(UpdateAttachment)) through real engine frame
+            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
 
-            // Verify: pending item WAS marked for re-request (dedupe cache cleared so UpdateAttachment proceeds)
-            if (_attachmentMeshIds.ContainsKey(pendingId))
-                problems.Add("pending item dedupe record was not cleared for re-request");
-
-            // Run the re-request
-            UpdateAttachment(pendingId.ToString());
             PumpUntil(() => _riggedAttachments.ContainsKey(pendingId));
             DrainQueue();
 
+            // (a) Verify pending rig interrupted mid-build: ends up built and visible
             if (!_riggedAttachments.TryGetValue(pendingId, out var newPendingMi) || !IsInstanceValid(newPendingMi))
             {
-                problems.Add("pending rig was not built after unpark");
+                problems.Add("(a) pending rig was not built after unpark");
             }
             else if (!newPendingMi.Visible)
             {
-                problems.Add("recovered rig is not visible");
+                problems.Add("(a) recovered pending rig is not visible");
             }
 
-            // Verify: built item was NOT rebuilt (same instance)
+            // (b) Verify built item: same instance, not rebuilt
             if (!_riggedAttachments.TryGetValue(builtId, out var currentBuiltMi))
             {
-                problems.Add("built item lost its instance");
+                problems.Add("(b) built item lost its instance");
             }
             else if (!ReferenceEquals(currentBuiltMi, originalBuiltMi))
             {
-                problems.Add("built item was rebuilt instead of instantaneous unpark");
+                problems.Add("(b) built item was rebuilt instead of instantaneous unpark");
             }
             else if (!currentBuiltMi.Visible)
             {
-                problems.Add("built item was not made visible on unpark");
+                problems.Add("(b) built item was not made visible on unpark");
+            }
+
+            // (c) Verify built item with a pending newer LOD interrupted: the newer one ends up built
+            if (!_riggedAttachments.TryGetValue(lodId, out var currentLodMi) || !IsInstanceValid(currentLodMi))
+            {
+                problems.Add("(c) newer LOD item lost its instance");
+            }
+            else if (!currentLodMi.Visible)
+            {
+                problems.Add("(c) newer LOD item is not visible");
+            }
+            else if (!visual.RiggedAttachments.Any(r => r.Mi == currentLodMi && r.MeshId == newerHairMeshId))
+            {
+                problems.Add("(c) newer LOD was not built for item");
+            }
+
+            // (d) Verify worn animesh part: not rebuilt
+            if (_riggedAttachments.ContainsKey(animeshId))
+            {
+                problems.Add("(d) worn animesh part erroneously rigged on wearer");
+            }
+
+            // (e) Verify failed mesh: not requested again (remains in dedupe, not built)
+            if (_riggedAttachments.ContainsKey(failedId))
+            {
+                problems.Add("(e) failed mesh item was erroneously rigged");
+            }
+            if (!_attachmentMeshIds.ContainsKey(failedId))
+            {
+                problems.Add("(e) failed mesh dedupe record was erroneously cleared for re-request");
             }
         }
         catch (Exception ex)
@@ -381,10 +472,16 @@ public partial class AvatarRenderer
             _world = priorWorld;
             _gpuCache = priorCache;
             _assetService = priorAssetService;
+            try
+            {
+                if (System.IO.Directory.Exists(scratchDir))
+                    System.IO.Directory.Delete(scratchDir, recursive: true);
+            }
+            catch { }
         }
 
         return problems.Count == 0
-            ? (true, "pending rig recovers after park and finishes building; already-built rig is not rebuilt on unpark")
+            ? (true, "parked rigs recovered through real promotion: interrupted rig built, built item untouched, newer LOD built, animesh and failed mesh not rebuilt")
             : (false, string.Join("; ", problems.Distinct()));
     }
 }

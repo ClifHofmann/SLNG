@@ -17,8 +17,8 @@ public static partial class SelfTest
 
     /// <summary>BUG-AVATAR-23: an item with a pending rig that is parked mid-build ends up built after unpark,
     /// while an already-built item is not rebuilt (<c>AvatarRenderer.SelfTestParkedRigsRecovered</c>).</summary>
-    private static Check CheckParkedRigsRecovered(SceneTree tree) =>
-        RunOnRenderer(tree, "parked rigs recovered on promotion, built rigs untouched", r => r.SelfTestParkedRigsRecovered());
+    private static System.Threading.Tasks.Task<Check> CheckParkedRigsRecovered(SceneTree tree) =>
+        RunOnRendererAsync(tree, "parked rigs recovered on promotion, built rigs untouched", r => r.SelfTestParkedRigsRecovered(tree));
 
     /// <summary>FEAT-PERF-23 fix: the runtime switch off, on, off again -- also mid-un-merge
     /// (<c>AvatarRenderer.SelfTestOutfitMergeToggle</c>).</summary>
@@ -29,6 +29,26 @@ public static partial class SelfTest
     /// (<c>AvatarRenderer.SelfTestWornAlphaOrder</c>).</summary>
     private static Check CheckWornAlphaOrder(SceneTree tree) =>
         RunOnRenderer(tree, "worn alpha: viewer order and depth pass", r => r.SelfTestWornAlphaOrder());
+
+    private static async System.Threading.Tasks.Task<Check> RunOnRendererAsync(SceneTree tree, string name, Func<AvatarRenderer, System.Threading.Tasks.Task<(bool Passed, string Detail)>> test)
+    {
+        var renderer = new AvatarRenderer();
+        try
+        {
+            tree.Root.AddChild(renderer);
+            var (passed, detail) = await test(renderer).ConfigureAwait(true);
+            return new Check(name, passed, detail);
+        }
+        catch (Exception ex)
+        {
+            return new Check(name, false, $"threw {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            renderer.GetParent()?.RemoveChild(renderer);
+            renderer.Free();
+        }
+    }
 
     private static Check RunOnRenderer(SceneTree tree, string name, Func<AvatarRenderer, (bool Passed, string Detail)> test)
     {

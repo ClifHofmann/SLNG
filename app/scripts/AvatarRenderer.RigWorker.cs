@@ -120,6 +120,7 @@ public partial class AvatarRenderer
                     else
                     {
                         _pendingRigs.TryRemove(new System.Collections.Generic.KeyValuePair<Guid, PendingRig>(entityId, request));
+                        request.Visual.WornBuildsInProgress.Remove(entityId);
                     }
                 }
                 finally
