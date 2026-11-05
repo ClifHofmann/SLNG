@@ -107,6 +107,8 @@ public partial class AvatarRenderer
         catch (Exception ex)
         {
             GD.PushWarning($"[Attachment] preparing mesh {request.MeshId:N} failed: {ex.Message}");
+            if (IsNewestAttachRequest(request))
+                request.Visual.WornBuildsInProgress.TryRemove(request.EntityId, out _);
             return;
         }
         finally
@@ -114,7 +116,12 @@ public partial class AvatarRenderer
             _rigPrepGate.Release();
         }
 
-        if (prepared == null) return;
+        if (prepared == null)
+        {
+            if (IsNewestAttachRequest(request))
+                request.Visual.WornBuildsInProgress.TryRemove(request.EntityId, out _);
+            return;
+        }
         EnqueueFor(request.Visual.AgentId, MainThreadWorkQueue.Lane.Visual, () => CommitPreparedAttach(request, prepared),
             label: "avatar.attach");
     }
@@ -155,6 +162,7 @@ public partial class AvatarRenderer
         ForgetMergeItem(entityId);
         RegisterBomAndUpdateVisibility(avatarVisual, mi, prepared.FaceIndices, request.Faces, request.DefaultFace, request.MeshId, entityId);
         _ = ApplyFaceMaterialsAsync(mi, prepared.FaceIndices, request.Faces, request.DefaultFace, avatarVisual, request.MeshId);
+        avatarVisual.WornBuildsInProgress.TryRemove(entityId, out _);
     }
 
     /// <summary>Self test (BUG-PERF-08): of two requests for one worn entity only the newer reaches the
